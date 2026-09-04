@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pickle
 import sys
@@ -146,7 +147,7 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
     assert seen["context_by_unit"][EXPERT].structure == "routed_moe"
 
 
-def _allocator_inputs(tmp_path):
+def _allocator_inputs(tmp_path, fmt="BF16"):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps({
@@ -158,8 +159,8 @@ def _allocator_inputs(tmp_path):
     costs = tmp_path / "cost.pkl"
     probe.write_bytes(pickle.dumps({"stats": stats, "meta": {"model": str(model_dir)}}))
     costs.write_bytes(pickle.dumps({"costs": {
-        name: {"BF16": {"predicted_dloss": 0.0}} for name in stats}, "formats": ["BF16"]}))
-    return ["--probe", str(probe), "--costs", str(costs), "--formats", "BF16",
+        name: {fmt: {"predicted_dloss": 0.0}} for name in stats}, "formats": [fmt]}))
+    return ["--probe", str(probe), "--costs", str(costs), "--formats", fmt,
             "--allow-legacy-fisher-norm",
             "--target-profile", "tessera_research_sm121", "--target-bits", "16",
             "--pareto-targets", "16", "--bit-precision", "0.1",
@@ -199,3 +200,66 @@ def test_allocator_real_endpoint_records_each_selected_scope(tmp_path, monkeypat
     allocator.main()
     assert seen["context_by_unit"][EXPERT].structure == "routed_moe"
     assert seen["context_by_unit"][DENSE].structure == "dense"
+
+
+def _v5_contract(monkeypatch, *, with_experts=True):
+    from prismaquant import tessera_runtime_contract as contract
+    from prismaquant import tessera_menu as menu
+    payload = json.loads(contract.contract_path().read_text())
+    block = payload["lane_eligibility"]
+    block["schema"] = "tessera.lane-eligibility.v5"
+    for cell in block["cells"]:
+        cell["runtime"] = {"image": IMAGE, "execution_modes": ["eager"]}
+    if with_experts:
+        extra = copy.deepcopy(block["cells"])
+        for cell in extra:
+            cell["id"] += "_expert_fixture"
+            cell["structure"] = "routed_moe"
+        block["cells"].extend(extra)
+        block["structures"].append("routed_moe")
+    parsed = contract._parse(payload, commit="fixture", sha="fixture", path="fixture")
+    monkeypatch.setattr(menu, "tessera_runtime_contract", lambda: parsed)
+    monkeypatch.setenv("PRISMAQUANT_TESSERA_MENU", "attested")
+
+
+@pytest.mark.parametrize("token", [False, True])
+def test_real_allocator_admits_v5_tessera_and_records_each_selected_unit(tmp_path, monkeypatch, token):
+    from prismaquant import allocator
+    _v5_contract(monkeypatch)
+    fmt = "TESSERA_E4M3_K1_R1024"
+    argv = _allocator_inputs(tmp_path, fmt)
+    if token:
+        argv[argv.index("--formats") + 1] = "TESSERA"
+    monkeypatch.setattr(sys, "argv", ["allocator", *argv,
+                                    "--no-fused-aggregation", "--no-packed-aggregation", *_cli_scope()])
+    allocator.main()
+    metadata = json.loads((tmp_path / "layer.json").read_text())["__prismaquant__"]
+    assert metadata["tessera_serving_scope"]["target"]["runtime_image"] == IMAGE
+    by_unit = metadata["serving_lane_provenance"]["by_unit"]
+    for name, structure in ((DENSE, "dense"), (EXPERT, "routed_moe"), (SHARED, "dense")):
+        assert by_unit[name]["format"] == fmt
+        assert by_unit[name]["route"]["route_status"] in {"backed", "backed_with_serve_flag"}
+        assert by_unit[name]["serving_context"]["structure"] == structure
+
+
+def test_real_allocator_never_borrows_dense_admission_for_expert(tmp_path, monkeypatch):
+    from prismaquant import allocator
+    _v5_contract(monkeypatch, with_experts=False)
+    monkeypatch.setattr(sys, "argv", ["allocator", *_allocator_inputs(tmp_path, "TESSERA_E4M3_K1_R1024"),
+                                    "--no-fused-aggregation", "--no-packed-aggregation", *_cli_scope()])
+    with pytest.raises(ValueError, match=EXPERT):
+        allocator.main()
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--tessera-runtime-image", "example/other@sha256:" + "b" * 64),
+    ("--tessera-execution-mode", "compiled"),
+])
+def test_real_allocator_refuses_runtime_scope_without_matching_cells(tmp_path, monkeypatch, flag, value):
+    from prismaquant import allocator
+    _v5_contract(monkeypatch)
+    scope = _cli_scope()
+    scope[scope.index(flag) + 1] = value
+    monkeypatch.setattr(sys, "argv", ["allocator", *_allocator_inputs(tmp_path, "TESSERA_E4M3_K1_R1024"), *scope])
+    with pytest.raises((ValueError, SystemExit), match="(producer|attest|scope|Tessera|TESSERA)"):
+        allocator.main()
