@@ -147,7 +147,21 @@ fi
 # It was a shell-local variable while the existence check was a loop in this
 # file, which is exactly the coupling that moved.
 export TESSERA_REPO
+# Keep the existing unscoped default, but do not turn it into an operator's
+# declaration when a v5 runtime target is requested below.
+TESSERA_SERVE_MODE_EXPLICIT=${TESSERA_SERVE_MODE+x}
 : "${TESSERA_SERVE_MODE:=resident}"
+TESSERA_SCOPE_ARGS=()
+if [[ -n "${TESSERA_PLATFORM:-}${TESSERA_RUNTIME_IMAGE:-}${TESSERA_EXECUTION_MODE:-}" ]]; then
+  if [[ "$TESSERA_SERVE_MODE_EXPLICIT" != "x" ]]; then
+    echo "[pipeline] ERROR: an explicit Tessera runtime target requires TESSERA_SERVE_MODE=resident|streamed; the legacy default is not a scoped declaration." >&2
+    exit 2
+  fi
+  [[ -z "${TESSERA_PLATFORM:-}" ]] || TESSERA_SCOPE_ARGS+=(--tessera-platform "$TESSERA_PLATFORM")
+  [[ -z "${TESSERA_RUNTIME_IMAGE:-}" ]] || TESSERA_SCOPE_ARGS+=(--tessera-runtime-image "$TESSERA_RUNTIME_IMAGE")
+  [[ -z "${TESSERA_EXECUTION_MODE:-}" ]] || TESSERA_SCOPE_ARGS+=(--tessera-execution-mode "$TESSERA_EXECUTION_MODE")
+  TESSERA_SCOPE_ARGS+=(--tessera-residency "$TESSERA_SERVE_MODE")
+fi
 # `as-allocated` plans exactly the units the allocation names and spells every
 # other body Linear BF16 explicitly. `broadcast-by-role` EXTRAPOLATES a
 # single-layer allocation to every depth and stamps itself as an
@@ -383,23 +397,21 @@ if [[ "$EXPORT_CONTAINER" == "gguf" ]]; then
   fi
 fi
 
-# Tessera lane consistency gates. Three refusals, cheapest first, and every
-# one of them is a fact read from the pinned runtime's own published table
-# rather than a belief held here (principle 14):
+# Tessera lane consistency gates read the packaged contract and release pin,
+# rather than assuming the checkpoint's class or requested runtime is served.
 #
 #   * the checkpoint's structure must be one the packaged contract declares
-#     (it declares `dense` and carries no routed_moe cell, because no served
-#     measurement covers routed experts);
+#     (a checkpoint class does not determine the structure of each unit);
 #   * lane_specs/tessera.json's `served_activation_quantization.executes` must
 #     EQUAL what the contract's formats[] rows imply;
 #   * the pinned Tessera serving runtime must be an exact reviewed release.
 #
-# The third one refuses every run today, and it is the ONLY thing that does:
-# there is no Tessera release tag (RobTand/tessera#17). That is the honest
-# state of the lane, said here where an operator can act on it, instead of
-# `unknown export lane` from a vocabulary check three layers up.
+# V5 additionally requires an explicit runtime target. The selected-unit
+# check runs again immediately before translation, when the allocation exists.
+# A development pin does not bypass the release export gate (tessera#17).
 if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
-  if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH"; then
+  if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
+      --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}"; then
     exit 2
   fi
   # The two Tessera-repository tools this arm shells out to are NOT listed
@@ -477,7 +489,9 @@ if ! LM_HEAD_POLICY_TEXT="$(
   PQ_ALLOW_PINNED="$ALLOW_PINNED" \
   PQ_LM_HEAD_FORMAT="$LM_HEAD_FORMAT" \
   PQ_BODY_FORMATS="$FORMATS" \
-  python3 - <<'PY'
+  PQ_COST_PATH_OVERRIDE="${COST_PATH_OVERRIDE:-}" \
+  python3 - --target-profile "${TARGET_PROFILE_RESOLVED:-}" "${TESSERA_SCOPE_ARGS[@]}" <<'PY'
+import argparse
 import os
 import sys
 
@@ -487,14 +501,34 @@ from prismaquant.fixed_head import (
     remaining_profile_pins,
 )
 from prismaquant.model_profiles import detect_profile
+from prismaquant.serving_profiles import load_serving_profile
+from prismaquant.tessera_serving_scope import (
+    add_serving_scope_arguments,
+    serving_target_from_args,
+    unit_structure_from_profile,
+)
 
 profile = detect_profile(os.environ["PQ_MODEL_PATH"])
+parser = argparse.ArgumentParser()
+parser.add_argument("--target-profile", default=None)
+add_serving_scope_arguments(parser)
+scope_args = parser.parse_args()
+try:
+    serving_profile = load_serving_profile(scope_args.target_profile or None)
+    target = serving_target_from_args(scope_args, target_platform=serving_profile.target_platform)
+except (OSError, ValueError) as exc:
+    print(f"[pipeline] ERROR: invalid Tessera serving target: {exc}", file=sys.stderr)
+    raise SystemExit(2) from None
 try:
     canonical = fr.get_format(os.environ["PQ_LM_HEAD_FORMAT"]).name
 except Exception as exc:
     print(f"[pipeline] ERROR: invalid LM_HEAD_FORMAT: {exc}", file=sys.stderr)
     raise SystemExit(2) from None
-if not fr.format_is_producer_eligible(canonical):
+head_context = None
+if target is not None and fr.is_tessera_format_name(canonical):
+    head_context = {"lm_head": target.context(unit_structure_from_profile("lm_head", profile))}
+if not fr.format_is_producer_eligible(canonical, **(
+        {"context_by_unit": head_context} if head_context is not None else {})):
     print(
         f"[pipeline] ERROR: LM_HEAD_FORMAT={canonical} is reader-only and "
         "cannot enter a new artifact.",
@@ -520,8 +554,29 @@ for raw in os.environ["PQ_BODY_FORMATS"].split(","):
     value = raw.strip()
     if not value:
         continue
+    if value == "TESSERA":
+        # This is a token, never a shape-free FormatSpec. Its cost columns and
+        # per-unit admission are resolved by the allocator. The separate cost
+        # override stage-graph repair is tracked in PrismaQuant #184.
+        if not os.environ.get("PQ_COST_PATH_OVERRIDE"):
+            print("[pipeline] ERROR: TESSERA menu token requires COST_PATH_OVERRIDE", file=sys.stderr)
+            raise SystemExit(2)
+        if value not in seen:
+            seen.add(value)
+            formats.append(value)
+        continue
     fmt = fr.get_format(value).name
-    if not fr.format_is_producer_eligible(fmt):
+    if target is not None and fr.is_tessera_format_name(fmt):
+        from prismaquant.tessera_render import tessera_rung_is_serialisable
+
+        # No unit topology exists at this name-only boundary. Check bytes can
+        # be written, then let the allocator and selected-export gate ask the
+        # same complete context for each actual unit; never fabricate a
+        # model-wide dense or routed claim just to pass this preliminary check.
+        eligible = tessera_rung_is_serialisable(fmt)
+    else:
+        eligible = fr.format_is_producer_eligible(fmt)
+    if not eligible:
         print(
             f"[pipeline] ERROR: FORMATS contains reader-only {fmt}; legacy "
             "wire ids may be inspected but cannot enter a new cost/allocator/"
@@ -540,6 +595,8 @@ print("1" if fixed_quantized else "0")
 print("1" if dp_unpinned else "0")
 print("1" if fixed_quantized or dp_unpinned else "0")
 print(",".join(formats))
+if target is not None:
+    print(target.platform)
 for pin in remaining_profile_pins(
     profile,
     allow_pinned=allow,
@@ -561,7 +618,21 @@ LM_HEAD_FIXED_QUANTIZED="${LM_HEAD_POLICY_LINES[1]}"
 LM_HEAD_DP_UNPINNED="${LM_HEAD_POLICY_LINES[2]}"
 LM_HEAD_RENDER_ACTIVE="${LM_HEAD_POLICY_LINES[3]}"
 COST_FORMATS="${LM_HEAD_POLICY_LINES[4]}"
-REMAINING_PROFILE_PINS=("${LM_HEAD_POLICY_LINES[@]:5}")
+TESSERA_RESOLVED_PLATFORM=""
+TESSERA_SCOPE_RESIDENCY=""
+TESSERA_SCOPE_TARGET_PROFILE=""
+if [[ ${#TESSERA_SCOPE_ARGS[@]} -gt 0 ]]; then
+  if (( ${#LM_HEAD_POLICY_LINES[@]} < 6 )); then
+    echo "[pipeline] ERROR: scoped policy resolver omitted the resolved Tessera platform." >&2
+    exit 2
+  fi
+  TESSERA_RESOLVED_PLATFORM="${LM_HEAD_POLICY_LINES[5]}"
+  TESSERA_SCOPE_RESIDENCY="$TESSERA_SERVE_MODE"
+  TESSERA_SCOPE_TARGET_PROFILE="$TARGET_PROFILE_RESOLVED"
+  REMAINING_PROFILE_PINS=("${LM_HEAD_POLICY_LINES[@]:6}")
+else
+  REMAINING_PROFILE_PINS=("${LM_HEAD_POLICY_LINES[@]:5}")
+fi
 
 LM_HEAD_BASE_COST_ARGS=(--no-include-lm-head)
 if [[ "$LM_HEAD_RENDER_ACTIVE" == "1" ]]; then
@@ -1132,6 +1203,11 @@ STAGE_SETTINGS_ENV=(
   "VALIDATED_FRONTIER_CALIB_SKIP_FIRST=$VALIDATED_FRONTIER_CALIB_SKIP_FIRST"
   "VALIDATED_FRONTIER_KL_SCOPE=$VALIDATED_FRONTIER_KL_SCOPE"
   "TESSERA_PLAN_COVER=$TESSERA_PLAN_COVER"
+  "TESSERA_PLATFORM=$TESSERA_RESOLVED_PLATFORM"
+  "TESSERA_RUNTIME_IMAGE=${TESSERA_RUNTIME_IMAGE:-}"
+  "TESSERA_EXECUTION_MODE=${TESSERA_EXECUTION_MODE:-}"
+  "TESSERA_RESIDENCY=$TESSERA_SCOPE_RESIDENCY"
+  "TESSERA_TARGET_PROFILE=$TESSERA_SCOPE_TARGET_PROFILE"
   "${RENDER_ENV_SETTINGS[@]}"
 )
 STAGE_SETTINGS_ARGS=()
@@ -1740,6 +1816,7 @@ ALLOCATOR_PROFILE_ARGS=(--target-profile-default "$TARGET_PROFILE_DEFAULT")
 if [[ -n "$TARGET_PROFILE" ]]; then
   ALLOCATOR_PROFILE_ARGS+=(--target-profile "$TARGET_PROFILE")
 fi
+ALLOCATOR_PROFILE_ARGS+=("${TESSERA_SCOPE_ARGS[@]}")
 if [[ -n "$ALLOW_PINNED" ]]; then
   ALLOCATOR_PROFILE_ARGS+=(--allow-pinned "$ALLOW_PINNED")
 fi
@@ -2379,8 +2456,8 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # Tessera lane: one blob per vLLM module on the Tessera wire, served by
   # Tessera's OWN vLLM plugin (package `tessera.serving`, entry point under
   # vllm.general_plugins, quant_method "tessera"). There is no enable flag --
-  # the checkpoint selects the plugin -- and the one operator knob is
-  # TESSERA_SERVE_MODE.
+  # the checkpoint selects the plugin. Scoped targets additionally bind the
+  # exact image and execution mode rather than inheriting wrapper defaults.
   #
   # TWO CALLS OUT, ZERO CODECS IN. The layer_config -> plan translation and
   # the encode both live in the Tessera repository and are NAMED here, never
@@ -2391,8 +2468,22 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # place a wire recipe can drift, which is exactly what the producer/consumer
   # boundary exists to prevent. The lane preflight above has already refused
   # if TESSERA_REPO does not hold both.
+  # Re-read the allocation's scope and actual source header dimensions even
+  # when an old plan exists: a cached plan is not an admission receipt.
+  TESSERA_BUILD_JSON="${WORK_DIR}/artifacts/tessera_build.json"
+  if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
+      --assignment "${WORK_DIR}/artifacts/layer_config.json" \
+      --write-build-json "$TESSERA_BUILD_JSON" \
+      --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}"; then
+    exit 2
+  fi
   TESSERA_PLAN="${WORK_DIR}/artifacts/tessera_plan.json"
-  require_stage_settings "$TESSERA_PLAN" tessera-plan
+  # The allocator always rewrites its recipe. A path or a newly generated
+  # build anchor cannot establish which allocation an existing plan translated.
+  TESSERA_ASSIGNMENT_DIGEST=$(sha256sum "${WORK_DIR}/artifacts/layer_config.json")
+  TESSERA_ASSIGNMENT_DIGEST=${TESSERA_ASSIGNMENT_DIGEST%% *}
+  require_stage_settings "$TESSERA_PLAN" tessera-plan \
+    "ASSIGNMENT_DIGEST=$TESSERA_ASSIGNMENT_DIGEST"
   if [[ ! -f "$TESSERA_PLAN" ]]; then
     echo "[pipeline] [4/4] translating layer_config.json -> Tessera plan (cover=${TESSERA_PLAN_COVER}) ..."
     # Write-then-rename: a crashed translation must not leave a partial plan
@@ -2452,13 +2543,43 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   if [[ -f "${WORK_DIR}/exported/shipcard.json" ]]; then
     echo "  Ship record: ${WORK_DIR}/exported/shipcard.json exists, kept (re-open would discard filled slots)"
   elif ! python3 -m prismaquant.lane_shipcard open \
-         --lane tessera --artifact "${WORK_DIR}/exported"; then
+         --lane tessera --artifact "${WORK_DIR}/exported" \
+         --build-json "$TESSERA_BUILD_JSON"; then
     echo "[pipeline] ERROR: EXPORT_CONTAINER=tessera: could not open the Tessera ship record. The artifact is unpublishable without one, and writing a base card by hand would omit this lane's own gates, so the export is not done until this succeeds." >&2
     exit 2
   fi
-  echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
-  echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
-  echo "  Close census: python -m prismaquant.shipcard_cli fill-route-census ${WORK_DIR}/exported/shipcard.json --census <census.json> --priced-route TESSERA_NVFP4 [...]"
+  # Print a shell-safe recipe for the same target admission just checked.
+  # Legacy context-free callers retain the wrapper's image/mode defaults.
+  TESSERA_PRINT_SERVE=("TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE}" "TS=${TESSERA_REPO%/}")
+  if [[ -n "${TESSERA_RUNTIME_IMAGE:-}" ]]; then
+    TESSERA_PRINT_SERVE+=("IMAGE=$TESSERA_RUNTIME_IMAGE")
+    case "$TESSERA_EXECUTION_MODE" in
+      eager) TESSERA_PRINT_SERVE+=(TESSERA_LANE_EAGER=1) ;;
+      compiled) TESSERA_PRINT_SERVE+=(TESSERA_LANE_EAGER=0) ;;
+      *) echo "[pipeline] ERROR: invalid scoped Tessera execution mode" >&2; exit 2 ;;
+    esac
+  fi
+  TESSERA_PRINT_SERVE+=(bash "${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh"
+    "${WORK_DIR}/exported" '<arm>' "$TESSERA_SERVE_MODE")
+  printf '  Serve:      '
+  printf ' %q' "${TESSERA_PRINT_SERVE[@]}"
+  printf '\n'
+  echo "  Run the route census inside the same verified runtime image; keep its complete raw JSON."
+  TESSERA_PRINT_CENSUS=("TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE}" python3
+    "${TESSERA_REPO%/}/tools/tessera_route_census.py" "${WORK_DIR}/exported"
+    '<raw-census.json>' --runtime-image "${TESSERA_RUNTIME_IMAGE:-<verified-image@sha256:digest>}")
+  if [[ "${TESSERA_EXECUTION_MODE:-}" == "compiled" ]]; then
+    TESSERA_PRINT_CENSUS+=(--compiled)
+    echo "  Note: the producer's combined dense compiled trace cannot prove per-regime route agreement."
+  fi
+  printf '  Route census:'
+  printf ' %q' "${TESSERA_PRINT_CENSUS[@]}"
+  printf '\n'
+  printf '  Close census:'
+  printf ' %q' python3 -m prismaquant.shipcard_cli fill-route-census \
+    "${WORK_DIR}/exported/shipcard.json" --census '<raw-census.json>' \
+    --layer-config "${WORK_DIR}/artifacts/layer_config.json" --model-dir "${WORK_DIR}/exported"
+  printf '\n'
   echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
   exit 0
 fi

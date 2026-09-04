@@ -1660,7 +1660,12 @@ def clip_probe_fisher_outliers(stats: dict, meta: dict | None = None, *,
 
 
 def main():
+    from .tessera_serving_scope import (
+        add_serving_scope_arguments, serving_target_from_args,
+        context_by_unit_from_stats, scope_provenance,
+    )
     ap = argparse.ArgumentParser()
+    add_serving_scope_arguments(ap)
     ap.add_argument("--probe", required=True, help="sensitivity_probe pickle")
     ap.add_argument("--costs", required=True, help="measure_quant_cost pickle")
     ap.add_argument(
@@ -2239,6 +2244,9 @@ def main():
     if target_profile not in serving_profile_names():
         raise SystemExit(f"[alloc] ERROR: unknown target profile {target_profile!r}")
     print(f"[alloc] target profile: {target_profile}", flush=True)
+    from .serving_profiles import load_serving_profile
+    tessera_serving_target = serving_target_from_args(
+        args, target_platform=load_serving_profile(target_profile).target_platform)
 
     if bool(args.research_cost_base) != bool(args.research_cost_segments_dir):
         raise SystemExit(
@@ -2457,6 +2465,8 @@ def main():
         )
     stats = _mark_weight_only_nvfp4_stats(stats, model_profile)
     accounting_stats = dict(stats)
+    tessera_context_by_unit = context_by_unit_from_stats(
+        tessera_serving_target, accounting_stats, model_profile)
 
     if args.formats:
         fmt_names = [s.strip() for s in args.formats.split(",") if s.strip()]
@@ -2482,7 +2492,9 @@ def main():
         if isinstance(n, str) and n.startswith("TESSERA_")
     ]
     fmt_names, unattested = expand_menu_tokens_report(
-        fmt_names, cost_data.get("formats", ()))
+        fmt_names, cost_data.get("formats", ()),
+        **({"context_by_unit": tessera_context_by_unit}
+           if tessera_context_by_unit is not None else {}))
     tessera_menu_widths: dict = {}
     if priced_tessera:
         kept = [n for n in fmt_names if n.startswith("TESSERA_")]
@@ -2530,7 +2542,9 @@ def main():
             )
     try:
         specs = fr.require_producer_formats(
-            fmt_names, where="new allocator assignment menu"
+            fmt_names, where="new allocator assignment menu",
+            **({"context_by_unit": tessera_context_by_unit}
+               if tessera_context_by_unit is not None else {}),
         )
     except ValueError as exc:
         raise SystemExit(
@@ -2938,6 +2952,7 @@ def main():
         # what THIS solver can distinguish rather than to a taste constant.
         bit_precision=float(args.bit_precision),
         tessera_menu_report=tessera_menu_report,
+        context_by_unit=tessera_context_by_unit,
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
 
@@ -2989,6 +3004,7 @@ def main():
             # own predicted_dloss/cost_source precedence while making the
             # absence of body activation transfer explicit.
             activation_pricing=None,
+            context_by_unit=tessera_context_by_unit,
         )
         missing_head_candidates = [
             name for name in head_probe_names
@@ -3075,6 +3091,7 @@ def main():
             mask_records=candidate_mask_records,
             cb_serialization_context=cb_serialization_context,
             activation_pricing=activation_pricing,
+            context_by_unit=tessera_context_by_unit,
         )
         missing_mtp_candidates = [
             name for name in mtp_names
@@ -3147,6 +3164,7 @@ def main():
                 mask_records=candidate_mask_records,
                 cb_serialization_context=cb_serialization_context,
                 activation_pricing=activation_pricing,
+                context_by_unit=tessera_context_by_unit,
             )
             visual_aux_candidates = {
                 name: cand for name in visual_cost_names
@@ -3527,7 +3545,7 @@ def main():
             legal_formats=per_linear_legal_formats,
         )
 
-    _serve_lane_cache: dict[str, object] = {}
+    _serve_lane_cache: dict[tuple, object] = {}
 
     def _serve_lane_for(name: str, fmt: str):
         """The concrete serving-lane route one assigned unit would ride (P5b).
@@ -3542,9 +3560,13 @@ def main():
         for cand in candidates.get(name, ()):
             if cand.fmt == fmt:
                 return cand.serving_lane
-        if fmt not in _serve_lane_cache:
-            _serve_lane_cache[fmt] = serving_lane_route(target_profile, fmt)
-        return _serve_lane_cache[fmt]
+        context = None if tessera_context_by_unit is None else tessera_context_by_unit.get(name)
+        key = (fmt, None if context is None else context.key())
+        if key not in _serve_lane_cache:
+            _serve_lane_cache[key] = serving_lane_route(
+                target_profile, fmt,
+                **({"serving_context": context} if context is not None else {}))
+        return _serve_lane_cache[key]
 
     def _serve_feasibility(
         expanded_assignment: Mapping[str, str],
@@ -4994,7 +5016,11 @@ def main():
             "activation_fair_pricing": activation_pricing.as_dict(),
             "cb_ladder_cross_family_verdict": cross_family_verdict,
             "serving_lane_provenance": selection_serving_lane_provenance(
-                chosen_info["assignment"], candidates, target_profile),
+                chosen_info["assignment"], candidates, target_profile,
+                context_by_unit=tessera_context_by_unit),
+            **({"tessera_serving_scope": scope_provenance(
+                tessera_serving_target, tessera_context_by_unit)}
+               if tessera_serving_target is not None else {}),
             # How big the per-unit menu was BEFORE the DP saw it, and which
             # of the two reductions shrank it (see reduce_continuous_menu).
             # Empty on a run with no Tessera rung on the menu. Without this a
@@ -5378,6 +5404,12 @@ def main():
     layer_cfg[LAYER_CONFIG_META_KEY] = {
         "schema": "prismaquant.layer_config_meta.v1",
         "target_profile": target_profile,
+        **({"tessera_serving_scope": scope_provenance(
+                tessera_serving_target, tessera_context_by_unit),
+            "serving_lane_provenance": selection_serving_lane_provenance(
+                assignment_expanded, candidates, target_profile,
+                context_by_unit=tessera_context_by_unit)}
+           if tessera_serving_target is not None else {}),
         "target_profile_requested": args.target_profile,
         "target_profile_default": str(args.target_profile_default or "research"),
         "lm_head_format": lm_head_format_canonical,
