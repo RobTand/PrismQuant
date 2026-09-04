@@ -129,3 +129,12 @@ The distinct fixes were transplanted onto main
 on branch `codex/pq183-packed-capture`. Only the architecture stamp insertion
 needed conflict resolution; both sets of prose were retained. The prior
 dependency copies are not part of this branch's PR diff.
+
+Combined targeted action
+`8c87b0777daeda083396c2e5a16f474089125ab860c06701eb0f9c83d5892674`
+on the integrated source ran all nine previously named test files together:
+79 passed, 7 skipped, no uncollected module reported. The five campaign skip
+reasons are `Tessera encodes need CUDA`; the two streaming skip reasons are
+`streaming production render is GPU-or-bust`. CPU-only, serial, one CPU / 4 GiB
+on Sparky; no GPU qualification inferred. Receipt:
+`4ae92d4004626ce1b9015300bb40a62cabc08cf1a2b3828de9b1e3076ea93585`.
