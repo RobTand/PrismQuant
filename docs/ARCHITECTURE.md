@@ -1,8 +1,75 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq87-physical-ab`. Stamps
+As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
+census handoff instructions** (§9.4). The driver prints the producer's actual
+artifact/output/runtime-image census API, preserving compiled mode when
+requested, and a consumer fill command with the exact allocation and artifact
+paths. A log summary and caller-supplied route list are not v5 evidence. The
+census must run inside the same verified runtime image; instructions explicitly
+note that combined dense compiled traces cannot prove per-regime agreement.
+The scoped receipt implementation remains the separate #126 integration leg.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **scope-preserving
+serve instructions** (§9.4). The printed Tessera launch recipe now supplies
+the validated exact `IMAGE`, eager/compiled `TESSERA_LANE_EAGER`, residency
+and `TS` producer checkout with shell-safe quoting. Legacy unscoped callers
+retain the existing wrapper image/mode defaults. This changes instructions,
+not serving defaults or attestation.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **allocation-bound
+Tessera plan reuse** (§9.4). The plan stage now records the full SHA-256 of
+the exact allocation bytes as a late-bound settings key. Changed allocations
+refuse cached plans before export, even under an unchanged model/runtime
+target. Existing plans without their own recorded allocation binding refuse
+instead of acquiring today's hash by trust-on-first-use; other stages keep
+their legacy missing-manifest policy. The independently generated shipcard
+build anchor does not substitute for evidence of what an old plan translated.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **selected
+export scope and shipcard binding** (§5.7, §9.4; Tessera #126). V5 export
+requires a complete runtime target before work and rechecks every selected
+Tessera unit against allocation contexts, source headers/name projection,
+profile topology and same-runtime native, device-qualified cells covering all
+regimes before the external translator runs. Exact two-dimensional source
+units are supported; packed/aggregate shapes and predicates needing the
+producer's fused-unit projection refuse. No projection is guessed. The shell
+threads scope into allocator and export gates and keys plan reuse by the
+resolved platform, image, mode and residency. Name-only body intake checks
+serializability and defers admission to per-unit gates; the head has its own
+explicit context. `--write-build-json` binds exact raw assignment SHA and
+validated scope through the existing shipcard `--build-json` interface,
+providing the independent allocation anchor for scoped census replay. This
+does not yet implement that replay or the prepriced cost-stage repair (#184).
+The release pin stays PENDING and no serving or GPU result is claimed.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **scoped
+campaign and allocator entry points** (§5.7; Tessera #126). The real CLIs
+thread the explicit target and each unit's discovered/probed structure
+through menu-token intake, every candidate construction, fallback-route
+caches and final selected-route provenance. Shared-menu intake is the union
+of actual unit contexts; the cached global `FormatSpec` stays a context-free
+byte description and the final candidate mask still gates each unit. The
+exact target and per-unit contexts are recorded under
+`__prismaquant__.tessera_serving_scope` in the allocation recipe. Tests run
+the real allocator endpoint with both literal and token-expanded Tessera
+menus, preserve dense/expert separation and refuse image/mode mismatch.
+This does not add packed expert activation capture: the existing campaign's
+Linear-only population and packed export bridge are tracked in PrismaQuant
+#183. Pins, wire bytes, encoder defaults and promotion thresholds stay put.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **explicit
+serving-target intake** (§5.7; Tessera #126). `tessera_serving_scope` owns
+the optional target arguments and per-unit context construction. Image,
+execution mode and residency are explicit; platform is explicit or comes
+from the selected serving profile, never the probe device. All-absent keeps
+the legacy context-free call; partial/conflicting targets refuse. Probe
+router/expert or packed-module facts determine unit structure, cross-checked
+against the declared model profile. Missing facts cannot silently become
+dense. The helper delegates value validation to `ServingContext`; it does
+not change a runtime default or attest any new serving cell.
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
 hashes native BF16 source before starting one read-only-model server, then
@@ -8979,7 +9046,7 @@ decision rather than operator policy. Strix Halo enters this lane first, serving
 
 ### 9.4 tessera — the Tessera wire on Tessera's own vLLM plugin
 
-**Declared, driveable, and fail-closed on one thing.** This lane existed as a
+**Declared, driveable, and fail-closed.** This lane existed as a
 *bar* before it existed as a shipping path: `prismaquant/lane_specs/tessera.json`
 states the serve, the endpoint, the gate set, the KL evaluator and the executed
 activation contracts. Since 2026-09-03 `run-pipeline.sh` has a real
@@ -8999,7 +9066,7 @@ a partial allocation is planned as-is with every other body Linear spelled BF16,
 broadcast by role and stamped as the extrapolation it is; silence must never become
 a 4-bit rung.
 
-**Four preflight gates, each fail-closed on its own** (`tessera_export_lane.py`,
+**Preflight gates, each fail-closed on its own** (`tessera_export_lane.py`,
 run before any GPU work): the checkpoint's structure must be one the packaged
 contract declares (`require_declared_structure`, read from the artifact's own
 `config.json`, because the `qwen3` profile claims both the dense and the MoE
@@ -9009,8 +9076,12 @@ architecture and only one is declared); the lane spec's
 in the field that asserts what the runtime executes; every tool the lane
 declares it shells out to must exist under the env var that declaration names
 (`require_producer_tools`); and the pinned Tessera serving runtime must be an
-exact reviewed release (`require_release_pin`). The last refuses every run
-today and is the only thing that does.
+exact reviewed release (`require_release_pin`). The PENDING release pin still
+refuses shipping. Runtime-scoped v5 adds an explicit validated target before
+work and selected-unit scope/source-shape admission before translation;
+passing the release pin does not bypass those gates. Cached plans must also
+retain their own exact allocation-content binding, independent of the current
+shipcard build anchor.
 
 The producer-tool gate reads `lane_specs/tessera.json`'s `producer_tools`. It
 was a hardcoded `for` loop over two paths in `run-pipeline.sh`, which named two
@@ -9035,10 +9106,13 @@ reviewed development contract includes NVFP4 W4A4 at
 `e2m1_group16_ue4m3_static`, FP8 W8A8 at `fp8_per_token_dynamic` and BF16 at
 `bf16_unquantized`; each route's cells name its residency and launches.
 **There is no enable flag**: the checkpoint's
-`quantization_config.quant_method` selects the plugin, and the single operator
-knob is `TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
+`quantization_config.quant_method` selects the plugin. Residency is
+`TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
 because it changes the artifact's footprint and is folded into vLLM's
-compile-cache key. The serve installs the plugin into the *stock* vLLM image
+compile-cache key. A scoped target additionally fixes exact image and execution
+mode; the printed recipe preserves those through the producer wrapper's
+`IMAGE` and `TESSERA_LANE_EAGER`, plus the selected checkout through `TS`.
+The serve installs the plugin into the *stock* vLLM image
 (`pip install --no-deps --no-build-isolation -e <tessera>`); no core patch, no
 forked runtime. The reference serve script
 (`/home/rob/tessera/experiments/tessera_plugin_served.sh`) and the route census

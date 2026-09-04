@@ -18,12 +18,12 @@ the encode is Tessera's ``experiments/export_tessera_serving.py``.  Copying
 either here would make this repository the second place a wire recipe lives,
 which is the failure mode principle 14 exists to prevent.
 
-**Four gates, each of which fails closed on its own.**
+**Independent fail-closed gates, before encoding.**
 
 1. :func:`require_release_pin` -- the pinned Tessera serving runtime must be an
    exact reviewed release.  It is not, today: no Tessera release tag exists
-   (RobTand/tessera#17), so this refuses every run and it is the ONLY thing
-   that does.  That is the honest state of the lane and it is stated where an
+   (RobTand/tessera#17), so this refuses release exports regardless of whether
+   development admission is enabled. That is stated where an
    operator can act on it, rather than as ``unknown export lane`` from a
    vocabulary check three layers up.
 2. :func:`require_executes_derived_from_contract` -- principle 14.  The lane
@@ -31,10 +31,9 @@ which is the failure mode principle 14 exists to prevent.
    runtime EXECUTES, so it is DERIVED from the ``formats[]`` table the runtime
    publishes and any disagreement refuses.  Two of our own spec files once
    disagreed about one runtime; the runtime was never ambiguous.
-3. :func:`require_declared_structure` -- the contract declares
-   ``structures: ["dense"]`` and carries no ``routed_moe`` cell, because no
-   served measurement covers routed experts.  A model with routed experts is
-   refused by reading that field, not by a hardcoded list here.
+3. :func:`require_declared_structure` -- the checkpoint's structural class
+   must be declared by the packaged contract. This is a coarse preflight,
+   not permission to treat every unit of an MoE checkpoint as an expert.
 4. :func:`require_producer_tools` -- every external tool the lane DECLARES it
    shells out to must exist under the env var the declaration names.  This was
    a hardcoded ``for`` loop over two paths in ``run-pipeline.sh``; it is now
@@ -42,11 +41,17 @@ which is the failure mode principle 14 exists to prevent.
    carries each tool's stability and its tracking issue, so a shipping lane's
    dependency on a script with no stability promise is a value a reader and a
    gate can both see (RobTand/prismaquant#119).
+5. :func:`require_serving_target` and :func:`require_assignment_scope` -- v5
+   needs an explicit runtime target. Before translation, every selected
+   Tessera unit must retain the allocation's target and per-unit context,
+   agree with the source header and profile topology, and resolve all regimes
+   on that context. Legacy calls without scope retain their existing gates.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -67,8 +72,8 @@ ROUTED_EXPERT_COUNT_KEYS = (
 )
 
 #: The structure id this repository uses for a checkpoint with routed experts.
-#: It is one of ``lane_eligibility.STRUCTURES``; the contract simply does not
-#: declare it.
+#: It is one of ``lane_eligibility.STRUCTURES``; admission reads whether the
+#: packaged contract declares it rather than inferring support from this id.
 STRUCTURE_ROUTED_MOE = "routed_moe"
 STRUCTURE_DENSE = "dense"
 
@@ -98,9 +103,9 @@ def require_release_pin() -> None:
             f"{exc}\n"
             "  There is no Tessera release tag yet (RobTand/tessera#17), and "
             "cutting one is Rob's decision, not this pipeline's. Until then "
-            "the lane is declared and gated but cannot build: every Tessera "
-            "rung is producer-ineligible, so an allocation cannot select one "
-            "either.\n"
+            "the release export lane is declared and gated but cannot build. "
+            "Explicit development admission may allocate research artifacts; "
+            "it does not satisfy this release gate.\n"
             "  Resolving it is ONE reviewed commit: "
             "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json's "
             "commit/version/version_is_release AND the two release constants "
@@ -238,11 +243,9 @@ def require_declared_structure(model_path: str | Path) -> str:
         raise TesseraExportLaneError(
             f"this checkpoint's structure is {structure!r} and the pinned "
             f"Tessera runtime declares structures {list(table.structures)}.\n"
-            "  Absence is the honest state, not an oversight: no served "
-            "measurement covers routed experts, so the plugin refuses a routed "
-            "MoE module by name rather than degrading it, and the exporter "
-            "would pass every expert through as BF16 -- an artifact that is "
-            "not the allocation that justified it."
+            "  A checkpoint class absent from the published table is not "
+            "attested. Do not replace its selected units with BF16 merely "
+            "to build an artifact different from the allocation that priced it."
         )
     return structure
 
@@ -308,14 +311,202 @@ def require_producer_tools(
 
 
 # ---------------------------------------------------------------------------
+# Runtime-scoped export -- the allocation and source, not a model-wide guess
+# ---------------------------------------------------------------------------
+def require_serving_target(target=None, *, table=None):
+    """Validate explicit v5 target input without inventing a per-unit claim."""
+    from .lane_eligibility import (
+        LANE_ELIGIBILITY_SCHEMA_TESSERA, legacy_runtime_scope_refusal,
+        load_eligibility_table,
+    )
+    from .tessera_serving_scope import ServingTarget
+
+    if table is None:
+        table = load_eligibility_table(contract_path=packaged_contract_path())
+    if target is None:
+        if table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA:
+            raise TesseraExportLaneError(
+                "an explicit Tessera serving target is required for v5 export; "
+                "supply platform, runtime image, execution mode and residency")
+        return None
+    if table.schema != LANE_ELIGIBILITY_SCHEMA_TESSERA:
+        raise TesseraExportLaneError(legacy_runtime_scope_refusal(table.schema))
+    try:
+        validated = ServingTarget(**target.as_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise TesseraExportLaneError(f"invalid Tessera serving target: {exc}") from exc
+    if validated.platform not in table.platforms:
+        raise TesseraExportLaneError(
+            f"Tessera target platform {validated.platform!r} is not published "
+            f"by this contract: {list(table.platforms)}")
+    return validated
+
+
+def _source_unit_shapes(model_path: str | Path, profile) -> dict[str, list[tuple[str, tuple]]]:
+    """Read source headers and the shared name projection; never load weights."""
+    from .footprint import _read_safetensors_header
+    from .name_projection import MAPPED, NameProjection
+    from .source_prefetch import _unique_safetensor_shards
+
+    paths = _unique_safetensor_shards(model_path)
+    if not paths:
+        raise TesseraExportLaneError(
+            f"no indexed or model.safetensors source checkpoint under {model_path}")
+    projection = NameProjection(profile)
+    by_unit: dict[str, list[tuple[str, tuple]]] = {}
+    seen: set[str] = set()
+    for path in paths:
+        for name, metadata in _read_safetensors_header(str(path)).items():
+            if name == "__metadata__":
+                continue
+            if name in seen:
+                raise TesseraExportLaneError(
+                    f"source checkpoint tensor {name!r} occurs in multiple shards")
+            seen.add(name)
+            projected = projection.checkpoint_to_live(name)
+            if projected.outcome != MAPPED:
+                continue
+            unit = projection.recipe_unit(projected.target)
+            shape = metadata.get("shape") if isinstance(metadata, Mapping) else None
+            if not isinstance(shape, list) or any(
+                    isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0
+                    for dim in shape):
+                # Zero-size ancillary tensors need not make an otherwise valid
+                # checkpoint unexportable; a selected one has no valid shape.
+                shape = ()
+            by_unit.setdefault(unit, []).append((name, tuple(shape)))
+    return by_unit
+
+
+def require_assignment_scope(model_path: str | Path, assignment_path: str | Path,
+                             *, target=None) -> dict | None:
+    """Re-resolve selected Tessera units before the external translator runs.
+
+    The existing translator still owns serialization and expert aggregation.
+    This gate accepts exact two-dimensional source units, not a guessed slice
+    of a packed source tensor. These are source-member shapes, not a claim
+    about the producer's eventual fused execution unit; predicated cells
+    require that producer projection and are refused here.
+    """
+    from .lane_eligibility import (
+        LANE_ELIGIBILITY_SCHEMA_TESSERA, QUALIFICATION_DEVICE_QUALIFIED, ROUTE_STATUS_BACKED,
+        ROUTE_STATUS_BACKED_WITH_SERVE_FLAG, ServingContext, cell_matches_serving_context,
+        load_eligibility_table, load_published_formats, resolve_unit_route,
+        unit_structural_facts,
+    )
+    from .layer_config import load_assignment, read_layer_config_metadata
+    from .model_profiles import detect_profile
+    from .tessera_serving_scope import ServingTarget, unit_structure_from_profile
+
+    path = packaged_contract_path()
+    table = load_eligibility_table(contract_path=path)
+    # An old context-free export remains the old export. Explicitly scoped
+    # queries never borrow a legacy table's global runtime identity.
+    if target is None and table.schema != LANE_ELIGIBILITY_SCHEMA_TESSERA:
+        return None
+    if target is None:
+        require_serving_target(target, table=table)
+    try:
+        selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
+                    if fmt.startswith("TESSERA_")}
+        scope = read_layer_config_metadata(assignment_path).get("tessera_serving_scope")
+        if not isinstance(scope, Mapping):
+            raise TesseraExportLaneError(
+                "allocation carries no tessera_serving_scope; re-allocate with an explicit target")
+        if set(scope) != {"target", "by_unit"} or not isinstance(scope["target"], Mapping):
+            raise TesseraExportLaneError(
+                "allocation tessera_serving_scope requires target and by_unit objects")
+        recorded_target = ServingTarget(**scope["target"])
+        if recorded_target.as_dict() != target.as_dict():
+            raise TesseraExportLaneError(
+                "export target disagrees with the allocation target: "
+                f"export={target.as_dict()}, allocation={recorded_target.as_dict()}")
+        target = require_serving_target(target, table=table)
+        by_unit = scope["by_unit"]
+        if not isinstance(by_unit, Mapping):
+            raise TesseraExportLaneError("allocation scope.by_unit must be an object")
+        profile = detect_profile(str(model_path))
+        shapes = _source_unit_shapes(model_path, profile)
+        formats = load_published_formats(contract_path=path)
+        routes = {}
+        for name, fmt in sorted(selected.items()):
+            matches = shapes.get(name, ())
+            if len(matches) != 1 or len(matches[0][1]) != 2:
+                raise TesseraExportLaneError(
+                    f"{name}: scoped export needs one exact 2-D source checkpoint shape; "
+                    f"found {list(matches)}. Packed or aggregate source units require "
+                    "the producer's explicit projection, not a guessed slice.")
+            structure = unit_structure_from_profile(name, profile)
+            expected = target.context(structure)
+            context_payload = by_unit.get(name)
+            if not isinstance(context_payload, Mapping):
+                raise TesseraExportLaneError(f"{name}: allocation is missing per-unit serving context")
+            recorded = ServingContext(**context_payload)
+            if recorded != expected:
+                raise TesseraExportLaneError(
+                    f"{name}: allocation context disagrees with the export target or source "
+                    f"structure: recorded={recorded.as_dict()}, expected={expected.as_dict()}")
+            rows, columns = matches[0][1]
+            facts = unit_structural_facts(
+                name, fmt, is_routed_moe=structure == STRUCTURE_ROUTED_MOE,
+                # Tessera's per-Linear wire has no split codebooks. Expert
+                # aggregation remains the producer's job, not a local guess.
+                role_split=False, in_features=columns, out_features=rows,
+                published_formats=formats)
+            predicated = [cell.id for cell in table.cells
+                          if cell.family == facts.payload_family and cell.covers_rung(facts)
+                          and cell_matches_serving_context(cell, expected) and cell.predicates]
+            if predicated:
+                raise TesseraExportLaneError(
+                    f"{name}: selected route is unattested at this boundary: cells {predicated} "
+                    "carry predicates requiring the producer's executed-unit projection; "
+                    "source-member dimensions do not attest a fused execution shape")
+            route = resolve_unit_route(facts, table, **target.as_dict())
+            if (route.route_status not in (ROUTE_STATUS_BACKED, ROUTE_STATUS_BACKED_WITH_SERVE_FLAG)
+                    or any(row.qualification != QUALIFICATION_DEVICE_QUALIFIED for row in route.regimes)):
+                raise TesseraExportLaneError(
+                    f"{name}: selected Tessera route is {route.route_status}: "
+                    f"{route.unattested_reason or 'every regime must be device_qualified and native'}")
+            routes[name] = route.as_dict()
+        return {"target": target.as_dict(), "by_unit": routes,
+                "contract": table.provenance()}
+    except TesseraExportLaneError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, struct.error) as exc:
+        raise TesseraExportLaneError(f"cannot attest selected Tessera export scope: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
 # The driver's entry point
 # ---------------------------------------------------------------------------
-def preflight(model_path: str | Path) -> dict:
+def preflight(model_path: str | Path, *, target=None,
+              assignment_path: str | Path | None = None) -> dict:
     """Every gate, in the order that puts the cheapest refusal first."""
     structure = require_declared_structure(model_path)
+    target = require_serving_target(target)
     executes = require_executes_derived_from_contract()
     producer_tools = require_producer_tools()
     require_release_pin()
+    scope = None
+    build = None
+    if assignment_path is not None:
+        from .layer_config import read_layer_config_metadata
+        from .shipcard import file_sha256
+
+        assignment_sha = file_sha256(assignment_path)
+        if assignment_sha is None:
+            raise TesseraExportLaneError(f"cannot hash allocation {assignment_path}")
+        scope = require_assignment_scope(model_path, assignment_path, target=target)
+        build = {
+            "source_model": str(model_path), "layer_config": str(assignment_path),
+            "layer_config_sha": assignment_sha,
+        }
+        if scope is not None:
+            build["tessera_serving_scope"] = read_layer_config_metadata(
+                assignment_path)["tessera_serving_scope"]
+        if file_sha256(assignment_path) != assignment_sha:
+            raise TesseraExportLaneError(
+                "allocation changed during scoped preflight; no build anchor was produced")
     from .tessera_serving_runtime_pin import (
         load_tessera_serving_runtime_pin,
     )
@@ -325,7 +516,7 @@ def preflight(model_path: str | Path) -> dict:
     from .shipcard import lane_gate_slots
 
     spec = load_lane_spec("tessera")
-    return {
+    report = {
         "structure": structure,
         "executes": list(executes),
         "producer_tools": list(producer_tools),
@@ -342,6 +533,13 @@ def preflight(model_path: str | Path) -> dict:
         "pinned_commit": pin.commit,
         "quant_method": "tessera",
     }
+    if target is not None:
+        report["serving_target"] = target.as_dict()
+    if scope is not None:
+        report["selected_serving_scope"] = scope
+    if build is not None:
+        report["build"] = build
+    return report
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -353,10 +551,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--model", required=True,
                         help="the source checkpoint run-pipeline.sh is building")
+    parser.add_argument("--assignment", default=None,
+                        help="selected layer_config.json to attest before plan translation")
+    parser.add_argument("--target-profile", default=None,
+                        help="serving profile supplying or cross-checking the exact platform")
+    parser.add_argument("--write-build-json", default=None,
+                        help="write validated allocation facts for lane_shipcard open --build-json")
+    from .tessera_serving_scope import add_serving_scope_arguments, serving_target_from_args
+
+    add_serving_scope_arguments(parser)
     args = parser.parse_args(argv)
     try:
-        report = preflight(args.model)
-    except TesseraExportLaneError as exc:
+        if args.write_build_json is not None and args.assignment is None:
+            raise TesseraExportLaneError("--write-build-json requires --assignment")
+        platform = None
+        if args.target_profile is not None:
+            from .serving_profiles import load_serving_profile
+
+            platform = load_serving_profile(args.target_profile).target_platform
+        target = serving_target_from_args(args, target_platform=platform)
+        if target is None and args.assignment is None:
+            report = preflight(args.model)
+        else:
+            report = preflight(args.model, target=target, assignment_path=args.assignment)
+        if args.write_build_json is not None:
+            destination = Path(args.write_build_json)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(destination.name + ".tmp")
+            temporary.write_text(json.dumps(report["build"], indent=2, sort_keys=True) + "\n",
+                                 encoding="utf-8")
+            temporary.replace(destination)
+    except (TesseraExportLaneError, OSError, ValueError) as exc:
         print(f"[preflight] ERROR: EXPORT_CONTAINER=tessera: {exc}",
               file=sys.stderr)
         return 2
@@ -366,6 +591,11 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"pin={report['pinned_version']}@{report['pinned_commit'][:12]}")
     print("[preflight] ship record this artifact must close: "
           + ", ".join(report["shipcard_slots"]))
+    if "serving_target" in report:
+        print("[preflight] explicit serving target: " + json.dumps(report["serving_target"], sort_keys=True))
+    if "selected_serving_scope" in report:
+        print("[preflight] scoped selected units: "
+              + str(len(report["selected_serving_scope"]["by_unit"])))
     for gate in report["unrecorded_gates"]:
         print(f"[preflight] gate {gate['gate']} is ADVISORY BY DECLARATION "
               f"(closes no shipcard slot): {gate['reason']}")

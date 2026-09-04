@@ -1318,7 +1318,7 @@ def list_producer_formats(family: str | None = None) -> list[FormatSpec]:
     ]
 
 
-def format_is_producer_eligible(name: str) -> bool:
+def format_is_producer_eligible(name: str, *, context_by_unit=None) -> bool:
     """Whether a canonical/alias format may be newly produced.
 
     Resolved through :func:`get_format`, not through ``REGISTRY`` directly, so
@@ -1332,9 +1332,23 @@ def format_is_producer_eligible(name: str) -> bool:
     thrown away.  An unknown name still raises ``KeyError`` inside
     ``get_format``; that is "not a format", not "not producer-eligible", and it
     is returned as False here exactly as the absent row was.
+
+    With explicit Tessera contexts this asks whether at least one unit admits
+    the rung. It is only shared-menu intake: each candidate must still pass
+    its own unit's scope. No context-free registry/spec claim is changed.
     """
 
     canonical = canonical_format_name(name)
+    if context_by_unit is not None and is_tessera_format_name(canonical):
+        # A shared allocator menu is the union of its units' admissible rungs,
+        # not a model-wide attestation. build_candidates still tests EACH
+        # unit against its own context. Never install this transient answer
+        # in the registry or in a context-free synthesized FormatSpec.
+        from .tessera_menu import menu_mode, route_admission
+        unique = {context.key(): context for context in context_by_unit.values()
+                  if context is not None}
+        return any(route_admission(canonical, serving_context=context).admits(menu_mode())
+                   for context in unique.values())
     try:
         spec = get_format(canonical)
     except KeyError:
@@ -1352,12 +1366,25 @@ def require_producer_formats(
     names: Iterable[str],
     *,
     where: str = "producer format menu",
+    context_by_unit=None,
 ) -> list[FormatSpec]:
-    """Resolve a new-artifact menu without admitting reader-only wire ids."""
+    """Resolve a new-artifact menu without admitting reader-only wire ids.
+
+    Explicit Tessera contexts admit the union needed by a per-unit allocator.
+    Returned specs remain context-free byte descriptions; scoped serving
+    claims belong to the individual candidates, not a global spec mutation.
+    """
 
     requested = [str(name) for name in names]
+    if context_by_unit is not None:
+        # Every rate asks the same scope union. Reduce the model-sized input
+        # once, while leaving the caller's per-unit evidence untouched.
+        context_by_unit = {context.key(): context for context in context_by_unit.values()
+                           if context is not None}
     nonproducer = [
-        name for name in requested if not format_is_producer_eligible(name)
+        name for name in requested
+        if not format_is_producer_eligible(name, **(
+            {"context_by_unit": context_by_unit} if context_by_unit is not None else {}))
     ]
     if nonproducer:
         raise ValueError(

@@ -1403,14 +1403,19 @@ def expand_menu_tokens(names, priced_formats=()) -> list[str]:
     return expand_menu_tokens_report(names, priced_formats)[0]
 
 
-def expand_menu_tokens_report(names, priced_formats=()) -> tuple[list[str], list[str]]:
+def expand_menu_tokens_report(names, priced_formats=(), *, context_by_unit=None) -> tuple[list[str], list[str]]:
     """``(menu, dropped)`` -- the expansion, and the priced-but-unattested rungs.
 
     Split out so the caller can *print* the narrowing rather than discover it
     as a smaller menu. ``dropped`` is empty whenever the token is absent.
+    With explicit contexts the shared menu is their admitted union; unit-level
+    candidate admission, not this union, decides which unit may use each rung.
     """
     from . import format_registry as fr
 
+    if context_by_unit is not None:
+        context_by_unit = {context.key(): context for context in context_by_unit.values()
+                           if context is not None}
     priced_all = [
         str(name) for name in priced_formats
         if isinstance(name, str) and name.startswith("TESSERA_")
@@ -1418,7 +1423,9 @@ def expand_menu_tokens_report(names, priced_formats=()) -> tuple[list[str], list
     dropped: list[str] = []
     priced: list[str] = []
     for name in priced_all:
-        (priced if fr.format_is_producer_eligible(name) else dropped).append(name)
+        eligible = fr.format_is_producer_eligible(name, **(
+            {"context_by_unit": context_by_unit} if context_by_unit is not None else {}))
+        (priced if eligible else dropped).append(name)
     out: list[str] = []
     seen: set[str] = set()
     for name in names:
