@@ -58,6 +58,20 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         self.requests.append(req)
         prompt = req.get("prompt", "")
 
+        if self.path == "/v1/chat/completions":
+            messages = req.get("messages") or []
+            prompt = messages[-1].get("content", "") if messages else ""
+            body = {"choices": [{
+                "message": {"reasoning": "brief trace", "content": " 12"},
+                "finish_reason": "stop",
+            }]}
+            out = json.dumps(body).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(out)
+            return
+
         if self.path == "/v1/completions":
             mt = int(req.get("max_tokens") or 1)
             echo = bool(req.get("echo", False))
@@ -89,16 +103,9 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
                 }
             else:
                 # Plain generation request: return a short stub completion.
-                # Boundary-stressing prompts get a clean boundary shape
-                # (exactly one </think>, finish stop) so the healthy arm is
-                # healthy on every check; anything else gets generic prose.
-                if prompt in vqm.BOUNDARY_PROMPTS:
-                    body = {"choices": [{"text": "<think>12</think> 12",
-                                         "finish_reason": "stop"}]}
-                else:
-                    txt = ("Pretend this is a coherent completion about the topic "
-                           "that goes on for enough characters.")
-                    body = {"choices": [{"text": txt}]}
+                txt = ("Pretend this is a coherent completion about the topic "
+                       "that goes on for enough characters.")
+                body = {"choices": [{"text": txt}]}
 
             out = json.dumps(body).encode("utf-8")
             self.send_response(200)
