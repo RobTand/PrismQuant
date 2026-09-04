@@ -1,5 +1,6 @@
 """The real export endpoint binds selected units to their priced v5 scope."""
 from dataclasses import asdict, dataclass, replace
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -331,3 +332,34 @@ def test_actual_shell_keeps_unbound_unwritable_and_uncosted_refusals(monkeypatch
     with pytest.raises(SystemExit) as error:
         _run_head_policy(monkeypatch, capsys, **kwargs)
     assert error.value.code == 2
+
+
+def test_export_cli_writes_existing_build_anchor_from_exact_raw_assignment(case, tmp_path, monkeypatch):
+    _isolate_other_gates(monkeypatch)
+    raw = json.dumps(case.payload, indent=3) + "\n\n"
+    case.assignment.write_text(raw)
+    output = tmp_path / "tessera_build.json"
+    assert export.main([
+        "--model", str(case.model), "--assignment", str(case.assignment),
+        "--tessera-platform", "sm_121", "--tessera-runtime-image", IMAGE,
+        "--tessera-execution-mode", "eager", "--tessera-residency", "resident",
+        "--write-build-json", str(output),
+    ]) == 0
+    build = json.loads(output.read_text())
+    assert build["layer_config_sha"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert build["tessera_serving_scope"] == _scope(case)
+    assert build["layer_config"] == str(case.assignment)
+    assert build["source_model"] == str(case.model)
+
+
+def test_export_build_anchor_requires_an_assignment(case, tmp_path):
+    output = tmp_path / "tessera_build.json"
+    assert export.main(["--model", str(case.model), "--write-build-json", str(output)]) == 2
+    assert not output.exists()
+
+
+def test_shell_passes_the_bound_build_json_to_lane_shipcard():
+    driver = (Path(__file__).parents[1] / "prismaquant" / "run-pipeline.sh").read_text()
+    assert '--write-build-json "$TESSERA_BUILD_JSON"' in driver
+    opening = driver[driver.index("python3 -m prismaquant.lane_shipcard open"):]
+    assert '--build-json "$TESSERA_BUILD_JSON"' in opening.split("; then", 1)[0]
