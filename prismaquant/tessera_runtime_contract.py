@@ -1159,6 +1159,14 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         raise TesseraContractError(f"{path}: {exc}") from exc
     cells: list[TesseraRouteCell] = []
     for cell in table.cells:
+        if cell.predicates:
+            raise TesseraContractError(
+                f"{path}.lane_eligibility.cells[{cell.id!r}].predicates "
+                "cannot be evaluated by shape-free development admission; "
+                "a constrained route must not enter an unconditional menu. "
+                "Pass structural facts through admission before accepting "
+                "predicated cells."
+            )
         cells.append(TesseraRouteCell(
             cell_id=cell.id,
             platform=cell.platform,

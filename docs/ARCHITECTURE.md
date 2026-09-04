@@ -3,6 +3,14 @@
 As of: 2026-09-04 · `codex/pq-tessera-v4-consumer`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
+admission's predicate refusal** (§5.7). The shared parser retained cell
+predicates, but the shape-free development reader discarded them. It now
+refuses non-empty predicates before constructing an unconditional menu; the
+export resolver continues to evaluate predicates against unit facts. The
+reviewed contract has no predicated cells, so its current menu is unchanged.
+Test: `test_tessera_dev_predicates.py`.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **Tessera lane
 schema v4 consumption** (§5.7, §9.4). Development and export readers now share
 the cell parser. Executed `(symbol, decoder)` pairs and explicit residency
@@ -5875,6 +5883,9 @@ includes those values, so changing a decoder cannot retain the old answer.
 Explicit legacy Tessera v3 tables retain their original grammar and carry no
 fabricated launches. Gridbook schemas remain refused. Release admission is
 still gated by the exact PENDING release pin.
+The development reader also refuses non-empty cell predicates: its family/rate
+menu lookup has no unit facts with which to evaluate a shape constraint.
+Export's `resolve_unit_route` has those facts and evaluates the predicates.
 
 **What is not here.** No PrismaQuant exporter writes a Tessera wire
 (`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
