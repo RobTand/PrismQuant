@@ -137,3 +137,20 @@ PB sealing excludes three external calibration symlinks in the isolated
 submission index and restores them immediately after the immutable action is
 queued. None of these tests uses the datasets; no symlink removal was committed.
 No PrismaBuild source or fleet configuration was changed.
+
+## Current-main merge check
+
+Merged main `6252ef70a4556900d44df53e8c6a2fd2daef375e` at `880cc4d3`.
+Only the architecture stamp conflicted; both sets of dated updates were
+preserved. A targeted post-merge core/legacy/recipe/documentation check at
+`9b65294e` passed **175 tests, 0 failures, 0 skips and 0 collection errors**,
+again CPU-only Sparky, one CPU and 4 GiB. It does not replace or expand the
+earlier 33-file population.
+
+Action: `e10d68772faae48fee940d3dccfdd51c360b4bf46ebbe25ce00c8db1a42c83fd`.
+Receipt SHA-256:
+`b18c9b671aa439646b68d976adb04abd932c9510e0c0fd7c0795cf579712ca35`.
+Result blob:
+`/mnt/shared/prismabuild-fleet/cas/blobs/3a/3a537bb5c8f639739269a0a895c65717660b0adb9b56e165d06af07aa07686b5`.
+Endpoint-only regression tests and unfinished endpoint source were kept on a
+separate follow-up branch, not included in this capability change.
