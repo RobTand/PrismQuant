@@ -100,12 +100,10 @@ class CampaignAnchor:
     activation_quantized: bool
     wire_bytes: int
     seconds: float
-    #: Was a Hessian actually applied to these bytes?  A property of the RUNG'S
-    #: WIRE and not of the run: only a CHANNEL scale plane admits LDLQ and the
-    #: H refit, so every E2M1 rung is False even under ``--hessian require``.
-    #: Stamped per row rather than per table, because a mixed-family campaign
-    #: is legitimately half H-aware and a table-level flag would have to lie in
-    #: one direction or the other.
+    #: Was a Hessian actually applied to these bytes? Admission comes from the
+    #: producer's ActivationSource settings for this rung's scale plane, via
+    #: rung_accepts_hessian, not a campaign-owned plane roster. Stamped per
+    #: measured row so weights-only and H-aware results cannot be conflated.
     hessian_applied: bool = False
 
 
