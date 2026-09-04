@@ -1,5 +1,15 @@
 # PrismaQuant Architecture
 
+Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
+physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
+hashes native BF16 source before starting one read-only-model server, then
+requires the client to observe that same content. It journals every completed
+HTTP response and cap step, uses explicit one-sequence/4096-context/1-GiB-KV
+limits, and bounds the whole physical action to 1200 seconds plus cleanup.
+Timeout or refusal remains inconclusive; cleanup verifies only its uniquely
+named container. CPU controller tests are not a served result, and no shipping
+policy changes. Gate: `tests/test_pq87_physical_ab.py`.
+
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the paired
 instrument's **exact native weight identity** (§7.2). Each boundary binding
 carries the existing model-metadata hash plus the shared safetensors content
