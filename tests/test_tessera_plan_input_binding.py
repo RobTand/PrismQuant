@@ -116,3 +116,21 @@ def test_printed_serve_recipe_retains_exact_runtime_scope(tmp_path, mode, eager)
     assert f"TESSERA_LANE_EAGER={eager}" in tokens
     assert f"TS={tmp_path / 'producer tree'}" in tokens
     assert str(tmp_path / "work with spaces/exported") in tokens
+
+
+@pytest.mark.parametrize("mode", ["eager", "compiled"])
+def test_printed_census_recipe_keeps_raw_scope_and_bound_allocation(tmp_path, mode):
+    result = _run(tmp_path, mode=mode)
+    assert result.returncode == 0, result.stdout + result.stderr
+    census = next(line.split("Route census:", 1)[1].strip()
+                  for line in result.stdout.splitlines() if "Route census:" in line)
+    tokens = shlex.split(census)
+    assert "--log" not in tokens
+    assert tokens[tokens.index("--runtime-image") + 1] == IMAGE
+    assert ("--compiled" in tokens) == (mode == "compiled")
+    close = next(line.split("Close census:", 1)[1].strip()
+                 for line in result.stdout.splitlines() if "Close census:" in line)
+    tokens = shlex.split(close)
+    assert tokens[tokens.index("--layer-config") + 1] == str(tmp_path / "work with spaces/artifacts/layer_config.json")
+    assert tokens[tokens.index("--model-dir") + 1] == str(tmp_path / "work with spaces/exported")
+    assert "--priced-route" not in tokens
