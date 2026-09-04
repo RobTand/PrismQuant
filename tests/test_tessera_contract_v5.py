@@ -1,6 +1,8 @@
 """V5 development admission retains scope and cannot invent a target."""
 import copy
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -86,3 +88,39 @@ def test_v5_required_regimes_are_part_of_the_reviewed_answer():
     payload["lane_eligibility"]["regimes"].append("additional_required_regime")
     after = contract.contract_answer(_parse(payload))
     assert contract._answer_drift(before, after)
+
+
+def test_explicit_publisher_v5_contract_admits_only_complete_matching_contexts():
+    """Interop uses explicit immutable publisher bytes, never a vendored copy."""
+    path = os.environ.get("PRISMAQUANT_TEST_TESSERA_V5_CONTRACT")
+    if not path:
+        pytest.skip("explicit immutable v5 publisher contract was not supplied")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert payload["lane_eligibility"]["schema"] == "tessera.lane-eligibility.v5"
+    parsed = _parse(payload)
+    # Required scope is not inferred from whichever native cell appears first.
+    for cell in parsed.cells:
+        for rate in cell.rungs_q256:
+            assert parsed.native_cells(cell.family, rate) == ()
+    assert parsed.requires_serving_context
+    positive_contexts = set()
+    for cell in parsed.cells:
+        if not cell.native:
+            continue
+        for rate in cell.rungs_q256:
+            for residency in cell.residency_modes:
+                for execution in cell.execution_modes:
+                    context = lane.ServingContext(
+                        platform=cell.platform, structure=cell.structure,
+                        residency=residency, runtime_image=cell.runtime_image,
+                        execution_mode=execution)
+                    expected = tuple(other for other in parsed.cells
+                                     if other.native and other.family == cell.family
+                                     and rate in other.rungs_q256
+                                     and lane.cell_matches_serving_context(other, context))
+                    complete = {other.regime for other in expected} == set(parsed.regimes)
+                    observed = parsed.native_cells(cell.family, rate, serving_context=context)
+                    assert observed == (expected if complete else ())
+                    if complete:
+                        positive_contexts.add(context.key())
+    assert positive_contexts, "the supplied publisher contract has no complete positive scope"
