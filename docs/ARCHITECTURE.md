@@ -61,6 +61,22 @@ router/expert or packed-module facts determine unit structure, cross-checked
 against the declared model profile. Missing facts cannot silently become
 dense. The helper delegates value validation to `ServingContext`; it does
 not change a runtime default or attest any new serving cell.
+Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
+physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
+hashes native BF16 source before starting one read-only-model server, then
+requires the client to observe that same content. It journals every completed
+HTTP response and cap step, uses explicit one-sequence/4096-context/1-GiB-KV
+limits, and bounds the whole physical action to 1200 seconds plus cleanup.
+Timeout or refusal remains inconclusive; cleanup verifies only its uniquely
+named container. CPU controller tests are not a served result, and no shipping
+policy changes. Gate: `tests/test_pq87_physical_ab.py`.
+The cleanup reader accepts Docker's case-varying absence diagnostic only when
+it names this exact container; an unrecognized error never proves absence.
+The first BF16 instrument A/B is recorded in
+`docs/results/pq87_bf16_boundary_ab_2026-09-04.md`: 64-token raw/chat were both
+censored on 30/30 samples; the uncensored chat control and same-session repeat
+at the measured 2,048 cap were 0/30. This remains one instrument population,
+not a quantized-candidate promotion or a new default budget.
 
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the paired
 instrument's **exact native weight identity** (§7.2). Each boundary binding
