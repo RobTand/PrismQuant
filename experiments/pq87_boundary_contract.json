@@ -1,0 +1,13 @@
+{
+  "prompts": [
+    {"text": "144÷12", "stratum": "numeric"},
+    {"text": "9²", "stratum": "numeric"},
+    {"text": "How many legs does a spider have?", "stratum": "terse_qa"},
+    {"text": "What is 7×8?", "stratum": "numeric"},
+    {"text": "Name the capital of France.", "stratum": "short_recall"}
+  ],
+  "seeds": [0, 1, 2, 3, 4, 5],
+  "temperature": 1.0,
+  "initial_max_tokens": 64,
+  "max_steps": 11
+}

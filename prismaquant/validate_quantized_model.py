@@ -149,9 +149,9 @@ BOUNDARY_PROMPTS: tuple[str, ...] = (
 #: Closed defect vocabulary for one sampled generation. `zero_tag` (no
 #: `</think>` emitted — the runaway shape), `think_stutter` (more than one
 #: `</think>` — the stutter/loop shape), and `cap_truncation` (the server
-#: stopped on `length`: on these terse prompts a clean model answers in far
-#: fewer tokens, so hitting the cap means the model never reached its answer
-#: — the hang presentation from the issue).
+#: stopped on `length`). A cap hit describes censored output; healthy thinking
+#: models can also exhaust the historical cap, so it alone does not establish
+#: an artifact defect (issue #87).
 BOUNDARY_DEFECTS: tuple[str, ...] = (
     "zero_tag",
     "think_stutter",
@@ -472,16 +472,29 @@ def check_boundary_behavior(
     not apply the model's chat template and cannot exercise this boundary.
     Reasoning-parser responses are recovered through
     :func:`_boundary_text_from_chat_choice` before scoring. Fails when
-    total defects exceed `max_defects` (default 0: any stutter, zero-tag
-    runaway, or cap-truncation on these terse prompts is a functional
-    failure). Runs alongside KL/PPL, not replacing them.
+    total flagged generations exceed `max_defects`. The historical 64-token
+    cap and zero bound remain fail-closed pending #87's paired-control policy;
+    neither is a calibrated universal artifact-quality threshold. Runs
+    alongside KL/PPL, not replacing them.
     """
-    if not temperature or temperature <= 0:
+    invalid = []
+    if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+            or not math.isfinite(temperature) or temperature <= 0):
+        invalid.append(f"boundary_temperature={temperature!r} is not sampling; must be finite and > 0")
+    if type(reps) is not int or reps <= 0:
+        invalid.append(f"boundary_reps={reps!r} must be a positive integer")
+    if type(max_tokens) is not int or max_tokens <= 0:
+        invalid.append(f"boundary_max_tokens={max_tokens!r} must be a positive integer")
+    if type(max_defects) is not int or max_defects < 0:
+        invalid.append(f"max_boundary_defects={max_defects!r} must be a non-negative integer")
+    if (not isinstance(prompts, (tuple, list)) or not prompts
+            or any(not isinstance(prompt, str) or not prompt.strip() for prompt in prompts)):
+        invalid.append("boundary_prompts must be a nonempty sequence of nonempty strings")
+    if invalid:
         return CheckResult(
             name="boundary_behavior",
             passed=False,
-            detail=f"boundary_temperature={temperature!r} is not sampling — "
-                   "the defect this check exists for is invisible at temp 0",
+            detail="invalid sampling contract: " + "; ".join(invalid),
         )
     n_defects = 0
     by_kind: dict[str, int] = {kind: 0 for kind in BOUNDARY_DEFECTS}

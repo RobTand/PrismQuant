@@ -10,6 +10,22 @@ import pytest
 import tools.serve_fingerprint as serve_fingerprint
 
 
+@pytest.mark.parametrize("argv,name,expected", [
+    (["python3", "measure_boundary_control.py", "--image", "eugr/spark-vllm@sha256:abc"], "python3", False),
+    (["python3", "client.py", "--model", "/models/vllm-test"], "python3", False),
+    (["bash", "-lc", "vllm serve /model"], "bash", False),
+    (["python3", "/usr/local/bin/vllm", "serve", "/model"], "python3", True),
+    (["vllm", "serve", "/model"], "vllm", True),
+    (["python3", "-m", "vllm.entrypoints.openai.api_server"], "python3", True),
+    (["VLLM::EngineCore"], "VLLM::EngineCor", True),
+    (["python3", "-c", "multiprocessing.spawn"], "VLLM::Worker_TP0", True),
+])
+def test_server_discovery_uses_process_identity_not_payload_substrings(monkeypatch, argv, name, expected):
+    monkeypatch.setattr(serve_fingerprint, "_read_cmdline", lambda _pid: argv)
+    monkeypatch.setattr(serve_fingerprint, "_read_process_name", lambda _pid: name)
+    assert serve_fingerprint._looks_like_vllm_process(123) is expected
+
+
 def test_stable_fingerprint_excludes_phase_but_binds_runtime_stack_fields():
     pre = {
         "attestation_phase": "pre",
@@ -261,4 +277,3 @@ def test_required_engine_descendant_fails_closed(monkeypatch):
 )
 def test_engine_witness_requires_engine_argv(argv, expected):
     assert serve_fingerprint.argv_identifies_vllm_engine(argv) is expected
-
