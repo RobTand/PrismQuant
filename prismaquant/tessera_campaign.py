@@ -479,8 +479,8 @@ def campaign_cost_payload(
 # ---------------------------------------------------------------------------
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
-                         *, want_hessian: bool = False):
-    """One forward pass per calibration batch, per Linear.
+                         *, want_hessian: bool = False, profile=None):
+    """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts)``.
 
@@ -498,7 +498,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
       accumulation runs before the keep's early return, not after it.
 
     Accumulated in fp32 on the model's device and moved to CPU once at the
-    end, matching how the kept rows are handled.
+    end, matching how the kept rows are handled. Packed units use the existing
+    module-input collector and routing/SwiGLU derivation. The score-row cap
+    never caps routed rows before the Hessian. This capture API does not open
+    the main-entry packed-population/export gate.
     """
     import torch
 
@@ -506,7 +509,31 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     kept: dict[str, int] = {name: 0 for name in targets}
     hess: dict[str, object] = {name: None for name in targets}
     seen: dict[str, int] = {name: 0 for name in targets}
+    routed_seen: dict[str, int] = {}
     handles = []
+    packed_collector = None
+
+    def accumulate(name, x):
+        flat = x.detach().reshape(-1, x.shape[-1])
+        if name in routed_seen and not flat.shape[0]:
+            return
+        if name in routed_seen:
+            routed_seen[name] += int(flat.shape[0])
+        if want_hessian:
+            # Every row, before any cap: see the docstring.
+            f32 = flat.to(dtype=torch.float32)
+            gram = f32.t() @ f32
+            if hess[name] is None:
+                hess[name] = gram
+            else:
+                hess[name] += gram
+            seen[name] += int(f32.shape[0])
+        room = max_rows - kept[name]
+        if room <= 0:
+            return
+        take = flat[:room].to(dtype=torch.float32, device="cpu")
+        store[name].append(take)
+        kept[name] += int(take.shape[0])
 
     def make_hook(name):
         def hook(_module, args):
@@ -515,34 +542,79 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             x = args[0]
             if not isinstance(x, torch.Tensor):
                 return
-            flat = x.detach().reshape(-1, x.shape[-1])
-            if want_hessian:
-                # Every row, before any cap: see the docstring.
-                f32 = flat.to(dtype=torch.float32)
-                gram = f32.t() @ f32
-                if hess[name] is None:
-                    hess[name] = gram
-                else:
-                    hess[name] += gram
-                seen[name] += int(f32.shape[0])
-            room = max_rows - kept[name]
-            if room <= 0:
-                return
-            take = flat[:room].to(dtype=torch.float32, device="cpu")
-            store[name].append(take)
-            kept[name] += int(take.shape[0])
+            accumulate(name, x)
         return hook
 
     modules = dict(model.named_modules())
-    for name in targets:
-        handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+    missing_modules = set(targets) - modules.keys()
+    if missing_modules:
+        from .routed_experts import (
+            profile_declared_packed_expert_projections,
+            resolve_routed_expert_profile,
+        )
+        from .measure_quant_cost import (
+            _packed_experts_parent_module, derive_per_expert_activations,
+        )
+        from .production_weight_cache import _PackedExpertActivationCollector
+
+        profile = resolve_routed_expert_profile(model, profile)
+        inventory = profile_declared_packed_expert_projections(model, profile)
+        by_name = {member.qname: member for member in inventory}
+        unknown = missing_modules - by_name.keys()
+        if unknown:
+            raise RuntimeError(f"campaign activation targets are not declared units: {sorted(unknown)}")
+        selected_by_module = {}
+        # These are the input kinds published by the existing derivation,
+        # not a mapping to the producer's served role/group vocabulary.
+        input_kind = {"gate_up_proj": "gate_up", "down_proj": "down"}
+        for name in sorted(missing_modules):
+            member = by_name[name]
+            if member.param_name not in input_kind:
+                raise RuntimeError(
+                    f"packed activation derivation does not support {member.packed_qname!r}")
+            selected_by_module.setdefault(member.module_qname, []).append(member)
+            routed_seen[name] = 0
+        parents = {name: _packed_experts_parent_module(model, name)
+                   for name in selected_by_module}
+
+        def consume_packed(module_qname, x):
+            selected = selected_by_module.get(module_qname)
+            if not selected:
+                return
+            derived = derive_per_expert_activations(
+                selected[0].module, x, parents[module_qname],
+                capture_down=any(input_kind[member.param_name] == "down"
+                                 for member in selected),
+                max_rows_per_expert=None,
+            )
+            for member in selected:
+                accumulate(member.qname,
+                           derived[input_kind[member.param_name]][member.expert_id])
+
+        packed_collector = _PackedExpertActivationCollector(
+            model, {member.module_qname for member in inventory},
+            module_token_budget=0, store_device=device, store_qnames=set(),
+            profile=profile, row_consumer=consume_packed,
+        )
     try:
+        for name in targets:
+            if name not in missing_modules:
+                handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+        if packed_collector is not None:
+            packed_collector.install()
         with torch.no_grad():
             for batch in tokens:
                 model(batch.to(device))
     finally:
         for handle in handles:
             handle.remove()
+        if packed_collector is not None:
+            packed_collector.remove()
+    unobserved = [name for name, count in routed_seen.items() if not count]
+    if unobserved:
+        raise RuntimeError(
+            "packed campaign units have no routed calibration rows: "
+            f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
     rows = {
         name: (torch.cat(chunks, dim=0) if chunks else None)
         for name, chunks in store.items()

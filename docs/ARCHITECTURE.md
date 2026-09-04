@@ -3,6 +3,20 @@
 As of: 2026-09-04 · `codex/pq183-packed-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **packed
+source-unit capture** (§4.10; PrismaQuant #183). Shared routed-expert
+discovery exposes per-expert projection views using the native exporter's
+profile-owned split; it does not invent Tessera serving groups. The existing
+packed activation collector offers an optional synchronous full-row consumer,
+leaving its default reservoir behavior unchanged. Campaign capture uses the
+existing router/SwiGLU derivation on those live inputs, accumulating every
+routed row into each selected unit's own Hessian before retaining bounded
+scoring rows. An unobserved selected expert refuses; no shared-Hessian or
+weight-only fallback is introduced. The main-entry packed-population refusal
+remains in force pending the producer's exact cached-wire/stack-plan bridge
+and its measured coverage. This is CPU-tested capture plumbing, not packed
+campaign/export eligibility or a GPU/served performance claim.
+
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for the **campaign
 population refusal** (§4.10; PrismaQuant #183). Before calibration, the
 Tessera campaign checks the profile-declared routed target population against
