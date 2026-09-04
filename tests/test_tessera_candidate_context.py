@@ -107,8 +107,26 @@ def _tables(contexts):
     return stats, costs
 
 
+def _fixture_specs(monkeypatch, *names):
+    # Build the real specs before admission is mocked. Cost validation asks
+    # the registry for them again; re-synthesizing a Tessera spec would make
+    # the cache spy count factory admission calls rather than candidate calls.
+    original_get_format = fr.get_format
+    specs = [original_get_format(name) for name in names]
+    by_name = {spec.name: spec for spec in specs}
+
+    def get_format(name):
+        canonical = fr.canonical_format_name(name)
+        if canonical in by_name:
+            return by_name[canonical]
+        return original_get_format(name)
+
+    monkeypatch.setattr(fr, "get_format", get_format)
+    return specs
+
+
 def test_candidates_resolve_same_format_separately_for_dense_and_routed_units(monkeypatch):
-    spec = fr.get_format(_FORMAT)
+    spec, = _fixture_specs(monkeypatch, _FORMAT)
     contexts = _contexts()
     stats, costs = _tables(contexts)
     calls, lanes = _record_resolver(monkeypatch)
@@ -206,7 +224,7 @@ def test_selected_candidate_routes_survive_conflicting_same_format_provenance(mo
 @pytest.mark.parametrize("mode", [tm.MENU_ATTESTED, tm.MENU_RESEARCH])
 @pytest.mark.parametrize("context", [None, _Context(structure="routed_moe")])
 def test_v5_unmatched_context_masks_only_the_attested_candidate(monkeypatch, mode, context):
-    specs = [fr.get_format(_FORMAT), fr.get_format("BF16")]
+    specs = _fixture_specs(monkeypatch, _FORMAT, "BF16")
     contexts = {} if context is None else {"unit.a": context}
     stats, costs = _tables({"unit.a": context})
     costs["unit.a"]["BF16"] = {"weight_mse": 0.0, "predicted_dloss": 0.0}
@@ -260,7 +278,7 @@ def test_v5_unmatched_context_masks_only_the_attested_candidate(monkeypatch, mod
 
 
 def test_v5_scope_refusal_cannot_silently_remove_a_whole_unit(monkeypatch):
-    specs = [fr.get_format(_FORMAT)]
+    specs = _fixture_specs(monkeypatch, _FORMAT)
     stats, costs = _tables({"unit.a": None})
     monkeypatch.setattr(tm, "menu_mode", lambda: tm.MENU_ATTESTED)
     monkeypatch.setattr(tm, "route_admission", lambda *args, **kwargs: SimpleNamespace(

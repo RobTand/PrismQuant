@@ -39,6 +39,7 @@ def released_table(monkeypatch):
             })
     formats = {FAMILY: {"family": FAMILY, "kind": "tessera_wire",
                        "name_pattern": FAMILY + "_R{k}",
+                       "reader_rate_range_q256": [1024, 1024],
                        "candidate_rungs_q256": [1024],
                        "residency_modes": ["resident", "streamed"]}}
     table = lane._parse_table({
