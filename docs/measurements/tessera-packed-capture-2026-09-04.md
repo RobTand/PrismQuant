@@ -99,3 +99,22 @@ ran the pin, packed-capture, and existing campaign test files: 39 passed,
 5 skipped. All five skips say `Tessera encodes need CUDA`. Receipt:
 `42f3a7d6c81c5dff4f5091aa14e1a9af1e4abe7ed2aa029ea36d952a0609954c`.
 The same CPU-only resource envelope and interpreter described above applied.
+
+## Capture dtype follow-up
+
+The live-forward capture comparison also runs with original BF16 weights and
+inputs, while its expected Hessian is accumulated in FP32. This checks that
+the full-row consumer keeps the model's live dtype through routing/SwiGLU,
+rather than replaying FP32 reservoir rows against BF16 weights.
+
+For a genuine pre-capture replay, the PB snapshot fetched exact commit
+`4682dcf9a7a91dc48956afa83e9aaf8369c7f38b` and restored only its
+`prismaquant/tessera_campaign.py` into the disposable worker checkout, retaining
+the new test. Both FP32 and BF16 cases failed at the old line 538 with the
+same missing expert-target `KeyError`; no master baseline suite was run.
+
+Green action `87145c9cfd5613f2ec42d33dd085441385ff6d8074a433e22231eb9cb96ca4ba`
+ran the packed capture, pin, architecture, and docs-staleness test files:
+28 passed, no skips. Receipt:
+`3efcb00dcd0f8c45f89f0b43024c9dfd0701d38c587acea076ae5dc13e964609`.
+Both dtypes ran on CPU; this remains no GPU claim.
