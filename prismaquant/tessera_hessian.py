@@ -153,29 +153,23 @@ def unit_name_for(qname: str) -> str:
 def encoder_recipe() -> dict:
     """The activation-aware recipe an ``ActivationSource`` applies by default.
 
-    Read from Tessera's own dataclass defaults, so a receipt quoting "sigma
-    1.0, block 32, exact-H refit" is quoting the encoder rather than a comment.
+    Read from Tessera's own default object's exported config, so the producer
+    owns both the setting roster and its JSON-safe normalization. In
+    particular, an unset trailing objective and a disabled Gauss-Seidel sweep
+    remain explicit settings; per-plane maps remain maps rather than one
+    plane's answer quoted over another plane's artifact.
 
-    ``refit_objective`` is a **map from scale plane to objective** since
-    Tessera's 2026-09-02 release gave the LUT plane a refit of its own: the
-    receipt records all of it, because a single objective quoted here would be
-    a true statement about one plane printed over an artifact built on
-    another.  It is copied into a plain ``dict`` -- Tessera hands back a
-    ``MappingProxyType``, which this block is stamped into cost payloads that
-    ``json.dumps`` would refuse.
+    Only the Hessian capture identity and explanatory note are excluded: the
+    caller records the capture separately, and prose is not an encoder rule.
     """
     from tessera.export import ActivationSource
 
     source = ActivationSource(
         hessians={}, provenance={f: "" if f.endswith("sha256") else 0
                                  for f in HESSIAN_IDENTITY_FIELDS})
-    objective = source.refit_objective
     return {
-        "ldlq_sigma": source.ldlq_sigma,
-        "ldlq_block": source.ldlq_block,
-        "refit_objective": (objective if isinstance(objective, str)
-                            else dict(objective)),
-        "refit_reach_floor": source.refit_reach_floor,
+        key: value for key, value in source.config_block().items()
+        if key not in {"hessian", "note"}
     }
 
 
@@ -215,13 +209,14 @@ def encoder_kwargs(source, qname: str, in_features: int, device="cpu", *,
     refusal is right: pricing a unit under the other plane's objective prices
     an artifact the export does not ship (principle 8).
 
-    **What is hoistable, and what is not.**  Two of the four keywords are a
-    function of the Hessian alone -- ``ldl`` (the block-LDL factorisation,
-    which is the expensive part) and ``ldl_block`` -- and the other two are a
-    function of the Hessian *and the plane*.  The plane is a function of the
-    grid, not of the rung: measured over every family PrismaQuant allocates
-    (``realisable_rungs`` x ``tessera_wire_recipe``), the plane is constant
-    across every rung of every family, and differs across families --
+    **What is hoistable, and what is not.**  ``ldl`` (the expensive block-LDL
+    factorisation) and ``ldl_block`` depend on the Hessian and the source's
+    fixed settings, not the plane. The refit objective, trailing objective
+    and sweep settings are resolved for the unit's plane. The plane is a
+    function of the grid, not of the rung: measured over every family
+    PrismaQuant allocates (``realisable_rungs`` x ``tessera_wire_recipe``), the
+    plane is constant across every rung of every family, and differs across
+    families --
     ``channel`` on ``TESSERA_E4M3_K1``, ``lut16`` on both E2M1 families and
     every free grid.  ``TESSERA_E2M1_K2`` changes *body* at the coset cap
     (WINDOW below q896, TCQ at it) and keeps its plane through the change.

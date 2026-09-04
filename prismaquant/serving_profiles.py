@@ -12,7 +12,10 @@ import re
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Collection, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Mapping
+
+if TYPE_CHECKING:
+    from .lane_eligibility import ServingContext
 
 from . import format_registry as fr
 
@@ -430,9 +433,10 @@ class ResolvedServingLane:
     route_status: str = "unattested"
     requires_serve_flags: tuple[str, ...] = ()
     route_status_source: str = ""
+    serving_context: "ServingContext | None" = None
 
     def as_dict(self) -> dict:
-        return {
+        payload = {
             "lane_id": self.lane_id,
             "format": self.format,
             "rung": self.rung,
@@ -451,17 +455,23 @@ class ResolvedServingLane:
             "fused_mid_m_rungs_source": self.rungs_source,
             "detail": self.detail,
         }
+        if self.serving_context is not None:
+            payload["serving_context"] = self.serving_context.as_dict()
+        return payload
 
     def route_key(self) -> str:
         """Stable one-line identity for candidate/provenance comparison."""
+        payload = {
+            "lane": self.lane_id,
+            "act": self.activation_contract,
+            "fused_mid_m": bool(self.fused_mid_m_backed),
+            "runtime": self.runtime_version,
+            "route_status": self.route_status,
+        }
+        if self.serving_context is not None:
+            payload["serving_context"] = self.serving_context.as_dict()
         return json.dumps(
-            {
-                "lane": self.lane_id,
-                "act": self.activation_contract,
-                "fused_mid_m": bool(self.fused_mid_m_backed),
-                "runtime": self.runtime_version,
-                "route_status": self.route_status,
-            },
+            payload,
             separators=(",", ":"),
             sort_keys=True,
         )
@@ -1354,6 +1364,7 @@ def serving_lane_route(
     fmt: str,
     *,
     runtime_version: str | None = None,
+    serving_context: "ServingContext | None" = None,
 ) -> ResolvedServingLane | None:
     """Resolve one format's serving-lane route under a target profile."""
     try:
@@ -1382,7 +1393,9 @@ def serving_lane_route(
     if isinstance(fmt, str) and fmt.startswith("TESSERA_"):
         from .tessera_menu import tessera_resolved_serving_lane
         return tessera_resolved_serving_lane(
-            fmt, runtime_version=(runtime_version or ""))
+            fmt, runtime_version=(runtime_version or ""),
+            **({"serving_context": serving_context}
+               if serving_context is not None else {}))
     return None
 
 

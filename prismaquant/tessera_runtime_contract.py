@@ -78,11 +78,14 @@ from typing import Any, Mapping, Sequence
 
 from .lane_eligibility import (
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
     LaneEligibilityError,
+    ServingContext,
     QUALIFICATION_DEVICE_QUALIFIED,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     _parse_table,
+    cell_matches_serving_context,
 )
 
 __all__ = [
@@ -118,6 +121,7 @@ class TesseraContractError(RuntimeError):
 #: wrong error to hand someone whose contract predates the field.
 TESSERA_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
 TESSERA_LANE_SCHEMA = LANE_ELIGIBILITY_SCHEMA_TESSERA
+TESSERA_LANE_SCHEMAS = frozenset({TESSERA_LANE_SCHEMA, LANE_ELIGIBILITY_SCHEMA_TESSERA_V4})
 #: The ``fused_module`` block's own schema id, checked the same way.
 FUSED_MODULE_SCHEMA = "tessera.fused-module.v1"
 
@@ -428,6 +432,8 @@ class TesseraRouteCell:
     requires_serve_flags: tuple[str, ...]
     executes: tuple[tuple[str, str], ...]
     residency_modes: tuple[str, ...]
+    runtime_image: str
+    execution_modes: tuple[str, ...]
 
     @property
     def native(self) -> bool:
@@ -551,20 +557,41 @@ class TesseraContract:
     commit: str
     sha256: str
     path: str
+    lane_schema: str
+    regimes: tuple[str, ...]
+
+    @property
+    def requires_serving_context(self) -> bool:
+        return self.lane_schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
 
     def governs(self, family: str) -> bool:
         """Does the contract publish this payload family at all?"""
         return str(family) in self.reader_rate_range
 
-    def native_cells(self, family: str, rate_q256: int
+    def native_cells(self, family: str, rate_q256: int, *,
+                     serving_context: ServingContext | None = None,
                      ) -> tuple[TesseraRouteCell, ...]:
-        """Every native cell covering ``(family, rate)``, on any platform."""
-        return tuple(
+        """V5 admits every required regime only under one explicit context.
+
+        Context-free v4 keeps its historical family/rate projection. An
+        explicit runtime query cannot borrow that unscoped claim. V5 never uses
+        the first matching cell to infer an image, execution mode or structure.
+        """
+        if self.requires_serving_context and serving_context is None:
+            return ()
+        if not self.requires_serving_context and serving_context is not None:
+            return ()
+        selected = tuple(
             cell for cell in self.cells
             if cell.family == str(family)
             and int(rate_q256) in cell.rungs_q256
             and cell.native
+            and (not self.requires_serving_context
+                 or cell_matches_serving_context(cell, serving_context))
         )
+        if self.requires_serving_context and {cell.regime for cell in selected} != set(self.regimes):
+            return ()
+        return selected
 
     def identity(self) -> dict:
         """The ``tessera_dev_pin`` provenance block.
@@ -696,7 +723,9 @@ def contract_answer(contract: "TesseraContract") -> dict:
     """
     return {
         "schema": TESSERA_CONTRACT_SCHEMA,
-        "lane_schema": TESSERA_LANE_SCHEMA,
+        "lane_schema": contract.lane_schema,
+        **({"required_regimes": sorted(contract.regimes)}
+           if contract.requires_serving_context else {}),
         "quant_method": contract.quant_method,
         "fused_module": contract.fused_module.answer(),
         "native_extensions": [
@@ -738,7 +767,9 @@ def contract_answer(contract: "TesseraContract") -> dict:
                 sorted(cell.requires_serve_flags),
                 [list(launch) for launch in sorted(cell.executes)],
                 sorted(cell.residency_modes),
-            ]
+            ] + ([{"image": cell.runtime_image,
+                   "execution_modes": sorted(cell.execution_modes)}]
+                 if contract.requires_serving_context else [])
             for cell in contract.cells
         ),
     }
@@ -748,7 +779,7 @@ def _answer_drift(reviewed: Mapping[str, Any], installed: Mapping[str, Any]
                   ) -> list[str]:
     """Field-level lines naming what moved, so the refusal is reviewable."""
     lines: list[str] = []
-    for key in ("schema", "lane_schema", "quant_method"):
+    for key in ("schema", "lane_schema", "quant_method", "required_regimes"):
         if reviewed.get(key) != installed.get(key):
             lines.append(
                 f"  {key}: reviewed {reviewed.get(key)!r}, installed "
@@ -1148,9 +1179,9 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
     if not isinstance(lane, Mapping):
         raise TesseraContractError(f"{path}.lane_eligibility must be an object")
     lane_schema = lane.get("schema")
-    if lane_schema != TESSERA_LANE_SCHEMA:
+    if lane_schema not in TESSERA_LANE_SCHEMAS:
         raise TesseraContractError(
-            f"{path}.lane_eligibility.schema must be {TESSERA_LANE_SCHEMA!r}, "
+            f"{path}.lane_eligibility.schema must be one of {sorted(TESSERA_LANE_SCHEMAS)!r}, "
             f"got {lane_schema!r}"
         )
     try:
@@ -1181,6 +1212,8 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             requires_serve_flags=cell.requires_serve_flags,
             executes=cell.executes,
             residency_modes=cell.residency_modes,
+            runtime_image=cell.runtime_image,
+            execution_modes=cell.execution_modes,
         ))
 
     extensions = _parse_native_extensions(
@@ -1221,6 +1254,8 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         commit=commit,
         sha256=sha,
         path=path,
+        lane_schema=table.schema,
+        regimes=table.regimes,
     )
 
 

@@ -54,6 +54,10 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .lane_eligibility import ServingContext
 
 from . import tessera_hessian as th
 
@@ -575,14 +579,18 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
 
 
 def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
-                             parallel_kind) -> dict[str, list]:
-    """One Tessera menu per distinct shape, shared across same-shape units.
+                             parallel_kind,
+                             context_by_unit: "Mapping[str, ServingContext] | None" = None,
+                             ) -> dict[str, list]:
+    """One Tessera menu per distinct shape and explicit serving context.
 
     ``expand_tessera_menu`` takes nothing but the shape and the run
-    configuration -- no argument identifies the unit, and ``MenuRung`` carries
-    no unit field -- so two units of one shape get identical lists.  Units
+    configuration and serving context, so units with equal values of those
+    inputs get identical lists. Dense and routed expert units may share one
+    shape; their structural class comes from context_by_unit, never shape or
+    name. A missing map entry remains unbound. Units
     repeat shapes ~1500:1 on a production MoE, so expanding per Linear repeats
-    the same answer thousands of times; keying by shape expands once per
+    the same answer thousands of times; keying by shape and context expands once per
     distinct answer instead.  Exact rather than approximate: same arguments,
     same list.  The lists are shared, not copied -- downstream only iterates
     them -- which is also what makes ``menu_cache_shapes``' retention the
@@ -590,16 +598,19 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
     """
     from .tessera_menu import expand_tessera_menu
 
-    by_shape: dict[tuple, list] = {}
+    by_shape_and_context: dict[tuple, list] = {}
     menus: dict[str, list] = {}
     for name in targets:
         shape = tuple(weights[name].shape)
-        if shape not in by_shape:
-            by_shape[shape] = expand_tessera_menu(
+        context = None if context_by_unit is None else context_by_unit.get(name)
+        key = (shape, None if context is None else context.key())
+        if key not in by_shape_and_context:
+            by_shape_and_context[key] = expand_tessera_menu(
                 shape, mode=mode, tp_degree=tp_degree,
                 parallel_kind=parallel_kind,
+                **({"serving_context": context} if context is not None else {}),
             )
-        menus[name] = by_shape[shape]
+        menus[name] = by_shape_and_context[key]
     return menus
 
 
