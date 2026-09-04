@@ -78,3 +78,11 @@ def test_v5_development_uses_shared_runtime_grammar():
     payload["lane_eligibility"]["cells"][0]["runtime"]["execution_modes"] = ["automatic"]
     with pytest.raises(contract.TesseraContractError, match="runtime.*execution_modes"):
         _parse(payload)
+
+
+def test_v5_required_regimes_are_part_of_the_reviewed_answer():
+    payload = _payload()
+    before = contract.contract_answer(_parse(payload))
+    payload["lane_eligibility"]["regimes"].append("additional_required_regime")
+    after = contract.contract_answer(_parse(payload))
+    assert contract._answer_drift(before, after)

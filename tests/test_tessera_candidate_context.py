@@ -257,3 +257,22 @@ def test_v5_unmatched_context_masks_only_the_attested_candidate(monkeypatch, mod
         assert "context" in masks[0]["detail"]
     else:
         assert masks == []
+
+
+def test_v5_scope_refusal_cannot_silently_remove_a_whole_unit(monkeypatch):
+    specs = [fr.get_format(_FORMAT)]
+    stats, costs = _tables({"unit.a": None})
+    monkeypatch.setattr(tm, "menu_mode", lambda: tm.MENU_ATTESTED)
+    monkeypatch.setattr(tm, "route_admission", lambda *args, **kwargs: SimpleNamespace(
+        requires_serving_context=True,
+        detail="no explicit serving context was supplied",
+        admits=lambda mode: False,
+    ))
+    monkeypatch.setattr(
+        ac, "check_stats_format_applicability",
+        lambda *args, **kwargs: ac.FormatApplicability(True),
+    )
+    with pytest.raises(ValueError, match="unit.a"):
+        ac.build_candidates(
+            stats, costs, specs, target_profile=_PROFILE, context_by_unit={},
+        )

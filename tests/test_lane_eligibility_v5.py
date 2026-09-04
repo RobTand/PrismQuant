@@ -99,7 +99,7 @@ def test_v5_runtime_grammar_refuses_missing_unknown_or_mutable_scope(runtime):
         del block["cells"][0]["runtime"]
     else:
         block["cells"][0]["runtime"] = runtime
-    with pytest.raises(lane.LaneEligibilityError, match="runtime"):
+    with pytest.raises(lane.LaneEligibilityError, match=r"cells.*runtime"):
         _parse(block, formats)
 
 
