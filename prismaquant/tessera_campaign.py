@@ -624,8 +624,13 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     from .tessera_render import (
         HessianContractError, tessera_encoder_hessian_status,
     )
+    from .tessera_serving_scope import (
+        add_serving_scope_arguments, serving_target_from_args,
+        context_by_unit_from_stats, scope_provenance,
+    )
 
     ap = argparse.ArgumentParser(description=__doc__)
+    add_serving_scope_arguments(ap)
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True, help="cost payload (.pkl)")
     ap.add_argument("--cache-dir", required=True)
@@ -674,6 +679,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--deadline-seconds", type=float, default=0.0,
                     help="stop starting new anchors after this much wall time")
     args = ap.parse_args(argv)
+    serving_target = serving_target_from_args(args)
 
     mode = menu_mode(args.menu_mode)
     hessian_status = tessera_encoder_hessian_status()
@@ -725,6 +731,16 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         targets = keep
     print(f"[campaign] {len(targets)} target Linears, mode={mode}, "
           f"device={device}", flush=True)
+
+    context_by_unit = None
+    if serving_target is not None:
+        from .sensitivity_probe import discover_moe_structure
+        routed = discover_moe_structure(model, profile=profile)
+        topology = {
+            name: dict(zip(("router_path", "expert_id"), routed.get(name, (None, None))))
+            for name in targets
+        }
+        context_by_unit = context_by_unit_from_stats(serving_target, topology, profile)
 
     tokens, corpus_text = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
@@ -795,6 +811,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     menus = expand_menus_for_targets(
         weights, targets, mode=mode, tp_degree=args.tp_degree,
         parallel_kind=PARALLEL_NONE,
+        context_by_unit=context_by_unit,
     )
 
     measured: dict[str, dict[str, list[CampaignAnchor]]] = {}
@@ -1081,6 +1098,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "stopped_early": bool(stopped_early),
             "wall_seconds": time.time() - started,
             "cache_dir": str(cache_dir),
+            **({"tessera_serving_scope": scope_provenance(serving_target, context_by_unit)}
+               if serving_target is not None else {}),
             "wire_dir": str(wire_dir),
             "tessera_commit": os.environ.get("TESSERA_COMMIT", ""),
             "hessian": {
