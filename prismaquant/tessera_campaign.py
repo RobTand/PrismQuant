@@ -831,6 +831,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             continue
         if name.endswith("lm_head") or "embed" in name:
             continue
+        if profile.is_pinned_name(name):
+            continue
         targets.append(name)
     targets = _campaign_layer_scope(targets, args.layer_stride)
     print(f"[campaign] {len(targets)} target Linears, mode={mode}, "

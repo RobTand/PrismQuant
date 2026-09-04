@@ -3,6 +3,15 @@
 As of: 2026-09-04 · `codex/pq183-packed-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
+campaign exclusions** (§4.10). The dense target walk now consults the existing
+`ModelProfile.is_pinned_name` accessor before capture/menuing. In particular,
+LFM's already-pinned router and short-convolution Linears cannot be priced as
+quantizable parameters. The profile still owns every pin; no new roster or
+default is introduced. Real main-entry regressions exercise both LFM's declared
+pins and a changed profile declaration, so the test cannot be satisfied by a
+private campaign pin list. Gate: `tests/test_tessera_campaign_pins.py`.
+
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **packed
 source-unit capture** (§4.10; PrismaQuant #183). Shared routed-expert
 discovery exposes per-expert projection views using the native exporter's
