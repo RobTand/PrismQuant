@@ -58,3 +58,39 @@ compares raw64 versus chat64 versus an uncensored context-bounded control on
 one Qwen BF16 session, with an A/A repeat. Its GPU slot remains ordered after
 Tessera #113/#5. No AQUA/Gridbook reproduction, candidate-model discrimination,
 power delta, profiler delta or default-policy validation has been measured.
+
+## Review follow-up
+
+The bounded review found three new-instrument provenance gaps and one shared
+process-discovery defect. All were fixed on this branch, in separate commits
+from the initial implementation: actual token IDs and producer source now
+participate in pairing; BF16 attestation reads live dtype/quantization arguments
+and refuses aliases, repeated dtype and configuration overrides; shared serve
+discovery no longer calls a client a server because its image argument contains
+`vllm`.
+
+- Pairing red `2673ed77fb4828b96f64a51690c7658d6d01defc6b3a88fd6090ef94b488de2b`:
+  5 failed, 13 deselected. The equal-length/different-token and changed-source
+  cases both failed with `DID NOT RAISE <class 'ValueError'>`; the new live-BF16
+  guard was absent. The subsequent alias/repeated-argv API test, action
+  `4466eeca0bfb`, failed 3 with the `launch_argv` input absent before the fix.
+- Shared classifier red
+  `384f6e3d064b59cb359adce584b1f257004a767137c81fe7e438c5eaedcbf3ca`:
+  3 failed, 5 passed, 10 deselected on dl380 CPU. Failure line: `assert True is
+  False` for the measurement client's image argument, a model-path argument,
+  and a shell's quoted launch command. Legitimate server/worker cases passed.
+- Expanded post-review run `c5bf7e89fbbb`: 225 passed, 9 failed. All nine were
+  in `test_tessera_serve_fingerprint.py`: existing installed-Tessera versus
+  PENDING-pin/schema drift. Only that failed file was run against pristine
+  `483ff9ca`, action `860d5526cb14`: the identical 9 failures, 19 passes.
+  The separate release consumer/v4 work owns those rows; no duplicate issue
+  or pin change was made here.
+- Final source `df44f6d2`, action
+  `b5da2968616280679717305628147cec2fdba6fbe484a01e9d41106c30a8b0fd`,
+  receipt `4a9b4d22ba9d92b0d096be0c51a516a177f187e1c22c372ba9034dd115100766`:
+  **209 passed, 0 failed, 0 skipped** in 17.75 seconds, CPU-only Sparky.
+  Population: the original six files plus `test_serve_fingerprint_descendants.py`,
+  `test_kl_ab.py`, and `test_measure_served_gold.py`. The already-baselined
+  fingerprint file remains red and is not represented as green by this subset.
+  All three changed executable modules also passed compilation. No GPU result
+  or changed shipping threshold is claimed.
