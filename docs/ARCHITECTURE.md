@@ -5887,22 +5887,19 @@ The development reader also refuses non-empty cell predicates: its family/rate
 menu lookup has no unit facts with which to evaluate a shape constraint.
 Export's `resolve_unit_route` has those facts and evaluates the predicates.
 
-**What is not here.** No PrismaQuant exporter writes a Tessera wire
-(`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
-served so far was written by the Tessera repository's own exporter), no ship
-gate has been RUN on this lane, no `run-pipeline.sh` stage names a Tessera
-format, and `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16`. What IS here since
-2026-09-02 is the declared bar: `prismaquant/lane_specs/tessera.json` (§9.4)
-states the serve, endpoint, gates, KL evaluator and executed activation
-contracts before an exporter exists, which is the order that makes the bar
-something an exporter is built against.
-`tessera_{allocator,footprint,rate_surface}.py` are the §4.9 trellis trio
-re-pointed at Tessera families (36 lines differ after renaming), imported by
-nothing in the pipeline; `trellis_menu` remains the only allocation-time seam
-and still refuses (§4.9). Tests (collected):
-`tests/test_tessera_formats.py` (44), `tests/test_tessera_footprint.py` (42),
-`tests/test_tessera_shape_dependent_recipe.py` (15),
-`tests/test_tessera_lane_admission.py` (16). Register entry: D33.
+**The boundary has an export arm, not a second codec.**
+`prismaquant/run-pipeline.sh` selects `EXPORT_CONTAINER=tessera`, preflights
+the lane and calls Tessera's own plan and encoding tools under `TESSERA_REPO`.
+`export_native_compressed.py` deliberately has no Tessera codec. The arm opens
+a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
+serve, endpoint, gates, KL evaluator and executed activation contracts.
+Allocation uses `tessera_menu` and its reviewed development contract; that
+research menu does not bypass the exact release pin required for export.
+The pending release and supported producer-tool boundary remain D33, rather
+than an absence of pipeline integration. Tests include
+`test_tessera_formats.py`, `test_tessera_footprint.py`,
+`test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
+`test_tessera_menu.py` and `test_tessera_export_lane.py`.
 
 ## 6. Export & serving invariants
 
@@ -8860,9 +8857,11 @@ hours rather than after them.
 **The runtime is Tessera's.** Package `tessera.serving` in the Tessera
 repository: a `vllm.general_plugins` entry point
 `tessera = "tessera.serving:register"` registering `quant_method = "tessera"`,
-two dense routes (NVFP4 W4A4 at `e2m1_group16_ue4m3_static`, per-channel FP8
-W8A8 at `fp8_per_token_dynamic`), a streamed window decoder and the span-2
-NVFP4 CUDA decoder. **There is no enable flag**: the checkpoint's
+the routes and executed decoders published by its packaged contract. The
+reviewed development contract includes NVFP4 W4A4 at
+`e2m1_group16_ue4m3_static`, FP8 W8A8 at `fp8_per_token_dynamic` and BF16 at
+`bf16_unquantized`; each route's cells name its residency and launches.
+**There is no enable flag**: the checkpoint's
 `quantization_config.quant_method` selects the plugin, and the single operator
 knob is `TESSERA_SERVE_MODE=resident|streamed`, declared rather than defaulted
 because it changes the artifact's footprint and is folded into vLLM's
@@ -8888,14 +8887,15 @@ artifact that does not exist.
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
 route is not merely flag-gated, and an export gate has to be able to refuse an
 artifact whose serve command would not install the runtime. The shared parser
-carries it as an optional cell key and aggregates it as `requires_plugins`
+carries it as a required v4 cell key (optional only in legacy v3) and
+aggregates it as `requires_plugins`
 through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
 because a contract defect must be loud rather than silently admitted.
 
 **Scope, from the table and not from prose.** `structures: ["dense"]` and no
 `routed_moe` cell — no served measurement covers routed experts, and absence is
-the honest state under a closed-world v3 table, not a refusal. Both
+the honest state under a closed-world v4 table, not a refusal. The published
 `tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
 per vLLM module against a shared rate schedule, so a sharded form needs
 per-rank wires rather than a byte range. `expert_parallel.units` is empty.
