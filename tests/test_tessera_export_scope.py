@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import struct
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -175,6 +176,15 @@ def test_export_shape_predicates_use_checkpoint_dimensions(case):
         export.require_assignment_scope(case.model, case.assignment, target=Target())
 
 
+def test_matching_shape_predicate_cannot_claim_the_producers_fused_unit(case):
+    payload = _payload()
+    for row in payload["lane_eligibility"]["cells"]:
+        row["predicates"] = [{"fact": "out_features", "op": "equals", "value": 64}]
+    case.contract.write_text(json.dumps(payload))
+    with pytest.raises(export.TesseraExportLaneError, match="predicate|projection"):
+        export.require_assignment_scope(case.model, case.assignment, target=Target())
+
+
 def test_export_does_not_change_plain_bf16_assignments(case):
     case.payload[DENSE] = "BF16"
     _scope(case)["by_unit"].pop(DENSE)
@@ -257,3 +267,67 @@ def test_tessera_plan_cache_identity_changes_with_serving_target(key, value):
     after, _ = stage_settings_projection("tessera-plan", {**legacy, key: value})
     assert after != before
     assert value in after.values()
+
+
+def _run_head_policy(monkeypatch, capsys, *, body=FORMAT, head="BF16",
+                     scoped=True, serialisable=True, cost_override="cost.pkl"):
+    """Execute the driver's real inline policy under CPU-only mocked formats."""
+    from prismaquant import format_registry as fr
+    from prismaquant import tessera_render
+    from prismaquant import model_profiles
+    from prismaquant.model_profiles.qwen3 import Qwen3Profile
+
+    monkeypatch.setattr(model_profiles, "detect_profile", lambda _: Qwen3Profile())
+    for key, value in {
+        "PQ_MODEL_PATH": "fixture", "PQ_ALLOW_PINNED": "",
+        "PQ_LM_HEAD_FORMAT": head, "PQ_BODY_FORMATS": body,
+        "PQ_COST_PATH_OVERRIDE": cost_override,
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    def get_format(value):
+        if value == "TESSERA":
+            raise KeyError("menu token is not a shape-free format")
+        return SimpleNamespace(name=value)
+
+    monkeypatch.setattr(fr, "get_format", get_format)
+    monkeypatch.setattr(fr, "format_is_producer_eligible", lambda name, **kwargs:
+                        name == "BF16" or bool(kwargs.get("context_by_unit")))
+    monkeypatch.setattr(tessera_render, "tessera_rung_is_serialisable", lambda _: serialisable)
+    args = ["fixture", "--target-profile", "tessera_research_sm121"]
+    if scoped:
+        args += ["--tessera-platform", "sm_121", "--tessera-runtime-image", IMAGE,
+                 "--tessera-execution-mode", "eager", "--tessera-residency", "resident"]
+    monkeypatch.setattr(sys, "argv", args)
+    driver = (Path(__file__).parents[1] / "prismaquant" / "run-pipeline.sh").read_text()
+    block = driver[driver.index('if ! LM_HEAD_POLICY_TEXT="$('):]
+    program = block.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    exec(compile(program, "run-pipeline.sh:head-policy", "exec"), {"__name__": "__main__"})
+    return capsys.readouterr().out.splitlines()
+
+
+def test_actual_shell_body_defers_scoped_tessera_admission_to_per_unit_gate(monkeypatch, capsys):
+    lines = _run_head_policy(monkeypatch, capsys)
+    assert lines[0] == "BF16"
+    assert lines[4] == FORMAT
+
+
+def test_actual_shell_head_uses_its_explicit_context(monkeypatch, capsys):
+    lines = _run_head_policy(monkeypatch, capsys, body="BF16", head=FORMAT)
+    assert lines[0] == FORMAT
+    assert lines[4] == "BF16," + FORMAT
+
+
+def test_actual_shell_preserves_the_prepriced_tessera_menu_token(monkeypatch, capsys):
+    lines = _run_head_policy(monkeypatch, capsys, body="TESSERA,BF16")
+    assert lines[4] == "TESSERA,BF16"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"scoped": False}, {"serialisable": False},
+    {"body": "TESSERA", "cost_override": ""},
+])
+def test_actual_shell_keeps_unbound_unwritable_and_uncosted_refusals(monkeypatch, capsys, kwargs):
+    with pytest.raises(SystemExit) as error:
+        _run_head_policy(monkeypatch, capsys, **kwargs)
+    assert error.value.code == 2
