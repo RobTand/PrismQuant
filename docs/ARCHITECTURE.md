@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq183-packed-capture`. Stamps
+As of: 2026-09-04 · `codex/pq186-campaign-identity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for the shared
+checkpoint journal's **explicit manifest pathname** (§4.10; PrismaQuant #186).
+`cost_stage_checkpoint.prepare_journal` can retain a file-oriented caller's
+manifest path while storing per-unit shards in its checkpoint directory. It
+uses the existing manifest/unit schemas, exact identity comparison, checksums,
+and durable writes; existing directory-oriented callers are unchanged. This
+adapter enables the campaign's identity-bound resume without changing its
+`--checkpoint` filename/default or introducing another checkpoint grammar.
+The campaign's intake/wire verification is a separate change, not supplied
+merely by this optional argument.
 
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
 campaign exclusions** (§4.10). The dense target walk now consults the existing
