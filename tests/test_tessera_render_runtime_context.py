@@ -58,11 +58,12 @@ def test_unbound_v5_released_pin_does_not_admit_any_runtime(released_table):
     assert not render.tessera_lane_attested(NAME)
 
 
-@pytest.mark.parametrize("context", [
-    _context(), _context(execution_mode="compiled"),
-    _context(structure="routed_moe", runtime_image=MOE_IMAGE),
+@pytest.mark.parametrize("overrides", [
+    {}, {"execution_mode": "compiled"},
+    {"structure": "routed_moe", "runtime_image": MOE_IMAGE},
 ])
-def test_explicit_v5_context_selects_its_complete_regime_population(released_table, context):
+def test_explicit_v5_context_selects_its_complete_regime_population(released_table, overrides):
+    context = _context(**overrides)
     table, _ = released_table
     cells = render.tessera_attesting_cells(NAME, serving_context=context)
     assert {cell.regime for cell in cells} == set(table.regimes)
@@ -71,12 +72,13 @@ def test_explicit_v5_context_selects_its_complete_regime_population(released_tab
     assert render.tessera_lane_attested(NAME, serving_context=context)
 
 
-@pytest.mark.parametrize("context", [
-    _context(platform="sm_120"), _context(residency="streamed"),
-    _context(runtime_image=MOE_IMAGE), _context(structure="routed_moe"),
-    _context(structure="routed_moe", runtime_image=MOE_IMAGE, execution_mode="compiled"),
+@pytest.mark.parametrize("overrides", [
+    {"platform": "sm_120"}, {"residency": "streamed"},
+    {"runtime_image": MOE_IMAGE}, {"structure": "routed_moe"},
+    {"structure": "routed_moe", "runtime_image": MOE_IMAGE, "execution_mode": "compiled"},
 ])
-def test_v5_released_pin_cannot_borrow_any_mismatched_scope(released_table, context):
+def test_v5_released_pin_cannot_borrow_any_mismatched_scope(released_table, overrides):
+    context = _context(**overrides)
     assert render.tessera_attesting_cells(NAME, serving_context=context) == ()
     assert not render.tessera_lane_attested(NAME, serving_context=context)
 
@@ -114,3 +116,12 @@ def test_legacy_v4_renderer_keeps_its_prior_context_free_lookup(released_table):
     table, formats = released_table
     legacy = replace(table, schema=lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V4)
     assert render.tessera_lane_attested(NAME, table=legacy, formats=formats)
+
+
+def test_research_mode_keeps_writable_unattested_rungs(monkeypatch):
+    from prismaquant import tessera_menu as menu
+    monkeypatch.setattr(menu, "route_admission", lambda _name: SimpleNamespace(
+        requires_serving_context=True, admits=lambda _mode: True))
+    monkeypatch.setattr(menu, "menu_mode", lambda: menu.MENU_RESEARCH)
+    monkeypatch.setattr(render, "tessera_rung_is_serialisable", lambda _name: True)
+    assert render._producer_eligible(NAME)
