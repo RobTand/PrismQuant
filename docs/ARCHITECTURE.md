@@ -1,6 +1,5 @@
 # PrismaQuant Architecture
 
-<<<<<<< HEAD
 As of: 2026-09-03 · `muse/pq-172-173-append`. Stamps
 follow, newest first, each recording its own branch and date.
 
@@ -20,10 +19,6 @@ different hash refuses, since the bytes on disk are the first render's.
 Deliberately still unbound: the render narrowing on both paths. Gates:
 `tests/test_packed_append_streaming_and_pair_identity.py` (8, each shown
 failing before the fix).
-=======
-As of: 2026-09-03 · `muse/pq-146-stamp`. Stamps
-follow, newest first, each recording its own branch and date.
-
 Re-stamped (2026-09-03, `muse/pq-146-stamp`) for the **pre-guard
 trust-admission record** (§5.4; RobTand/prismaquant#146, remaining leg). The
 guard admitted a directory holding shards but no sidecar on trust with a
@@ -44,8 +39,6 @@ receipt echoes the admission; the sidecar is the record. Gates:
 `tests/test_production_cache_render_identity.py` (7 new: a hand-built v1
 sidecar resumes, pre-guard records while fresh does not, the append merge and
 the base adoption preserve, no false mismatch, malformed refuses).
->>>>>>> muse/pq-146-stamp
-
 Re-stamped (2026-09-03, `muse/pq-170-append`) for the **production cache
 append-identity guard** (§5.4; RobTand/prismaquant#170). #146's sidecar
 covered the dense fill only, so the MTP and packed-expert appends — which
