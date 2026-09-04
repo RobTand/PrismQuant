@@ -84,3 +84,22 @@ Packed/aggregate source projections, nonidentity runtime owner mappings and
 nonempty relevant cell predicates also remain explicit unsupported boundaries.
 No adjacent defect was deferred or filed by this receipt implementation;
 review findings were corrected in its bounded gate before handoff.
+
+## Endpoint/main integration
+
+The coordinator branch cherry-picked the reviewed implementation without the
+duplicate helper commit, then merged main `10dd2395` (PR185 endpoints) at
+`118d2afc`. Only architecture stamps needed reconciliation while applying
+the implementation; production source was not rewritten during integration.
+
+The five worker files plus export-scope, actual plan/printed-command, and both
+architecture/doc checks passed **209 tests, 0 failures, 0 skips**, with no
+collection errors. The three modified Python modules compiled in the same
+PrismaBuild action. Population remained CPU-only Sparky, 1 CPU / 4 GiB, no
+GPU demand, with the same immutable producer archive and thread bounds.
+
+Action: `239d642cb5b8eefabc27ea4320a65fd50847acbedc476207ffae5d9b51d86b89`.
+Receipt: `a968fdb7bff5fb078a3efe746909d06acc30a62f3161fd7b66e8b26d6af5dde5`.
+Result log: `f927000db4ca1e679bb70c70eedad995094a0a7b32a6300048eee285b04606c7`.
+This establishes the bounded endpoint/receipt integration, not final producer
+pin compatibility or any served/CUDA population.
