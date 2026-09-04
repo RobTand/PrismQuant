@@ -373,13 +373,14 @@ _PREDICABLE_FACTS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class EligibilityCell:
-    """One packaged cell: bytes, platform, regime, residency and launch.
+    """One packaged cell: bytes, platform, regime, residency, runtime and launch.
 
     A cell is scoped to exactly one ``(platform, family, structure, regime)``
     and covers an explicit, non-empty rung list. It carries no prose: a
     validator refuses ``detail``/``rationale`` keys on a cell, because a gate
     cannot read prose (principle 14). Legacy v3 alone permits an absent plugin
-    key. v4 requires Tessera, launch declarations and residency flags.
+    key. v4 requires Tessera, launch declarations and residency flags; v5
+    additionally scopes every cell to an exact image and execution-mode set.
     """
 
     id: str
