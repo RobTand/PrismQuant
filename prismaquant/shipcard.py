@@ -2919,9 +2919,8 @@ def _verify_ship_gate_record(
         ):
             problems.append(
                 f"{slot}: boundary check reports {defects!r} defective "
-                "generations — the bound is zero "
-                "(any stutter/zero-tag/cap-truncation on a terse prompt "
-                "is a functional failure)"
+                "generations — the historical bound is zero; "
+                "its control-relative replacement remains pending #87"
             )
         temperature = boundary.get("temperature")
         if (
