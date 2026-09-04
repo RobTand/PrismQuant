@@ -49,6 +49,8 @@ def main(argv=None):
     parser.add_argument("--out", required=True)
     parser.add_argument("--legacy-ab", action="store_true",
                         help="also measure historical raw request at initial cap on control")
+    parser.add_argument("--decision-policy", choices=("no-new-failures",),
+                        help="opt-in candidate decision; leaves the production gate unchanged")
     args = parser.parse_args(argv)
     if "@sha256:" not in args.image:
         parser.error("--image must be immutable")
@@ -61,8 +63,8 @@ def main(argv=None):
     import serve_fingerprint as sf
 
     if args.role == "control":
-        if not args.contract or args.control:
-            parser.error("control requires --contract and no --control")
+        if not args.contract or args.control or args.decision_policy:
+            parser.error("control requires --contract and no --control/--decision-policy")
         contract = json.loads(Path(args.contract).read_text())
         model_config = json.loads((Path(args.model_dir) / "config.json").read_text())
         control = None
@@ -128,6 +130,8 @@ def main(argv=None):
     else:
         measurement = bc.measure_candidate(args.base_url, args.model_name, control, binding)
         comparison = bc.compare(control, measurement)
+    decision = (bc.decide_no_new_failures(control, measurement)
+                if args.decision_policy else None)
     finished = time.time()
     after = sf.collect_manifest(image=args.image, base_url=args.base_url,
                                 attestation_phase="post")
@@ -144,12 +148,17 @@ def main(argv=None):
                "artifact_pre": artifact_pre, "artifact_post": artifact_post,
                "weight_stats_pre": weight_stats_pre, "weight_stats_post": weight_stats_post,
                "source_sha256": source_hashes}
+    if decision is not None:
+        receipt["decision"] = decision
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x") as handle:
         json.dump(receipt, handle, indent=2, ensure_ascii=False, allow_nan=False)
         handle.write("\n")
     print(json.dumps({"receipt": str(output), "sha256": bc.digest(receipt),
-                      "comparison": comparison, "fixed_point": measurement.get("fixed_point")}))
+                      "comparison": comparison, "decision": decision,
+                      "fixed_point": measurement.get("fixed_point")}))
+    if decision is not None:
+        return 0 if decision["verdict"] == "accepted" else 2
     return 0 if measurement.get("fixed_point", True) else 2
 
 

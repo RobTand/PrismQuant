@@ -1,7 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq87-physical-ab`. Stamps
+As of: 2026-09-04 · `codex/pq87-paired-policy`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for the **opt-in paired
+no-new-boundary-failures decision** (§7.2; #87). The separately versioned
+`prismaquant.no_new_boundary_failures/1` policy replays both measurement
+receipts before comparing defect-kind sets on identical prompt/seed pairs at
+the BF16-derived uncensored cap. A newly broken clean pair or a new kind on
+an already-broken pair refuses; repairs never offset failures elsewhere.
+Missing, malformed, incomparable or censored control evidence is inconclusive.
+`measure_boundary_control.py candidate --decision-policy no-new-failures`
+records this optional decision and exits 2 on refusal. Offline replay
+recomputes every decision field. This adds no shipcard waiver, changes no
+production threshold and claims no quantized/held-out measurement. Gates:
+`tests/test_boundary_policy.py`.
 
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
@@ -7401,7 +7414,7 @@ boundary check, regardless of its nominal defect count.
 This endpoint fix is necessary and insufficient. Physical evidence invalidated
 the current 64-token cap and a universal zero roster: healthy DSV4 still filed
 7/30 cap truncations at 64, while stock Qwen3-8B filed 10/15 even at 600. The
-pending policy is a same-session BF16 control whose cap grows until the control
+control-relative instrument uses a same-session BF16 control whose cap grows until the control
 reaches its own finishing fixed point, bounded by the declared model context
 and an explicit backstop; the quantized arm is then scored control-relative at
 that exact cap. The opt-in `boundary_control.py` instrument now specifies and
@@ -7414,9 +7427,15 @@ record raw-request A versus chat-request B at the historical initial cap,
 followed by the uncensored control budget. Relative counts are per stratum,
 without an invented significance or tolerance threshold. The budget is fit on
 this frozen schedule, so the report is a detector and must not select artifact
-calibration content. Until a physical paired measurement and a replacement
-shipping policy are approved, the old 64/zero values remain fail-closed, #87
-remains `needs-decision`, and this instrument cannot promote an artifact.
+calibration content. The optional `--decision-policy no-new-failures` applies
+the versioned paired rule chosen for #87: a new defect kind on any prompt/seed
+refuses, with no offset from repairs on other pairs. The policy replays the
+complete evidence and treats missing/incomparable/censored controls as
+inconclusive. It remains opt-in and does not fill or waive a shipping slot.
+Until matched quantized, disjoint held-out and representative-population
+validation supports a shipping-default promotion, the old 64/zero values
+remain fail-closed. The BF16-only A/B does not establish quantized-artifact
+discrimination.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return

@@ -1,9 +1,11 @@
-"""Opt-in paired boundary measurement; deliberately not a shipping verdict.
+"""Paired boundary measurement and an opt-in, non-default acceptance policy.
 
 The BF16 control determines a finishing budget for a frozen prompt/seed
 schedule. A token or iteration bound is an inconclusive stop, never proof of
 convergence. Candidate and control are then compared at the identical cap.
 This module reuses the shipping probe's HTTP, response and scoring contracts.
+The separately versioned no-new-failures decision rejects new defect kinds
+on each matched pair. It does not replace the production shipping gate.
 """
 from __future__ import annotations
 
@@ -17,6 +19,8 @@ from prismaquant import validate_quantized_model as vqm
 
 SCHEMA = "prismaquant.boundary_control/1"
 SCORER = "prismaquant.boundary_close_count/1"
+DECISION_SCHEMA = "prismaquant.boundary_decision/1"
+NO_NEW_FAILURES_POLICY = "prismaquant.no_new_boundary_failures/1"
 
 
 def digest(value):
@@ -305,3 +309,66 @@ def compare(control, candidate):
     return {"schema": "prismaquant.boundary_comparison/1", "advisory_only": True,
             "control_sha256": digest(control), "candidate_sha256": digest(candidate),
             "max_tokens": cap, "strata": strata}
+
+
+def decide_no_new_failures(control, candidate):
+    """Apply the opt-in paired rule only after replaying comparable evidence.
+
+    A repair never offsets a new failure, even within one stratum. Existing
+    BF16 defects may persist or disappear; introducing a new kind on that
+    same prompt/seed refuses. A censored candidate is a measured new defect,
+    whereas a censored control supplies no valid comparison and is
+    inconclusive. This policy is not an estimator of a population failure
+    probability and does not change a production default.
+    """
+    result = {"schema": DECISION_SCHEMA, "policy": NO_NEW_FAILURES_POLICY,
+              "advisory_only": True, "verdict": "inconclusive", "reason": "",
+              "control_sha256": None, "candidate_sha256": None,
+              "pair_count": 0, "max_tokens": None, "newly_broken_pairs": 0,
+              "new_defect_kind_pairs": 0, "violations": []}
+    try:
+        if not isinstance(control, dict) or not isinstance(candidate, dict):
+            raise ValueError("both control and candidate measurement receipts are required")
+        comparison = compare(control, candidate)
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:
+        # Malformed serialized evidence is no measurement. Do not coerce a
+        # missing count to zero or accept an asserted fixed-point flag.
+        result["reason"] = f"paired evidence is incomplete or incomparable: {exc}"
+        return result
+    result.update(control_sha256=comparison["control_sha256"],
+                  candidate_sha256=comparison["candidate_sha256"],
+                  max_tokens=comparison["max_tokens"])
+    controls = control["steps"][-1]["outcomes"]
+    candidates = candidate["step"]["outcomes"]
+    result["pair_count"] = len(controls)
+    for reference, observed in zip(controls, candidates):
+        before, after = set(reference["score"]["defects"]), set(observed["score"]["defects"])
+        introduced = after - before
+        if not introduced:
+            continue
+        result["newly_broken_pairs" if not before else "new_defect_kind_pairs"] += 1
+        result["violations"].append({
+            "prompt_index": observed["prompt_index"], "seed": observed["seed"],
+            "stratum": control["contract"]["prompts"][observed["prompt_index"]]["stratum"],
+            "control_defects": sorted(before), "candidate_defects": sorted(after),
+            "new_defects": sorted(introduced),
+        })
+    result["verdict"] = "refused" if result["violations"] else "accepted"
+    result["reason"] = ("candidate introduced new defects on matched prompt/seed pairs"
+                        if result["violations"] else
+                        "no new defect kind on any matched prompt/seed pair")
+    return result
+
+
+def replay_no_new_failures(decision, control, candidate):
+    """Recompute the complete decision; a stored passed/verdict bit is not evidence."""
+    expected = decide_no_new_failures(control, candidate)
+    # Python equality coerces 0/False and 2/2.0. A versioned JSON receipt must
+    # retain the actual counter/boolean types as well as their values.
+    try:
+        matches = digest(decision) == digest(expected)
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise ValueError("boundary decision differs from replayed paired policy")
+    return expected
