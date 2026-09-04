@@ -34,8 +34,8 @@ choosing a rung per Linear beats spending the same bytes everywhere:
 
 And one lane-declared evidence slot, required of cards stamped with the lane
 that declares it — principle 12's second leg, the priced-vs-served route
-comparison (#136): the priced routes, the served route records with the
-decoder each ran, and the known substitute set:
+comparison (#136, Tessera #126): the exact price/artifact/runtime-bound
+census, or historical unscoped rows with their known substitute set:
 
 | Slot | Filled by |
 |---|---|
@@ -1728,7 +1728,7 @@ def verify(
             # lane-slot registry (#162) so the admission invariant and the
             # replay read the same entry.
             problems.extend(LANE_SLOT_VERIFIERS[ROUTE_CENSUS_SLOT](
-                slot, record))
+                slot, record, card=card, model_dir=model_dir))
             continue
         if record.get("passed") is not True:
             problems.append(
@@ -2958,11 +2958,14 @@ def make_route_census_record(
     *,
     tool: str,
     model_sha: str | None,
-    priced_routes: Sequence[str],
-    route_records: Sequence[Mapping[str, Any]],
-    substitute_decoders: Sequence[str],
+    priced_routes: Sequence[str] = (),
+    route_records: Any,
+    substitute_decoders: Sequence[str] = (),
     serve_fingerprint: str | None = None,
     git_commit: str | None = None,
+    binding: Mapping[str, str] | None = None,
+    build: Mapping[str, Any] | None = None,
+    model_dir: str | os.PathLike | None = None,
 ) -> dict[str, Any]:
     """Close `route.census` from the priced routes and the served records.
 
@@ -2971,7 +2974,23 @@ def make_route_census_record(
     (`_verify_route_census_record`), so filling a `passed=true` over
     substitute-decoder records still refuses at publication.
     """
-    from prismaquant.tessera_route_receipt import check_route_receipt
+    from prismaquant.tessera_route_receipt import (
+        TesseraRouteReceiptError, check_route_receipt, check_scoped_route_receipt,
+    )
+
+    if isinstance(route_records, Mapping):
+        from copy import deepcopy
+        verdict = check_scoped_route_receipt(route_records, binding, build=build, model_dir=model_dir)
+        if priced_routes and sorted(set(priced_routes)) != verdict["served_routes"]:
+            raise TesseraRouteReceiptError("caller priced routes differ from independently bound price projections")
+        return make_record(slot=ROUTE_CENSUS_SLOT, tool=tool, passed=True, model_sha=model_sha,
+            metrics={"n_records": verdict["n_records"], "n_served_routes": len(verdict["served_routes"])},
+            detail=verdict["detail"], serve_fingerprint=serve_fingerprint, git_commit=git_commit,
+            extra={"route_census": deepcopy(route_records), "census_binding": deepcopy(binding),
+                   "scoped_verdict": verdict, "served_routes": verdict["served_routes"],
+                   "served_decoders": verdict["served_decoders"]})
+    if binding is not None or (build or {}).get("tessera_serving_scope") is not None:
+        raise TesseraRouteReceiptError("scoped artifact cannot fill route.census from an unbound legacy flat list")
 
     verdict = check_route_receipt(
         priced_routes=list(priced_routes),
@@ -3018,14 +3037,44 @@ def parse_route_records_for_card(
 def _verify_route_census_record(
     slot: str,
     record: Mapping[str, Any],
+    *,
+    card: Mapping[str, Any] | None = None,
+    model_dir: str | os.PathLike | None = None,
 ) -> list[str]:
     """Replay the priced-vs-served comparison from the carried values."""
     from prismaquant.tessera_route_receipt import (
         TesseraRouteReceiptError,
         check_route_receipt,
+        check_scoped_route_receipt,
     )
 
     problems: list[str] = []
+    build = (card or {}).get("build") or {}
+    if "route_census" in record or "census_binding" in record or "scoped_verdict" in record:
+        try:
+            replay = check_scoped_route_receipt(record.get("route_census"), record.get("census_binding"),
+                                               build=build, model_dir=model_dir)
+        except TesseraRouteReceiptError as exc:
+            return [f"{slot}: scoped census REFUSED: {exc}"]
+        if record.get("passed") is not True or record.get("scoped_verdict") != replay:
+            problems.append(f"{slot}: carried scoped verdict differs from current-contract replay")
+        for key in ("served_routes", "served_decoders"):
+            if record.get(key) != replay[key]:
+                problems.append(f"{slot}: carried {key} differs from scoped replay")
+        return problems
+    if build.get("tessera_serving_scope") is not None:
+        return [f"{slot}: scoped artifact carries an unbound legacy census; retain the producer's v2 receipt"]
+    from prismaquant.tessera_route_receipt import _current_scoped_contract
+    from prismaquant.lane_eligibility import LANE_ELIGIBILITY_SCHEMA_TESSERA
+    try:
+        table, _formats = _current_scoped_contract()
+        if table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA:
+            return [f"{slot}: current v5 cells cannot attest an unbound legacy flat census"]
+    except ModuleNotFoundError:
+        # Historical, unscoped cards do not acquire a runtime dependency.
+        pass
+    except (ValueError, OSError) as exc:
+        return [f"{slot}: cannot inspect current census contract: {exc}"]
     priced = record.get("priced_routes")
     rows = record.get("route_records")
     substitutes = record.get("substitute_decoders")
@@ -3076,7 +3125,8 @@ def _verify_route_census_record(
 #: adds: the slot's vocabulary membership is derived from the lane's own spec
 #: (:func:`lane_scoped_slots`), and the replay is named here.  A derived slot
 #: with no entry here is REFUSED wherever it is declared, filled, or verified
-#: (RobTand/prismaquant#162).  Lane-slot verifiers take ``(slot, record)``.
+#: (RobTand/prismaquant#162). Lane-slot verifiers take ``(slot, record)``;
+#: the scoped census also receives the independent ``card``/``model_dir``.
 LANE_SLOT_VERIFIERS: dict[str, Callable[..., list[str]]] = {
     ROUTE_CENSUS_SLOT: _verify_route_census_record,
 }

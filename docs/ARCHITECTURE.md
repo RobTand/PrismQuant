@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
+As of: 2026-09-04 · `codex/pq-census-v5-binding`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq-census-v5-binding`) for **runtime-bound
+route census replay** (§7.1; Tessera #126). The complete producer
+`tessera.serving.route_census/2` record retains exact runtime, execution mode,
+residency, both driven phases, owner maps, backend-qualified launches and
+checkpoint-sidecar seals. Exact allocation text is rehashed against the
+independent card build anchor, and artifact sidecars are independently
+rehash-checked at fill and verification. Current v5 cells, not an embedded
+agreement or a global decoder blacklist, decide launch eligibility. Legacy
+unscoped rows remain compatible only without a scoped build/current v5 table.
+No default, bytes, promotion threshold or reviewed runtime pin moves.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
 census handoff instructions** (§9.4). The driver prints the producer's actual
@@ -70,6 +81,7 @@ router/expert or packed-module facts determine unit structure, cross-checked
 against the declared model profile. Missing facts cannot silently become
 dense. The helper delegates value validation to `ServingContext`; it does
 not change a runtime default or attest any new serving cell.
+
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
 hashes native BF16 source before starting one read-only-model server, then
@@ -6944,14 +6956,48 @@ that the routes the serve actually emitted -- each stamped by the plugin with
 the decoder that ran -- are the routes the artifact priced
 (`prismaquant/tessera_route_receipt.py`, `make_route_census_record`; CLI
 `fill-route-census`; the lane spec's `route.census` gate names this slot).
+For a scoped artifact, `fill-route-census --census <raw-v2.json>
+--layer-config <allocation.json> --model-dir <artifact>` retains the complete
+producer census as `route_census`, exact UTF-8 allocation/config/manifest
+texts as `census_binding`, and the derived `scoped_verdict`. The allocation's
+SHA256 and `__prismaquant__.tessera_serving_scope` must independently match
+`card.build.layer_config_sha` and `card.build.tessera_serving_scope`; audit
+paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
+match the retained texts and the actual artifact files, so host/container
+checkpoint path aliases are valid but an artifact-free replay is not.
+
+Coverage is the exact set of Tessera-selected allocation units (not BF16
+passthrough context keys). Their source tensors join explicit manifest
+projections and config-group owners, with exact shape/grid/rung/context
+checks. Each owner must appear exactly once in both driven phases, with
+recorded owner maps matching the replay. Every unit needs a current
+device-qualified backed cell for the same platform, image, mode and residency
+in every declared regime. Actual state, activation contract, launch pair and
+serve flags must agree. Backend suffixes stay in the retained record; a
+routed launch may compare its declared base plus a nonempty backend suffix.
+Thus a named dense fallback is permitted for MoE only when that exact scoped
+cell declares the pair. Dense compiled aggregate traces, packed/aggregate
+source projections, and nonidentity checkpoint/runtime owner mappings remain
+explicit unsupported refusals, not guessed equivalences.
+Nonempty predicates in relevant scoped/family/rung cells also refuse: a
+manifest member's dimensions are not an attestation of the executed fused
+unit's dimensions or role-split facts. This matches the export endpoint's
+bounded support rather than manufacturing a serving-shape projection.
+Eager phases retain
+canonical shape evidence and must actually name their one-row decode versus
+multi-row prefill regime. No new runtime is attested by this adapter.
+
 The requirement travels with the lane declaration (`required_slots` UNIONS
 the lane's slots), not with a rate-axis special case. `verify` replays the
 priced-vs-served comparison from the carried records
-rather than trusting the carried boolean, and refuses a census run on a known
+rather than trusting the carried boolean. Historical unscoped flat rows retain
+the v4 comparison and refuse a census run on a known
 substitute decoder (derived from the pinned contract's `when_unavailable`,
 never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
-with the replay. "No census was ever compared" reads as `UNFILLED`. Known
+with the replay; explicit scope fields cannot be flattened into those rows.
+A scoped card or current v5 table refuses a flat legacy receipt instead of
+inventing the missing runtime. "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.
