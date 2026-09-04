@@ -318,7 +318,16 @@ def test_the_pinned_encoder_accepts_every_keyword_the_source_emits():
     # ``refit_metric``), and this tuple is the seam's forwarded-key whitelist.
     # Probing one plane would narrow it and make the seam refuse another
     # plane's legitimate keyword as unknown.
-    assert required == ("ldl", "ldl_block", "refit_metric", "refit_reach_floor")
+    identity = {field: "" if field.endswith("sha256") else 0
+                for field in texport.HESSIAN_IDENTITY}
+    defaults = texport.ActivationSource(hessians={}, provenance=identity)
+    width = int(defaults.ldlq_block)
+    producer = texport.ActivationSource(
+        hessians={"probe": torch.eye(width)}, provenance=identity)
+    emitted = set().union(*(
+        producer.for_unit("probe.weight", width, scale_plane=plane)
+        for plane in texport._PLANE_NAMES))
+    assert required == tuple(sorted(emitted))
     assert accepted, sorted(params)
     assert all(k in params for k in required), sorted(params)
     # And the recipe travels from Tessera's own defaults, not from a comment --
@@ -817,7 +826,10 @@ def test_activation_kwargs_are_rung_independent_but_plane_dependent():
     plane = ScalePlaneKind.CHANNEL
     first = encoder_kwargs(source, "m.up", 256, scale_plane=plane)
     second = encoder_kwargs(source, "m.up", 256, scale_plane=plane)
-    assert sorted(first) == ["ldl", "ldl_block", "refit_metric", "refit_reach_floor"]
+    # The forwarding adapter owes the producer's emitted set, including new
+    # encoder controls, not a historical list of four Hessian keywords.
+    expected = source.for_unit("m.up.weight", 256, scale_plane=plane)
+    assert set(first) == set(expected)
     for key in ("ldl", "refit_metric"):
         assert torch.equal(first[key], second[key])
 

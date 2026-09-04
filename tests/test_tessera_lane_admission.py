@@ -183,9 +183,14 @@ def test_the_packaged_tessera_contract_parses_and_every_cell_names_the_plugin():
 
     with as_file(tr.tessera_serving_contract_path()) as path:
         table, formats = _load(path)
+        published_schema = json.loads(path.read_text(encoding="utf-8"))[
+            "lane_eligibility"]["schema"]
 
     assert table.present
-    assert table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    # Parser capability can advance before the reviewed development pin does.
+    # This assertion belongs to the actual installed publisher, not the newest
+    # schema the consumer knows how to read.
+    assert table.schema == published_schema
     assert table.cells
     for cell in table.cells:
         assert cell.requires_plugin == TESSERA_SERVING_PLUGIN_NAME
