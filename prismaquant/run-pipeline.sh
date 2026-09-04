@@ -2456,8 +2456,8 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # Tessera lane: one blob per vLLM module on the Tessera wire, served by
   # Tessera's OWN vLLM plugin (package `tessera.serving`, entry point under
   # vllm.general_plugins, quant_method "tessera"). There is no enable flag --
-  # the checkpoint selects the plugin -- and the one operator knob is
-  # TESSERA_SERVE_MODE.
+  # the checkpoint selects the plugin. Scoped targets additionally bind the
+  # exact image and execution mode rather than inheriting wrapper defaults.
   #
   # TWO CALLS OUT, ZERO CODECS IN. The layer_config -> plan translation and
   # the encode both live in the Tessera repository and are NAMED here, never
@@ -2548,7 +2548,22 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
     echo "[pipeline] ERROR: EXPORT_CONTAINER=tessera: could not open the Tessera ship record. The artifact is unpublishable without one, and writing a base card by hand would omit this lane's own gates, so the export is not done until this succeeds." >&2
     exit 2
   fi
-  echo "  Serve:       TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE} bash ${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh ${WORK_DIR}/exported <arm> ${TESSERA_SERVE_MODE}"
+  # Print a shell-safe recipe for the same target admission just checked.
+  # Legacy context-free callers retain the wrapper's image/mode defaults.
+  TESSERA_PRINT_SERVE=("TESSERA_SERVE_MODE=${TESSERA_SERVE_MODE}" "TS=${TESSERA_REPO%/}")
+  if [[ -n "${TESSERA_RUNTIME_IMAGE:-}" ]]; then
+    TESSERA_PRINT_SERVE+=("IMAGE=$TESSERA_RUNTIME_IMAGE")
+    case "$TESSERA_EXECUTION_MODE" in
+      eager) TESSERA_PRINT_SERVE+=(TESSERA_LANE_EAGER=1) ;;
+      compiled) TESSERA_PRINT_SERVE+=(TESSERA_LANE_EAGER=0) ;;
+      *) echo "[pipeline] ERROR: invalid scoped Tessera execution mode" >&2; exit 2 ;;
+    esac
+  fi
+  TESSERA_PRINT_SERVE+=(bash "${TESSERA_REPO%/}/experiments/tessera_plugin_served.sh"
+    "${WORK_DIR}/exported" '<arm>' "$TESSERA_SERVE_MODE")
+  printf '  Serve:      '
+  printf ' %q' "${TESSERA_PRINT_SERVE[@]}"
+  printf '\n'
   echo "  Route census: python ${TESSERA_REPO%/}/tools/tessera_route_census.py --log <serve.log>"
   echo "  Close census: python -m prismaquant.shipcard_cli fill-route-census ${WORK_DIR}/exported/shipcard.json --census <census.json> --priced-route TESSERA_NVFP4 [...]"
   echo "  Verify:      python -m prismaquant.shipcard_cli verify ${WORK_DIR}/exported/shipcard.json"
