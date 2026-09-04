@@ -83,3 +83,23 @@ without relaxing source gates. The complete endpoint file then passed **21/0/0**
 no collection errors, under the same CPU-only reservation: action
 `f305d657783e16e7dbc4615b5864323dc362281087870360b8ad5d6988f51e77`, receipt
 `1d3e0bb685ebd2ba306a655fe37416bfe6b5ea46a3d30f11408adf3ecfee08a7`.
+
+## Final main/endpoint integration
+
+After merging main `10dd2395` (endpoint PR185) at `784f1674`, the expanded
+15-file targeted population passed **234 tests, 0 failures, 0 skips**, no
+collection errors. It includes all six owner/override files, real scoped
+allocator endpoints, real shell gates/defaults, stage identity, pipeline
+contracts, export scope, plan binding and both documentation checks. Shell
+syntax also passed. The only merge conflict was the architecture provenance
+stamp; shell source merged automatically. No production change followed this
+measurement.
+
+PrismaBuild action:
+`49eae99259307543b4bf86b3b172400efffef5cfbf00eb37d52536291122e4cf`.
+Receipt:
+`5cdaefad68148b88e8d0022b39cdf591b0243b9fbf2ac54af5d6c3d014caf629`.
+Result log:
+`340529b91d351f0a5705e5d5e419661661ff8d86a7117796ae4e79aac83d5dbc`.
+Population remained CPU-only Sparky, 1 core / 4 GiB, CUDA hidden and the same
+immutable reviewed producer archive. This is not a full-suite or GPU claim.
