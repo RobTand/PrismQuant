@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v5-scope`. Stamps
+As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **explicit
+serving-target intake** (§5.7; Tessera #126). `tessera_serving_scope` owns
+the optional target arguments and per-unit context construction. Image,
+execution mode and residency are explicit; platform is explicit or comes
+from the selected serving profile, never the probe device. All-absent keeps
+the legacy context-free call; partial/conflicting targets refuse. Probe
+router/expert or packed-module facts determine unit structure, cross-checked
+against the declared model profile. Missing facts cannot silently become
+dense. The helper delegates value validation to `ServingContext`; it does
+not change a runtime default or attest any new serving cell.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **complete encoder
 recipe provenance** (§5.4). The default activation-aware recipe is projected
