@@ -5032,7 +5032,7 @@ row-parallel Linear is `cols / tp % 256 == 0`, which is what collapses 3060 to
 **One function owns the encoder call, and it is H-gated**
 (`tessera_render.encode_tessera_unit`). The Tessera encoder's shipping default
 is *H-aware*: given a unit's `H = XᵀX` it applies LDLQ (sigma 1.0, block 32)
-plus an exact full-H row-scale refit, and weights-only encodes stay
+and the producer's plane-specific refit policy, and weights-only encodes stay
 byte-identical. So a rung priced without an H is a price of different bytes at
 the same format name, and the seam refuses rather than downgrade silently:
 
