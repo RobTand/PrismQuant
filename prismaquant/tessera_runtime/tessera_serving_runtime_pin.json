@@ -18,6 +18,15 @@
         "streamed": {"status": "refused",
                      "decoder": null}
       }
+    },
+    {
+      "module_name_prefix": "tessera_window_gemv",
+      "filename_glob": "tessera_window_gemv*.so",
+      "match": "basename_fnmatch",
+      "when_unavailable": {
+        "resident": {"status": "substituted", "decoder": "torch_window"},
+        "streamed": {"status": "substituted", "decoder": "torch_window"}
+      }
     }
   ]
 }

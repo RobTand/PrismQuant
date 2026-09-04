@@ -37,7 +37,7 @@ The shape of the fix is therefore as important as the values:
 * Route status alone never removes an honestly priced rung from the allocator's
   menu (principle 1). It gates EXPORT, per artifact, per principle 9.
 
-Schema v3, and why absence carries the whole weight
+Schemas v3/v4, and why absence carries the whole weight
 ---------------------------------------------------
 ``tessera.lane-eligibility.v3`` is a **closed-world cell table**. It declares
 ``platforms``, ``regimes``, ``structures`` and a list of ``cells``, each cell
@@ -48,6 +48,13 @@ cell uses is NOT a key on the cell: it is decided by whether the cell's family
 appears in ``formats[]`` with a rate-addressed ``kind``
 (:data:`RATE_ADDRESSED_FORMAT_KINDS`), exactly as the publisher's own
 validator decides it.
+
+``tessera.lane-eligibility.v4`` adds a required non-empty ``executes`` set of
+``{symbol, decoder}`` launches and makes residency an explicit resolution
+axis. A caller must name a residency; two cells in the same scope may never
+claim the same residency. The published serve flag selects that axis, and the
+family's ``residency_modes`` bounds it. Legacy v3 tables retain their original
+resolution semantics and never acquire fabricated launch claims.
 
 One parser, and why the vocabulary is wider than one publisher
 ---------------------------------------------------------------
@@ -97,23 +104,29 @@ from typing import Any, Mapping, Sequence
 #: Schema of the eligibility table PrismaQuant consumes, published by Tessera's
 #: own vLLM plugin
 #: (``tessera.serving``, entry point ``tessera``, ``quant_method: "tessera"``).
-#: v3 is a closed-world, platform-scoped cell table, and the parser below is
-#: deliberately ONE parser: a second copy of the cell grammar is a drift bug
-#: waiting for a field to move. ``requires_plugin`` is an OPTIONAL cell key.
+#: v4 adds executed launches and residency to v3's closed-world cell table.
+#: The parser owns both grammars; plugin requirements remain optional only
+#: for explicitly identified legacy v3 tables.
 #:
 #: Until 2026-09-02 this set also carried ``gridbook.lane-eligibility.v3``, the
 #: same wire format published by the retired Gridbook codebook lane. That lane
 #: was removed with Rob's decision to put Tessera in PrismaQuant and remove
 #: Gridbook; see ``archive/gridbook_lane_2026-09-02/README.md``.
-LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v3"
+LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v4"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3 = "tessera.lane-eligibility.v3"
 
 #: Every eligibility-table schema this parser accepts. The check is a set
 #: membership, never a prefix match: an unrecognised vendor is a table this
-#: repository was not handed, and an older *version* of the vendor's table
-#: is not a subset of v3 (see ``_parse_table``).
+#: repository was not handed, and an unlisted version is not treated as a
+#: subset of either supported grammar (see ``_parse_table``).
 LANE_ELIGIBILITY_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3,
 })
+
+#: The residency vocabulary in Tessera's v4 flag grammar. Each format row
+#: publishes the subset its route supports; no cell can widen that subset.
+TESSERA_RESIDENCY_MODES = frozenset({"resident", "streamed"})
 
 #: Schema of the provenance payload this module produces. It was
 #: ``prismaquant.cb_route_attestation.v2`` until 2026-09-02, when the Gridbook
@@ -143,7 +156,7 @@ LANE_ROUTE_STATUSES = frozenset({
 })
 REGIME_ROUTE_STATUSES = LANE_ROUTE_STATUSES | {ROUTE_STATUS_FALLBACK}
 
-#: The CLOSED set a packaged v3 cell may declare, mirroring the publisher's
+#: The CLOSED set a packaged cell may declare, mirroring the publisher's
 #: ``_LANE_ROUTE_STATUSES`` exactly. ``unbacked`` is absent on purpose: the
 #: runtime never enumerates what it refuses, so a cell claiming ``unbacked`` is
 #: a table this repository must not have been handed. Accepting one would make
@@ -296,13 +309,13 @@ _PREDICABLE_FACTS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class EligibilityCell:
-    """One packaged v3 cell: which bytes, where, in which regime, on what route.
+    """One packaged cell: bytes, platform, regime, residency and launch.
 
     A cell is scoped to exactly one ``(platform, family, structure, regime)``
-    and covers an explicit, non-empty rung list. It carries no prose: a v3
+    and covers an explicit, non-empty rung list. It carries no prose: a
     validator refuses ``detail``/``rationale`` keys on a cell, because a gate
-    cannot read prose (principle 14). ``requires_plugin`` is the one optional
-    key, absent from every retired-lane cell and present on every Tessera one.
+    cannot read prose (principle 14). Legacy v3 alone permits an absent plugin
+    key. v4 requires Tessera, launch declarations and residency flags.
     """
 
     id: str
@@ -333,6 +346,10 @@ class EligibilityCell:
     #: The name is historical -- ``tcq_trellis`` was the only such kind when it
     #: was chosen -- and ``tessera_wire`` families set it too.
     is_trellis: bool = False
+    #: v4's published launches, retained as pairs rather than inferred from IDs.
+    executes: tuple[tuple[str, str], ...] = ()
+    #: Parsed from the v4 cell's explicit TESSERA_SERVE_MODE flag.
+    residency_modes: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(
@@ -341,9 +358,13 @@ class EligibilityCell:
         where: str,
         *,
         trellis_families: frozenset[str],
+        schema: str = LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3,
+        residency_modes: Sequence[str] = (),
     ) -> "EligibilityCell":
         if not isinstance(payload, Mapping):
             raise LaneEligibilityError(f"{where} must be a JSON object")
+        if schema not in LANE_ELIGIBILITY_SCHEMAS:
+            raise LaneEligibilityError(f"{where}: unsupported lane schema {schema!r}")
         family = str(payload.get("family", ""))
         if not family:
             raise LaneEligibilityError(
@@ -359,11 +380,11 @@ class EligibilityCell:
         }
         if is_trellis:
             required.add("activation_contract")
-        # ``requires_plugin`` is OPTIONAL, which is the whole of what keeps
-        # this widening additive: a retired-lane v3 cell never carried the key
-        # and must keep parsing unchanged.
+        is_v4 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        if is_v4:
+            required.update({"requires_plugin", "executes"})
         _require_keys(payload, where, required=required,
-                      optional={"requires_plugin"})
+                      optional=set() if is_v4 else {"requires_plugin"})
 
         status = str(payload["route_status"])
         if status not in CELL_ROUTE_STATUSES:
@@ -371,7 +392,7 @@ class EligibilityCell:
                 f"{where}.route_status must be one of "
                 f"{sorted(CELL_ROUTE_STATUSES)}, got {status!r}. The runtime "
                 "does not enumerate what it refuses; absence, not an "
-                f"{ROUTE_STATUS_UNBACKED!r} cell, is how a v3 table says no.")
+                f"{ROUTE_STATUS_UNBACKED!r} cell, is how a lane table says no.")
         qualification = str(payload["qualification"])
         if qualification not in CELL_QUALIFICATIONS:
             raise LaneEligibilityError(
@@ -394,6 +415,10 @@ class EligibilityCell:
                     "route executes; an empty one attests nothing")
 
         requires_plugin = str(payload.get("requires_plugin", ""))
+        if is_v4 and payload["requires_plugin"] != "tessera":
+            raise LaneEligibilityError(
+                f"{where}.requires_plugin must be 'tessera'; stock vLLM "
+                "has no reader for these bytes")
         if requires_plugin and status not in LANE_ROUTE_STATUSES:
             # Mirrors the ``requires_serve_flags`` rule below. A plugin
             # requirement is an instruction for reaching a route that EXISTS;
@@ -405,6 +430,11 @@ class EligibilityCell:
                 f"route_status is {status!r}; a plugin requirement is only "
                 f"meaningful on a cell whose route is one of "
                 f"{sorted(LANE_ROUTE_STATUSES)}")
+        executes: tuple[tuple[str, str], ...] = ()
+        cell_modes: tuple[str, ...] = ()
+        if is_v4:
+            executes, cell_modes = parse_v4_cell_contract(
+                payload, where, residency_modes=residency_modes)
         flags = tuple(str(v) for v in payload["requires_serve_flags"])
         if flags and status != ROUTE_STATUS_BACKED_WITH_SERVE_FLAG:
             raise LaneEligibilityError(
@@ -413,7 +443,7 @@ class EligibilityCell:
                 f"{ROUTE_STATUS_BACKED_WITH_SERVE_FLAG!r} by definition")
         if status == ROUTE_STATUS_BACKED_WITH_SERVE_FLAG and not flags:
             raise LaneEligibilityError(
-                f"{where}: route_status is "
+                f"{where}.requires_serve_flags: route_status is "
                 f"{ROUTE_STATUS_BACKED_WITH_SERVE_FLAG!r} but no serve flag is "
                 "named; an operator cannot reach an unnamed flag")
 
@@ -432,6 +462,8 @@ class EligibilityCell:
             requires_plugin=requires_plugin,
             predicates=_parse_predicates(payload["predicates"], where),
             is_trellis=is_trellis,
+            executes=executes,
+            residency_modes=cell_modes,
         )
 
     def covers_rung(self, facts: UnitStructuralFacts) -> bool:
@@ -472,6 +504,11 @@ class EligibilityCell:
             # Emitted only when non-empty, so a keyless cell's serialization
             # is byte-identical to what it was before this key existed.
             payload["requires_plugin"] = self.requires_plugin
+        if self.executes:
+            payload["executes"] = [
+                {"symbol": symbol, "decoder": decoder}
+                for symbol, decoder in self.executes
+            ]
         return payload
 
 
@@ -551,6 +588,8 @@ class RegimeRoute:
     qualification: str = ""
     activation_contract: str = ""
     detail: str = ""
+    executes: tuple[tuple[str, str], ...] = ()
+    residency: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -564,6 +603,13 @@ class RegimeRoute:
         }
         if self.requires_plugins:
             payload["requires_plugins"] = list(self.requires_plugins)
+        if self.executes:
+            payload["executes"] = [
+                {"symbol": symbol, "decoder": decoder}
+                for symbol, decoder in self.executes
+            ]
+        if self.residency:
+            payload["residency"] = self.residency
         return payload
 
 
@@ -650,6 +696,7 @@ def resolve_unit_route(
     table: EligibilityTable,
     *,
     platform: str | None = None,
+    residency: str | None = None,
 ) -> UnitRoute:
     """Resolve one unit's route status against the pinned eligibility table.
 
@@ -657,9 +704,14 @@ def resolve_unit_route(
     guess, and never principle 9's ``backed`` by default.
 
     ``platform`` is the exact runtime platform id the artifact targets (the
-    serving profile's ``target_platform``, e.g. ``sm_121``). v3 cells are
+    serving profile's ``target_platform``, e.g. ``sm_121``). Lane cells are
     platform-scoped, so resolving without one cannot name a route: a missing or
     unpublished platform yields ``unattested``, never a match-any.
+
+    v4 additionally requires ``residency``, the explicit serve mode for the
+    artifact. It filters cells before route selection; omitting it cannot
+    choose whichever same-scope cell happened to be listed first. v3 keeps
+    its original behavior and makes no claim about executed launches.
     """
     if not table.present:
         return UnitRoute(
@@ -688,7 +740,7 @@ def resolve_unit_route(
             route_status=ROUTE_STATUS_UNATTESTED,
             in_scope=True,
             unattested_reason=(
-                "no declared target platform; v3 cells are platform-scoped, so "
+                "no declared target platform; lane cells are platform-scoped, so "
                 "no route can be named without one. Declare "
                 "'target_platform' on the serving profile this artifact "
                 f"targets; the pinned release publishes {list(table.platforms)}"
@@ -706,11 +758,25 @@ def resolve_unit_route(
             ),
         )
 
+    is_v4 = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    if is_v4 and residency not in TESSERA_RESIDENCY_MODES:
+        return UnitRoute(
+            facts=facts,
+            route_status=ROUTE_STATUS_UNATTESTED,
+            in_scope=True,
+            unattested_reason=(
+                f"no declared supported residency (got {residency!r}); v4 "
+                "cells require an explicit residency to identify their "
+                f"launches: {sorted(TESSERA_RESIDENCY_MODES)}"
+            ),
+        )
+
     candidates = [
         cell for cell in table.cells
         if cell.platform == platform
         and cell.family == facts.payload_family
         and cell.structure == facts.structure
+        and (not is_v4 or residency in cell.residency_modes)
         and cell.covers_rung(facts)
         and cell.matches(facts)
     ]
@@ -726,7 +792,7 @@ def resolve_unit_route(
                 best = cell
         if best is None:
             # No packaged cell names this unit in this regime. Under a
-            # closed-world v3 table that is the ONLY negative signal there is,
+            # closed-world table that is the ONLY negative signal there is,
             # and it must not be laundered into a verdict: the honest state is
             # "the runtime made no claim", and the export gate fails closed on
             # it for any family the contract governs.
@@ -750,6 +816,8 @@ def resolve_unit_route(
                 (best.requires_plugin,) if best.requires_plugin else ()),
             qualification=best.qualification,
             activation_contract=best.activation_contract,
+            executes=best.executes,
+            residency=str(residency) if is_v4 else "",
         ))
 
     unclaimed = [
@@ -776,6 +844,7 @@ def resolve_unit_route(
             f"{[r.regime for r in unclaimed]} for {facts.payload_family} "
             f"rung {facts.k if facts.k is not None else facts.rate_q256!r} on "
             f"{platform}"
+            + (f" at residency {residency!r}" if is_v4 else "")
         )
         return UnitRoute(
             facts=facts,
@@ -1057,7 +1126,7 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     # The schema string is checked BEFORE the key set, deliberately. An older
     # table fails both, and "missing field(s) ['cells', 'platforms']" would
     # send its reader off to add keys to a v2 block rather than to
-    # re-materialize the contract from a release that publishes v3.
+    # re-materialize the contract from a release with a supported schema.
     if block.get("schema") not in LANE_ELIGIBILITY_SCHEMAS:
         raise LaneEligibilityError(
             f"{where}.schema must be one of "
@@ -1097,6 +1166,22 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
             f"dispatch path for; the known set is {sorted(STRUCTURES)}")
 
     families, trellis_families = _published_families(formats)
+    schema = str(block["schema"])
+    is_v4 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    family_modes: dict[str, tuple[str, ...]] = {}
+    if is_v4:
+        for i, entry in enumerate(formats):
+            family = str(entry["family"])
+            modes = entry.get("residency_modes")
+            if (not isinstance(modes, list) or not modes
+                    or any(not isinstance(mode, str)
+                           or mode not in TESSERA_RESIDENCY_MODES for mode in modes)
+                    or len(set(modes)) != len(modes)):
+                raise LaneEligibilityError(
+                    f"runtime_contract.formats[{i}].residency_modes must "
+                    "publish a non-empty list of distinct supported "
+                    f"residencies {sorted(TESSERA_RESIDENCY_MODES)}")
+            family_modes[family] = tuple(modes)
 
     cells_block = block["cells"]
     if not isinstance(cells_block, Sequence) or isinstance(
@@ -1104,7 +1189,10 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         raise LaneEligibilityError(f"{where}.cells must be a JSON array")
     cells = tuple(
         EligibilityCell.from_dict(
-            cell, f"{where}.cells[{i}]", trellis_families=trellis_families)
+            cell, f"{where}.cells[{i}]", trellis_families=trellis_families,
+            schema=schema,
+            residency_modes=(family_modes.get(str(cell.get("family", "")), ())
+                             if isinstance(cell, Mapping) else ()))
         for i, cell in enumerate(cells_block)
     )
 
@@ -1130,13 +1218,25 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     ids = [cell.id for cell in cells]
     if len(set(ids)) != len(ids):
         raise LaneEligibilityError(f"{where}.cells ids must be unique")
+    if is_v4:
+        scopes: dict[tuple[str, ...], str] = {}
+        for cell in cells:
+            for mode in cell.residency_modes:
+                scope = (cell.platform, cell.family, cell.structure, cell.regime, mode)
+                previous = scopes.get(scope)
+                if previous is not None:
+                    raise LaneEligibilityError(
+                        f"{where}.cells {previous!r} and {cell.id!r} both cover "
+                        f"{scope}; overlapping residency scopes make route "
+                        "resolution depend on cell order")
+                scopes[scope] = cell.id
 
     return EligibilityTable(
         present=True,
         runtime_version=version,
         runtime_commit=commit,
         contract_sha256=sha,
-        schema=str(block["schema"]),
+        schema=schema,
         platforms=platforms,
         regimes=regimes,
         structures=structures,
@@ -1144,6 +1244,62 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         families=families,
         trellis_families=trellis_families,
     )
+
+
+def parse_v4_cell_contract(
+    payload: Mapping[str, Any],
+    where: str,
+    *,
+    residency_modes: Sequence[str],
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Parse the v4 launch set and residency selector, without runtime imports.
+
+    The runtime owns whether a launch is correct for its route. This consumer
+    verifies the published grammar and preserves that claim; it never derives
+    a launch from a family name or a cell ID.
+    """
+    raw_executes = payload.get("executes")
+    if not isinstance(raw_executes, list) or not raw_executes:
+        raise LaneEligibilityError(
+            f"{where}.executes must be a non-empty JSON array of "
+            "{symbol, decoder} objects")
+    launches: list[tuple[str, str]] = []
+    for i, launch in enumerate(raw_executes):
+        spot = f"{where}.executes[{i}]"
+        if not isinstance(launch, Mapping):
+            raise LaneEligibilityError(f"{spot} must be a JSON object")
+        _require_keys(launch, spot, required={"symbol", "decoder"}, optional=set())
+        if any(not isinstance(launch[key], str) or not launch[key].strip()
+               for key in ("symbol", "decoder")):
+            raise LaneEligibilityError(
+                f"{spot}.symbol and decoder must be non-empty strings")
+        launches.append((launch["symbol"], launch["decoder"]))
+    if len(set(launches)) != len(launches):
+        raise LaneEligibilityError(
+            f"{where}.executes must not repeat a (symbol, decoder) pair")
+
+    head = "TESSERA_SERVE_MODE="
+    flags = payload.get("requires_serve_flags")
+    if (not isinstance(flags, list)
+            or any(not isinstance(flag, str) or not flag for flag in flags)):
+        raise LaneEligibilityError(
+            f"{where}.requires_serve_flags must be a JSON array of non-empty strings")
+    named = [flag for flag in flags if flag.startswith(head)]
+    if len(named) != 1:
+        raise LaneEligibilityError(
+            f"{where}.requires_serve_flags must name exactly one "
+            "TESSERA_SERVE_MODE residency flag")
+    modes = tuple(named[0][len(head):].split("|"))
+    if (len(set(modes)) != len(modes)
+            or any(mode not in TESSERA_RESIDENCY_MODES for mode in modes)):
+        raise LaneEligibilityError(
+            f"{where}.requires_serve_flags names invalid or repeated "
+            f"residency values {list(modes)}")
+    if not set(modes).issubset(residency_modes):
+        raise LaneEligibilityError(
+            f"{where}.requires_serve_flags residency {list(modes)} exceeds "
+            f"the family's published residency_modes {list(residency_modes)}")
+    return tuple(launches), modes
 
 
 def _parse_rungs(payload: Any, where: str) -> tuple[int, ...]:
@@ -1237,7 +1393,9 @@ def _sha256(path: Path) -> str:
 
 __all__ = [
     "LANE_ELIGIBILITY_SCHEMA_TESSERA",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3",
     "LANE_ELIGIBILITY_SCHEMAS",
+    "parse_v4_cell_contract",
     "ROUTE_ATTESTATION_SCHEMA",
     "ROUTE_STATUS_BACKED",
     "ROUTE_STATUS_BACKED_WITH_SERVE_FLAG",

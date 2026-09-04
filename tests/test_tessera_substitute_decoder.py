@@ -116,10 +116,8 @@ def test_the_tool_reads_the_block_from_the_pin_file(tmp_path):
 
 def _status_manifest(*, resident: bool):
     """A minimal manifest pair whose only stack difference is the decoder."""
-    row = _published_rows()[0]
-    prefix = row["module_name_prefix"]
-    stem = f"{prefix}9f2c"
-    basename = f"{stem}.so"
+    rows = _published_rows()
+    basenames = [f"{row['module_name_prefix']}9f2c.so" for row in rows]
     return {
         "image": "vllm-node:latest",
         "gpu_name": "NVIDIA GB10",
@@ -127,7 +125,7 @@ def _status_manifest(*, resident: bool):
         "enforce_eager": True,
         "quantization": "compressed-tensors",
         "package_versions": {"vllm": "0.21.0", "torch": "2.11.0"},
-        "resident_extensions": ([basename] if resident else []),
+        "resident_extensions": (basenames if resident else []),
         "residency_readable": True,
         "launch_flags": ["vllm", "serve", "<path>", "--enforce-eager"],
         "native_extension_status": [
@@ -143,7 +141,7 @@ def _status_manifest(*, resident: bool):
                         row["when_unavailable"].items())
                 },
             }
-            for row in _published_rows()
+            for row in rows
         ],
         "created": "2026-07-30T10:00:00",
         "launch_argv": ["vllm", "serve", "/dqruns/a/exported",
