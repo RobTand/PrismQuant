@@ -79,3 +79,23 @@ packing the cached bytes unchanged. Then an actual packed-model campaign,
 export, and matched-byte served measurement must establish full population
 coverage and priced == written == served. No capture helper pass substitutes
 for those measurements, and no production admission was opened here.
+
+## On-path fix: respect existing profile pins
+
+Reviewing the future packed campaign wiring found the dense target walk did
+not consult `ModelProfile.is_pinned_name`. This was fixed separately, without
+adding or changing any pin: the campaign now honors the existing profile
+declaration before activation capture and menu construction.
+
+Red action `43339f3343aa73919eb1ad463c474f31719b2a62130f064252621e77e394955e`
+ran `tests/test_tessera_campaign_pins.py`: 2 failed, no skips. Both failed at
+line 49 with `AssertionError: campaign attempted to price profile-pinned Linears`.
+The LFM arm included its pinned `conv.in_proj`, `conv.out_proj`, and
+`feed_forward.gate`; a changed explicit pin declaration also failed, proving
+that merely hardcoding LFM's current roster would not fix the tested rule.
+
+Green action `9bbd92484c598dfd25024597b12fd5c7388fd925134574e3952c265270369707`
+ran the pin, packed-capture, and existing campaign test files: 39 passed,
+5 skipped. All five skips say `Tessera encodes need CUDA`. Receipt:
+`42f3a7d6c81c5dff4f5091aa14e1a9af1e4abe7ed2aa029ea36d952a0609954c`.
+The same CPU-only resource envelope and interpreter described above applied.
