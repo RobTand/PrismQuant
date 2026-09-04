@@ -271,7 +271,8 @@ def test_tessera_plan_cache_identity_changes_with_serving_target(key, value):
 
 
 def _run_head_policy(monkeypatch, capsys, *, body=FORMAT, head="BF16",
-                     scoped=True, serialisable=True, cost_override="cost.pkl"):
+                     scoped=True, serialisable=True, cost_override="cost.pkl",
+                     explicit_platform=True):
     """Execute the driver's real inline policy under CPU-only mocked formats."""
     from prismaquant import format_registry as fr
     from prismaquant import tessera_render
@@ -297,8 +298,10 @@ def _run_head_policy(monkeypatch, capsys, *, body=FORMAT, head="BF16",
     monkeypatch.setattr(tessera_render, "tessera_rung_is_serialisable", lambda _: serialisable)
     args = ["fixture", "--target-profile", "tessera_research_sm121"]
     if scoped:
-        args += ["--tessera-platform", "sm_121", "--tessera-runtime-image", IMAGE,
+        args += ["--tessera-runtime-image", IMAGE,
                  "--tessera-execution-mode", "eager", "--tessera-residency", "resident"]
+        if explicit_platform:
+            args += ["--tessera-platform", "sm_121"]
     monkeypatch.setattr(sys, "argv", args)
     driver = (Path(__file__).parents[1] / "prismaquant" / "run-pipeline.sh").read_text()
     block = driver[driver.index('if ! LM_HEAD_POLICY_TEXT="$('):]
@@ -322,6 +325,13 @@ def test_actual_shell_head_uses_its_explicit_context(monkeypatch, capsys):
 def test_actual_shell_preserves_the_prepriced_tessera_menu_token(monkeypatch, capsys):
     lines = _run_head_policy(monkeypatch, capsys, body="TESSERA,BF16")
     assert lines[4] == "TESSERA,BF16"
+
+
+def test_actual_shell_binds_inherited_platform_to_plan_identity(monkeypatch, capsys):
+    lines = _run_head_policy(monkeypatch, capsys, explicit_platform=False)
+    assert lines[5] == "sm_121"
+    driver = (Path(__file__).parents[1] / "prismaquant" / "run-pipeline.sh").read_text()
+    assert '"TESSERA_PLATFORM=$TESSERA_RESOLVED_PLATFORM"' in driver
 
 
 @pytest.mark.parametrize("kwargs", [
