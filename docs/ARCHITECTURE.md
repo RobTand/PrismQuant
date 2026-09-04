@@ -1,5 +1,12 @@
 # PrismaQuant Architecture
 
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for shared serve
+process discovery. `tools/serve_fingerprint.py` now identifies the vLLM
+executable, Python module/script or worker process title rather than searching
+arbitrary argv payloads. A measurement client's `--image spark-vllm@...` and
+a shell's quoted launch command no longer join the server process census or
+change its session identity. Gate: `tests/test_serve_fingerprint_descendants.py`.
+
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the **opt-in
 paired boundary instrument** (§7.2). `prismaquant/boundary_control.py`
 records a frozen prompt/seed schedule and replays every raw scored outcome.

@@ -907,14 +907,39 @@ def serve_session_fingerprint(manifest: Mapping[str, Any]) -> str:
 
 
 def _looks_like_vllm_process(pid: int, pattern: str = "vllm") -> bool:
-    joined = " ".join(_read_cmdline(pid))
-    name = _read_process_name(pid)
-    return bool(
-        pattern.lower() in joined.lower()
-        or "enginecore" in joined.lower()
-        or "vllm" in name.lower()
-        or "enginecore" in name.lower()
-    )
+    """Identify the executable/module or worker title, never payload arguments.
+
+    A measurement client commonly carries ``--image spark-vllm@sha256:...``.
+    Treating that argument as a process identity adds the client itself to
+    every serve manifest, so a fresh client falsely looks like a fresh serve.
+    """
+    target = pattern.lower()
+
+    def title(value: str) -> bool:
+        value = Path(value).name.lower()
+        return (value == target or value.startswith(target + "::")
+                or re.match(r"^enginecore(?:$|[_:.])", value) is not None)
+
+    argv = _read_cmdline(pid)
+    if title(_read_process_name(pid)) or (argv and title(argv[0])):
+        return True
+    if not argv or not Path(argv[0]).name.lower().startswith("python"):
+        return False
+    index = 1
+    while index < len(argv):
+        value = argv[index]
+        if value == "-m":
+            return index + 1 < len(argv) and (
+                argv[index + 1] == target or argv[index + 1].startswith(target + "."))
+        if value == "-c":
+            return False  # any Python source here is payload, not process identity
+        if value in ("-W", "-X", "--check-hash-based-pycs"):
+            index += 2
+        elif value.startswith("-"):
+            index += 1
+        else:
+            return title(value)  # the script; never scan its arguments
+    return False
 
 
 def find_server_pids(pattern: str = "vllm") -> list[int]:
