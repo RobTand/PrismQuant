@@ -177,3 +177,56 @@ def test_campaign_partial_context_map_keeps_missing_scope_unbound(monkeypatch):
         parallel_kind=menu.PARALLEL_NONE, context_by_unit={"a": first})
     assert calls == [first, None]
     assert result["b"] == [None]
+
+
+def _legacy_contract(monkeypatch):
+    # A legacy supplier can answer only family/rate, even when its Python
+    # method accepts the new keyword. It supplies no runtime-scope evidence.
+    cell = SimpleNamespace(
+        cell_id="legacy_cell", route_status="backed_with_serve_flag",
+        activation_contract="fp8_per_token_dynamic",
+        requires_serve_flags=("TESSERA_SERVE_MODE=resident",),
+    )
+    contract = SimpleNamespace(
+        commit="legacy-fixture", lane_schema="tessera.lane-eligibility.v4",
+        requires_serving_context=False,
+        max_world_size={"TESSERA_E4M3_K1": 1},
+        attested_rungs={"TESSERA_E4M3_K1": (1024,)},
+        governs=lambda family: family == "TESSERA_E4M3_K1",
+        native_cells=lambda *args, **kwargs: (cell,),
+    )
+    monkeypatch.setattr(menu, "tessera_runtime_contract", lambda: contract)
+
+
+@pytest.mark.parametrize("context", [
+    None, _Context(), _Context(execution_mode="compiled"),
+    _Context(structure="routed_moe"),
+])
+def test_legacy_menu_cannot_attest_a_new_runtime_context(monkeypatch, context):
+    _legacy_contract(monkeypatch)
+
+    admission = menu.route_admission(
+        "TESSERA_E4M3_K1_R1024", serving_context=context)
+
+    assert admission.attested is (context is None)
+    assert admission.admits(menu.MENU_ATTESTED) is (context is None)
+    assert admission.admits(menu.MENU_RESEARCH)
+    assert admission.serving_context == context
+    assert not admission.requires_serving_context
+    if context is not None:
+        assert "context" in admission.detail
+        assert "v4" in admission.detail
+        assert admission.requires_serve_flags == ()
+
+
+def test_legacy_context_refusal_survives_resolved_route_provenance(monkeypatch):
+    _legacy_contract(monkeypatch)
+    context = _Context(structure="routed_moe", execution_mode="compiled")
+
+    resolved = menu.tessera_resolved_serving_lane(
+        "TESSERA_E4M3_K1_R1024", serving_context=context)
+
+    assert resolved.route_status == "unattested"
+    assert resolved.as_dict()["route_status"] == "unattested"
+    assert resolved.as_dict()["serving_context"] == context.as_dict()
+    assert resolved.requires_serve_flags == ()

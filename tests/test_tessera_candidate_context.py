@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +132,8 @@ def test_candidates_resolve_same_format_separately_for_dense_and_routed_units(mo
     calls, lanes = _record_resolver(monkeypatch)
     monkeypatch.setattr(
         tm, "route_admission",
-        lambda *args, **kwargs: SimpleNamespace(requires_serving_context=False),
+        lambda *args, **kwargs: SimpleNamespace(
+            requires_serving_context=False, admits=lambda mode: True),
     )
     # This test isolates route threading; shape legality and wire accounting
     # have their own proof harnesses and are not facts inferred by this mock.
@@ -293,4 +294,76 @@ def test_v5_scope_refusal_cannot_silently_remove_a_whole_unit(monkeypatch):
     with pytest.raises(ValueError, match="unit.a"):
         ac.build_candidates(
             stats, costs, specs, target_profile=_PROFILE, context_by_unit={},
+        )
+
+
+def _legacy_scope_candidate_fixture(monkeypatch, *, context, mode, include_bf16=True):
+    names = (_FORMAT, "BF16") if include_bf16 else (_FORMAT,)
+    specs = _fixture_specs(monkeypatch, *names)
+    stats, costs = _tables({"unit.a": context})
+    if include_bf16:
+        costs["unit.a"]["BF16"] = {"weight_mse": 0.0, "predicted_dloss": 0.0}
+    monkeypatch.setattr(tm, "menu_mode", lambda: mode)
+    monkeypatch.setattr(tm, "route_admission", lambda *args, **kwargs: SimpleNamespace(
+        requires_serving_context=False,
+        attested=False,
+        detail="legacy v4 cannot attest an explicit runtime context",
+        admits=lambda selected_mode: selected_mode == tm.MENU_RESEARCH,
+    ))
+    monkeypatch.setattr(
+        ac, "serving_lane_route",
+        lambda profile, fmt, **kwargs: None if fmt == "BF16" else replace(
+            _lane("unattested"), route_status="unattested", serving_context=context),
+    )
+    monkeypatch.setattr(
+        ac, "check_stats_format_applicability",
+        lambda *args, **kwargs: ac.FormatApplicability(True),
+    )
+    monkeypatch.setattr(
+        ac, "serialized_candidate_payload",
+        lambda *args, **kwargs: (32768, None, None),
+    )
+    monkeypatch.setattr(
+        ac, "reduce_continuous_menu",
+        lambda candidates, *args, **kwargs: candidates,
+    )
+    return specs, stats, costs
+
+
+@pytest.mark.parametrize("mode", [tm.MENU_ATTESTED, tm.MENU_RESEARCH])
+@pytest.mark.parametrize("context", [None, _Context(structure="routed_moe")])
+def test_legacy_context_refusal_masks_only_explicit_attested_candidates(
+        monkeypatch, mode, context):
+    specs, stats, costs = _legacy_scope_candidate_fixture(
+        monkeypatch, context=context, mode=mode)
+    masks = []
+
+    candidates = ac.build_candidates(
+        stats, costs, specs, target_profile=_PROFILE,
+        context_by_unit={} if context is None else {"unit.a": context},
+        mask_records=masks,
+    )
+
+    refused = context is not None and mode == tm.MENU_ATTESTED
+    expected = {"BF16"} if refused else {"BF16", _FORMAT}
+    assert {candidate.fmt for candidate in candidates["unit.a"]} == expected
+    if refused:
+        assert len(masks) == 1
+        assert masks[0]["reason"] == "tessera_serving_context"
+        assert masks[0]["serving_context"] == context.as_dict()
+    else:
+        assert masks == []
+        candidate = next(c for c in candidates["unit.a"] if c.fmt == _FORMAT)
+        assert candidate.serving_lane.route_status == "unattested"
+
+
+def test_legacy_explicit_context_refusal_cannot_remove_the_final_unit_choice(monkeypatch):
+    context = _Context()
+    specs, stats, costs = _legacy_scope_candidate_fixture(
+        monkeypatch, context=context, mode=tm.MENU_ATTESTED, include_bf16=False)
+
+    with pytest.raises(ValueError, match="unit.a"):
+        ac.build_candidates(
+            stats, costs, specs, target_profile=_PROFILE,
+            context_by_unit={"unit.a": context},
         )
