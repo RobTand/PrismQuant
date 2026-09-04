@@ -72,3 +72,14 @@ Failed output is retained in
 receipts/results are in the PrismaBuild CAS. Only the three tracked external
 calibration symlinks were excluded for sealing and immediately restored after
 queue; source input semantics and measurement artifacts were preserved.
+
+## Existing endpoint fixture integration
+
+The stronger currency owner exposed three existing scope-test fixtures whose
+synthetic Tessera rows omitted campaign currency/mode. The previously passing
+file was shown red at that exact missing-stamp boundary (**3 failed, 18 passed**,
+action prefix `13a7c8c2187c`), then corrected using the campaign's own constants
+without relaxing source gates. The complete endpoint file then passed **21/0/0**,
+no collection errors, under the same CPU-only reservation: action
+`f305d657783e16e7dbc4615b5864323dc362281087870360b8ad5d6988f51e77`, receipt
+`1d3e0bb685ebd2ba306a655fe37416bfe6b5ea46a3d30f11408adf3ecfee08a7`.

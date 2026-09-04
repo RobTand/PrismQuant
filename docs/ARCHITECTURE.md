@@ -4717,6 +4717,12 @@ gate. Diagnostic error rows are excluded, and legacy stock rows without
 a Tessera format or currency remain outside this gate's jurisdiction.
 
 **Explicit external prepriced input** (`python -m prismaquant.prepriced_cost`).
+The driver's `COST_PATH_OVERRIDE` runs this preflight before probe/GPU work,
+bypasses all cost builders/finalization, and passes the original input path
+unchanged to the allocator after receipt re-verification. It writes only the
+local `artifacts/prepriced_cost_input.json`, not a supplied cost or its
+settings sidecar. The no-override path keeps normal generation.
+
 The intake CLI takes `--path`, `--cost-mode` and `--model`, reads the supplied
 trusted pickle without rewriting it, and applies those shared gates plus
 `research_cost_acceptance.accepted_cost_provenance` and
