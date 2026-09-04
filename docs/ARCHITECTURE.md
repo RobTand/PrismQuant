@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
+As of: 2026-09-04 · `codex/pq183-packed-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for the **campaign
+population refusal** (§4.10; PrismaQuant #183). Before calibration, the
+Tessera campaign checks the profile-declared routed target population against
+live rank-three parameters under the same explicit layer stride used by its
+dense walk. Any in-scope packed expert parameters are named and refused;
+they can no longer disappear from a dense-only cost payload. This guard does
+not implement packed activation capture or the exact cached-wire/stack-plan
+producer bridge, and it makes no packed-MoE qualification claim. Gate:
+`tests/test_tessera_campaign_packed.py` (real main-entry synthetic mixed
+dense/packed regressions, both shown failing before the refusal).
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
 census handoff instructions** (§9.4). The driver prints the producer's actual

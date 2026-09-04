@@ -614,6 +614,44 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
     return menus
 
 
+def _campaign_layer_scope(names, layer_stride: int) -> list[str]:
+    """The same explicit layer scope for supported and unsupported units."""
+    if layer_stride <= 1:
+        return list(names)
+    import re
+
+    selected = []
+    for name in names:
+        match = re.search(r"\.layers\.(\d+)\.", name)
+        if match is None or int(match.group(1)) % layer_stride == 0:
+            selected.append(name)
+    return selected
+
+
+def _require_campaign_population(model, profile, layer_stride: int) -> None:
+    """Refuse packed units before an incomplete dense-only campaign starts.
+
+    The profile's routed-target discovery owns membership. An arbitrary 3-D
+    parameter (for example a convolution) is not an expert by shape alone.
+    """
+    from .routed_experts import profile_declared_routed_expert_targets
+
+    parameters = dict(model.named_parameters())
+    packed = {
+        name: tuple(parameters[name].shape)
+        for name in profile_declared_routed_expert_targets(model, profile)
+        if name in parameters and parameters[name].ndim == 3
+    }
+    missing = _campaign_layer_scope(packed, layer_stride)
+    if missing:
+        raise RuntimeError(
+            "Tessera campaign cannot price the packed expert population yet: "
+            + ", ".join(f"{name} {packed[name]}" for name in missing)
+            + ". Refusing an incomplete dense-only cost payload; per-expert "
+            "activation/Hessian capture and the producer's explicit projection "
+            "are required (PrismaQuant #183).")
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
@@ -714,6 +752,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     from .model_profiles import detect_profile
 
     profile = detect_profile(args.model)
+    _require_campaign_population(model, profile, args.layer_stride)
     targets: list[str] = []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.Linear):
@@ -721,14 +760,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         if name.endswith("lm_head") or "embed" in name:
             continue
         targets.append(name)
-    if args.layer_stride > 1:
-        import re as _re
-        keep = []
-        for name in targets:
-            match = _re.search(r"\.layers\.(\d+)\.", name)
-            if match is None or int(match.group(1)) % args.layer_stride == 0:
-                keep.append(name)
-        targets = keep
+    targets = _campaign_layer_scope(targets, args.layer_stride)
     print(f"[campaign] {len(targets)} target Linears, mode={mode}, "
           f"device={device}", flush=True)
 
