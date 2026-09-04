@@ -334,12 +334,9 @@ def test_the_pinned_encoder_accepts_every_keyword_the_source_emits():
     # including the fact that the refit objective is now keyed BY PLANE. A
     # receipt that quoted one objective would print a true statement about one
     # plane over an artifact built on another.
-    assert tessera_encoder_hessian_status()["recipe"] == {
-        "ldlq_sigma": 1.0, "ldlq_block": 32,
-        "refit_objective": {"channel": "hessian", "lut16": "h^1.0",
-                            "s6b": "plain"},
-        "refit_reach_floor": False,
-    }
+    expected_recipe = {key: value for key, value in defaults.config_block().items()
+                       if key not in {"hessian", "note"}}
+    assert tessera_encoder_hessian_status()["recipe"] == expected_recipe
     # Plain dicts all the way down: this block is stamped into cost payloads.
     import json
     json.dumps(tessera_encoder_hessian_status()["recipe"])

@@ -3,6 +3,15 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-scope`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **complete encoder
+recipe provenance** (§5.4). The default activation-aware recipe is projected
+from Tessera's `ActivationSource.config_block()`, excluding only Hessian
+capture identity and explanatory prose. It retains every producer setting,
+including an unset trailing refit objective, a disabled Gauss-Seidel sweep
+and producer-normalized per-plane maps. Encoder defaults and bytes do not
+change. Gate: `tests/test_tessera_encoder_recipe.py`; both completeness
+regressions failed before the fix on the omitted settings.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **legacy scope
 honesty** (§5.7). The context-free v4 lookup remains compatible, but an
 explicit runtime query on a legacy table is now unattested. A caller's image
@@ -5029,9 +5038,8 @@ the same format name, and the seam refuses rather than downgrade silently:
 
 * **The seam is `tessera.export.ActivationSource`**, not a kwarg name.
   `ActivationSource.for_unit(name, in_features, device, scale_plane=...)`
-  turns one unit's H into the encoder keywords it implies — `ldl`,
-  `ldl_block`, `refit_metric`, `refit_reach_floor` — and PrismaQuant forwards
-  that object's output and
+  turns one unit's H into the encoder keywords it implies, including the
+  plane-specific refit settings, and PrismaQuant forwards that object's output and
   nothing else: a keyword it did not emit is refused, so this seam cannot
   become a second place where encode settings are chosen. Capability is
   *probed*, never assumed (principle 14): `_encoder_accepts_hessian` asks a
@@ -5039,6 +5047,11 @@ the same format name, and the seam refuses rather than downgrade silently:
   `inspect.signature(encode_linear_planes)` which it takes, and the seam
   refuses when they disagree. Deliberately *not* "call and catch `TypeError`",
   which would swallow every unrelated argument error.
+  The recorded default recipe comes from the same producer object's
+  `config_block()`, excluding only capture identity and explanatory prose.
+  Unset and disabled settings are retained, as are producer-normalized
+  per-plane maps; a producer setting cannot disappear from provenance merely
+  because a consumer-maintained field list predates it.
 * **Which rungs can take an H is a fact about the WIRE, and it is DERIVED —
   never restated.** The paragraph that stood here quoted two Tessera guards
   verbatim ("LDLQ is implemented for the CHANNEL scale plane", "read only by
