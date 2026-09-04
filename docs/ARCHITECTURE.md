@@ -3,6 +3,21 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **scoped
+campaign and allocator entry points** (§5.7; Tessera #126). The real CLIs
+thread the explicit target and each unit's discovered/probed structure
+through menu-token intake, every candidate construction, fallback-route
+caches and final selected-route provenance. Shared-menu intake is the union
+of actual unit contexts; the cached global `FormatSpec` stays a context-free
+byte description and the final candidate mask still gates each unit. The
+exact target and per-unit contexts are recorded under
+`__prismaquant__.tessera_serving_scope` in the allocation recipe. Tests run
+the real allocator endpoint with both literal and token-expanded Tessera
+menus, preserve dense/expert separation and refuse image/mode mismatch.
+This does not add packed expert activation capture: the existing campaign's
+Linear-only population and packed export bridge are tracked in PrismaQuant
+#183. Pins, wire bytes, encoder defaults and promotion thresholds stay put.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **explicit
 serving-target intake** (§5.7; Tessera #126). `tessera_serving_scope` owns
 the optional target arguments and per-unit context construction. Image,
