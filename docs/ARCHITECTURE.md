@@ -3,6 +3,22 @@
 As of: 2026-09-04 · `codex/pq186-campaign-identity`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for **identity-bound
+Tessera campaign resume** (§4.10; PrismaQuant #186). The existing cost journal
+binds the current selected weights, scoring rows even with Hessians off, actual
+Hessians, corpus/token draw, menus/scope, explicit campaign settings, resolved
+encoder configuration and both producer/package source seals. Its original
+`--checkpoint` file path is the manifest; sibling `.parts` shards hold durable
+checksummed per-unit anchors and the producer's own cached-byte receipts.
+Every resumed anchor must belong to the current unit/menu, agree with the
+producer's Hessian applicability and verify its exact wire bytes against a
+fresh producer input identity before entering the cost payload. Legacy unbound
+JSON, changed inputs, extra/missing receipts and missing/changed wire refuse;
+old anchors never acquire today's identity. This consumes the pending producer
+`tessera.cached_unit` API and does not change the release pin, admit packed
+campaigns, or establish served/GPU qualification. Gate:
+`tests/test_tessera_campaign_resume.py`.
+
 Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for the shared
 checkpoint journal's **explicit manifest pathname** (§4.10; PrismaQuant #186).
 `cost_stage_checkpoint.prepare_journal` can retain a file-oriented caller's
@@ -5444,6 +5460,19 @@ purpose. Each surface records its anchors, encode seconds and which of the two
 stopped it.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
+
+Resume is an identity check, not a name match. The JSON checkpoint manifest
+uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in
+its sibling `.parts` directory. It binds actual selected weights, scoring rows,
+Hessians and calibration draw, resolved menus/scope/settings and the producer
+and PrismaQuant source seals. Each priced wire has a `tessera.cached_unit`
+receipt, verified against freshly derived producer inputs before its saved
+cost is admitted. Changed or unverifiable inputs, old identity-free anchor
+lists, absent/corrupt wire and receipt coverage mismatch refuse without
+recomputing or relabelling the old result. Output/cache paths and the wall-clock
+interruption limit are not numerical inputs; moving them is allowed only if
+the same manifest, unit journal and verified priced wire remain available.
+The producer API is required; an older producer without it refuses.
 
 > **Premise correction.** This work was briefed on the belief that Tessera's
 > "embedded rate axis" would let one deep encode per unit yield exact decodes of
