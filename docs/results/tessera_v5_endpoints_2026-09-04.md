@@ -88,3 +88,19 @@ Separate review fixes: `3b3fce05` binds cached plans to allocation content;
 `cbf44281` preserves explicit runtime in printed serve instructions and fixes
 contradictory current-tense architecture prose. The initial recipe-provenance
 and legacy-explicit-scope findings were already isolated in merged #181.
+
+## Final handoff-command correction
+
+After the scoped census worker supplied its supported API, `1084bc69`
+replaced the stale printed `--log`/manual-route instructions with complete
+raw-census generation inside the exact verified image and allocation-bound
+consumer filling. The command preserves eager/compiled and residency; a
+printed warning states the producer's unsupported dense compiled proof.
+New actual-shell cases were **2 failed, 6 deselected** before the fix (action
+prefix `3346e432fed4`, failure `assert '--log' not in tokens`). Final
+post-main-merge shell/docs population is **27 passed, 0 failed, 0 skipped**,
+no collection errors, CPU-only Sparky under the same 1-core/4-GiB reservation:
+action `cf4b58ffeb159fd8a23db4e556ba260d0e04a8f5f454aee2adcbdb6fe8c55a83`,
+receipt `d7e752e48920a4a4fe58e2ecff88ee42911ed6860f5c514f0e429632f4600eb4`.
+The receipt-filling implementation is still the separate integration leg;
+printed instructions are not a claim that a gate has been run.
