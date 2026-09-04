@@ -573,10 +573,13 @@ class TesseraContract:
                      ) -> tuple[TesseraRouteCell, ...]:
         """V5 admits every required regime only under one explicit context.
 
-        Legacy v4 keeps its historical family/rate projection. V5 never uses
+        Context-free v4 keeps its historical family/rate projection. An
+        explicit runtime query cannot borrow that unscoped claim. V5 never uses
         the first matching cell to infer an image, execution mode or structure.
         """
         if self.requires_serving_context and serving_context is None:
+            return ()
+        if not self.requires_serving_context and serving_context is not None:
             return ()
         selected = tuple(
             cell for cell in self.cells

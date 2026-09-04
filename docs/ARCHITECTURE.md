@@ -3,6 +3,14 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-scope`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **legacy scope
+honesty** (§5.7). The context-free v4 lookup remains compatible, but an
+explicit runtime query on a legacy table is now unattested. A caller's image
+and execution mode cannot be serialized beside a backed family-only claim.
+The same refusal covers generic, development, released-pin and menu admission;
+candidate masking honors an explicit query even when the legacy table itself
+does not require context. Opt-in research remains writable and unattested.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-scope`) for **runtime-scoped
 Tessera admission** (§5.7, §9.4; Tessera #126, approved by Rob). A v5 cell
 requires an exact image digest and explicit eager/compiled execution modes;
@@ -5917,6 +5925,10 @@ includes those values, so changing a decoder cannot retain the old answer.
 Explicit legacy Tessera v3 tables retain their original grammar and carry no
 fabricated launches. Gridbook schemas remain refused. Release admission is
 still gated by the exact PENDING release pin.
+Legacy context-free behavior is preserved, not expanded: supplying new
+runtime-image/execution scope to a legacy schema is refused with the shared
+`legacy_runtime_scope_refusal` message. The caller's requested context remains
+in provenance beside `unattested`, never beside a borrowed backed verdict.
 V5 additionally requires `runtime: {image, execution_modes}` on every cell:
 an immutable image reference and a non-empty subset of `eager`/`compiled`,
 never an implicit fallback to `versions.attested_on`. Its overlap key includes

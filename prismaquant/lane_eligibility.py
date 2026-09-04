@@ -270,6 +270,15 @@ def cell_matches_serving_context(cell: Any, context: ServingContext) -> bool:
     )
 
 
+def legacy_runtime_scope_refusal(schema: str) -> str:
+    """The one refusal for a scoped query a legacy table cannot attest."""
+    return (
+        f"lane schema {schema!r} carries no per-cell runtime scope; an explicit "
+        f"serving context (runtime-image/execution query) requires {LANE_ELIGIBILITY_SCHEMA_TESSERA!r}. "
+        "Global runtime identity is not a scoped admission."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Structural facts of one selected unit
 # ---------------------------------------------------------------------------
@@ -840,6 +849,10 @@ def resolve_unit_route(
 
     is_v4 = table.schema in _LAUNCH_SCHEMAS
     is_v5 = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    if not is_v5 and (runtime_image is not None or execution_mode is not None):
+        return UnitRoute(
+            facts=facts, route_status=ROUTE_STATUS_UNATTESTED, in_scope=True,
+            unattested_reason=legacy_runtime_scope_refusal(table.schema))
     if is_v4 and residency not in TESSERA_RESIDENCY_MODES:
         return UnitRoute(
             facts=facts,

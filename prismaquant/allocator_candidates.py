@@ -2100,6 +2100,8 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
     the choice instead of being reconstructed from the format name later.
     A v5 contract requires each unit's context from ``context_by_unit``; an
     absent entry remains unbound and cannot borrow another unit's attestation.
+    An explicit context also binds a legacy lookup: a schema without runtime
+    scope cannot admit that query merely because it does not require one.
     The existing research menu may still price an unattested writable rung.
     """
     refuse_retired_trellis_surface()
@@ -2203,7 +2205,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                     )
                 admission = admission_cache[cache_key]
                 if (
-                    admission.requires_serving_context
+                    (admission.requires_serving_context or serving_context is not None)
                     and not admission.admits(tessera_menu.menu_mode())
                 ):
                     reason = "tessera_serving_context"

@@ -196,6 +196,8 @@ def tessera_attesting_cells(
     scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
     if scoped and serving_context is None:
         return ()
+    if not scoped and serving_context is not None:
+        return ()
     matched = tuple(
         cell for cell in table.cells
         if cell.is_trellis
@@ -268,7 +270,7 @@ def tessera_lane_admission(
     """
     from .lane_eligibility import (
         LANE_ELIGIBILITY_SCHEMA_TESSERA, LaneEligibilityError,
-        resolve_payload_rung,
+        legacy_runtime_scope_refusal, resolve_payload_rung,
     )
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
@@ -287,6 +289,8 @@ def tessera_lane_admission(
         return False, (
             f"the packaged Tessera contract does not publish {family}")
     scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    if not scoped and serving_context is not None:
+        return False, legacy_runtime_scope_refusal(table.schema)
     if scoped and serving_context is None:
         return False, (
             f"{name}: the packaged Tessera v5 contract requires an explicit "

@@ -78,6 +78,7 @@ if TYPE_CHECKING:
 
 from .lane_eligibility import (
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    legacy_runtime_scope_refusal,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     ROUTE_STATUS_UNATTESTED,
@@ -481,6 +482,8 @@ def route_admission(
     A v5 development contract requires the caller's complete serving context.
     Its own scoped lookup checks every required regime under that one target;
     an absent context cannot borrow the runtime or structure of another cell.
+    A legacy contract retains its context-free admission but cannot attest a
+    newly supplied runtime context it has no per-cell evidence to answer.
     """
     from .tessera_render import (
         _pinned_serving_table, tessera_attesting_cells, tessera_lane_admission,
@@ -503,10 +506,14 @@ def route_admission(
         source = _tessera_attestation_source(contract)
         world = contract.max_world_size.get(family.name)
         requires_context = bool(getattr(contract, "requires_serving_context", False))
+        legacy_scope_reason = (
+            legacy_runtime_scope_refusal(getattr(contract, "lane_schema", "legacy"))
+            if serving_context is not None and not requires_context else ""
+        )
         cells = (
             (contract.native_cells(family.name, rung, serving_context=serving_context)
              if serving_context is not None else contract.native_cells(family.name, rung))
-            if contract.governs(family.name) else ()
+            if not legacy_scope_reason and contract.governs(family.name) else ()
         )
         if cells:
             # The status is the CELL's, not a constant. A cell that says
@@ -536,7 +543,7 @@ def route_admission(
         else:
             status = ROUTE_STATUS_UNATTESTED
             published = sorted(contract.attested_rungs.get(family.name, ()))
-            detail = (
+            detail = legacy_scope_reason or (
                 f"the pinned Tessera contract publishes {family.name} at "
                 f"rungs {published} and no native cell covers R{rung}"
                 if contract.governs(family.name) else
