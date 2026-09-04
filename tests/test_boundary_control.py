@@ -26,7 +26,9 @@ def _binding(artifact="bf16"):
     return {"campaign_id": "paired-test", "artifact_id": artifact,
             "serve_session_id": artifact + "-session",
             "serve_fingerprint": "a" * 64, "host_boot_id": "boot-1",
-            "model_context_tokens": 70, "prompt_tokens": [6]}
+            "model_context_tokens": 70, "prompt_tokens": [6],
+            "prompt_token_ids": [[1, 2, 3, 4, 5, 6]],
+            "producer_source_sha256": "c" * 64}
 
 
 def _control(monkeypatch, *, finish_at=16):
@@ -93,6 +95,8 @@ def test_candidate_matches_control_seeds_cap_and_reports_relative_counts(monkeyp
 @pytest.mark.parametrize("field,value", [
     ("campaign_id", "other-campaign"), ("host_boot_id", "other-boot"),
     ("serve_fingerprint", "b" * 64), ("prompt_tokens", [7]),
+    ("prompt_token_ids", [[6, 5, 4, 3, 2, 1]]),
+    ("producer_source_sha256", "d" * 64),
 ])
 def test_candidate_refuses_unpaired_stack_or_tokenization(monkeypatch, field, value):
     api = _api()
@@ -100,6 +104,24 @@ def test_candidate_refuses_unpaired_stack_or_tokenization(monkeypatch, field, va
     binding = {**_binding("quant"), field: value}
     with pytest.raises(ValueError, match=field):
         api.measure_candidate("http://server", "model", control, binding)
+
+
+@pytest.mark.parametrize("dtype,quantization", [("half", None), ("float16", None),
+                                                ("bfloat16", "fp8")])
+def test_control_refuses_live_dtype_or_quantization_override(dtype, quantization):
+    with pytest.raises(ValueError, match="BF16 control"):
+        _api().require_bf16_control({"torch_dtype": "bfloat16"}, dtype, quantization)
+
+
+@pytest.mark.parametrize("argv", [
+    ["vllm", "serve", "/bf16", "-q", "fp8"],
+    ["vllm", "serve", "/bf16", "--dtype", "bfloat16", "--dtype", "half"],
+    ["vllm", "serve", "/bf16", "--hf-overrides", "{}"],
+])
+def test_control_refuses_ambiguous_or_aliased_live_overrides(argv):
+    with pytest.raises(ValueError, match="BF16 control"):
+        _api().require_bf16_control({"torch_dtype": "bfloat16"}, "bfloat16", None,
+                                   launch_argv=argv)
 
 
 def test_replay_rejects_forged_counts_and_missing_generations(monkeypatch):

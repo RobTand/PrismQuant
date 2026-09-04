@@ -14,6 +14,11 @@ raw-request arm in the same control session. Per-stratum defect deltas are
 does not replace the historical mandatory 64/zero policy. No physical served
 result is claimed by implementation or CPU tests.
 
+Review follow-up on the same branch binds the actual chat token-ID arrays,
+not merely their lengths, and requires the same producer-source closure digest
+across arms. The BF16 label also refuses an observed non-BF16 dtype or an
+explicit quantization override even when the source config says bfloat16.
+
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the boundary
 probe's input refusal (§7.2). Empty prompt/repetition populations, non-finite
 or nonpositive sampling temperatures, nonpositive token caps and malformed

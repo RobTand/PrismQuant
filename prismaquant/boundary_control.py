@@ -29,6 +29,32 @@ def _positive(value, field):
     return value
 
 
+def require_bf16_control(config, live_dtype, live_quantization, *, launch_argv=None):
+    if launch_argv is not None:
+        dtypes = []
+        override_flags = ("--quantization", "--quantization-config", "--hf-overrides",
+                          "--hf-config-path")
+        for i, token in enumerate(launch_argv):
+            flag, separator, value = token.partition("=")
+            if (flag.startswith("-q") and not flag.startswith("--")) or any(
+                flag == option or flag.startswith(option + ".") for option in override_flags
+            ):
+                raise ValueError(f"BF16 control refuses live override {flag}")
+            if flag == "--dtype":
+                if not separator:
+                    value = launch_argv[i + 1] if i + 1 < len(launch_argv) else ""
+                dtypes.append(value)
+        if len(dtypes) > 1:
+            raise ValueError("BF16 control refuses repeated --dtype")
+        live_dtype = dtypes[0] if dtypes else None
+    source_dtype = config.get("dtype", config.get("torch_dtype"))
+    if (source_dtype not in ("bfloat16", "torch.bfloat16")
+            or config.get("quantization_config")
+            or live_dtype not in (None, "auto", "bfloat16")
+            or live_quantization is not None):
+        raise ValueError("BF16 control requires BF16 source and observed BF16/auto unquantized serve")
+
+
 def _validate(contract, binding):
     if not isinstance(contract, dict) or set(contract) != {
         "prompts", "seeds", "temperature", "initial_max_tokens", "max_steps"
@@ -53,7 +79,7 @@ def _validate(contract, binding):
     _positive(contract["initial_max_tokens"], "initial_max_tokens")
     _positive(contract["max_steps"], "max_steps")
     for field in ("campaign_id", "artifact_id", "serve_session_id",
-                  "serve_fingerprint", "host_boot_id"):
+                  "serve_fingerprint", "host_boot_id", "producer_source_sha256"):
         if not isinstance(binding.get(field), str) or not binding[field].strip():
             raise ValueError(f"missing {field}")
     context = _positive(binding.get("model_context_tokens"), "model_context_tokens")
@@ -64,6 +90,12 @@ def _validate(contract, binding):
         _positive(n, "prompt_tokens")
         if n >= context:
             raise ValueError("prompt_tokens exhaust model context")
+    tokens = binding.get("prompt_token_ids")
+    if (not isinstance(tokens, list) or len(tokens) != len(counts)
+            or any(not isinstance(row, list) or len(row) != n
+                   or any(type(token) is not int or token < 0 for token in row)
+                   for row, n in zip(tokens, counts))):
+        raise ValueError("prompt_tokens and prompt_token_ids disagree or are malformed")
     return min(context - n for n in counts)
 
 
@@ -216,7 +248,8 @@ def _paired(control, binding):
         raise ValueError("BF16 control did not reach a finishing fixed point")
     _validate(control["contract"], binding)
     for field in ("campaign_id", "host_boot_id", "serve_fingerprint",
-                  "model_context_tokens", "prompt_tokens"):
+                  "model_context_tokens", "prompt_tokens", "prompt_token_ids",
+                  "producer_source_sha256"):
         if binding[field] != control["binding"][field]:
             raise ValueError(f"paired {field} differs")
     if (binding["artifact_id"] != control["binding"]["artifact_id"]

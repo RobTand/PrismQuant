@@ -51,10 +51,6 @@ def main(argv=None):
             parser.error("control requires --contract and no --control")
         contract = json.loads(Path(args.contract).read_text())
         model_config = json.loads((Path(args.model_dir) / "config.json").read_text())
-        if model_config.get("quantization_config") or model_config.get(
-            "dtype", model_config.get("torch_dtype")
-        ) not in ("bfloat16", "torch.bfloat16"):
-            parser.error("BF16 control requires an unquantized bfloat16 model config")
         control = None
     else:
         if not args.control or args.contract or args.legacy_ab:
@@ -72,7 +68,12 @@ def main(argv=None):
         raise ValueError("requested model is not the observed live serve")
     if Path(before["model"]).resolve() != Path(args.model_dir).resolve():
         raise ValueError("model-dir differs from the observed server argv")
+    if args.role == "control":
+        bc.require_bf16_control(model_config,
+            sf._flag_value(before["launch_argv"], "--dtype"), before["quantization"],
+            launch_argv=before["launch_argv"])
     counts = []
+    token_ids = []
     for prompt in contract["prompts"]:
         tokenized = bc.vqm._post_json(bc.vqm._server_root(args.base_url) + "/tokenize", {
             "model": args.model_name,
@@ -81,6 +82,13 @@ def main(argv=None):
             "chat_template_kwargs": dict(bc.vqm.BOUNDARY_CHAT_TEMPLATE_KWARGS),
         })
         counts.append(tokenized["count"])
+        token_ids.append(tokenized["tokens"])
+    source_hashes = {path: bc.hashlib.sha256((root / path).read_bytes()).hexdigest()
+        for path in ("prismaquant/boundary_control.py",
+                     "prismaquant/validate_quantized_model.py", "prismaquant/shipcard.py",
+                     "tools/measure_boundary_control.py", "tools/serve_fingerprint.py",
+                     "tools/prismaquant_source_bootstrap.py",
+                     "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json")}
     binding = {
         "campaign_id": args.campaign_id,
         "artifact_id": compute_model_sha(args.model_dir),
@@ -89,6 +97,8 @@ def main(argv=None):
         "host_boot_id": before["host_identity"]["boot_id"],
         "model_context_tokens": model["max_model_len"],
         "prompt_tokens": counts,
+        "prompt_token_ids": token_ids,
+        "producer_source_sha256": bc.digest(source_hashes),
     }
     context_bound = bc._validate(contract, binding)
     started = time.time()
@@ -112,11 +122,7 @@ def main(argv=None):
                "measurement": measurement, "legacy_raw": historical,
                "comparison": comparison, "started_unix": started,
                "finished_unix": finished, "serve_pre": before, "serve_post": after,
-               "source_sha256": {path: bc.hashlib.sha256((root / path).read_bytes()).hexdigest()
-                   for path in ("prismaquant/boundary_control.py",
-                                "prismaquant/validate_quantized_model.py",
-                                "tools/measure_boundary_control.py",
-                                "tools/serve_fingerprint.py")}}
+               "source_sha256": source_hashes}
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x") as handle:
         json.dump(receipt, handle, indent=2, ensure_ascii=False, allow_nan=False)
