@@ -2478,7 +2478,12 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
     exit 2
   fi
   TESSERA_PLAN="${WORK_DIR}/artifacts/tessera_plan.json"
-  require_stage_settings "$TESSERA_PLAN" tessera-plan
+  # The allocator always rewrites its recipe. A path or a newly generated
+  # build anchor cannot establish which allocation an existing plan translated.
+  TESSERA_ASSIGNMENT_DIGEST=$(sha256sum "${WORK_DIR}/artifacts/layer_config.json")
+  TESSERA_ASSIGNMENT_DIGEST=${TESSERA_ASSIGNMENT_DIGEST%% *}
+  require_stage_settings "$TESSERA_PLAN" tessera-plan \
+    "ASSIGNMENT_DIGEST=$TESSERA_ASSIGNMENT_DIGEST"
   if [[ ! -f "$TESSERA_PLAN" ]]; then
     echo "[pipeline] [4/4] translating layer_config.json -> Tessera plan (cover=${TESSERA_PLAN_COVER}) ..."
     # Write-then-rename: a crashed translation must not leave a partial plan

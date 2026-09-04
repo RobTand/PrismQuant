@@ -3,6 +3,15 @@
 As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **allocation-bound
+Tessera plan reuse** (§9.4). The plan stage now records the full SHA-256 of
+the exact allocation bytes as a late-bound settings key. Changed allocations
+refuse cached plans before export, even under an unchanged model/runtime
+target. Existing plans without their own recorded allocation binding refuse
+instead of acquiring today's hash by trust-on-first-use; other stages keep
+their legacy missing-manifest policy. The independently generated shipcard
+build anchor does not substitute for evidence of what an old plan translated.
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **selected
 export scope and shipcard binding** (§5.7, §9.4; Tessera #126). V5 export
 requires a complete runtime target before work and rechecks every selected
