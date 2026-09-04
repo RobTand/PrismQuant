@@ -75,21 +75,14 @@ jobs:
           tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
           printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
 
-      - name: Require Tessera repository token
-        env:
-          TESSERA_REPO_TOKEN: ${{ secrets.TESSERA_REPO_TOKEN }}
-        run: |
-          if [ -z "${TESSERA_REPO_TOKEN:-}" ]; then
-            echo "::error::TESSERA_REPO_TOKEN is required to check out pinned private Tessera"
-            exit 1
-          fi
-
-      - name: Check out pinned private Tessera
+      # Tessera becomes public after its release fixes and audit. Until then,
+      # ordinary checkout access fails here; no private credential is required
+      # or exposed to contributor PRs by this workflow.
+      - name: Check out pinned Tessera
         uses: actions/checkout@v7.0.1
         with:
           repository: RobTand/tessera
           ref: ${{ steps.tessera-pin.outputs.commit }}
-          token: ${{ secrets.TESSERA_REPO_TOKEN }}
           persist-credentials: false
           path: .ci/tessera
 
@@ -135,20 +128,11 @@ jobs:
         run: |
           tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
           printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
-      - name: Require Tessera repository token
-        env:
-          TESSERA_REPO_TOKEN: ${{ secrets.TESSERA_REPO_TOKEN }}
-        run: |
-          if [ -z "${TESSERA_REPO_TOKEN:-}" ]; then
-            echo "::error::TESSERA_REPO_TOKEN is required to check out pinned private Tessera"
-            exit 1
-          fi
-      - name: Check out pinned private Tessera
+      - name: Check out pinned Tessera
         uses: actions/checkout@v7.0.1
         with:
           repository: RobTand/tessera
           ref: ${{ steps.tessera-pin.outputs.commit }}
-          token: ${{ secrets.TESSERA_REPO_TOKEN }}
           persist-credentials: false
           path: .ci/tessera
       - name: Install pinned Tessera

@@ -107,7 +107,7 @@ def test_stdlib_resolver_reads_the_authoritative_pin_without_package_imports():
     assert _dev_pin_literal() not in resolver
 
 
-def test_ci_installs_the_authoritative_private_tessera_pin_in_every_job():
+def test_ci_installs_the_authoritative_tessera_pin_without_private_credentials():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     # A copied SHA becomes a second pin and can drift from the admission rule.
@@ -119,19 +119,16 @@ def test_ci_installs_the_authoritative_private_tessera_pin_in_every_job():
         resolve = "python tools/resolve_tessera_dev_pin.py"
         assert resolve in job, name
         assert "id: tessera-pin" in job, name
-        assert "name: Require Tessera repository token" in job, name
-        assert "TESSERA_REPO_TOKEN is required" in job, name
-        assert 'if [ -z "${TESSERA_REPO_TOKEN:-}" ]' in job, name
+        assert "TESSERA_REPO_TOKEN" not in job, name
         assert "repository: RobTand/tessera" in job, name
         assert "ref: ${{ steps.tessera-pin.outputs.commit }}" in job, name
-        assert "token: ${{ secrets.TESSERA_REPO_TOKEN }}" in job, name
         assert "persist-credentials: false" in job, name
         assert "python -m pip install --no-deps .ci/tessera" in job, name
 
-        # Resolve and validate credentials before touching the private remote;
-        # install those bytes before importing/installing PrismaQuant itself.
-        assert job.index(resolve) < job.index("Require Tessera repository token")
-        assert job.index("Require Tessera repository token") < job.index(
+        # Resolve the pin before checkout; install those bytes before
+        # importing/installing PrismaQuant itself. Ordinary checkout access
+        # becomes sufficient when Tessera is published, including fork PRs.
+        assert job.index(resolve) < job.index(
             "repository: RobTand/tessera"
         )
         assert job.index("repository: RobTand/tessera") < job.index(

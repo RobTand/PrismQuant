@@ -6,9 +6,11 @@ follow, newest first, each recording its own branch and date.
 Re-stamped (2026-09-04, `codex/pq-175-ci-tessera`) for the **pinned Tessera
 CI dependency** (§8.6; RobTand/prismaquant#175). Both CPU jobs resolve the
 single `TESSERA_DEV_PIN_COMMIT` literal with a stdlib-only source parser before
-PrismaQuant can be imported, fail closed with the named
-`TESSERA_REPO_TOKEN` prerequisite, check out that exact private commit without
-persisting credentials, and install its bytes before PrismaQuant. A failed
+PrismaQuant can be imported, check out that exact commit with ordinary checkout
+access without persisting credentials, and install its bytes before
+PrismaQuant. Tessera remains private until its fixes and audit are complete;
+checkout failure is expected until Rob publishes it. No private-repository
+secret is required by this workflow. A failed
 pin resolver stops the step before publishing any checkout output; its exit
 status is preserved by a separate shell assignment, so an empty ref cannot
 fall back to Tessera's default branch. Gate:
@@ -8358,10 +8360,11 @@ allocation.
 And there is CI to run it — `.github/workflows/ci.yml` (#18, `1cc7b90`) executes the suite on
 every push and PR, on Python 3.12 with CPU torch. Before PrismaQuant is
 installed, both jobs use the stdlib-only `tools/resolve_tessera_dev_pin.py` to
-derive the exact private Tessera checkout from `TESSERA_DEV_PIN_COMMIT`, stop
-without publishing a ref if that resolution fails, fail
-closed unless the explicitly named `TESSERA_REPO_TOKEN` secret is present, and
-install that checkout before exercising the package. §12 D11.
+derive the exact Tessera checkout from `TESSERA_DEV_PIN_COMMIT`, stop
+without publishing a ref if that resolution fails, and install that checkout
+before exercising the package. Ordinary checkout access is sufficient once
+Tessera is public; while it remains private pending fixes and audit, checkout
+failure is expected. §12 D11.
 
 ### 8.7 A fourth plug-in point: `FormatCostPlugin` (formats, not models)
 
