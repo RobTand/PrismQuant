@@ -5854,12 +5854,12 @@ different rendering; the export fingerprint records the enumeration the shipped 
 so a shipped artifact names its rendering. Packed experts stamp the hook-only
 `metadata["activation_hook_scope_packed"]` (`fill_packed_expert_cache_entries` hooks the
 full visible module set and `store_qnames` narrows only storage, #145) and the union merge
-requires agreeing packed digests while tolerating dense-only shards. **One caveat remains.**
-The
-cache directory has no render-identity guard at all — resume is file-presence only — so a
-directory whose units were rendered under a narrower hook set will keep those bytes and
-silently mix them with newly rendered ones. Rebuild an assignment-scoped cache directory
-rather than resuming it across this change.
+requires agreeing packed digests while tolerating dense-only shards. Resume is now guarded
+by `render_identity.json` (#146): the base fill and packed append writers compare their
+respective identity sections before admitting file-presence reuse. A changed hook scope
+refuses and requires a fresh cache directory. A pre-guard directory can still be admitted
+on trust, but its existing shard names and count are recorded as `pre_guard_admission`;
+that history is not evidence that those old shards had a verified render identity.
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,
