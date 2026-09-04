@@ -75,14 +75,15 @@ def _routed_tokens():
                            [4., 1., 1., 0.], [-4., 1., 0., 2.]]])]
 
 
-def test_capture_packed_projections_uses_every_actual_routed_row():
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_capture_packed_projections_uses_every_actual_routed_row(dtype):
     from prismaquant.tessera_campaign import _collect_activations
 
-    model = _RoutedModel()
+    model = _RoutedModel().to(dtype=dtype)
     targets = [f"{EXPERT_PREFIX}.{expert}.{projection}"
                for expert in range(2) for projection in ("w1", "w3", "w2")]
     dense = "model.layers.0.attention"
-    tokens = _routed_tokens()
+    tokens = [batch.to(dtype=dtype) for batch in _routed_tokens()]
     rows, hessians, counts = _collect_activations(
         model, [dense, *targets], tokens, 1, "cpu", want_hessian=True)
     from prismaquant.routed_experts import profile_declared_packed_expert_projections
@@ -94,7 +95,7 @@ def test_capture_packed_projections_uses_every_actual_routed_row():
         for projection, input_kind in (("w1", "gate_up"),
                                        ("w3", "gate_up"), ("w2", "down")):
             name = f"{EXPERT_PREFIX}.{expert}.{projection}"
-            actual = torch.cat(observed[expert][input_kind])
+            actual = torch.cat(observed[expert][input_kind]).float()
             assert actual.shape[0] == 4  # The score cap must be binding.
             assert counts[name] == actual.shape[0]
             torch.testing.assert_close(rows[name], actual[:1])
@@ -105,7 +106,7 @@ def test_capture_packed_projections_uses_every_actual_routed_row():
                         packed[expert, :4] if projection == "w1" else packed[expert, 4:])
             torch.testing.assert_close(unit.weight, expected)
             assert unit.weight.untyped_storage().data_ptr() == packed.untyped_storage().data_ptr()
-    flat = torch.cat(tokens).reshape(-1, 4)
+    flat = torch.cat(tokens).reshape(-1, 4).float()
     assert counts[dense] == 8
     torch.testing.assert_close(hessians[dense], flat.T @ flat)
     assert not model.model.layers[2].feed_forward.experts._forward_pre_hooks
