@@ -9,6 +9,8 @@ limits, and bounds the whole physical action to 1200 seconds plus cleanup.
 Timeout or refusal remains inconclusive; cleanup verifies only its uniquely
 named container. CPU controller tests are not a served result, and no shipping
 policy changes. Gate: `tests/test_pq87_physical_ab.py`.
+The cleanup reader accepts Docker's case-varying absence diagnostic only when
+it names this exact container; an unrecognized error never proves absence.
 
 Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the paired
 instrument's **exact native weight identity** (§7.2). Each boundary binding

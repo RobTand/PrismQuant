@@ -56,7 +56,8 @@ def cleanup_container(name):
             if command[1] == "inspect":
                 if result.returncode == 0:
                     evidence["safe"] = json.loads(result.stdout)[0]["State"]["Running"] is False
-                elif "No such object" in result.stdout or "No such container" in result.stdout:
+                elif any(f"no such {kind}: {name}" in result.stdout.lower()
+                         for kind in ("object", "container")):
                     evidence["safe"] = True
         except Exception as exc:
             evidence["commands"].append({"argv": command, "error": repr(exc)})

@@ -43,3 +43,11 @@ def test_cleanup_verifies_live_container_state(monkeypatch, running, expected):
         returncode=0, stdout='[{"State": {"Running": ' + str(running).lower() + '}}]'
         if argv[1] == "inspect" else "", stderr=""))
     assert driver.cleanup_container("exact-owned-name")["safe"] is expected
+
+
+def test_cleanup_accepts_actual_lowercase_docker_absence_diagnostic(monkeypatch):
+    from types import SimpleNamespace
+    driver = importlib.import_module("experiments.pq87_physical_ab")
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **_kwargs: SimpleNamespace(
+        returncode=1, stdout="[]\nerror: no such object: exact-owned-name\n"))
+    assert driver.cleanup_container("exact-owned-name")["safe"] is True
