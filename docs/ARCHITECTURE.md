@@ -1,5 +1,12 @@
 # PrismaQuant Architecture
 
+Re-stamped (2026-09-04, `codex/pq-87-control-relative`) for the boundary
+probe's input refusal (§7.2). Empty prompt/repetition populations, non-finite
+or nonpositive sampling temperatures, nonpositive token caps and malformed
+defect bounds now fail before HTTP, rather than producing an empty pass or
+asking the endpoint to validate the measurement contract. This does not
+change any shipping threshold. Gate: `tests/test_ship_boundary_behavior.py`.
+
 As of: 2026-09-03 · `muse/pq-172-173-append`. Stamps
 follow, newest first, each recording its own branch and date.
 
@@ -7245,6 +7252,11 @@ reasoning-side and answer-side content are non-empty. A later close remains
 visible as stutter, while either empty side remains zero-tag/cap-truncation.
 Both schema identities and the endpoint are filed in the shipcard and replayed
 offline.
+
+The live check refuses an empty prompt/repetition population, non-finite or
+nonpositive temperature, nonpositive integer token cap, or negative/noninteger
+defect bound before contacting the endpoint. An empty sample cannot certify a
+boundary check, regardless of its nominal defect count.
 
 This endpoint fix is necessary and insufficient. Physical evidence invalidated
 the current 64-token cap and a universal zero roster: healthy DSV4 still filed

@@ -477,12 +477,24 @@ def check_boundary_behavior(
     neither is a calibrated universal artifact-quality threshold. Runs
     alongside KL/PPL, not replacing them.
     """
-    if not temperature or temperature <= 0:
+    invalid = []
+    if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+            or not math.isfinite(temperature) or temperature <= 0):
+        invalid.append(f"boundary_temperature={temperature!r} is not sampling; must be finite and > 0")
+    if type(reps) is not int or reps <= 0:
+        invalid.append(f"boundary_reps={reps!r} must be a positive integer")
+    if type(max_tokens) is not int or max_tokens <= 0:
+        invalid.append(f"boundary_max_tokens={max_tokens!r} must be a positive integer")
+    if type(max_defects) is not int or max_defects < 0:
+        invalid.append(f"max_boundary_defects={max_defects!r} must be a non-negative integer")
+    if (not isinstance(prompts, (tuple, list)) or not prompts
+            or any(not isinstance(prompt, str) or not prompt.strip() for prompt in prompts)):
+        invalid.append("boundary_prompts must be a nonempty sequence of nonempty strings")
+    if invalid:
         return CheckResult(
             name="boundary_behavior",
             passed=False,
-            detail=f"boundary_temperature={temperature!r} is not sampling — "
-                   "the defect this check exists for is invisible at temp 0",
+            detail="invalid sampling contract: " + "; ".join(invalid),
         )
     n_defects = 0
     by_kind: dict[str, int] = {kind: 0 for kind in BOUNDARY_DEFECTS}

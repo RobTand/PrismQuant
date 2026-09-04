@@ -73,6 +73,20 @@ def test_scorer_passes_a_clean_single_tag_completion():
     assert scored["defects"] == []
 
 
+@pytest.mark.parametrize("kwargs", [
+    {"reps": 0}, {"prompts": []}, {"temperature": float("nan")},
+    {"temperature": float("inf")}, {"reps": True},
+    {"max_tokens": 0}, {"max_defects": -1}, {"prompts": [""]},
+])
+def test_boundary_check_refuses_invalid_sampling_contract_before_http(monkeypatch, kwargs):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("invalid sampling contract reached HTTP")
+    monkeypatch.setattr(vqm, "_post_json", forbidden)
+    result = vqm.check_boundary_behavior("http://unused", "model", **kwargs)
+    assert not result.passed, result.detail
+    assert "invalid sampling contract" in result.detail
+
+
 def test_scorer_flags_zero_tag_runaway():
     scored = vqm.score_boundary_text("The answer is 12.", "stop")
     assert scored["think_tag_count"] == 0
