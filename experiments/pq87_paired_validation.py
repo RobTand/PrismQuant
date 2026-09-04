@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -75,6 +76,26 @@ def require_ppl_binding(before, model, nonce):
         raise ValueError("PPL requires readable live residency and serve session")
     if Path(before["model"]).resolve() != Path(model).resolve() or before["models_endpoint_binding"]["model"]["id"] != nonce:
         raise ValueError("PPL source differs from observed server")
+
+
+def require_ppl_measurement(result, prompt_count):
+    """A measured threshold refusal is data; missing/skipped logprobs are not."""
+    metrics = result.metrics
+    if (result.name != "perplexity" or type(result.passed) is not bool
+            or not isinstance(metrics, dict) or metrics.get("skipped", False) is not False
+            or metrics.get("spec_decode_detected") is not False):
+        raise ValueError("PPL measurement is missing, skipped, or speculative")
+    per_prompt = metrics.get("per_prompt_avg_nll")
+    tokens = metrics.get("n_tokens")
+    if (not isinstance(per_prompt, list) or len(per_prompt) != prompt_count
+            or type(tokens) is not int or tokens < prompt_count):
+        raise ValueError("PPL measurement does not cover the full prompt roster with scored tokens")
+    values = [metrics.get(key) for key in ("perplexity", "mean_nll_per_tok",
+                                          "p99_nll_per_tok", "max_nll_per_tok")]
+    if (any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            for value in values + per_prompt) or values[0] <= 0):
+        raise ValueError("PPL measurement has missing or nonfinite numeric metrics")
+    return result
 
 
 def require_container_name_available(name):
@@ -163,6 +184,10 @@ def client_phase(args):
             require_ppl_binding(before, model, args.nonce)
             result = bc.vqm.check_perplexity("http://127.0.0.1:8187", args.nonce,
                 bc.vqm.DEFAULT_MAX_PPL, bc.vqm.DEFAULT_MAX_P99_NLL, bc.vqm.DEFAULT_MAX_MEAN_NLL)
+            # Preserve even incomplete results as evidence, but never call an
+            # empty/skipped CheckResult a completed numeric observation.
+            instrument.dump(Path(prefix + "-result.json"), asdict(result))
+            require_ppl_measurement(result, len(bc.vqm.EVAL_PROMPTS))
             after = sf.collect_manifest(image=manifest["image"], base_url="http://127.0.0.1:8187", attestation_phase="post")
             require_ppl_binding(after, model, args.nonce)
             after_content, after_stats = bound_capture(model)

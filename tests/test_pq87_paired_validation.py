@@ -1,7 +1,9 @@
 """The physical validation is a frozen sequential state machine, not a launch loop."""
 import copy
 import importlib
+import io
 import json
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -134,3 +136,65 @@ def test_cleanup_refuses_an_unowned_container_id(tmp_path, monkeypatch, mismatch
         f"cleaned unowned container {name}"))
     result = driver.cleanup_owned_container(cidfile, "our-name", "a" * 64, "nonce", attempted=True)
     assert not result["safe"]
+
+
+def _ppl_result():
+    from prismaquant.validate_quantized_model import CheckResult, EVAL_PROMPTS
+    return CheckResult(name="perplexity", passed=False, detail="measured threshold refusal", metrics={
+        "perplexity": 22026.465794806718, "mean_nll_per_tok": 10.0,
+        "p99_nll_per_tok": 10.0, "max_nll_per_tok": 10.0,
+        "per_prompt_avg_nll": [10.0] * len(EVAL_PROMPTS),
+        "n_tokens": 100, "spec_decode_detected": False})
+
+
+@pytest.mark.parametrize("mutation", ["empty", "skipped", "unknown_spec", "speculative",
+                                      "nonfinite", "n_tokens", "partial"])
+def test_ppl_missing_measurement_is_not_completion(mutation):
+    from prismaquant.validate_quantized_model import EVAL_PROMPTS
+    result = _ppl_result()
+    if mutation == "empty":
+        result.metrics.clear()
+    elif mutation in {"skipped", "unknown_spec", "speculative"}:
+        result.metrics.clear()
+        result.metrics.update(skipped=True, spec_decode_detected={
+            "skipped": False, "unknown_spec": None, "speculative": True}[mutation])
+    elif mutation == "nonfinite":
+        result.metrics["mean_nll_per_tok"] = float("nan")
+    elif mutation == "n_tokens":
+        result.metrics["n_tokens"] = 0
+    else:
+        result.metrics["per_prompt_avg_nll"].pop()
+    with pytest.raises(ValueError, match="PPL"):
+        _driver().require_ppl_measurement(result, len(EVAL_PROMPTS))
+
+
+def test_ppl_measured_threshold_refusal_is_a_complete_observation():
+    from prismaquant.validate_quantized_model import EVAL_PROMPTS
+    result = _ppl_result()
+    assert _driver().require_ppl_measurement(result, len(EVAL_PROMPTS)) is result
+
+
+@pytest.mark.parametrize("metrics", [{}, {"skipped": True, "spec_decode_detected": None}])
+def test_actual_ppl_phase_refuses_missing_numeric_observation(monkeypatch, metrics):
+    driver = _driver()
+    from prismaquant import boundary_control as bc
+    result = bc.vqm.CheckResult(name="perplexity", passed=False, detail="missing logprobs", metrics=metrics)
+    content = {"frozen": "content"}
+    client = SimpleNamespace(_capture_artifact=lambda model: (content, {"stable": True}))
+    before = {"residency_readable": True, "serve_session_id": "live",
+              "performance_stack_fingerprint": "stack", "model": "/models/control",
+              "models_endpoint_binding": {"model": {"id": "nonce"}}}
+    manifest = _manifest()
+    monkeypatch.setattr(driver.instrument, "bootstrap", lambda: (Path("/repo"), client, bc))
+    monkeypatch.setitem(sys.modules, "serve_fingerprint", SimpleNamespace(collect_manifest=lambda **kwargs: before))
+    monkeypatch.setattr(Path, "read_text", lambda self, **kwargs: json.dumps(
+        manifest if str(self) == "/run/manifest.json" else {"content": content}))
+    monkeypatch.setattr(driver, "open", lambda *args, **kwargs: io.StringIO(), raising=False)
+    monkeypatch.setattr(driver.instrument, "dump", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bc.vqm, "check_perplexity", lambda *args: result)
+    monkeypatch.setattr(bc, "artifact_content_id", lambda value: "artifact")
+    # client_phase wraps these attributes for journalling; restore them after the fixture.
+    monkeypatch.setattr(bc.vqm, "_post_json", bc.vqm._post_json)
+    monkeypatch.setattr(bc, "measure_step", bc.measure_step)
+    with pytest.raises(ValueError, match="PPL"):
+        driver.client_phase(SimpleNamespace(role="control", population="ppl", nonce="nonce"))

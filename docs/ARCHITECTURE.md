@@ -21,6 +21,9 @@ PrismaBuild action label and a fresh campaign nonce before any stop/remove.
 An unused output directory does not prove Docker-name ownership; prelaunch
 failure cleans nothing, name collisions refuse, and uncertain creation stays
 inconclusive for PrismaBuild's action-owner cleanup.
+The numeric screen distinguishes a measured PPL threshold refusal from
+empty/skipped/speculative logprobs: only finite full-roster metrics with
+scored tokens are completed observations. Missing data stays inconclusive.
 
 Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for the **opt-in paired
 no-new-boundary-failures decision** (§7.2; #87). The separately versioned
