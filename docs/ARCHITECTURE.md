@@ -3,6 +3,20 @@
 As of: 2026-09-04 · `codex/pq87-paired-policy`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for a **frozen sequential
+native-candidate validation plan**, not a measured result. The opt-in
+`experiments/pq87_paired_validation.py` reuses the existing bounded BF16
+instrument helpers and the paired client. A committed manifest declares
+distinct native BF16/quantized sources, screen and disjoint held-out schedules,
+both-box telemetry URLs and the deadline. It freezes both artifacts before
+startup, serves one model at a time, records the paired policy on each
+population and runs the existing small PPL check on both servers. A candidate
+refusal is retained as a completed observation; missing/incomparable evidence
+is inconclusive, never an automatic retry or a default promotion. The
+reference native NVFP4 candidate's existing shipcard is unfilled. This one
+model cannot cover the additional representative population or gold/downstream
+promotion gates. Gate: `tests/test_pq87_paired_validation.py`.
+
 Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for the **opt-in paired
 no-new-boundary-failures decision** (§7.2; #87). The separately versioned
 `prismaquant.no_new_boundary_failures/1` policy replays both measurement

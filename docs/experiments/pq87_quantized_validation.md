@@ -1,0 +1,95 @@
+# #87 paired quantized validation plan
+
+Prepared before serving; no result is claimed. The policy implementation is
+recorded in `docs/results/pq87_paired_policy_2026-09-04.md`.
+
+The committed `experiments/pq87_validation_manifest.json` selects Qwen3-0.6B:
+shared BF16 source from the #113 input freeze and the existing native NVFP4
+reference under `tessera-runs/bf16/refs`. Read-only PrismaBuild inventory
+`74cbc51063720a960483cd2be87cedea20bf39d197500d1f9b1eb298bb51aaf8`
+found 1,503,300,328 BF16 safetensors bytes and 870,290,032 candidate bytes,
+identical `tokenizer.json` and `tokenizer_config.json` hashes, and a candidate
+build block naming the original Qwen3-0.6B with 196 NVFP4 assignments. The candidate's shipping slots
+are all unfilled: this is a materialized native candidate, not a ship-certified
+artifact. Exact weight content will be frozen and hashed before startup.
+
+One exclusive PrismaBuild action will run two sequential servers on the same
+box/image/source closure: BF16, then native compressed-tensors NVFP4. Each
+uses the instrument's explicit one sequence, 4096-token context, 1 GiB KV and
+eager settings. Docker has 28 GiB memory/swap and two CPU limits; the fleet
+reservation must be the entire physical GPU capacity plus two CPUs/32 GiB.
+The manifest's 2400-second wall deadline is an inconclusive backstop, not a
+predicted completion time. An enclosing `timeout` must retain cleanup grace.
+No GPU action may be submitted without the coordinator allocating that box.
+
+The BF16 serve derives an uncensored schedule separately for the existing
+30-pair screen and a disjoint 30-pair heldout set. Both prompt sets and seeds
+are committed before either model is observed; no candidate outcome selects
+a cap or prompt. The candidate runs the exact matched BF16 schedules. A
+refused candidate is recorded and the second population still runs. No raw
+endpoint A/B is repeated. A new source/campaign cannot silently reuse the old
+BF16-only receipt as its own control.
+
+Both live servers also run `validate_quantized_model.check_perplexity` under
+its existing bounds and prompt roster. This is the small numeric screening
+check, not gold WikiText PPL, full-vocabulary served KL, or a tool benchmark.
+It has its own pre/post serve/content bindings. Every HTTP response, cap step,
+server log, process I/O window and both-box Netdata series is retained. GPU
+power is recorded separately from unsupported GB10 memory-utilization metrics.
+No speed or work-per-joule claim is planned.
+
+The controller refuses overlap between screen and heldout prompts, mutable
+image tags, ambiguous model identity, missing telemetry URLs and an unbounded
+manifest. Original sources are never edited; copied model bytes are mounted
+read-only through both container aliases. Shutdown must leave no serving
+process before the next arm. Exact-container cleanup is recorded even after
+timeout or refusal, and the coordinator checks actual worker completion before
+releasing the GPU to another task.
+
+Remaining after this first campaign: an additional representative model/shape
+population with its own BF16 control; actual heldout/gold/downstream evidence
+sufficient for any proposed shipping-default promotion. Existing Gridbook-only
+reproduction claims remain third-party/historical and are not substituted by
+Qwen measurements. Nothing here reinstates the retired Gridbook lane or
+waives that difference in scope. #87 stays open until the agreed shipping fix
+and required evidence are complete.
+
+## Controller verification, not served validation
+
+All controller checks used deployed PrismaBuild `aa6d3cfa2f77`, Sparky with
+one CPU/4 GiB, `CUDA_VISIBLE_DEVICES=''`, and all three BLAS/OMP thread limits
+set to one. The serial eight-file population collected every selected module,
+with zero skips or collection errors. No master baseline or full suite ran.
+As for the policy receipt, the three unused absolute calibration symlinks
+were excluded only during snapshot sealing, then immediately restored.
+
+Before implementing the controller, action
+`220734d546405ba7811ab1b61a683c24e7a9421979e773fc41be0bd15caf9b60`
+was **8 failed** with `ModuleNotFoundError: No module named
+'experiments.pq87_paired_validation'`. Before adding physical-admission and
+PPL binding guards, action
+`41e866101a125f3087b962ea99b0f49f6d9bd88a8f7a9223cff82a7ceff37150`
+was **3 failed, 8 deselected**: `Failed: CPU action reached physical
+preparation`, and two missing-`require_ppl_binding` `AttributeError`s.
+Both red wrappers returned success only for pytest status 1; neither is a
+green test claim. A later submission named a nonexistent test file and
+collected nothing; that command error supplies no test evidence.
+
+Final action
+`28a6956f4ef3bc1e9a5203535b0e22e787a67d1c23f9f623f4f4fc1a56321681`
+observed **116 passed, 0 failed, 0 skipped**, plus successful compilation of
+`boundary_control.py`, `measure_boundary_control.py` and this controller.
+Receipt SHA-256:
+`a0220f3c9e8ffb3c217e7e9254108251616b61fa08148e34a30e4067fc6ff99d`.
+Result blob:
+`4b7b4b008403cac3dda1a2341bfa0d985441a79289c6c198f8915acd124420d2`.
+
+Selected files: `test_boundary_policy.py`, `test_boundary_control.py`,
+`test_measure_boundary_control_identity.py`, `test_pq87_physical_ab.py`,
+`test_pq87_paired_validation.py`, `test_ship_boundary_behavior.py`,
+`test_docs_staleness.py`, and `test_architecture_doc.py`. The command was
+`python -m pytest -q -ra --tb=short -p no:cacheprovider` with those eight
+`tests/` paths, followed by `python -m py_compile` on the three modules,
+inside the bounded CPU-only pool action. These fixtures verify the policy,
+manifest and safety guards; they do not prove a Docker lifecycle or a served
+quantized population.

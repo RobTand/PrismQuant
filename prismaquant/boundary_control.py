@@ -74,7 +74,8 @@ def require_bf16_control(config, live_dtype, live_quantization, *, launch_argv=N
         raise ValueError("BF16 control requires BF16 source and observed BF16/auto unquantized serve")
 
 
-def _validate(contract, binding):
+def validate_contract(contract):
+    """Validate the frozen schedule before a controller starts any server."""
     if not isinstance(contract, dict) or set(contract) != {
         "prompts", "seeds", "temperature", "initial_max_tokens", "max_steps"
     }:
@@ -97,6 +98,12 @@ def _validate(contract, binding):
         raise ValueError("temperature must be finite and positive")
     _positive(contract["initial_max_tokens"], "initial_max_tokens")
     _positive(contract["max_steps"], "max_steps")
+    return contract
+
+
+def _validate(contract, binding):
+    validate_contract(contract)
+    prompts = contract["prompts"]
     for field in ("campaign_id", "artifact_id", "serve_session_id",
                   "serve_fingerprint", "host_boot_id", "producer_source_sha256"):
         if not isinstance(binding.get(field), str) or not binding[field].strip():
