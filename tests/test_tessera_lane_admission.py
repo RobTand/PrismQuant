@@ -213,8 +213,8 @@ def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path)
     contract = _packaged_contract()
     for cell in contract["lane_eligibility"]["cells"]:
         cell["requires_plugin"] = ""
-    table, formats = _load(_write(tmp_path, contract, "no_plugin.json"))
     with pytest.raises(LaneEligibilityError, match="requires_plugin"):
+        table, formats = _load(_write(tmp_path, contract, "no_plugin.json"))
         tr.tessera_lane_attested(
             "TESSERA_E2M1_K2_R896", table=table, formats=formats)
 

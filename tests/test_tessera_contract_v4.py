@@ -40,7 +40,9 @@ def test_v4_reviewed_development_answer_does_not_open_release(monkeypatch):
     assert contract.contract_answer(parsed) == contract.TESSERA_DEV_PIN_ANSWER
     assert parsed.identity()["bytes_are_the_reviewed_bytes"] is True
     assert parsed.native_cells("TESSERA_E4M3_K1", 1024)
-    assert not any(cell.structure == "routed_moe" for cell in parsed.cells)
+    assert {cell.structure for cell in parsed.cells} == {
+        cell["structure"] for cell in _packaged()["lane_eligibility"]["cells"]
+    }
     with pytest.raises(release.TesseraServingRuntimePinError, match="PENDING"):
         release.require_exact_tessera_runtime_release(
             release.load_tessera_serving_runtime_pin())

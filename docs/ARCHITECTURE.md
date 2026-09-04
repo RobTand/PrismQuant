@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-03 · `muse/pq-172-173-append`. Stamps
+As of: 2026-09-04 · `codex/pq-tessera-v4-consumer`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **Tessera lane
+schema v4 consumption** (§5.7, §9.4). Development and export readers now share
+the cell parser. Executed `(symbol, decoder)` pairs and explicit residency
+scope are retained; malformed launches, missing plugin/residency declarations
+and overlapping scopes refuse. Per-unit route resolution requires a residency
+for v4 and records the selected launches. The development answer is reviewed
+against Tessera `1221d2a`, including its window-GEMV native extension, while
+the exact release pin remains PENDING and no routed-MoE attestation is added.
+Tests: `test_lane_eligibility_v4.py`, `test_tessera_contract_v4.py`.
 
 Re-stamped (2026-09-03, `muse/pq-172-173-append`) for the **append-identity
 follow-ups** (§5.4; RobTand/prismaquant#172, #173). Two configurations the
@@ -5806,7 +5816,7 @@ under `vllm.general_plugins`, registering `quant_method = "tessera"`, selected
 by the checkpoint with no enable flag and one operator knob
 `TESSERA_SERVE_MODE=resident|streamed`. `tessera_lane_attested(name)` resolves
 the name to its payload family and rate through
-`gridbook_lane_eligibility.resolve_payload_rung` against the contract that
+`lane_eligibility.resolve_payload_rung` against the contract that
 plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
 `importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
 and answers True only on the AND of three conjuncts, each of which fails closed
@@ -5832,7 +5842,7 @@ alone:
    dependency — and a producer-side import is not a serving release.
 
 **It is False today by the PIN, not by an edit and not by an absent table.**
-Tessera's packaged contract publishes both families with `device_qualified`
+Tessera's packaged contract publishes its attested families with `device_qualified`
 native cells and the package imports fine here; what withholds them is
 `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose `commit`
 and `version` are the conspicuous sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
@@ -5853,18 +5863,18 @@ lane is withdrawn and the Gridbook pin no longer governs Tessera admission**;
 read §9.2's Tessera passage as history. The per-artifact question (this
 platform, this unit's regimes) still stays with `resolve_unit_route` at export.
 
-**The parser is shared, and the widenings are additive.**
-`gridbook_lane_eligibility.py` reads both vendors' tables — the v3 cell grammar
-is identical and a second copy of it would be a drift bug — through three
-additive changes: `LANE_ELIGIBILITY_SCHEMAS` accepts
-`tessera.lane-eligibility.v3` beside `gridbook.lane-eligibility.v3`;
-`FORMAT_KIND_TESSERA_WIRE` joins `tcq_trellis` in
-`RATE_ADDRESSED_FORMAT_KINDS`, so `EligibilityCell.is_trellis` now means
-"rate-addressed" and both dispatch sites (`_published_families`,
-`resolve_payload_rung`) test the set rather than one constant; and
-`requires_plugin` is an OPTIONAL cell key, emitted from `as_dict()` only when
-non-empty, so a Gridbook cell serializes byte-for-byte as it did. Every
-pre-existing Gridbook eligibility test passes unchanged.
+**One cell parser, with explicit version semantics.** `lane_eligibility.py`
+reads Tessera's v4 table for export and for `tessera_runtime_contract.py`'s
+development pin. A v4 cell requires `requires_plugin: "tessera"`, non-empty
+`executes` pairs and exactly one residency selector bounded by its family's
+`residency_modes`. Two cells may not claim the same platform/family/structure/
+regime/residency scope, even at different rungs. `resolve_unit_route` takes an
+explicit `residency`; omission is unattested, and a resolved `RegimeRoute`
+carries both the residency and launches. The reviewed development answer
+includes those values, so changing a decoder cannot retain the old answer.
+Explicit legacy Tessera v3 tables retain their original grammar and carry no
+fabricated launches. Gridbook schemas remain refused. Release admission is
+still gated by the exact PENDING release pin.
 
 **What is not here.** No PrismaQuant exporter writes a Tessera wire
 (`export_native_compressed.py` has no Tessera codec; every Tessera checkpoint
@@ -8857,7 +8867,7 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v1`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v3`), read through `importlib.resources`.
+table `tessera.lane-eligibility.v4`), read through `importlib.resources`.
 PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
 serving pin this one binds no wheel digest: Tessera publishes no wheel and is
 installed from a source checkout, so a digest would be a claim about an
