@@ -3,6 +3,18 @@
 As of: 2026-09-04 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for the
+**read-only prepriced-input validator** (§4.10; #184). The explicit
+`prepriced_cost` CLI validates existing schema, objective currency,
+research provenance and uniform Tessera Hessian identity, requires
+the exact producer-stamped mode and model reference, and records the
+input bytes' SHA-256. Its separate local receipt retains both the original
+absolute argument path and resolved file; re-verification checks both
+resolution and bytes before allocation. The input is never rewritten,
+model-reference equality is not checkpoint-content attestation, and
+historical unstamped Hessian rows retain their owner-reported no-claim
+status. This helper does not itself wire the shell's cost-stage bypass.
+
 Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
 **Tessera currency-stamp completeness** (§4.10), encountered during
 #184 intake work. `cost_currency` recognizes Tessera rows through the
@@ -4692,6 +4704,28 @@ hardcoded family roster. Missing or unknown currency refuses with the
 unit and format named; dropping a stamp cannot opt a price out of the
 gate. Diagnostic error rows are excluded, and legacy stock rows without
 a Tessera format or currency remain outside this gate's jurisdiction.
+
+**Explicit external prepriced input** (`python -m prismaquant.prepriced_cost`).
+The intake CLI takes `--path`, `--cost-mode` and `--model`, reads the supplied
+trusted pickle without rewriting it, and applies those shared gates plus
+`research_cost_acceptance.accepted_cost_provenance` and
+`tessera_menu.assert_uniform_hessian_identity`. The pipeline has no research
+acceptance override, so research-stamped assembly refuses. Missing, unknown
+or mismatched `provenance.cost_mode` also refuses; the helper changes neither
+the input's stamp nor the run's defaults. It requires at least one explicit
+producer-owned model reference (direct metadata/provenance or retained
+baseline/shard metadata), with all present references equal to the exact
+requested string. This is not a checkpoint-content hash claim.
+
+`--report` writes a separate local JSON receipt containing the exact SHA-256,
+actual and declared format rosters separately, usable-row count, model-reference
+evidence and the shared currency/Hessian reports. Existing unstamped Hessian
+rows remain reported as unstamped, not invented matching claims. Report/input
+path aliases and hardlinks refuse. `--verify-report` checks the retained
+original absolute argument path still resolves to the same file and hashes
+the same bytes immediately before allocation; this catches retargeted file
+or parent-directory symlinks as well as content changes. Per-unit coverage,
+rendering identity and serving admission remain allocator/export decisions.
 
 Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
 is one rate, and a menu is the handful of them a launcher lists. A Tessera family
