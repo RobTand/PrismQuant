@@ -35,6 +35,9 @@ from prismaquant.shipcard import (
 import tools.publish_artifact as publisher
 from tools.publish_artifact import main as publish_cli
 from prismaquant.validate_quantized_model import (
+    BOUNDARY_ENDPOINT,
+    BOUNDARY_REQUEST_SCHEMA,
+    BOUNDARY_RESPONSE_SCHEMA,
     DEFAULT_BOUNDARY_MAX_TOKENS,
     DEFAULT_BOUNDARY_REPS,
     DEFAULT_BOUNDARY_TEMPERATURE,
@@ -122,6 +125,9 @@ def _ship_gate_record(model_sha, *, source, passed=True):
     if "boundary_behavior" in ledger:
         ledger["boundary_behavior"] = {
             "passed": True,
+            "endpoint": BOUNDARY_ENDPOINT,
+            "request_schema": BOUNDARY_REQUEST_SCHEMA,
+            "response_schema": BOUNDARY_RESPONSE_SCHEMA,
             "n_prompts": 5,
             "reps": DEFAULT_BOUNDARY_REPS,
             "n_generations": 5 * DEFAULT_BOUNDARY_REPS,
@@ -854,5 +860,4 @@ def test_ship_gate_ledger_follows_the_producer_not_a_roster(monkeypatch):
     ledger = _ship_gate_record("0" * 64, source="test")["metrics"]
     assert "mtp_acceptance_v2" in ledger
     assert "mtp_acceptance" not in ledger
-
 

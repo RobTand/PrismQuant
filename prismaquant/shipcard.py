@@ -2874,9 +2874,34 @@ def _verify_ship_gate_record(
         problems.append(f"{slot}: missing structured perplexity evidence")
     boundary = metrics.get("boundary_behavior")
     if isinstance(boundary, Mapping):
-        # The behavioral replay: a sampled check with no generations, run at
-        # temp 0, or with defects over the zero-tolerance bound is not
-        # evidence — it is the old argmax-blind gate wearing the new name.
+        # The behavioral replay: raw `/v1/completions` never applies the chat
+        # template, so a clean-looking count from that endpoint is not
+        # boundary evidence.  Pin the producer's request and extraction
+        # schemas independently here, alongside the numerical replay below.
+        endpoint = boundary.get("endpoint")
+        if endpoint != "/v1/chat/completions":
+            problems.append(
+                f"{slot}: boundary endpoint={endpoint!r}, expected "
+                "'/v1/chat/completions'"
+            )
+        request_schema = boundary.get("request_schema")
+        if request_schema != "prismaquant.boundary_chat_request/1":
+            problems.append(
+                f"{slot}: boundary request schema={request_schema!r}, "
+                "expected 'prismaquant.boundary_chat_request/1'"
+            )
+        response_schema = boundary.get("response_schema")
+        if response_schema != "prismaquant.boundary_chat_response/1":
+            problems.append(
+                f"{slot}: boundary response schema={response_schema!r}, "
+                "expected 'prismaquant.boundary_chat_response/1'"
+            )
+
+        # A sampled check with no generations, run at temp 0, or with defects
+        # over the zero-tolerance bound is not evidence — it is the old
+        # argmax-blind gate wearing the new name.  The zero/64 values remain
+        # fail-closed historical defaults pending #87's paired-control policy;
+        # replaying them here does not claim they are calibrated universally.
         generations = boundary.get("n_generations")
         if (
             isinstance(generations, bool)

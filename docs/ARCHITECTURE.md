@@ -19,6 +19,20 @@ source until a separate review of the producer's v5 contract; the release pin
 remains PENDING. Name-only/CLI callers without an explicit context remain
 closed under v5 rather than guessing a model-wide MoE or runtime scope.
 
+Re-stamped (2026-09-04, `codex/pq-175-ci-tessera`) for the **pinned Tessera
+CI dependency** (§8.6; RobTand/prismaquant#175). Both CPU jobs resolve the
+single `TESSERA_DEV_PIN_COMMIT` literal with a stdlib-only source parser before
+PrismaQuant can be imported, check out that exact commit with ordinary checkout
+access without persisting credentials, and install its bytes before
+PrismaQuant. Tessera remains private until its fixes and audit are complete;
+checkout failure is expected until Rob publishes it. No private-repository
+secret is required by this workflow. A failed
+pin resolver stops the step before publishing any checkout output; its exit
+status is preserved by a separate shell assignment, so an empty ref cannot
+fall back to Tessera's default branch. Gate:
+`tests/test_ci_tessera_install.py` (pre-fix: the workflow contained no pinned
+Tessera checkout).
+
 Re-stamped (2026-09-04, `codex/pq-tessera-v4-consumer`) for **development
 admission's predicate refusal** (§5.7). The shared parser retained cell
 predicates, but the shape-free development reader discarded them. It now
@@ -143,18 +157,22 @@ fourth lane with a novel gate is one spec file plus one verifier, and neither
 roster exists to be forgotten.
 
 
-Re-stamped (2026-09-03, `muse/pq-87-shipgate`) for the **sampled
-boundary-behavior ship gate** (§7.2; issue #87). KL/PPL and greedy-smoke are
-argmax- and distribution-distance measures, structurally blind to
-boundary-token defects that only manifest under sampling (three DSV4-Flash
-quants within ~3% PPL spanning a 6x behavioral gap). `run_validation` now
-files a fifth check, `boundary_behavior`: 5 terse prompts × 6 reps sampled at
-temperature 1.0 under a 64-token cap, scored by the server-free
-`score_boundary_text` for `zero_tag` / `think_stutter` / `cap_truncation`
-with a zero bound. `verify` replays the ledger membership, the exact
-boundary thresholds, and the evidence (positive generation count, zero
-defects, sampling temperature). Gates:
-`tests/test_ship_boundary_behavior.py` (14).
+Re-stamped (2026-09-04, `codex/pq-87-boundary-chat`) for the **sampled
+boundary-behavior request contract** (§7.2; issue #87, still open). The first
+physical run showed that the original implementation posted bare prompts to
+`/v1/completions`; vLLM applies no chat template there, so healthy DSV4 and
+Qwen references both failed 30/30 before artifact behavior was exercised. The
+check now posts a user `messages` body to `/v1/chat/completions`, explicitly
+enables thinking and reasoning output, and recovers the raw boundary semantics
+from either unparsed `message.content` or vLLM's structured `reasoning` /
+`reasoning_content` split. The endpoint plus request/response schema are filed
+in the check metrics and replayed by `shipcard.verify`, so a copied zero count
+from the old route cannot certify an artifact. **This fixes only the request
+contract.** The same run disproved the universal 64-token/zero-defect policy
+(healthy DSV4: 7/30 at 64; stock Qwen3-8B: 10/15 even at 600), so those values
+remain fail-closed historical defaults pending a same-session control-derived
+cap and control-relative verdict; no artifact is promoted and #87 is not
+closed on this commit. Gate: `tests/test_ship_boundary_behavior.py`.
 
 Re-stamped (2026-09-03, `pq132-fused-licence`) for the **fused module's
 per-member rung licence, read from the contract** (§4.10; PrismaQuant #132
@@ -7260,9 +7278,9 @@ CLI-overridable:
 | `DEFAULT_MAX_MEAN_NLL` | 3.0 | mean NLL |
 | `DEFAULT_MIN_GEN_LEN` | 30 chars | per completion |
 | `DEFAULT_MIN_MTP_ACCEPT_P0` | 0.60 | position-0 draft acceptance |
-| `DEFAULT_MAX_BOUNDARY_DEFECTS` | 0 | any `</think>` stutter/zero-tag/cap-truncation on a terse prompt is a functional failure (the answer is never reached); the clean reference scores 0 on this stratum (official unquantized 0/60 terse) |
+| `DEFAULT_MAX_BOUNDARY_DEFECTS` | 0 | fail-closed historical value, **not a calibrated universal bound**: stock Qwen3-8B produced 10/15 at a 600-token cap. Replacement requires a same-session control-relative policy; #87 remains open |
 | `DEFAULT_BOUNDARY_TEMPERATURE` | 1.0 | the unmodified distribution — any temperature > 0 leaves the argmax path greedy-smoke takes; temp 0 is refused, not sampled |
-| `DEFAULT_BOUNDARY_MAX_TOKENS` | 64 | far above what these prompts need, so `length` means runaway/loop |
+| `DEFAULT_BOUNDARY_MAX_TOKENS` | 64 | fail-closed historical value, **known too short**: healthy DSV4 produced 7/30 cap truncations. It remains only until the paired control derives its finishing cap from the model/context contract |
 | `DEFAULT_BOUNDARY_REPS` | 6 | the published battery's own replication count (30 prompts × 6 reps): 5 prompts × 6 reps = 30 sampled generations |
 
 **Sampled boundary behavior (#87).** KL/PPL (distribution distance) and
@@ -7271,13 +7289,32 @@ distribution defects that only manifest under sampling: three DSV4-Flash
 quants within ~3% PPL spanned a 6x behavioral gap (14/180 to 83/180) on the
 frozen battery, because greedy takes the argmax path where the boundary token
 still wins and KL/PPL average a per-token near-tie at one boundary position
-into noise. `check_boundary_behavior` (`:388`) samples the terse
-boundary-stressing prompts (ultra-short numeric, terse QA, short recall —
-the first three verbatim from the report) at temperature > 0 under a small
-cap and scores every generation with the server-free `score_boundary_text`
-(`:360`) for the closed defect vocabulary `zero_tag` / `think_stutter` /
-`cap_truncation`. It runs alongside KL/PPL, not replacing them: a few dozen
-sampled generations, minutes of serve time, no reference model needed.
+into noise. `check_boundary_behavior` samples the terse boundary-stressing
+prompts (ultra-short numeric, terse QA, short recall — the first three
+verbatim from the report) at temperature > 0 and scores every generation with
+the server-free `score_boundary_text` for the closed defect vocabulary
+`zero_tag` / `think_stutter` / `cap_truncation`. The request contract is
+`prismaquant.boundary_chat_request/1`: POST `/v1/chat/completions`, one user
+`messages` row, thinking enabled in the chat-template kwargs, reasoning
+included, and special tokens retained. The response contract is
+`prismaquant.boundary_chat_response/1`: raw `message.content` is scored
+directly; when vLLM's reasoning parser has consumed the first close token and
+split the response into `reasoning` (or legacy `reasoning_content`) plus
+`content`, the client reconstructs exactly that one boundary only when both
+reasoning-side and answer-side content are non-empty. A later close remains
+visible as stutter, while either empty side remains zero-tag/cap-truncation.
+Both schema identities and the endpoint are filed in the shipcard and replayed
+offline.
+
+This endpoint fix is necessary and insufficient. Physical evidence invalidated
+the current 64-token cap and a universal zero roster: healthy DSV4 still filed
+7/30 cap truncations at 64, while stock Qwen3-8B filed 10/15 even at 600. The
+pending policy is a same-session BF16 control whose cap grows until the control
+reaches its own finishing fixed point, bounded by the declared model context
+and an explicit backstop; the quantized arm is then scored control-relative at
+that exact cap. Until that paired receipt is specified and replayed, the old
+64/zero values remain fail-closed, #87 remains `needs-decision`, and a boundary
+check cannot promote an artifact.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return
@@ -7287,7 +7324,7 @@ ship-ready requires both. The same refusal now also guards the gold lane (§7.3)
 exist only here.
 
 **The guard fails closed, and the URL it uses is not `--base-url` verbatim (2026-08-14).**
-`--base-url` is the **server** root: the module appends `/v1/completions` itself and reads
+`--base-url` is the **server** root: the module appends its `/v1/*` endpoints itself and reads
 `/health` and `/metrics` off the root. The `compressed_tensors` lane spec published the OpenAI
 root (`http://127.0.0.1:8000/v1`), so on the Qwen3.8-27B ship gate `wait_for_ready` polled
 `/v1/health` — 404 — for 11 minutes and would have burned its whole 900 s timeout without
@@ -8390,7 +8427,13 @@ rather than uniform-format. Direct profile coverage asserts the spec stays
 empty so a native-lane assumption cannot silently constrain the Gridbook
 allocation.
 And there is CI to run it — `.github/workflows/ci.yml` (#18, `1cc7b90`) executes the suite on
-every push and PR, on py3.11 and 3.12 with CPU torch. §12 D11.
+every push and PR, on Python 3.12 with CPU torch. Before PrismaQuant is
+installed, both jobs use the stdlib-only `tools/resolve_tessera_dev_pin.py` to
+derive the exact Tessera checkout from `TESSERA_DEV_PIN_COMMIT`, stop
+without publishing a ref if that resolution fails, and install that checkout
+before exercising the package. Ordinary checkout access is sufficient once
+Tessera is public; while it remains private pending fixes and audit, checkout
+failure is expected. §12 D11.
 
 ### 8.7 A fourth plug-in point: `FormatCostPlugin` (formats, not models)
 
@@ -9282,7 +9325,7 @@ unplumbed).
 | ~~D8~~ | **CLOSED 2026-07-30 (re-vet R24).** `_production_cache_prefetch_assignment` gained a `require` mode mirroring `production_weight_cache.prefetch_assignment(require=…)`, exposed as `--production-cache-prefetch {require,warn}`; `run-pipeline.sh` passes `require` on the native lane (matching `VALIDATED_SOURCE_PREFETCH=require`), and the CB/GGUF lanes read no production cache at all. A total miss is now a named failure instead of a silent NVMe-bound export. | `export_native_compressed._production_cache_prefetch_assignment` | ~~MED~~ | closed |
 | ~~D9~~ | **CLOSED 2026-07-30 (re-vet R24).** The guard is at `main()` entry (not import time) in all seven — `incremental_probe`, `incremental_measure_quant_cost`, `aura_cost`, `production_render_cost`, `export_nvfp4_cb[_streaming]`, `export_gguf`, `select_validated_frontier` — verified against every CPU-only test import first, and a parametrized test pins all twelve callers so a refactor cannot drop one. | `gpu_guard.py` | ~~MED~~ | closed |
 | ~~D10~~ | **CLOSED 2026-07-30 (re-vet R5).** `pipeline.py` now has one real job — settings-hash authority (§3.4) — and the bookkeeping is honest: the two owner names that existed nowhere in the tree are deleted, `streaming_model_weights` names `layer_streaming.LayerCache`, and a test asserts every approved owner has a class behind it. `QuantWeightCache` went to the archive wall with L3, so it is no longer an unmodelled holder. The *spec* half stays explicitly descriptive (§3.6); modelling the ten executed-but-unmodelled stages was refused as fiction-surface. | §3.6; `pipeline.py` | ~~MED~~ | closed |
-| D11 | **MOSTLY FIXED 2026-07-30.** `model_profiles/validate.py`'s 8 conformance checks had zero callers and there were no workflow files in the tree. Both halves closed: `.github/workflows/ci.yml` (#18, `1cc7b90`) runs the suite on every push and PR (py3.11/3.12, CPU torch), and `tests/test_model_profile_conformance.py` drives the CPU-safe checks (1, 6, 8 + four structural invariants) over every registered profile, with 2/3/4 behind `integration` and 6/7 behind `slow`, and known gaps encoded as ratchets rather than bare xfails. **Residual (2026-07-30, R12): the check-5 half is now covered** — `test_has_mtp_implies_a_buildable_mtp_module` asserts `build_mtp_module` is a real override (and `mtp_source_prefix()` non-empty) whenever `has_mtp()`, which is the declarative part of the check that would catch L2/D2; check 5 proper still materialises a decoder layer and stays out of CI. Remaining: nothing invokes the validator as a `run-pipeline.sh` preflight for the actual `MODEL_PATH`. | `.github/workflows/ci.yml`; `tests/test_model_profile_conformance.py:9-31,223-249` | LOW (was MED) | Add a preflight invocation for `MODEL_PATH`. |
+| D11 | **MOSTLY FIXED 2026-07-30.** `model_profiles/validate.py`'s 8 conformance checks had zero callers and there were no workflow files in the tree. Both halves closed: `.github/workflows/ci.yml` (#18, `1cc7b90`) runs the suite on every push and PR (Python 3.12, CPU torch), and `tests/test_model_profile_conformance.py` drives the CPU-safe checks (1, 6, 8 + four structural invariants) over every registered profile, with 2/3/4 behind `integration` and 6/7 behind `slow`, and known gaps encoded as ratchets rather than bare xfails. **Residual (2026-07-30, R12): the check-5 half is now covered** — `test_has_mtp_implies_a_buildable_mtp_module` asserts `build_mtp_module` is a real override (and `mtp_source_prefix()` non-empty) whenever `has_mtp()`, which is the declarative part of the check that would catch L2/D2; check 5 proper still materialises a decoder layer and stays out of CI. Remaining: nothing invokes the validator as a `run-pipeline.sh` preflight for the actual `MODEL_PATH`. | `.github/workflows/ci.yml`; `tests/test_model_profile_conformance.py:9-31,223-249` | LOW (was MED) | Add a preflight invocation for `MODEL_PATH`. |
 | ~~D12~~ | **CLOSED 2026-07-30 (re-vet R1).** `TARGET_DISK_GB` is plumbed through `run-pipeline.sh`: it overrides `TARGET_BITS`, narrows the Pareto sweep to the byte-feasible bracket, flips `SELECTION_MODE` to `validated-surrogate` and the frontier pick to `budget` = min measured KL among the rows that fit. Kneedle stays the default without a card and stays a diagnostic. See §4.6. | §4.6; `select_validated_frontier --mode budget` | ~~MED~~ | closed |
 | D13 | **FIXED 2026-07-30 (R22 + R27).** The two hardcoded MiniMax arch tests now route through `profile.bypass_hf_fp8_module_rewrite()` and `profile.packed_expert_module_class_names()`; `specs/minimax_m2.json` exists and declares all eight of that profile's overrides; `deepseek_v4.json` declares `default_serving_profile: vllm_packed_moe`. Core-stack arch literals in control flow: **0**. Residual (not debt, sequencing): the MiniMax Python overrides stay until the equivalence gate `tests/test_minimax_m2_spec.py` has held for a release. | §8.4, §8.5 L4 | closed | — |
 | ~~D14~~ | **CLOSED 2026-08-01.** Runtime documentation now lives with the sole canonical Gridbook package. PrismaQuant documents only its producer/export contract and points to the pinned package's machine-readable runtime contract; the former in-tree README was deleted with the vendored runtime. | external Gridbook `README.md`; `prismaquant/gridbook_runtime/gridbook_runtime_pin.json` | ~~MED~~ | closed |

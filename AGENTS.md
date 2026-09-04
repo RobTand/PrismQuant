@@ -127,25 +127,50 @@ Before implementing new functionality, read this file,
     the envelope fraction also estimates remaining headroom, which wall-clock
     cannot. Do not diagnose a GPU hot path from utilization.
 
-14. **File the finding before you move on -- and err aggressive.** A defect
-    you noticed and did not file is a defect that dies with your context. The
-    cost of a duplicate issue is thirty seconds and a close; the cost of a lost
-    one is that it is rediscovered months later by an artifact. So the bar for
-    filing is **"I believe this is wrong"**, not "I have proved it is wrong and
-    scoped the fix" -- over-filing is explicitly sanctioned (Rob, 2026-09-03:
-    *"I don't care if we're too aggressive"*).
+14. **Fix the finding where you found it -- file only what you cannot.** A
+    defect you noticed and neither fixed nor filed dies with your context. But a
+    ticket is not the only record, and it is usually the worse one: whoever
+    tripped over the defect understands it better than any fresh agent will, and
+    that understanding evaporates the moment the task returns. A filed one-liner
+    then costs a brief, a worktree, a fresh-context ramp-up, a report and a
+    merge, to re-derive what somebody already knew. (Rob, 2026-09-03, watching a
+    dozen tickets arrive in an hour: *"we're just proliferating issues right now
+    that may make sense to fix in the context of the way in which they were
+    discovered."*)
 
-    The rule is *timely* as well as accurate. File it in the same working
-    session you found it, before starting the next task -- not at the end of the
-    day, not in a handover, not in a summary. A finding held in context for
-    "later" has already failed the rule.
+    **Default: fix it, on your branch, in a separate commit.** One commit does
+    one thing so a reviewer can take it or drop it alone -- that constraint is
+    satisfied by a second *commit*, and was never a reason to leave a defect
+    unfixed. Only the mixed commit is forbidden.
 
-    What a filed issue owes, and it is little: the **evidence at `file:line`**
-    (read the line, do not repeat a claim), what breaks and under what inputs,
-    a **severity** from the rubric below, and what would fix it -- or, when the
-    fix is a judgment call, the options and who decides. Say plainly what you
-    did *not* measure. A finding you are unsure of is filed with the
-    uncertainty stated, not withheld until it is certain.
+    **File instead when the fix is not yours to make:**
+    - it needs a decision only Rob prices -- a default moves, an artifact's bytes
+      move, a format menu or serving lane changes, a ship gate is involved;
+    - it needs a measurement you are not set up to take -- a served A/B, a
+      second model, the other box;
+    - it lives in another agent's live branch (read theirs, never edit theirs);
+    - it is large enough to swamp the diff of the task you came for.
+
+    Two bounds, so this is not a licence to widen scope: it covers what you
+    **trip over** doing the task you came for, never a hunt for adjacent work;
+    and every off-task fix is named in the report, one line each, so nothing
+    lands unannounced.
+
+    **When you do file, timeliness still binds.** Same working session, before
+    starting the next task -- not at the end of the day, not in a handover, not
+    in a summary. A finding held in context for "later" has already failed. The
+    bar is **"I believe this is wrong"**, not "I have proved it is wrong and
+    scoped the fix": over-filing beats losing a finding, and fixing beats both.
+
+    **Say which it was.** An issue filed under this principle records whether the
+    filer could have fixed it and chose not to, and why. Without that, a backlog
+    stops describing the work and starts hiding it.
+
+    What a filed issue otherwise owes is little: the **evidence at `file:line`**
+    (read the line, do not repeat a claim), what breaks and under what inputs, a
+    **severity** from the rubric below, and what would fix it -- or, when the fix
+    is a judgment call, the options and who decides. Say plainly what you did
+    *not* measure, and file an uncertain finding with its uncertainty stated.
 
     **Severity rubric.** `P0` -- can ship or serve a wrong artifact. `P1` -- a
     gate that cannot catch its own defect, or a wrong or underived number that
@@ -154,14 +179,11 @@ Before implementing new functionality, read this file,
     labels: `measurement-needed` when a GPU or served A/B decides it, and
     `needs-decision` when the answer is a trade only Rob prices.
 
-    **Two exceptions, both narrow.** (a) A finding in prose -- a doc, a
-    comment, a docstring -- is *fixed on sight*, not filed: reading the cited
-    line IS the verification, so a stale sentence is a one-line commit, not a
-    ticket. (b) A worker inside a delegated task does not widen scope and does
-    not file; it records the finding in its report with `file:line` and a
-    proposed severity, in a form the coordinator can file verbatim -- and the
-    **coordinator files it before starting the next task**, not after the queue
-    drains.
+    **One exception, narrower than it was.** A finding in prose -- a doc, a
+    comment, a docstring -- is *fixed on sight* and never filed: reading the
+    cited line IS the verification, so a stale sentence is a one-line commit.
+    (The former second exception, that a delegated worker neither fixes nor
+    files, is withdrawn: it described a constraint workers do not have.)
 
 ## Implementation Checklist
 
