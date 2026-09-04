@@ -160,8 +160,13 @@ def _allocator_inputs(tmp_path, fmt="BF16"):
     probe = tmp_path / "probe.pkl"
     costs = tmp_path / "cost.pkl"
     probe.write_bytes(pickle.dumps({"stats": stats, "meta": {"model": str(model_dir)}}))
+    # A scoped Tessera route quantizes activations: the legitimate guard must
+    # not mistake this synthetic fixture for a measured zero-cost identity.
+    cost_row = ({"weight_mse": 1e-4, "output_mse": 4e-4,
+                 "output_mse_measured": True}
+                if fmt.startswith("TESSERA_") else {"predicted_dloss": 0.0})
     costs.write_bytes(pickle.dumps({"costs": {
-        name: {fmt: {"predicted_dloss": 0.0}} for name in stats}, "formats": [fmt]}))
+        name: {fmt: dict(cost_row)} for name in stats}, "formats": [fmt]}))
     return ["--probe", str(probe), "--costs", str(costs), "--formats", fmt,
             "--allow-legacy-fisher-norm",
             "--target-profile", "tessera_research_sm121", "--target-bits", "16",
