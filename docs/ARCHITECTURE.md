@@ -3,6 +3,31 @@
 As of: 2026-09-05 · `claude/pq-222`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-222`) for **an allocation that keeps every
+routed expert in BF16 no longer being refused by its own export gate** (§5
+export lane; RobTand/prismaquant#229, P1). Selecting Tessera for a dense
+Linear while every routed expert stays BF16 is a decision the allocator is
+built to emit: `allocation_expert_projection_block` keeps the population and
+the producer's projection, records the stack's format as `BF16`, and carries
+an empty `tessera_expert_wires` map. The export lane filters the assignment
+to Tessera rows, so the selected routed subset is empty — yet
+`_carried_expert_projection` still returned a projection (with empty `units`
+and `stacks`) and `preflight` tested only that it was non-null, handing the
+empty map to the bundle writer, whose `cached_units_manifest` refuses `no
+priced expert wires to bundle`. Because `run-pipeline.sh` **always** passes
+`--write-cached-expert-units` on the Tessera export path, a valid mixed
+allocation exited 2 and published no build anchor, against `preflight`'s own
+documented contract that an allocation selecting no routed expert unit
+bundles nothing. The predicate is now the receipt's own value from the stamp
+below: the bundle is written exactly when `routed_expert_bytes` is
+`priced_wires`, so an anchor names a bundle in precisely the runs whose bytes
+come from one. The projection provenance is kept, not discarded, and
+`cached_units_manifest` still refuses an empty bundle where one is genuinely
+required. This is the case #222's third value (`no_routed_units`) exists to
+name, and it is distinct from #222's own: #222 is a routed **Tessera**
+selection carrying no projection, which silently re-encodes; #229 has a valid
+carried projection and **no selected Tessera expert at all**.
+
 Re-stamped (2026-09-05, `claude/pq-222`) for **the routed re-encode fallback
 being readable in the receipt** (§5 export lane; RobTand/prismaquant#222, P3).
 #220 made the producer's expert projection an UNLOCK, not a requirement: an
@@ -6273,7 +6298,15 @@ Two properties make the numbers comparable with the rest of the menu:
   `priced == written` on the routed leg: the exporter reuses the campaign's
   blobs instead of re-encoding the source. An allocation with no routed
   expert unit bundles nothing and the encode is byte-identical to one built
-  before this existed.
+  before this existed — **including one that carries the producer's projection
+  and keeps every routed expert in BF16** (#229). That allocation is one the
+  allocator emits by design (`allocation_expert_projection_block` records the
+  stack as BF16 with no wire receipts), and the gate refused it with exit 2
+  until the bundle was made conditional on `routed_expert_bytes ==
+  priced_wires` rather than on a projection merely being carried. Zero
+  selected Tessera experts means no bundle and no `--cached-expert-units`
+  handoff; where a bundle IS required, `cached_units_manifest` still refuses
+  an empty one.
 
 * **And the receipt names which path produced the routed bytes (PrismaQuant
   #222).** The projection is an unlock, not a requirement, so an allocation

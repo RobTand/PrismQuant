@@ -449,6 +449,9 @@ def test_cli_refuses_to_bundle_without_the_producers_schema(case, tmp_path, monk
 
 def test_cli_writes_no_bundle_for_an_allocation_without_a_projection(case, tmp_path,
                                                                      monkeypatch):
+    # The control below covers the STOCK-table shape: no projection metadata at
+    # all.  It is not the shape a #220 allocator emits, which is why it never
+    # caught #229 -- see the next test.
     _isolate_other_gates(monkeypatch)
     for name in _units():
         case.payload[name] = "BF16"
@@ -460,6 +463,69 @@ def test_cli_writes_no_bundle_for_an_allocation_without_a_projection(case, tmp_p
     build = json.loads((tmp_path / "build.json").read_text())
     assert "cached_expert_units" not in build
     assert not list(case.wire_dir.glob("*.json"))
+
+
+def _allocator_metadata(case, assignment):
+    """The projection block a REAL allocation carries, from the allocator's helper.
+
+    ``allocation_expert_projection_block`` is what `allocator.main` stamps, and
+    it is the producer side of the seam #229 was filed against: hand-built
+    metadata cannot show that the allocator and the export lane disagree about
+    what a retained projection means.  Shaped like the campaign cost table the
+    allocator reads -- population, projection and wire directory in
+    ``provenance``, the priced receipts keyed by rung at the top level.
+    """
+    meta = _meta(case)
+    payload = {
+        "provenance": {
+            POPULATION_KEY: meta[POPULATION_KEY],
+            PROJECTION_KEY: meta[PROJECTION_KEY],
+            "wire_dir": str(case.wire_dir),
+        },
+        EXPERT_WIRES_KEY: {name: {FMT: receipt}
+                           for name, receipt in case.receipts.items()},
+    }
+    return tep.allocation_expert_projection_block(payload, assignment)
+
+
+def test_cli_bundles_nothing_when_the_allocation_keeps_every_expert_in_bf16(
+        case, tmp_path, monkeypatch):
+    # PrismaQuant #229 (P1).  Selecting Tessera for a dense Linear while every
+    # routed expert stays BF16 is a decision the allocator is DESIGNED to
+    # produce: `allocation_expert_projection_block` keeps the population and
+    # the projection, records the stack as BF16, and carries no wire receipts.
+    # The export lane then filtered the assignment to Tessera rows, found no
+    # routed unit, and still handed the empty bundle to the writer -- so the
+    # driver, which always passes --write-cached-expert-units, refused a valid
+    # allocation with exit 2 and wrote no build anchor.
+    _isolate_other_gates(monkeypatch)
+    block = _allocator_metadata(
+        case, {DENSE: FMT, **{name: "BF16" for name in _units()}})
+    assert block[EXPERT_WIRES_KEY] == {}
+    assert block[STACK_FORMATS_KEY] == {STACK: "BF16"}
+    _meta(case).update(block)
+    for name in _units():
+        case.payload[name] = "BF16"
+        _meta(case)["tessera_serving_scope"]["by_unit"].pop(name)
+    _save(case)
+
+    # #222's third value is what draws the line: a carried projection that no
+    # SELECTED unit rides ships no routed byte, so there is nothing to bundle
+    # and nothing was re-encoded either.
+    scope = _scope(case)
+    assert set(scope["by_unit"]) == {DENSE}
+    assert scope[export.ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_NONE
+
+    assert _cli(case, tmp_path, "--write-cached-expert-units") == 0
+    build = json.loads((tmp_path / "build.json").read_text())
+    assert "cached_expert_units" not in build
+    assert not list(case.wire_dir.glob("*.json"))
+    # The provenance the allocator carried is KEPT, not discarded to get here.
+    assert build[export.BUILD_ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_NONE
+    carried = json.loads(case.assignment.read_text())["__prismaquant__"]
+    assert carried[PROJECTION_KEY] == _meta(case)[PROJECTION_KEY]
+    assert carried[POPULATION_KEY] == _meta(case)[POPULATION_KEY]
+    assert carried[STACK_FORMATS_KEY] == {STACK: "BF16"}
 
 
 def test_the_build_anchor_carries_which_path_produced_the_routed_bytes(case, tmp_path,

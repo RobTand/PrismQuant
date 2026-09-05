@@ -1212,7 +1212,10 @@ def preflight(model_path: str | Path, *, target=None,
     bundle for the priced expert wires this allocation selected, into the
     campaign's own wire directory, and names it in the build anchor so the
     driver hands the exporter the path rather than reconstructing it.  An
-    allocation that selects no routed expert unit bundles nothing.
+    allocation that selects no routed expert unit bundles nothing -- including
+    one that CARRIES the producer's projection and keeps every routed expert
+    in BF16, which is a decision the allocator emits and this gate refused
+    until #229.
     """
     structure = require_declared_structure(model_path)
     target = require_serving_target(target)
@@ -1250,7 +1253,23 @@ def preflight(model_path: str | Path, *, target=None,
             projection = scope.get("expert_projection")
             if projection is not None:
                 build["tessera_expert_stack_formats"] = dict(projection["stacks"])
-                if cached_expert_units:
+                # Bundle exactly when priced wires are what produce the routed
+                # bytes -- not merely when a projection is carried (#229).  An
+                # allocation that keeps every routed expert in BF16 and selects
+                # Tessera only for a dense Linear is one the allocator is
+                # designed to emit: `allocation_expert_projection_block` keeps
+                # the population and the projection and records the stack as
+                # BF16, so the projection here is non-null with no selected
+                # unit under it.  Testing non-null-ness handed that empty map
+                # to the bundle writer, which refuses "no priced expert wires
+                # to bundle" -- exit 2, no build anchor, on the normal driver
+                # path, which always passes the flag.  The receipt's own value
+                # is the predicate, so the anchor names a bundle in exactly the
+                # runs whose bytes come from one, and `cached_units_manifest`
+                # keeps refusing an empty bundle where one IS required.
+                if cached_expert_units and (
+                        scope[ROUTED_EXPERT_BYTES_KEY]
+                        == ROUTED_EXPERT_BYTES_PRICED_WIRES):
                     build["cached_expert_units"] = str(
                         write_cached_expert_units(projection))
         if file_sha256(assignment_path) != assignment_sha:
