@@ -436,3 +436,18 @@ def test_cost_pass_does_not_swallow_the_refusal(monkeypatch):
             _qwen3_model(), None, set(), [], [], "m", "p", "cpu", None,
             "unbatched", 1, "unused",
         )
+
+
+def test_perturbed_x_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`perturbed_x_cache.stage_text_only_under_work_root` answered `None`.
+
+    Which stages the checkpoint with the hardcoded default strip-key list
+    instead of the one the profile declares, so every perturbed-activation
+    row is then collected from a differently-staged model.
+    """
+    from prismaquant.perturbed_x_cache import stage_text_only_under_work_root
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_text_only_under_work_root(path, tmp_path / "work")
