@@ -1,4 +1,12 @@
-"""A v4 development pin reads the same cell grammar as export admission."""
+"""A v4 development pin reads the same cell grammar as export admission.
+
+The v4 table is a FIXTURE, down-converted from the installed contract by
+``conftest.legacy_v4_contract``. Until 2026-09-04 this file read the installed
+contract and asserted it WAS v4, which stopped being true when Tessera shipped
+``tessera.lane-eligibility.v6``; the reviewed-answer test below still reads the
+real installed contract, because the dev pin is an assertion about that file and
+about nothing this test made up.
+"""
 from __future__ import annotations
 
 import copy
@@ -11,6 +19,7 @@ from prismaquant import tessera_serving_runtime_pin as release
 
 
 def _packaged():
+    """The REAL installed contract -- the dev pin's own subject."""
     return json.loads(contract.contract_path().read_text(encoding="utf-8"))
 
 
@@ -18,8 +27,8 @@ def _parse(payload):
     return contract._parse(payload, commit="fixture", sha="fixture", path="fixture")
 
 
-def test_current_v4_contract_keeps_every_launch_and_residency():
-    payload = _packaged()
+def test_current_v4_contract_keeps_every_launch_and_residency(legacy_v4_contract):
+    payload = legacy_v4_contract
     assert payload["lane_eligibility"]["schema"] == "tessera.lane-eligibility.v4"
     parsed = _parse(payload)
     expected = {cell["id"]: cell for cell in payload["lane_eligibility"]["cells"]}
@@ -34,18 +43,26 @@ def test_current_v4_contract_keeps_every_launch_and_residency():
         assert set(cell.residency_modes) == set(flag.split("=", 1)[1].split("|"))
 
 
-def test_v4_reviewed_development_answer_does_not_open_release(monkeypatch):
-    monkeypatch.setenv(contract.TESSERA_DEV_PIN_ENV, "v4-regression")
+def test_the_reviewed_development_answer_is_the_installed_contracts(monkeypatch):
+    """The dev pin reads the REAL contract, and names the same Tessera the
+    serving pin does.
+
+    Until 2026-09-04 this test ended by asserting that the development pin did
+    not open the RELEASE gate, because that gate refused a PENDING pin. Rob
+    retired the tag, so the serving pin is resolved and the two pins now have
+    to agree instead -- letting them drift is how two of this repository's own
+    spec files came to disagree about one runtime.
+    """
+    monkeypatch.setenv(contract.TESSERA_DEV_PIN_ENV, "answer-regression")
     parsed = contract.load_tessera_contract()
     assert contract.contract_answer(parsed) == contract.TESSERA_DEV_PIN_ANSWER
     assert parsed.identity()["bytes_are_the_reviewed_bytes"] is True
-    assert parsed.native_cells("TESSERA_E4M3_K1", 1024)
     assert {cell.structure for cell in parsed.cells} == {
         cell["structure"] for cell in _packaged()["lane_eligibility"]["cells"]
     }
-    with pytest.raises(release.TesseraServingRuntimePinError, match="PENDING"):
-        release.require_exact_tessera_runtime_release(
-            release.load_tessera_serving_runtime_pin())
+    pin = release.load_tessera_serving_runtime_pin()
+    assert contract.TESSERA_DEV_PIN_COMMIT == pin.commit
+    assert contract.TESSERA_DEV_PIN_CONTRACT_SHA256 == pin.contract_sha256
 
 
 def test_launch_change_requires_development_pin_review():

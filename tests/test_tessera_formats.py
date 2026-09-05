@@ -796,41 +796,81 @@ def test_an_attested_lane_cannot_admit_an_unwritable_rung():
         ).producer_eligible
 
 
-def test_no_tessera_rung_is_producer_eligible_on_the_pinned_release():
+def test_tessera_rungs_are_producer_eligible_by_the_pin_and_only_by_it():
     """Principle 9, and the whole point of the pin.
 
-    Tessera's OWN packaged contract publishes both families with
-    ``device_qualified`` native cells, and the ``tessera`` package is
-    importable here (it is a producer-side render dependency).  Producer
-    eligibility is still False, and the *reason* is the tracked serving pin:
-    there is no Tessera release tag, so it carries PENDING sentinels.  Both
-    halves are asserted, because "False" without "because the pin" is a
-    correlation, and the day someone deletes the pin conjunct this test has to
-    fail rather than keep passing on an unrelated absence.
+    Until 2026-09-04 this test asserted the opposite: NO Tessera rung was
+    producer-eligible, because the tracked pin carried PENDING sentinels while
+    no Tessera release tag existed. Rob retired the tag requirement, so the pin
+    is now an exact commit plus the digest of the contract that commit
+    packages, and the dense rungs ARE eligible under it.
+
+    Both halves are still asserted, because eligibility without "because the
+    pin" is a correlation: the second half substitutes a wrong installed
+    digest and shows every rung go back to False. The day someone deletes the
+    pin conjunct, that half fails rather than quietly passing.
 
     The full-blooded admission logic lives in
     ``tests/test_tessera_lane_admission.py``.
     """
     from prismaquant import tessera_render as tr
+    from prismaquant import tessera_serving_runtime_pin as pin_module
     from prismaquant.tessera_render import synthesize_tessera_spec
-    from prismaquant.tessera_serving_runtime_pin import (
-        TesseraServingRuntimePinError,
-        load_tessera_serving_runtime_pin,
-        require_exact_tessera_runtime_release,
-    )
 
-    # The table is PRESENT and DOES govern both families -- so the refusal
-    # below cannot be coming from an absent or silent contract.
+    # The table is PRESENT and DOES govern both families.
     table, _formats = tr._pinned_serving_table()
     assert table.present
     assert table.governs("TESSERA_E2M1_K2") and table.governs("TESSERA_E4M3_K1")
 
-    with pytest.raises(TesseraServingRuntimePinError, match="PENDING"):
-        require_exact_tessera_runtime_release(load_tessera_serving_runtime_pin())
-    assert tr._release_pin_satisfied() is False
+    from prismaquant.lane_eligibility import ServingContext
 
+    pin_module.require_pinned_tessera_runtime()
+    assert tr._release_pin_satisfied() is True
+
+    # The installed table is SCOPED (lane schema v6), so admission needs an
+    # explicit serving context. Context-free eligibility -- which is what
+    # ``synthesize_tessera_spec`` asks -- is still False, and the reason is now
+    # the SCOPE rather than the pin. Two different refusals, asserted apart.
+    context = ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+    assert tr.tessera_lane_attested(
+        "TESSERA_E4M3_K1_R1024", serving_context=context) is True
+    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024") is False
+    assert not synthesize_tessera_spec("TESSERA_E4M3_K1_R1024").producer_eligible
+
+    # A rung no cell names stays False under the very same pin and context.
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K1_R640", serving_context=context) is False
+
+
+def _default_serve_image() -> str:
+    """The serve image the installed contract publishes as its default."""
+    import json
+    from importlib.resources import as_file
+    from prismaquant import tessera_runtime_contract as trc
+
+    with as_file(trc.contract_path()) as path:
+        return json.loads(path.read_text(encoding="utf-8"))[
+            "versions"]["default_serve_image"]
+
+
+def test_without_the_pinned_tessera_no_rung_is_eligible(monkeypatch):
+    """The refusal half: a Tessera whose contract is not the pinned bytes."""
+    from prismaquant import tessera_render as tr
+    from prismaquant import tessera_serving_runtime_pin as pin_module
+    from prismaquant.lane_eligibility import ServingContext
+    from prismaquant.tessera_render import synthesize_tessera_spec
+
+    monkeypatch.setattr(pin_module, "installed_tessera_contract_sha256",
+                        lambda: "c" * 64)
+    assert tr._release_pin_satisfied() is False
+    context = ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
     for name in ("TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024",
                  "TESSERA_E2M1_K1_R640"):
+        assert tr.tessera_lane_attested(name, serving_context=context) is False
         assert tr.tessera_lane_attested(name) is False
         assert synthesize_tessera_spec(name).producer_eligible is False
 

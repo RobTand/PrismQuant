@@ -47,13 +47,20 @@ Before implementing new functionality, read this file,
    `runtime_contract.json`, and on every such cell declaring
    `requires_plugin: "tessera"`, because stock vLLM has no reader for these
    bytes and the route is plugin-gated rather than merely flag-gated. Its
-   admission is **fail-closed until a Tessera release tag exists**: the pin
-   carries PENDING sentinels, `require_exact_tessera_runtime_release` refuses
-   them, and `tessera_render.tessera_lane_attested` therefore answers False for
-   every rung — by the pin, not by an edit — even though the contract publishes
-   the cells and the `tessera` package is importable producer-side. It is
-   dense-only at TP=1: no served measurement covers routed experts, so the
-   contract carries no `routed_moe` cell. The non-vLLM-native lanes are
+   admission is pinned to an **exact Tessera commit plus the SHA-256 of the
+   `runtime_contract.json` that commit packages** (pin schema
+   `prismaquant.tessera_serving_runtime_pin.v2`, 2026-09-04: Rob retired the
+   release-tag requirement). `require_pinned_tessera_runtime` refuses unless
+   the pin equals the reader's three pinned constants AND the installed
+   contract hashes to the pinned digest, so any other Tessera on `PYTHONPATH`
+   still answers False for every rung — by the pin, not by an edit.
+   `version_is_release` is recorded and advisory; no gate reads it. It is
+   dense-only at TP=1, and since contract v17 that is an EVIDENCE fact rather
+   than an absence: the contract does publish two `routed_moe` cells, both
+   carrying `evidence.smoke.status: "repetitive"`, and
+   `lane_eligibility.cell_evidence_admits` refuses them on that measured
+   generation failure. Promoting routed-MoE Tessera is Rob's decision under
+   principle 9; never widen the gate to admit one. The non-vLLM-native lanes are
    sanctioned, not exceptions; what is forbidden is a forked runtime.
    PrismaQuant must never vendor or import the Tessera *serving* runtime;
    compatibility crosses that repository boundary only through the immutable

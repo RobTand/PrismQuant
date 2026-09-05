@@ -146,19 +146,20 @@ def _pinned_serving_table():
 
 
 def _release_pin_satisfied() -> bool:
-    """Is the tracked Tessera serving pin an exact reviewed release?
+    """Is the INSTALLED Tessera the exact pinned one?
 
-    False today, and by the pin: there is no Tessera release tag, so the
-    tracked pin carries PENDING sentinels and
-    ``require_exact_tessera_runtime_release`` refuses them.  The module
-    attribute is looked up at call time so a test can substitute a
-    released-pin fixture without reaching inside this function.
+    Since 2026-09-04 the pin is a commit plus the packaged contract's
+    SHA-256, not a release tag, so this answers True whenever the installed
+    ``runtime_contract.json`` hashes to the pinned digest and the pin file
+    agrees with the module constants -- and False for any other Tessera on
+    ``PYTHONPATH``, which is the property the tag was standing in for.  The
+    module attribute is looked up at call time so a test can substitute a
+    pinned-runtime fixture without reaching inside this function.
     """
     from . import tessera_serving_runtime_pin as pin_module
 
     try:
-        pin_module.require_exact_tessera_runtime_release(
-            pin_module.load_tessera_serving_runtime_pin())
+        pin_module.require_pinned_tessera_runtime()
     except pin_module.TesseraServingRuntimePinError:
         return False
     return True
@@ -166,7 +167,8 @@ def _release_pin_satisfied() -> bool:
 
 def tessera_attesting_cells(
         name: str, *, table=None, formats=None,
-        serving_context: ServingContext | None = None) -> tuple:
+        serving_context: ServingContext | None = None,
+        ignore_evidence: bool = False) -> tuple:
     """The native device-qualified cells covering this rung, or ``()``.
 
     The match predicate of :func:`tessera_lane_admission`'s first conjunct,
@@ -176,11 +178,18 @@ def tessera_attesting_cells(
     verdict -- the caller reports *why* (no table, unpublished family, rate
     no cell names), exactly as the admission does.  The plugin-requirement
     check stays in the admission: it is a defect verdict, not a match rule.
-    A v5 table must cover every published regime within the same explicit
-    serving context; neither missing scope nor another image's cell attests it.
+    A scoped (v5 or later) table must cover every published regime within the
+    same explicit serving context; neither missing scope nor another image's
+    cell attests it.
+
+    Since schema v6 a matched cell must also pass its own published evidence
+    (``lane_eligibility.cell_evidence_admits``).  ``ignore_evidence=True``
+    matches WITHOUT that filter and exists for exactly one caller: the
+    admission, which asks a second time so its refusal can name the cell and
+    the reason rather than reporting the absence the filter produced.
     """
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, cell_matches_serving_context,
+        SCOPED_LANE_SCHEMAS, cell_evidence_admits, cell_matches_serving_context,
         resolve_payload_rung,
     )
 
@@ -193,7 +202,7 @@ def tessera_attesting_cells(
     family, _k, rate = resolve_payload_rung(name, published_formats=formats)
     if rate is None or not table.governs(family):
         return ()
-    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    scoped = table.schema in SCOPED_LANE_SCHEMAS
     if scoped and serving_context is None:
         return ()
     if not scoped and serving_context is not None:
@@ -205,6 +214,7 @@ def tessera_attesting_cells(
         and rate in cell.rungs_q256
         and cell.qualification == "device_qualified"
         and cell.route_status in _NATIVE_ROUTE_STATUSES
+        and (ignore_evidence or cell_evidence_admits(cell)[0])
         and (not scoped or cell_matches_serving_context(cell, serving_context))
     )
     if scoped and {cell.regime for cell in matched} != set(table.regimes):
@@ -251,14 +261,24 @@ def tessera_lane_admission(
        onto every ``UnitRoute`` / ``RegimeRoute`` (``requires_plugins``) and
        into ``EligibilityTable.provenance()`` (``required_plugins``) -- the
        payload the export gate stamps.
-    3. **The pinned runtime is an exact reviewed release.**  Without this
+    3. **The installed runtime is the exact pinned one.**  Without this
        conjunct the answer would flip to True the moment the ``tessera``
        package became importable -- which it already is, as a producer-side
-       render dependency -- and a producer-side import is not a serving
-       release.  There is no Tessera release tag today, so
-       ``require_exact_tessera_runtime_release`` refuses the tracked pin's
-       PENDING sentinels and **every Tessera rung is producer-ineligible by
-       the pin, not by an edit here**.
+       render dependency -- and a producer-side import is not an attested
+       serving runtime.  Since 2026-09-04 the pin is a commit plus the
+       packaged contract's SHA-256 rather than a release tag, so
+       ``require_pinned_tessera_runtime`` admits exactly the Tessera whose
+       ``runtime_contract.json`` hashes to
+       ``TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256`` and refuses every
+       other tree on ``PYTHONPATH`` -- **eligibility is decided by the pin,
+       not by an edit here**.
+    4. **The cell's own evidence admits it.**  A cell whose packaged
+       ``evidence.smoke.status`` records a degenerate greedy smoke is refused
+       by ``lane_eligibility.cell_evidence_admits``: the runtime measured this
+       route generating incorrectly, and principle 9 requires a route to
+       generate correctly.  That is a refusal the runtime attested, not a
+       structural ban this file typed; when the runtime records a clean smoke
+       the refusal lifts on its own and the re-pin is the review event.
 
     This is the scoped menu-level admission, one lookup. Per-unit structural
     predicates stay with ``lane_eligibility.resolve_unit_route`` at export.
@@ -269,7 +289,7 @@ def tessera_lane_admission(
     Gridbook pin no longer governs Tessera admission.
     """
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, LaneEligibilityError,
+        SCOPED_LANE_SCHEMAS, LaneEligibilityError, cell_evidence_admits,
         legacy_runtime_scope_refusal, resolve_payload_rung,
     )
     if table is None or formats is None:
@@ -288,17 +308,33 @@ def tessera_lane_admission(
     if not table.governs(family):
         return False, (
             f"the packaged Tessera contract does not publish {family}")
-    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    scoped = table.schema in SCOPED_LANE_SCHEMAS
     if not scoped and serving_context is not None:
         return False, legacy_runtime_scope_refusal(table.schema)
     if scoped and serving_context is None:
         return False, (
-            f"{name}: the packaged Tessera v5 contract requires an explicit "
+            f"{name}: the packaged Tessera {table.schema} contract requires an "
+            "explicit "
             "serving context (platform, structure, residency, runtime image "
             "and execution mode)")
     scope = {"serving_context": serving_context} if serving_context is not None else {}
     matched = list(tessera_attesting_cells(name, table=table, formats=formats, **scope))
     if not matched:
+        # Ask again without the evidence filter, so a cell that exists and was
+        # refused on what the runtime MEASURED on it does not read as a cell
+        # that does not exist. The two are opposite facts about the runtime,
+        # and a shipcard that could not tell them apart would report a missing
+        # route where the runtime published a failing one.
+        refused = [
+            cell_evidence_admits(cell)[1]
+            for cell in tessera_attesting_cells(
+                name, table=table, formats=formats, ignore_evidence=True, **scope)
+            if not cell_evidence_admits(cell)[0]
+        ]
+        if refused:
+            return False, (
+                f"{name}: the packaged Tessera contract's own evidence refuses "
+                f"this route. " + " ".join(sorted(set(refused))))
         if scoped:
             return False, (
                 f"the packaged Tessera contract has no complete device-qualified "
@@ -324,11 +360,13 @@ def tessera_lane_admission(
     if not _release_pin_satisfied():
         # The table HAS the row.  Saying anything else here would point a
         # reader at re-pinning a contract that already publishes the cell,
-        # when what is missing is a reviewed Tessera release tag.
+        # when what is missing is that the INSTALLED Tessera is not the
+        # pinned one.
         return False, (
             f"the packaged Tessera contract attests {len(matched)} native "
-            f"cell(s) for {family} R{rate}, but the tracked serving pin is "
-            f"not an exact reviewed release, so no rung is producer-eligible")
+            f"cell(s) for {family} R{rate}, but the installed Tessera is not "
+            "the pinned commit/contract digest, so no rung is "
+            "producer-eligible")
     return True, ""
 
 

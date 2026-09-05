@@ -46,7 +46,8 @@ from prismaquant.tessera_serving_runtime_pin import (
     TesseraServingRuntimePinError,
     load_tessera_serving_runtime_pin,
     parse_tessera_serving_runtime_pin,
-    require_exact_tessera_runtime_release,
+    require_exact_tessera_runtime_pin,
+    require_pinned_tessera_runtime,
     tessera_serving_runtime_pin_path,
 )
 
@@ -78,13 +79,14 @@ def _write(tmp_path, contract, name="contract.json"):
 
 @pytest.fixture()
 def released_pin(tmp_path, monkeypatch):
-    """A RELEASED Tessera pin, built through the real reader.
+    """A RESOLVED Tessera pin, built through the real reader and the real gate.
 
-    The fixture writes a pin file with a resolved commit/version, points the
-    two reviewed-release constants at it, and substitutes the loader on the pin
+    The fixture writes a pin file with a resolved commit/version/digest, points
+    the three pinned constants at it, and substitutes the loader on the pin
     MODULE -- which is where ``tessera_render._release_pin_satisfied`` looks it
-    up, at call time.  Nothing here weakens the parser or the release check:
-    both run exactly as they will on the day Rob cuts a tag.
+    up, at call time.  Nothing here weakens the parser or the gate: the digest
+    is the INSTALLED contract's real one, so the enforced conjunct runs for
+    real and only the two recorded-identity values are synthetic.
     """
     payload = {
         "schema": TESSERA_SERVING_RUNTIME_PIN_SCHEMA,
@@ -92,6 +94,7 @@ def released_pin(tmp_path, monkeypatch):
         "commit": FIXTURE_COMMIT,
         "version": FIXTURE_VERSION,
         "version_is_release": True,
+        "contract_sha256": pin_module.installed_tessera_contract_sha256(),
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
         "serving_residency_env": TESSERA_SERVING_RESIDENCY_ENV,
@@ -111,38 +114,44 @@ def released_pin(tmp_path, monkeypatch):
     path = tmp_path / "released_pin.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_COMMIT", FIXTURE_COMMIT)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_COMMIT", FIXTURE_COMMIT)
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_VERSION", FIXTURE_VERSION)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_VERSION", FIXTURE_VERSION)
+    monkeypatch.setattr(
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256",
+        payload["contract_sha256"])
     pin = pin_module.load_tessera_serving_runtime_pin(path)
     monkeypatch.setattr(
         pin_module, "load_tessera_serving_runtime_pin", lambda *a, **k: pin)
-    require_exact_tessera_runtime_release(pin)   # the real gate, satisfied
+    require_pinned_tessera_runtime(pin)   # the real gate, satisfied
     return pin
 
 
 # ---------------------------------------------------------------------------
 # The pin
 # ---------------------------------------------------------------------------
-def test_the_tracked_pin_is_pending_and_the_release_gate_refuses_it():
-    """Admission answers False TODAY BY THE PIN, not by an edit.
+def test_the_tracked_pin_is_an_exact_commit_and_the_installed_contracts_digest():
+    """Admission answers TODAY BY THE PIN, not by an edit.
 
-    The tracked pin is structurally valid -- so it can be reviewed -- and is
-    refused by the only function any gate consults. Both sentinels are pinned
-    verbatim: they are the conspicuous marks that say "no release tag exists",
-    and a silent drift to a resolved-looking value would be an admission.
+    Until 2026-09-04 this asserted the opposite -- the pin carried PENDING
+    sentinels and refused everything, because there was no Tessera release
+    tag. Rob retired the tag requirement, so what the pin now carries is an
+    exact commit plus the SHA-256 of the contract that commit packages, and
+    the gate compares the digest against the INSTALLED bytes. Same property,
+    a fact this process can check instead of a tag nobody wants to cut.
     """
     pin = load_tessera_serving_runtime_pin()
-    assert pin.commit == TESSERA_SERVING_RUNTIME_COMMIT_PENDING
-    assert pin.version == TESSERA_SERVING_RUNTIME_VERSION_PENDING
-    assert pin.version_is_release is False
-    assert pin.commit_is_resolved is False
-    assert pin.version_is_resolved is False
+    assert pin.commit_is_resolved and pin.version_is_resolved
+    assert pin.contract_sha256_is_resolved
     assert pin.plugin_entry_point == "tessera = tessera.serving:register"
 
-    with pytest.raises(TesseraServingRuntimePinError, match="PENDING"):
-        require_exact_tessera_runtime_release(pin)
-    assert tr._release_pin_satisfied() is False
+    require_pinned_tessera_runtime(pin)
+    assert tr._release_pin_satisfied() is True
+
+    with pytest.raises(TesseraServingRuntimePinError,
+                       match="the installed Tessera is not the pinned Tessera"):
+        require_exact_tessera_runtime_pin(
+            pin, installed_contract_sha256="e" * 64)
 
 
 def test_the_pin_file_on_disk_is_the_one_the_reader_parses():
@@ -154,23 +163,29 @@ def test_the_pin_file_on_disk_is_the_one_the_reader_parses():
 
 
 def test_a_pending_pin_cannot_be_marked_released():
-    """The one structural rule that stops a half-edit admitting anything."""
+    """The one structural rule that stops a half-edit admitting anything.
+
+    ``version_is_release`` is advisory since pin schema v2 -- no gate reads it
+    -- but the rule that keeps it TRUE when it is read is still enforced.
+    """
     payload = json.loads(
         tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    payload["commit"] = TESSERA_SERVING_RUNTIME_COMMIT_PENDING
     payload["version_is_release"] = True
     with pytest.raises(TesseraServingRuntimePinError, match="cannot be marked"):
         parse_tessera_serving_runtime_pin(payload)
 
 
-def test_a_resolved_pin_that_is_not_the_reviewed_release_is_refused():
-    """Resolving the JSON alone admits nothing: the constants must move too,
+def test_a_pin_that_is_not_the_reviewed_one_is_refused():
+    """Editing the JSON alone admits nothing: the constants must move too,
     in the same reviewed commit."""
     payload = json.loads(
         tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
     payload.update(commit="a" * 40, version="9.9.9", version_is_release=True)
     pin = parse_tessera_serving_runtime_pin(payload)
-    with pytest.raises(TesseraServingRuntimePinError, match="reviewed release"):
-        require_exact_tessera_runtime_release(pin)
+    with pytest.raises(TesseraServingRuntimePinError, match="ONE reviewed change"):
+        require_exact_tessera_runtime_pin(
+            pin, installed_contract_sha256=payload["contract_sha256"])
 
 
 # ---------------------------------------------------------------------------

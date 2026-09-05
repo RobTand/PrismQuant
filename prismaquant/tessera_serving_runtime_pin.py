@@ -15,27 +15,49 @@ boundary through exactly two objects -- this immutable pin, and the contract
 the runtime packages (``tessera/serving/runtime_contract.json``, read through
 ``importlib.resources``).
 
-**ADMISSION IS FAIL-CLOSED TODAY, BY THIS PIN, NOT BY AN EDIT.**  There is no
-Tessera release tag: cutting one is Rob's decision, not an agent's.  So the
-tracked pin's ``version`` and ``commit`` are conspicuous PENDING sentinels,
-``version_is_release`` is ``false``, and
-:func:`require_exact_tessera_runtime_release` REFUSES them.
-``tessera_render.tessera_lane_attested`` ANDs that refusal into its answer, so
-every Tessera rung is producer-ineligible even though the packaged contract
-publishes ``device_qualified`` cells for both families and the ``tessera``
-package is importable in this environment.  That is the point: without the pin
-conjunct, admission would flip to True the moment somebody put the Tessera
-source tree on ``PYTHONPATH``, which is the opposite of a reviewed release
-boundary.
+**THE PIN IS AN EXACT COMMIT PLUS THE CONTRACT'S DIGEST -- NOT A TAG.**
+Until 2026-09-04 this pin required a Tessera RELEASE, and admission was
+fail-closed because no tag existed.  Rob's instruction retired that:
+*"can we just pin prismaquant to latest version of tessera? then we won't have
+to keep cutting releases."*  "Latest" is read here as **an exact commit plus
+the packaged contract's raw SHA-256**, never as a floating ref.  A floating
+ref (``main``, "an installed source tree", "whatever imports") is precisely
+the failure principle 14 exists to prevent, and this module's own history
+names it: admission would flip to True the moment somebody put the Tessera
+source tree on ``PYTHONPATH``.
 
-**Cutting the release is ONE reviewed change, not three.**  Following the
-Gridbook discipline (a pin whose schema, version and commit cannot move by
-halves), resolving the tag means editing, in a single commit: the JSON pin's
-``commit``/``version``/``version_is_release``, AND the two module constants
-:data:`TESSERA_SERVING_RUNTIME_RELEASE_VERSION` /
-:data:`TESSERA_SERVING_RUNTIME_RELEASE_COMMIT` below.  The reader requires the
-pin to equal the constants, so a JSON edit alone cannot admit anything and a
-constant edit alone cannot either.
+Immutability now comes from those two values rather than from a tag, and the
+DIGEST is the enforced half.  PrismaQuant cannot verify a sibling checkout's
+git history from inside its own process -- a commit string is a claim about
+another repository -- but it CAN hash the contract bytes it is about to read,
+which is the only thing about the runtime a gate here actually consumes.  So:
+
+* :data:`TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256` is checked against
+  the installed ``tessera/serving/runtime_contract.json``, byte for byte, and
+  a mismatch REFUSES.  A stray Tessera checkout on ``PYTHONPATH`` whose
+  contract is not the pinned one is refused exactly as a PENDING pin was.
+* :data:`TESSERA_SERVING_RUNTIME_PINNED_COMMIT` is recorded identity: it says
+  which reviewed Tessera commit those bytes came from, so a shipcard and a
+  human can find the tree, and so ``git`` can settle any question the digest
+  raises.  The two are bound at review time by one command
+  (``git -C <tessera> show HEAD:src/tessera/serving/runtime_contract.json |
+  sha256sum``), which is what the pin's provenance records.
+
+**``version_is_release`` is ADVISORY.**  It is still required, still parsed,
+still recorded, and it still cannot be ``true`` over a PENDING commit -- so it
+keeps saying something true for an actual release.  What it no longer does is
+GATE: requiring it would re-impose the tag Rob just removed, and the
+immutability it was standing in for is now carried directly by the digest.
+
+**Moving the pin is ONE reviewed change, not three.**  Following the Gridbook
+discipline (a pin whose schema, version, commit and digest cannot move by
+halves), moving it means editing, in a single commit: the JSON pin's
+``commit``/``version``/``contract_sha256``, AND the module constants
+:data:`TESSERA_SERVING_RUNTIME_PINNED_VERSION` /
+:data:`TESSERA_SERVING_RUNTIME_PINNED_COMMIT` /
+:data:`TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256` below.  The reader
+requires the pin to equal the constants, so a JSON edit alone cannot admit
+anything and a constant edit alone cannot either.
 
 **THE EXTENSION TABLE IS TRANSCRIBED, AND REFUSED AGAINST ITS SOURCE.**
 ``serving_native_extensions`` is not this repository's opinion about which
@@ -66,10 +88,15 @@ artifact that does not exist.  The commit is the binding fact and it is the one
 this pin carries; when Tessera starts publishing wheels, a ``wheel_sha256``
 member is added here and to the JSON in the same reviewed commit.
 
-**The repository is local-only today.**  ``repository`` names the origin the
-release will be cut from; the tree lives at ``/home/rob/tessera`` and has not
-been pushed.  The field is the reviewed identity of the runtime, not a
-reachability claim.
+**A consequence worth stating.**  Under commit pinning, a developer checkout
+of Tessera that has moved past the pin makes this repository's Tessera tests
+go RED, by design: the installed contract is not the pinned contract, and
+fail-closed is the whole point.  The fix is environmental -- install Tessera
+at the pinned commit -- never a check that reads whatever is installed.
+
+**``repository`` names the origin the pin was reviewed from.**  It is the
+reviewed identity of the runtime, not a reachability claim, and no gate here
+fetches from it.
 """
 from __future__ import annotations
 
@@ -83,8 +110,12 @@ import re
 from typing import Any
 
 
+#: v2 (2026-09-04) added ``contract_sha256`` and demoted ``version_is_release``
+#: from gate to record.  The schema id moves with the member set, exactly as
+#: the Gridbook pin's did when ``version_is_release`` was added, so a v1 pin is
+#: refused rather than read as a v2 with a field missing.
 TESSERA_SERVING_RUNTIME_PIN_SCHEMA = (
-    "prismaquant.tessera_serving_runtime_pin.v1"
+    "prismaquant.tessera_serving_runtime_pin.v2"
 )
 TESSERA_SERVING_RUNTIME_REPOSITORY = (
     "https://github.com/RobTand/tessera.git"
@@ -99,17 +130,28 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
 #: The conspicuous sentinels a pin carries while no release tag exists.  They
 #: are structurally ACCEPTED by the parser -- so the pin file is reviewable,
 #: and so this module has something honest to say -- and REFUSED by every live
-#: admission gate through :func:`require_exact_tessera_runtime_release`.
+#: admission gate through :func:`require_exact_tessera_runtime_pin`.
 TESSERA_SERVING_RUNTIME_COMMIT_PENDING = "PENDING_TESSERA_RELEASE_COMMIT"
 TESSERA_SERVING_RUNTIME_VERSION_PENDING = "PENDING_TESSERA_RELEASE_VERSION"
+TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA256"
 
-#: The exact reviewed release.  Both are the PENDING sentinels because there is
-#: no Tessera release tag and creating one is Rob's call.  While they hold
-#: these values ``require_exact_tessera_runtime_release`` can never pass: the
-#: sentinel is not a resolved commit, and no resolved commit equals it.  The
-#: gate is therefore closed twice over, which is deliberate.
-TESSERA_SERVING_RUNTIME_RELEASE_VERSION = TESSERA_SERVING_RUNTIME_VERSION_PENDING
-TESSERA_SERVING_RUNTIME_RELEASE_COMMIT = TESSERA_SERVING_RUNTIME_COMMIT_PENDING
+#: The exact reviewed Tessera runtime: a commit, the distribution version at
+#: that commit, and the SHA-256 of the ``runtime_contract.json`` it packages.
+#:
+#: Bound at review time by one command, so the commit and the digest cannot be
+#: two independent assertions about one runtime::
+#:
+#:     git -C /home/rob/tessera show HEAD:src/tessera/serving/runtime_contract.json | sha256sum
+#:
+#: Recorded 2026-09-04T21:29-04:00 against Tessera master (contract v17, lane
+#: schema ``tessera.lane-eligibility.v6``, its PR #176).
+TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
+    "5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68"
+)
+TESSERA_SERVING_RUNTIME_PINNED_VERSION = "0.1.0"
+TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (
+    "ba3a3c69027a11f7bf9ef570867c58d608d0865c3e6a17dfeea53ba43ce055e6"
+)
 
 #: The vLLM plugin entry-point name the released runtime registers.  It is the
 #: value every packaged eligibility cell publishes in ``requires_plugin``, and
@@ -146,12 +188,14 @@ _REQUIRED_MEMBERS = {
     "commit",
     "version",
     "version_is_release",
+    "contract_sha256",
     "runtime_contract_schema",
     "plugin_entry_point",
     "serving_residency_env",
     "serving_native_extensions",
 }
 _FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9]+(?:[.][0-9]+)*(?:[A-Za-z0-9.+-]*)?")
 
 #: The exact keys one ``serving_native_extensions`` row carries, spelled the
@@ -242,7 +286,14 @@ class TesseraServingRuntimePin:
     repository: str
     commit: str
     version: str
+    #: ADVISORY since pin schema v2.  Recorded and structurally constrained (a
+    #: PENDING commit/version cannot be marked released), read by no gate: see
+    #: the module docstring for why requiring it would re-impose the tag.
     version_is_release: bool
+    #: SHA-256 of the ``runtime_contract.json`` the pinned commit packages.
+    #: The ENFORCED half of the pin -- the one fact about the serving runtime
+    #: this producer can verify from inside its own process.
+    contract_sha256: str
     runtime_contract_schema: str
     plugin_entry_point: str
     #: The serving runtime's one operator knob, transcribed so the serve
@@ -281,6 +332,10 @@ class TesseraServingRuntimePin:
         return (self.version != TESSERA_SERVING_RUNTIME_VERSION_PENDING
                 and _VERSION_RE.fullmatch(self.version) is not None)
 
+    @property
+    def contract_sha256_is_resolved(self) -> bool:
+        return _SHA256_RE.fullmatch(self.contract_sha256) is not None
+
 
 def parse_tessera_serving_runtime_pin(
     payload: Mapping[str, Any],
@@ -291,7 +346,7 @@ def parse_tessera_serving_runtime_pin(
 
     Accepting a pending pin *structurally* is what lets the file be reviewed
     before a tag exists.  It admits nothing: only
-    :func:`require_exact_tessera_runtime_release` is a gate, and it refuses
+    :func:`require_exact_tessera_runtime_pin` is a gate, and it refuses
     every sentinel.
     """
     if not isinstance(payload, Mapping) or set(payload) != _REQUIRED_MEMBERS:
@@ -325,6 +380,17 @@ def parse_tessera_serving_runtime_pin(
         raise TesseraServingRuntimePinError(
             f"{where}: version must be a release version or the exact "
             f"pending sentinel {TESSERA_SERVING_RUNTIME_VERSION_PENDING!r}"
+        )
+    contract_sha256 = payload["contract_sha256"]
+    if not isinstance(contract_sha256, str) or (
+        _SHA256_RE.fullmatch(contract_sha256) is None
+        and contract_sha256 != TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING
+    ):
+        raise TesseraServingRuntimePinError(
+            f"{where}: contract_sha256 must be 64 lowercase hex digits (the "
+            "SHA-256 of the runtime_contract.json the pinned commit packages) "
+            f"or the exact pending sentinel "
+            f"{TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING!r}"
         )
     released = payload["version_is_release"]
     if not isinstance(released, bool):
@@ -470,6 +536,7 @@ def parse_tessera_serving_runtime_pin(
         commit=commit,
         version=version,
         version_is_release=released,
+        contract_sha256=contract_sha256,
         runtime_contract_schema=str(payload["runtime_contract_schema"]),
         plugin_entry_point=entry_point,
         serving_residency_env=residency_env,
@@ -528,35 +595,113 @@ def load_tessera_serving_runtime_pin(
     return _read_pin(Path(path))
 
 
-def require_exact_tessera_runtime_release(
-    pin: TesseraServingRuntimePin,
-) -> None:
-    """Refuse anything that is not the exact reviewed Tessera release.
+def installed_tessera_contract_sha256() -> str:
+    """SHA-256 of the ``runtime_contract.json`` the INSTALLED Tessera packages.
 
-    Today it refuses everything, because both reviewed-release constants are
-    the PENDING sentinels: there is no Tessera release tag.  That refusal IS
-    the current admission answer -- ``tessera_lane_attested`` is False by this
-    function, not by a hand-typed constant somewhere -- and it lifts when Rob
-    cuts a tag and one reviewed commit resolves the JSON and the constants
-    together.
+    Resolved through ``tessera_runtime_contract.contract_path()`` -- the one
+    resolver both producer readers share -- so the bytes hashed here are the
+    bytes every other gate on this side reads.  Hashing a different copy would
+    make the pin attest a file nothing consumes.
+
+    Raises :class:`TesseraServingRuntimePinError` when there is no importable
+    Tessera at all, because "no runtime" and "the wrong runtime" must both
+    refuse; neither may read as "fine".
     """
-    if not pin.commit_is_resolved or not pin.version_is_resolved:
+    from importlib.resources import as_file
+    import hashlib
+
+    try:
+        from .tessera_runtime_contract import contract_path
+        with as_file(contract_path()) as path:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+    except TesseraServingRuntimePinError:
+        raise
+    except Exception as exc:  # ImportError, OSError, ModuleNotFoundError...
         raise TesseraServingRuntimePinError(
-            "Tessera serving runtime commit/version is still PENDING: no "
-            "Tessera release tag exists, so no Tessera route may be admitted. "
-            f"pin.version={pin.version!r} pin.commit={pin.commit!r}"
+            "cannot read the installed Tessera runtime contract, so the pin "
+            f"cannot be verified: {exc}"
+        ) from exc
+
+
+def require_exact_tessera_runtime_pin(
+    pin: TesseraServingRuntimePin,
+    *,
+    installed_contract_sha256: str,
+) -> None:
+    """Refuse anything that is not the exact pinned Tessera runtime.
+
+    A pure predicate over two inputs -- the tracked pin and the digest of the
+    contract actually installed -- so the rule can be tested without an
+    importable Tessera and cannot be satisfied by reading whatever happens to
+    be on ``PYTHONPATH``.  :func:`require_pinned_tessera_runtime` is the thin
+    resolver every live caller uses.
+
+    Three conjuncts, in the order a reader needs them:
+
+    1. The pin is RESOLVED -- no PENDING sentinel in the commit, the version
+       or the digest.
+    2. The pin EQUALS the module constants.  This is the "one reviewed change"
+       rule: a JSON edit alone admits nothing and a constant edit alone admits
+       nothing.
+    3. The INSTALLED contract hashes to the pinned digest.  This is the
+       enforced binding, and the reason a stray Tessera checkout on
+       ``PYTHONPATH`` is refused: the commit is a claim about another
+       repository that this process cannot check, but the bytes it is about to
+       read are right here.
+
+    ``version_is_release`` is deliberately absent from all three.  Rob retired
+    the tag requirement; a gate that still demanded the flag would re-impose
+    it.
+    """
+    if not (pin.commit_is_resolved and pin.version_is_resolved
+            and pin.contract_sha256_is_resolved):
+        raise TesseraServingRuntimePinError(
+            "the Tessera serving runtime pin is still PENDING, so no Tessera "
+            "route may be admitted. "
+            f"pin.version={pin.version!r} pin.commit={pin.commit!r} "
+            f"pin.contract_sha256={pin.contract_sha256!r}"
         )
     if (
-        pin.commit != TESSERA_SERVING_RUNTIME_RELEASE_COMMIT
-        or pin.version != TESSERA_SERVING_RUNTIME_RELEASE_VERSION
-        or pin.version_is_release is not True
+        pin.commit != TESSERA_SERVING_RUNTIME_PINNED_COMMIT
+        or pin.version != TESSERA_SERVING_RUNTIME_PINNED_VERSION
+        or pin.contract_sha256 != TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256
     ):
         raise TesseraServingRuntimePinError(
-            "Tessera serving runtime differs from the exact reviewed release "
-            f"({TESSERA_SERVING_RUNTIME_RELEASE_VERSION!r} / "
-            f"{TESSERA_SERVING_RUNTIME_RELEASE_COMMIT!r}); resolve the pin "
-            "file and the module constants in one reviewed commit"
+            "the tracked Tessera pin file and this module's constants "
+            "disagree; they are ONE reviewed change and neither half admits "
+            "anything alone.\n"
+            f"  constants: {TESSERA_SERVING_RUNTIME_PINNED_VERSION!r} / "
+            f"{TESSERA_SERVING_RUNTIME_PINNED_COMMIT} / "
+            f"{TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256}\n"
+            f"  pin file:  {pin.version!r} / {pin.commit} / "
+            f"{pin.contract_sha256}"
         )
+    if installed_contract_sha256 != pin.contract_sha256:
+        raise TesseraServingRuntimePinError(
+            "the installed Tessera is not the pinned Tessera. Its "
+            "runtime_contract.json hashes to\n"
+            f"  {installed_contract_sha256}\n"
+            "and the pin binds\n"
+            f"  {pin.contract_sha256}\n"
+            f"  (Tessera commit {TESSERA_SERVING_RUNTIME_PINNED_COMMIT}, "
+            f"version {TESSERA_SERVING_RUNTIME_PINNED_VERSION}).\n"
+            "Install Tessera at the pinned commit, or move the pin -- which "
+            "is a reviewed change to "
+            "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json AND "
+            "the constants in prismaquant/tessera_serving_runtime_pin.py, "
+            "together. Reading whatever is installed is the floating ref this "
+            "pin exists to refuse."
+        )
+
+
+def require_pinned_tessera_runtime(
+    pin: TesseraServingRuntimePin | None = None,
+) -> None:
+    """The live gate: the tracked pin against the installed contract's bytes."""
+    if pin is None:
+        pin = load_tessera_serving_runtime_pin()
+    require_exact_tessera_runtime_pin(
+        pin, installed_contract_sha256=installed_tessera_contract_sha256())
 
 
 __all__ = [
@@ -566,9 +711,11 @@ __all__ = [
     "TESSERA_SERVING_RESIDENCY_ENV",
     "TESSERA_SERVING_RUNTIME_COMMIT_PENDING",
     "TESSERA_SERVING_RUNTIME_CONTRACT_SCHEMA",
+    "TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING",
+    "TESSERA_SERVING_RUNTIME_PINNED_COMMIT",
+    "TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256",
+    "TESSERA_SERVING_RUNTIME_PINNED_VERSION",
     "TESSERA_SERVING_RUNTIME_PIN_SCHEMA",
-    "TESSERA_SERVING_RUNTIME_RELEASE_COMMIT",
-    "TESSERA_SERVING_RUNTIME_RELEASE_VERSION",
     "TESSERA_SERVING_RUNTIME_REPOSITORY",
     "TESSERA_SERVING_RUNTIME_VERSION_PENDING",
     "TesseraServingNativeExtension",
@@ -576,6 +723,8 @@ __all__ = [
     "TesseraServingRuntimePinError",
     "load_tessera_serving_runtime_pin",
     "parse_tessera_serving_runtime_pin",
-    "require_exact_tessera_runtime_release",
+    "installed_tessera_contract_sha256",
+    "require_exact_tessera_runtime_pin",
+    "require_pinned_tessera_runtime",
     "tessera_serving_runtime_pin_path",
 ]

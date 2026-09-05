@@ -645,9 +645,12 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     MUST be, or the gate is decorative.
     """
     answer = trc.contract_answer(trc.load_tessera_contract())
+    # ``required_regimes`` joins the answer for a SCOPED lane table (v5 and
+    # later): under one serving context every declared regime must resolve, so
+    # the regime roster is a value the admission decision is made of.
     assert set(answer) == {"schema", "lane_schema", "quant_method",
                            "native_extensions", "fused_module",
-                           "families", "cells"}
+                           "families", "cells", "required_regimes"}
     flat = repr(answer)
     # ``native_extensions`` is answer because the §7.4 fingerprint gate reads
     # it; the two fields of it that name files in the RUNTIME's own tree move
@@ -656,7 +659,11 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     # fields; the block's ``*_note`` keys are prose and stay out for the same
     # reason ``rationale`` does, and ``container`` names a sidecar no writer
     # here produces.
+    # ``default_serve_image`` replaced ``versions.attested_on`` at contract
+    # v17 and is identity for the same reason: it is a DEFAULT for harnesses,
+    # while what a gate decides on is each cell's own ``runtime.image``.
     for identity_field in ("contract_version", "plugin_version", "attested_on",
+                           "default_serve_image",
                            "rationale", "detail", "changelog",
                            "csrc/", "loaded_by",
                            "fields_note", "sidecar_q256_note",

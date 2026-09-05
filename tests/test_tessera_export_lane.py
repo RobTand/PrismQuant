@@ -32,7 +32,7 @@ from prismaquant.tessera_serving_runtime_pin import (
     TESSERA_SERVING_RESIDENCY_ENV,
     TESSERA_SERVING_RUNTIME_PIN_SCHEMA,
     TESSERA_SERVING_RUNTIME_REPOSITORY,
-    require_exact_tessera_runtime_release,
+    require_pinned_tessera_runtime,
 )
 
 #: The same non-real commit ``test_tessera_lane_admission`` uses: it exists to
@@ -51,6 +51,7 @@ def released_pin(tmp_path, monkeypatch):
         "commit": FIXTURE_COMMIT,
         "version": FIXTURE_VERSION,
         "version_is_release": True,
+        "contract_sha256": pin_module.installed_tessera_contract_sha256(),
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
         "serving_residency_env": TESSERA_SERVING_RESIDENCY_ENV,
@@ -70,13 +71,16 @@ def released_pin(tmp_path, monkeypatch):
     path = tmp_path / "released_pin.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_COMMIT", FIXTURE_COMMIT)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_COMMIT", FIXTURE_COMMIT)
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_VERSION", FIXTURE_VERSION)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_VERSION", FIXTURE_VERSION)
+    monkeypatch.setattr(
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256",
+        payload["contract_sha256"])
     pin = pin_module.load_tessera_serving_runtime_pin(path)
     monkeypatch.setattr(
         pin_module, "load_tessera_serving_runtime_pin", lambda *a, **k: pin)
-    require_exact_tessera_runtime_release(pin)   # the real gate, satisfied
+    require_pinned_tessera_runtime(pin)   # the real gate, satisfied
     return pin
 
 
@@ -93,13 +97,48 @@ def tessera_repo(tmp_path, monkeypatch):
     """
     from prismaquant.lane_spec import load_lane_spec
 
+    from prismaquant import tessera_export_lane as _tel
+
     root = tmp_path / "tessera-checkout"
     for tool in load_lane_spec("tessera").producer_tools:
         path = root / tool.path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# fixture\n", encoding="utf-8")
+    # Gate 5 requires this checkout to BE the pinned Tessera, so the fixture
+    # packages the very bytes the pin names -- copied from the installed
+    # contract rather than synthesized, which is what makes it the same
+    # object rather than a lookalike.
+    packaged = _tel.packaged_contract_path()
+    contract = root.joinpath("src", *packaged.parts[-3:])
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    contract.write_bytes(packaged.read_bytes())
     monkeypatch.setenv("TESSERA_REPO", str(root))
     return root
+
+
+def _dense_target():
+    """The serving target a SCOPED (v5/v6) contract requires, derived from it.
+
+    A scoped table admits only under one complete context, so a context-free
+    preflight is refused -- correctly.  Every value here is read off the
+    contract's own dense cell and its family's ``residency_modes`` rather than
+    typed, so a runtime that re-scopes the lane re-stales this helper instead
+    of quietly testing a context the runtime no longer publishes.
+    """
+    from prismaquant.tessera_serving_scope import ServingTarget
+
+    contract = json.loads(
+        tel.packaged_contract_path().read_text(encoding="utf-8"))
+    cell = next(c for c in contract["lane_eligibility"]["cells"]
+                if c["structure"] == "dense")
+    return ServingTarget(
+        platform=cell["platform"],
+        runtime_image=cell["runtime"]["image"],
+        execution_mode=cell["runtime"]["execution_modes"][0],
+        residency=next(row["residency_modes"][0]
+                       for row in contract["formats"]
+                       if row["family"] == cell["family"]),
+    )
 
 
 def _model_dir(tmp_path, **config):
@@ -151,36 +190,55 @@ def test_an_architecture_that_declares_the_lane_passes_the_r6_preflight():
 # ---------------------------------------------------------------------------
 # Gate 1 -- the release pin, which is what refuses today
 # ---------------------------------------------------------------------------
-def test_the_preflight_refuses_on_the_pending_pin_and_says_so(tmp_path):
-    """Admission is fail-closed BY THE PIN, and the message is actionable."""
+def test_the_preflight_refuses_a_tessera_that_is_not_the_pinned_one(monkeypatch):
+    """Admission is fail-closed BY THE PIN, and the message is actionable.
+
+    Until 2026-09-04 the refusal fired on PENDING sentinels, because no
+    Tessera release tag existed. Rob retired the tag, so what refuses now is
+    the digest: a Tessera on ``PYTHONPATH`` whose ``runtime_contract.json`` is
+    not the pinned bytes. Same fail-closed answer, a checkable fact.
+    """
+    monkeypatch.setattr(pin_module, "installed_tessera_contract_sha256",
+                        lambda: "d" * 64)
     with pytest.raises(tel.TesseraExportLaneError) as excinfo:
         tel.require_release_pin()
     message = str(excinfo.value)
-    assert "PENDING" in message
-    assert "RobTand/tessera#17" in message          # names the blocker
+    assert "the installed Tessera is not the pinned Tessera" in message
     assert "tessera_serving_runtime_pin.json" in message   # names the fix
-
-    # ... and it is the gate the whole preflight ends on.
-    assert tel.main(["--model", str(_model_dir(tmp_path))]) == 2
+    assert "ONE reviewed commit" in message                # names the shape
 
 
-def test_under_a_released_pin_the_whole_preflight_passes(
+def test_under_the_pinned_runtime_the_whole_preflight_passes(
         released_pin, tmp_path, tessera_repo):
     """The other half of "refused by the pin".
 
-    With ONLY the release boundary satisfied -- the real packaged contract,
-    the real lane spec, the real structure read -- a dense checkpoint clears
-    every gate.  That is what proves the refusal above is the pin's and not an
+    With ONLY the pin boundary satisfied -- the real packaged contract, the
+    real lane spec, the real structure read -- a dense checkpoint clears every
+    gate.  That is what proves the refusal above is the pin's and not an
     artefact of an unreadable table or an undeclared structure.
+
+    The target is not optional here: a scoped (v5/v6) contract admits under
+    one complete serving context, so the context-free call is refused first
+    and the pin is never reached.  Both halves are asserted, because "passes"
+    and "passes for the reason claimed" are different facts.
     """
-    report = tel.preflight(_model_dir(tmp_path))
+    with pytest.raises(tel.TesseraExportLaneError, match="scoped"):
+        tel.preflight(_model_dir(tmp_path))
+    report = tel.preflight(_model_dir(tmp_path), target=_dense_target())
     assert report["structure"] == "dense"
     assert report["quant_method"] == "tessera"
     assert report["executes"] == sorted(
         r["name_pattern"].replace("{k}", "*")
         for r in json.loads(tel.packaged_contract_path().read_text())["formats"]
     )
-    assert tel.main(["--model", str(_model_dir(tmp_path))]) == 0
+    target = _dense_target()
+    assert tel.main([
+        "--model", str(_model_dir(tmp_path)),
+        "--tessera-platform", target.platform,
+        "--tessera-runtime-image", target.runtime_image,
+        "--tessera-execution-mode", target.execution_mode,
+        "--tessera-residency", target.residency,
+    ]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -252,17 +310,53 @@ def test_the_structure_is_read_from_the_checkpoint_not_the_family(
     assert tel.model_structure(_model_dir(tmp_path, **config)) == expected
 
 
-def test_a_routed_moe_checkpoint_is_refused_by_the_contracts_own_field(
-        released_pin, tmp_path):
-    """Absence is the honest state: no served measurement covers routed
-    experts, so the contract declares `dense` and nothing here widens it."""
+def test_a_routed_moe_checkpoint_is_refused_by_the_contracts_own_evidence(
+        released_pin, tessera_repo, tmp_path):
+    """The refusal moved from absence to a MEASURED defect, and still refuses.
+
+    Contract v16 declared `dense` only, so a MoE checkpoint was refused by the
+    structure vocabulary.  v17 (Tessera PR #176) DECLARES `routed_moe` and
+    carries two routed-MoE cells -- and both publish
+    ``evidence.smoke.status: "repetitive"``: the runtime ran a greedy smoke on
+    those routes and the generation degenerated.
+
+    So the gate now reads ADMISSIBLE cells rather than the vocabulary.  A
+    structure whose every cell the runtime itself reports as generating
+    incorrectly does not become exportable because the vocabulary grew a
+    word.  Promoting it is a decision on evidence and it is Rob's
+    (principle 9); what this file pins is that PrismaQuant does not make it by
+    widening a gate.
+    """
     directory = _model_dir(tmp_path, num_experts=128,
                            architectures=["Qwen3MoeForCausalLM"])
+    contract = json.loads(
+        tel.packaged_contract_path().read_text(encoding="utf-8"))
+    cells = [c for c in contract["lane_eligibility"]["cells"]
+             if c["structure"] == "routed_moe"]
+    assert cells, "the packaged contract no longer covers routed_moe at all"
+    assert all(c["evidence"]["smoke"]["status"] == "repetitive" for c in cells)
+
     with pytest.raises(tel.TesseraExportLaneError) as excinfo:
         tel.require_declared_structure(directory)
     message = str(excinfo.value)
-    assert "routed_moe" in message and "['dense']" in message
+    assert "routed_moe" in message
+    assert "repetitive" in message          # the contract's own word
+    assert "belongs to Rob" in message      # the decision it does not make
     assert tel.main(["--model", str(directory)]) == 2
+
+    # ...and the refusal is EVIDENCE, not structure: a contract whose
+    # routed-MoE cells record a clean smoke passes this gate unchanged.
+    from prismaquant import lane_eligibility as le
+
+    real = le.cell_evidence_admits
+    tel_le = le
+    monkey = [c["id"] for c in cells]
+    tel_le.cell_evidence_admits = lambda cell: (True, "")
+    try:
+        assert tel.require_declared_structure(directory) == "routed_moe"
+    finally:
+        tel_le.cell_evidence_admits = real
+    assert monkey, "the fixture must name the cells it flipped"
 
 
 def test_a_checkpoint_with_no_config_is_refused_rather_than_assumed_dense(
@@ -352,3 +446,61 @@ def test_the_arm_invokes_exactly_the_declared_producer_tools():
     assert not undeclared, (
         "the arm shells out to Tessera-repository tools the lane does not "
         f"declare: {sorted(undeclared)}")
+
+
+# ---------------------------------------------------------------------------
+# Gate 5 -- the tools that WRITE the bytes come from the Tessera the pin attests
+# ---------------------------------------------------------------------------
+def test_the_checkout_that_encodes_must_be_the_tessera_the_pin_attests(
+        tessera_repo, released_pin, monkeypatch):
+    """Principle 8: the attested runtime and the encoding tools are one object.
+
+    Gate 1 hashes the ``tessera`` package this *process imports*.  Gate 4
+    resolves the two encoder scripts through ``$TESSERA_REPO``.  Nothing bound
+    those two together, so a run could satisfy the pin with one Tessera on
+    ``PYTHONPATH`` while a *different* checkout wrote the wire -- exactly the
+    rendering/execution split-brain principle 8 exists to stop, and a hole the
+    move from a release tag to a commit pin OPENS rather than closes (before
+    it, the lane could not build at all).
+
+    The check is the same predicate, applied to the checkout: the contract
+    that checkout packages must hash to ``pin.contract_sha256``.
+    """
+    from pathlib import Path
+
+    packaged = tel.packaged_contract_path()
+    # Derived, not typed: the repo-relative location comes from the installed
+    # package's own path tail, so a layout change is visible here.
+    suffix = Path(*packaged.parts[-3:])
+    good = tessera_repo / "src" / suffix
+    assert good.is_file(), (
+        "the fixture checkout must package the contract the pin names")
+    assert tel.require_producer_repo_is_pinned() == (str(tessera_repo),)
+
+    # A different Tessera under $TESSERA_REPO is refused, even though the
+    # importable one still satisfies gate 1.
+    good.write_text(good.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(tel.TesseraExportLaneError) as excinfo:
+        tel.require_producer_repo_is_pinned()
+    message = str(excinfo.value)
+    assert "TESSERA_REPO" in message
+    assert "pinned" in message
+
+    # ...and so is a checkout that packages no contract at all: absence is not
+    # read as agreement.
+    good.unlink()
+    with pytest.raises(tel.TesseraExportLaneError) as excinfo:
+        tel.require_producer_repo_is_pinned()
+    assert "packages no" in str(excinfo.value)
+
+
+def test_the_preflight_runs_the_producer_repo_gate(
+        tmp_path, tessera_repo, released_pin, monkeypatch):
+    """The gate is wired, not merely defined: a stray checkout stops a build."""
+    target = _dense_target()
+    calls = []
+    monkeypatch.setattr(
+        tel, "require_producer_repo_is_pinned",
+        lambda *a, **k: calls.append(True) or ("checked",))
+    tel.preflight(_model_dir(tmp_path), target=target)
+    assert calls, "preflight did not run the producer-repo gate"

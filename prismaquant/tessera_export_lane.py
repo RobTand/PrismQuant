@@ -20,12 +20,16 @@ which is the failure mode principle 14 exists to prevent.
 
 **Independent fail-closed gates, before encoding.**
 
-1. :func:`require_release_pin` -- the pinned Tessera serving runtime must be an
-   exact reviewed release.  It is not, today: no Tessera release tag exists
-   (RobTand/tessera#17), so this refuses release exports regardless of whether
-   development admission is enabled. That is stated where an
-   operator can act on it, rather than as ``unknown export lane`` from a
-   vocabulary check three layers up.
+1. :func:`require_release_pin` -- the INSTALLED Tessera must be the exact
+   pinned one: the pin's commit and the SHA-256 of the packaged
+   ``runtime_contract.json`` the run actually imports.  Since 2026-09-04 that
+   is what immutability rests on -- Rob retired the release-tag requirement
+   ("can we just pin prismaquant to latest version of tessera? then we won't
+   have to keep cutting releases"), and a digest is a stronger claim than a
+   tag because a tag can be moved and a stray tree cannot be hashed into
+   agreement.  This refuses release exports regardless of whether development
+   admission is enabled, and says so where an operator can act on it rather
+   than as ``unknown export lane`` from a vocabulary check three layers up.
 2. :func:`require_executes_derived_from_contract` -- principle 14.  The lane
    spec's ``served_activation_quantization.executes`` states what the serving
    runtime EXECUTES, so it is DERIVED from the ``formats[]`` table the runtime
@@ -41,7 +45,14 @@ which is the failure mode principle 14 exists to prevent.
    carries each tool's stability and its tracking issue, so a shipping lane's
    dependency on a script with no stability promise is a value a reader and a
    gate can both see (RobTand/prismaquant#119).
-5. :func:`require_serving_target` and :func:`require_assignment_scope` -- v5
+5. :func:`require_producer_repo_is_pinned` -- the checkout those tools come
+   from must be the SAME Tessera the pin attests: the
+   ``runtime_contract.json`` it packages must hash to the pin's
+   ``contract_sha256``.  Gate 1 hashes the package this process *imports*;
+   without this one a run could satisfy the pin with one Tessera while a
+   different checkout WROTE the wire, which is principle 8's split-brain.
+6. :func:`require_serving_target` and :func:`require_assignment_scope` -- a
+   scoped (v5/v6) contract
    needs an explicit runtime target. Before translation, every selected
    Tessera unit must retain the allocation's target and per-unit context,
    agree with the source header and profile topology, and resolve all regimes
@@ -86,29 +97,33 @@ class TesseraExportLaneError(RuntimeError):
 # Gate 1 -- the release pin
 # ---------------------------------------------------------------------------
 def require_release_pin() -> None:
-    """Refuse unless the pinned Tessera serving runtime is a reviewed release.
+    """Refuse unless the INSTALLED Tessera is the exact pinned runtime.
 
     This is the same conjunct ``tessera_render.tessera_lane_attested`` ANDs
     into producer eligibility, called here so the driver's refusal and the
     allocator's refusal are the same fact rather than two.
+
+    The name is historical: since 2026-09-04 the pin is a commit plus the
+    packaged contract's SHA-256 rather than a release tag, because Rob retired
+    the tag requirement ("we won't have to keep cutting releases"). What the
+    gate asserts is unchanged in kind -- an exact, immutable, reviewed runtime
+    -- and the digest is what makes it enforceable here.
     """
     from . import tessera_serving_runtime_pin as pin_module
 
     try:
-        pin = pin_module.load_tessera_serving_runtime_pin()
-        pin_module.require_exact_tessera_runtime_release(pin)
+        pin_module.require_pinned_tessera_runtime()
     except pin_module.TesseraServingRuntimePinError as exc:
         raise TesseraExportLaneError(
-            f"the pinned Tessera serving runtime is not a reviewed release: "
-            f"{exc}\n"
-            "  There is no Tessera release tag yet (RobTand/tessera#17), and "
-            "cutting one is Rob's decision, not this pipeline's. Until then "
-            "the release export lane is declared and gated but cannot build. "
-            "Explicit development admission may allocate research artifacts; "
-            "it does not satisfy this release gate.\n"
-            "  Resolving it is ONE reviewed commit: "
+            f"the installed Tessera is not the pinned Tessera serving "
+            f"runtime: {exc}\n"
+            "  Until the two agree the release export lane is declared and "
+            "gated but cannot build. Explicit development admission may "
+            "allocate research artifacts; it does not satisfy this gate.\n"
+            "  Either install Tessera at the pinned commit, or move the pin "
+            "-- ONE reviewed commit editing "
             "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json's "
-            "commit/version/version_is_release AND the two release constants "
+            "commit/version/contract_sha256 AND the three pinned constants "
             "in prismaquant/tessera_serving_runtime_pin.py, together."
         ) from None
 
@@ -229,8 +244,26 @@ def model_structure(model_path: str | Path) -> str:
 
 
 def require_declared_structure(model_path: str | Path) -> str:
-    """Refuse a checkpoint whose structure the packaged contract omits."""
-    from .lane_eligibility import load_eligibility_table
+    """Refuse a checkpoint no ADMISSIBLE cell of the packaged contract covers.
+
+    Two refusals, and they are different facts an operator acts on differently:
+
+    * the contract's ``structures`` vocabulary omits this class -- the runtime
+      has said nothing about it, which is UNATTESTED;
+    * the vocabulary names it, but every cell that covers it is refused by the
+      contract's **own** ``evidence`` (``lane_eligibility.cell_evidence_admits``)
+      -- the runtime measured those routes and published a defect.
+
+    The second is why this gate reads admissible cells rather than the
+    vocabulary.  Contract v17 DECLARES ``routed_moe`` and carries two
+    routed-MoE cells, both publishing ``evidence.smoke.status: "repetitive"``:
+    a greedy smoke that degenerated.  Reading the vocabulary alone would let a
+    MoE checkpoint past this gate on the strength of a structure name whose
+    every cell the runtime itself reports as generating incorrectly.  Nothing
+    here bans a structure (principle 1): when Tessera records a clean smoke the
+    refusal lifts on its own, and re-pinning that contract is the review event.
+    """
+    from .lane_eligibility import cell_evidence_admits, load_eligibility_table
 
     table = load_eligibility_table(contract_path=packaged_contract_path())
     if not table.present:
@@ -246,6 +279,25 @@ def require_declared_structure(model_path: str | Path) -> str:
             "  A checkpoint class absent from the published table is not "
             "attested. Do not replace its selected units with BF16 merely "
             "to build an artifact different from the allocation that priced it."
+        )
+    refusals = sorted({
+        reason for cell in table.cells if cell.structure == structure
+        for admits, reason in (cell_evidence_admits(cell),) if not admits
+    })
+    admissible = any(
+        cell.structure == structure and cell_evidence_admits(cell)[0]
+        for cell in table.cells
+    )
+    if not admissible:
+        raise TesseraExportLaneError(
+            f"this checkpoint's structure is {structure!r}: the pinned "
+            "Tessera runtime declares it, but every cell covering it is "
+            "refused by the contract's OWN published evidence.\n  "
+            + "\n  ".join(refusals or ["the table carries no cell for it"])
+            + "\n  This is a serving defect the runtime measured, not a ban "
+            "this repository typed. Promoting the structure is a decision on "
+            "the evidence -- it belongs to Rob (principle 9), not to a wider "
+            "gate here."
         )
     return structure
 
@@ -310,13 +362,79 @@ def require_producer_tools(
     return tuple(resolved)
 
 
+def require_producer_repo_is_pinned(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Refuse unless the checkout that ENCODES is the Tessera the pin attests.
+
+    Gate 1 hashes the ``tessera`` package this *process imports*; gate 4
+    resolves the two encoder scripts through the env var each
+    ``producer_tools`` entry names (``TESSERA_REPO``).  Nothing bound those
+    two together, so a run could satisfy the pin with one Tessera on
+    ``PYTHONPATH`` while a **different** checkout wrote the wire -- the
+    rendering/execution split-brain principle 8 exists to stop.
+
+    That hole is one this change OPENS rather than closes: while the pin
+    carried PENDING sentinels the lane could not build at all, so the two
+    Tesseras could never diverge in a run that produced bytes.  Making the pin
+    admittable makes the second Tessera reachable, so the same predicate is
+    applied to the checkout: the ``runtime_contract.json`` it packages must
+    hash to ``pin.contract_sha256``.
+
+    The repo-relative location is DERIVED from the installed package's own
+    path tail rather than typed, and both a ``src/`` layout and a flat one are
+    accepted, because asserting another repository's directory layout is the
+    kind of hand-assertion principle 14 refuses.  Absence is never read as
+    agreement: a checkout that packages no contract is refused.
+    """
+    import os
+
+    from .lane_spec import load_lane_spec
+    from .shipcard import file_sha256
+    from .tessera_serving_runtime_pin import load_tessera_serving_runtime_pin
+
+    env = os.environ if env is None else env
+    pin = load_tessera_serving_runtime_pin()
+    suffix = Path(*packaged_contract_path().parts[-3:])
+    roots: list[str] = []
+    for tool in load_lane_spec("tessera").producer_tools:
+        root = str(env.get(tool.repo_env, "") or "").strip().rstrip("/")
+        if not root or root in roots:
+            continue
+        roots.append(root)
+        candidates = [Path(root) / "src" / suffix, Path(root) / suffix]
+        found = next((c for c in candidates if c.is_file()), None)
+        if found is None:
+            raise TesseraExportLaneError(
+                f"${tool.repo_env}={root} packages no {suffix} -- so the "
+                "checkout that would ENCODE the wire cannot be shown to be "
+                "the Tessera the serving pin attests. This repository names "
+                "Tessera's tools instead of vendoring them; point "
+                f"{tool.repo_env} at the pinned commit "
+                f"({pin.commit})."
+            )
+        digest = file_sha256(found)
+        if digest != pin.contract_sha256:
+            raise TesseraExportLaneError(
+                f"${tool.repo_env}={root} is not the pinned Tessera: it "
+                f"packages a contract hashing {digest}, and the pin names "
+                f"{pin.contract_sha256}. The runtime that ATTESTS the route "
+                "and the checkout that WRITES the bytes must be one object "
+                "(principle 8); a producer-side import satisfying the pin "
+                "while a second checkout encodes is exactly the split this "
+                f"gate refuses. Check out {pin.commit}, or move the pin in "
+                "ONE reviewed commit."
+            )
+    return tuple(roots)
+
+
 # ---------------------------------------------------------------------------
 # Runtime-scoped export -- the allocation and source, not a model-wide guess
 # ---------------------------------------------------------------------------
 def require_serving_target(target=None, *, table=None):
     """Validate explicit v5 target input without inventing a per-unit claim."""
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, legacy_runtime_scope_refusal,
+        SCOPED_LANE_SCHEMAS, legacy_runtime_scope_refusal,
         load_eligibility_table,
     )
     from .tessera_serving_scope import ServingTarget
@@ -324,12 +442,13 @@ def require_serving_target(target=None, *, table=None):
     if table is None:
         table = load_eligibility_table(contract_path=packaged_contract_path())
     if target is None:
-        if table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA:
+        if table.schema in SCOPED_LANE_SCHEMAS:
             raise TesseraExportLaneError(
-                "an explicit Tessera serving target is required for v5 export; "
+                "an explicit Tessera serving target is required for a scoped "
+                "(v5 or later) export; "
                 "supply platform, runtime image, execution mode and residency")
         return None
-    if table.schema != LANE_ELIGIBILITY_SCHEMA_TESSERA:
+    if table.schema not in SCOPED_LANE_SCHEMAS:
         raise TesseraExportLaneError(legacy_runtime_scope_refusal(table.schema))
     try:
         validated = ServingTarget(**target.as_dict())
@@ -389,7 +508,7 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     require that producer projection and are refused here.
     """
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, QUALIFICATION_DEVICE_QUALIFIED, ROUTE_STATUS_BACKED,
+        SCOPED_LANE_SCHEMAS, QUALIFICATION_DEVICE_QUALIFIED, ROUTE_STATUS_BACKED,
         ROUTE_STATUS_BACKED_WITH_SERVE_FLAG, ServingContext, cell_matches_serving_context,
         load_eligibility_table, load_published_formats, resolve_unit_route,
         unit_structural_facts,
@@ -402,7 +521,7 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     table = load_eligibility_table(contract_path=path)
     # An old context-free export remains the old export. Explicitly scoped
     # queries never borrow a legacy table's global runtime identity.
-    if target is None and table.schema != LANE_ELIGIBILITY_SCHEMA_TESSERA:
+    if target is None and table.schema not in SCOPED_LANE_SCHEMAS:
         return None
     if target is None:
         require_serving_target(target, table=table)
@@ -486,6 +605,7 @@ def preflight(model_path: str | Path, *, target=None,
     target = require_serving_target(target)
     executes = require_executes_derived_from_contract()
     producer_tools = require_producer_tools()
+    producer_repos = require_producer_repo_is_pinned()
     require_release_pin()
     scope = None
     build = None
@@ -520,6 +640,7 @@ def preflight(model_path: str | Path, *, target=None,
         "structure": structure,
         "executes": list(executes),
         "producer_tools": list(producer_tools),
+        "producer_repos": list(producer_repos),
         "unsupported_producer_tools": [
             f"${{{tool.repo_env}}}/{tool.path} ({tool.tracking_issue})"
             for tool in spec.producer_tools if tool.stability != "supported"
