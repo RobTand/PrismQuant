@@ -1,7 +1,15 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/audit4-smoke-grammar`. Stamps
+As of: 2026-09-05 · `codex/audit4-integration`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/audit4-census`) for **replaying scoped census
+runtime-image declarations at fill and publication** (PrismaQuant #232,
+§7.1). A v2 image label alone is legacy evidence. Both consumers require the
+supported launcher declaration and replay its image, resolved reference,
+RepoDigests membership and non-refusal through Tessera's pure
+`runtime_image.declared_reference` helper. No launcher evidence is invented
+for historical receipts; the missing declaration receives a named refusal.
 
 Re-stamped (2026-09-05, `codex/audit4-smoke-grammar`) for producer/consumer
 v9 smoke-record grammar parity (PrismaQuant #233). Before deriving admission,
@@ -8299,6 +8307,19 @@ SHA256 and `__prismaquant__.tessera_serving_scope` must independently match
 paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
 match the retained texts and the actual artifact files, so host/container
 checkpoint path aliases are valid but an artifact-free replay is not.
+
+The raw census must also carry `runtime_image_declaration` from Tessera's
+post-#132 launcher protocol. Its schema, source and environment-variable names
+must match Tessera's exported declaration constants, and its record must
+explicitly declare boolean non-refusal and a RepoDigests string list. The
+shared fill/publication predicate replays that record through Tessera's
+stdlib `runtime_image.declared_reference`: the selected image must equal the
+declared image and resolved reference and occur in RepoDigests. It never
+consults the publisher's environment, daemon or box-local image ID. Unsupported
+or contradictory declarations refuse; a missing declaration is named
+`image_declaration_missing` legacy v2 evidence and requires a fresh census.
+This checks the launcher's declaration, not an unforgeable image attestation,
+and imports no serving execution implementation.
 
 **Reachable at the current pin, by the pin rather than by a flag.** The scoped
 path takes the packaged contract's lane table through

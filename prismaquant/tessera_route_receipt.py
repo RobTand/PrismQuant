@@ -381,6 +381,46 @@ def _priced_projection_population(binding, build, formats):
     return target, by_unit, owners
 
 
+def _check_runtime_image_declaration(census, requested):
+    """Replay the launcher's carried declaration through its pure Tessera owner.
+
+    ``runtime_image`` is the stdlib metadata helper also used by Tessera's
+    contract image parser; it imports no serving execution code. Supply only
+    the receipt's inputs, never this publisher's environment or Docker daemon.
+    """
+    from tessera.serving import runtime_image
+
+    _require("runtime_image_declaration" in census,
+             "image_declaration_missing: legacy v2 census has only an operator-asserted "
+             "runtime image; rerun the census under a declaring launcher")
+    declaration = _object(census["runtime_image_declaration"], "runtime_image_declaration")
+    _require(declaration.get("schema") == runtime_image.DECLARATION_SCHEMA and
+             declaration.get("source") == runtime_image.DECLARATION_SOURCE and
+             declaration.get("env") == [runtime_image.CENSUS_IMAGE_ENV,
+                                         runtime_image.CENSUS_DECLARATION_ENV],
+             "image_declaration_unsupported: unsupported declaration schema/source/env")
+    image = declaration.get("image")
+    _require(isinstance(image, str) and bool(image),
+             "image_declaration_unreadable: missing declared image")
+    record = _object(declaration.get("record"), "runtime_image_declaration.record")
+    # JSON shape guards: a string is not a RepoDigests list, and an omitted
+    # or false-like refused value is not an explicit non-refusal.
+    _require(type(record.get("refused")) is bool,
+             "image_declaration_unreadable: record.refused must be boolean")
+    digests = record.get("repo_digests")
+    _require(isinstance(digests, list) and all(isinstance(digest, str) for digest in digests),
+             "image_declaration_unreadable: record.repo_digests must be a string list")
+    try:
+        replay = runtime_image.declared_reference(requested, env={
+            runtime_image.CENSUS_IMAGE_ENV: image,
+            runtime_image.CENSUS_DECLARATION_ENV: json.dumps(dict(record)),
+        })
+    except runtime_image.RuntimeImageError as exc:
+        raise TesseraRouteReceiptError(f"{exc.payload['reason']}: {exc}") from exc
+    _require(declaration == replay,
+             "image_declaration_unsupported: carried declaration differs from supported owner replay")
+
+
 def check_scoped_route_receipt(census, binding, *, build, model_dir=None):
     """Replay v2 observations against current cells and independent artifact anchors.
 
@@ -411,6 +451,7 @@ def check_scoped_route_receipt(census, binding, *, build, model_dir=None):
         _require(census.get("runtime") == {"image": target.runtime_image, "execution_mode": target.execution_mode}
                  and census.get("compiled") is (target.execution_mode == "compiled"),
                  "actual census runtime image/execution disagrees with price target")
+        _check_runtime_image_declaration(census, target.runtime_image)
         env = _object(census.get("env"), "census.env")
         _require(env.get("TESSERA_SERVE_MODE") == target.residency, "actual census residency differs from price target")
         capability = _object(census.get("device"), "census.device").get("capability")

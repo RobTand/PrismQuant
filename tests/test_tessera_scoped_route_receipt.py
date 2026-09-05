@@ -8,6 +8,7 @@ import pytest
 from prismaquant import lane_eligibility as lane
 from prismaquant import shipcard
 from prismaquant import tessera_route_receipt as receipt
+from tessera.serving import runtime_image
 
 
 IMAGE = "example/runtime@sha256:" + "a" * 64
@@ -85,6 +86,10 @@ def fixture(tmp_path, monkeypatch, *, structure="routed_moe"):
               "checkpoint_sidecars": {"config.json": _sha(binding["config_json"]),
                                       "tessera_serving_manifest.json": _sha(binding["manifest_json"])},
               "records": {}, "record_owner": {}}
+    launch = runtime_image.resolve(IMAGE, contract={"versions": {"default_serve_image": IMAGE}},
+        inspector=lambda _: {"present": True, "repo_digests": [IMAGE], "local_id": "fixture"})
+    census["runtime_image_declaration"] = runtime_image.declared_reference(
+        IMAGE, env=runtime_image.container_env(launch))
     for phase, m in (("decode", 1), ("prefill", 64)):
         census["records"][phase] = {module: {"kind": kind, "policy": "TESSERA_FP8:resident",
                                             "symbol": symbol, "decoder": decoder,
@@ -144,6 +149,62 @@ def test_raw_v2_positive_retains_runtime_phase_owner_and_exact_price(tmp_path, m
     if structure == "routed_moe":
         assert record["served_decoders"] == ["torch_materialize_stock"]
         assert ":TRITON" in next(iter(record["route_census"]["records"]["decode"].values()))["symbol"]
+    assert shipcard._verify_route_census_record("route.census", record,
+        card={"build": data[2]}, model_dir=data[3]) == []
+
+
+@pytest.mark.parametrize("operation", ["fill", "replay"])
+@pytest.mark.parametrize("mutation", [
+    "missing", "empty", "nonobject", "schema", "source", "env", "image",
+    "record_missing", "record_nonobject", "record_schema", "refused", "refused_missing",
+    "refused_nonbool", "resolved_reference", "repo_digests", "digests_missing",
+    "digests_string", "digests_nonstring",
+])
+def test_runtime_declaration_refuses_at_fill_and_publication(tmp_path, monkeypatch, operation, mutation):
+    data = fixture(tmp_path, monkeypatch, structure="dense")
+    record = make(data)
+    raw = data[0] if operation == "fill" else record["route_census"]
+    declaration = raw["runtime_image_declaration"]
+    launch = declaration["record"]
+    other_image = IMAGE.replace("a" * 64, "b" * 64)
+    if mutation == "missing": del raw["runtime_image_declaration"]
+    elif mutation == "empty": raw["runtime_image_declaration"] = {}
+    elif mutation == "nonobject": raw["runtime_image_declaration"] = []
+    elif mutation == "schema": declaration["schema"] = "unsupported/99"
+    elif mutation == "source": declaration["source"] = "operator_asserted"
+    elif mutation == "env": declaration["env"] = []
+    elif mutation == "image": declaration["image"] = other_image
+    elif mutation == "record_missing": del declaration["record"]
+    elif mutation == "record_nonobject": declaration["record"] = []
+    elif mutation == "record_schema": launch["schema"] = "unsupported/99"
+    elif mutation == "refused": launch["refused"] = True
+    elif mutation == "refused_missing": del launch["refused"]
+    elif mutation == "refused_nonbool": launch["refused"] = 0
+    elif mutation == "resolved_reference": launch["resolved_reference"] = other_image
+    elif mutation == "repo_digests": launch["repo_digests"] = [other_image]
+    elif mutation == "digests_missing": del launch["repo_digests"]
+    elif mutation == "digests_string": launch["repo_digests"] = IMAGE
+    elif mutation == "digests_nonstring": launch["repo_digests"].append(None)
+    if operation == "fill":
+        with pytest.raises(receipt.TesseraRouteReceiptError, match="image.declaration"):
+            make(data)
+    else:
+        problems = shipcard._verify_route_census_record("route.census", record,
+            card={"build": data[2]}, model_dir=data[3])
+        assert problems and "image_declaration" in " ".join(problems)
+    if mutation == "missing" and operation == "replay":
+        assert "legacy" in " ".join(problems)
+
+
+def test_runtime_declaration_replay_uses_carried_evidence_and_manifest_identity(tmp_path, monkeypatch):
+    data = fixture(tmp_path, monkeypatch, structure="dense")
+    declaration = data[0]["runtime_image_declaration"]
+    declaration["record"]["local_id"] = "another-daemon-config-digest"
+    declaration["record"]["repo_digests"].append("mirror/runtime@sha256:" + "b" * 64)
+    monkeypatch.setenv(runtime_image.CENSUS_IMAGE_ENV, "wrong-host-image")
+    monkeypatch.setenv(runtime_image.CENSUS_DECLARATION_ENV, "not-json")
+    record = make(data)
+    assert record["passed"] is True
     assert shipcard._verify_route_census_record("route.census", record,
         card={"build": data[2]}, model_dir=data[3]) == []
 
