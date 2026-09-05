@@ -366,3 +366,57 @@ def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(monkeypatch)
             # short-circuits to an empty shard before it ever detects.
             **_dummy_shard_kwargs(probe_stats={"visual.blocks.0.attn.qkv": {}}),
         )
+
+
+def test_concat_merger_build_does_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._build_concat_merger` answered `None`.
+
+    "No merger" leaves the loader unchanged, so a split-source checkpoint
+    would load with its merge target unfilled.
+    """
+    from prismaquant.layer_streaming import _build_concat_merger
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _build_concat_merger(_qwen3_model(), {})
+
+
+def test_expert_packer_build_does_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._build_expert_packer` answered `None`.
+
+    Which leaves a per-expert-on-disk checkpoint unpacked against packed
+    live params, so the experts never load.
+    """
+    from prismaquant.layer_streaming import _build_expert_packer
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _build_expert_packer(_qwen3_model(), {})
+
+
+def test_packed_expert_fill_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`layer_streaming.fill_packed_experts_from_source` answered `0`.
+
+    #202 listed this as a candidate to keep swallowing because it returns a
+    count. It is the opposite case: the function exists so packed params do
+    not stay zero-initialized, so a clean `0` on a dead override reports
+    exactly the silent breakage it was written to prevent.
+    """
+    from prismaquant.layer_streaming import fill_packed_experts_from_source
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        fill_packed_experts_from_source(_qwen3_model(), str(tmp_path))
+
+
+def test_head_resident_prefixes_do_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._head_prefixes` fell back to a hardcoded guess.
+
+    The legacy branch only knows `hc_head`, so a dead override silently
+    dropped whatever head-resident prefixes the live profile declares.
+    """
+    from prismaquant.layer_streaming import _head_prefixes
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _head_prefixes(_qwen3_model(), "model")
