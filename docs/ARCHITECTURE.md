@@ -1,7 +1,50 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-decisions`. Stamps
+As of: 2026-09-05 · `claude/pq-204`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-204`) for **binding the Tessera export
+inputs to the payload and the values that priced the allocation** (§5;
+RobTand/prismaquant#204, P0). The #193 gate compared the allocation's identity
+triple against `<capture>.provenance.json` — a sidecar Tessera's
+`ActivationSource.from_capture` never reads — and checked only that each W4A4
+unit's key existed in the scales file; codex's `prismaquant_seam_inputs.py`
+showed a stale sidecar over a rewritten payload, the same triple over H = I vs
+H = 2I, and `input_global_scale` 1.0 vs 10000.0 at one key all accepted.
+Now: (1) `tessera_export_lane.hessian_capture_sha256` — Tessera's own
+`ActivationSource.capture_sha256` rule (release e78959e), reimplemented with
+torch alone because the dev pin 1221d2a predates it: the triple plus capture
+context (`model`, `seqlen`, `source`) and every unit's H by dtype/shape/bytes;
+where the running Tessera publishes the seal the gate computes both and refuses
+on disagreement. The campaign stamps that digest on every cost row
+(`hessian_identity.capture_sha256`) and in `provenance.hessian.capture_sha256`;
+`assert_uniform_hessian_identity` keys on it, so two captures of one draw
+refuse to merge; the allocator's `tessera_hessian` stamp carries it; the gate
+always loads the `.pt`, digests it, and refuses a payload whose digest is not
+the allocation's (by name, distinguishing "same triple, different content"
+from a triple mismatch), an allocation without the digest (pre-#204: unbound,
+never "any capture of this draw"), and a sidecar that does not seal the
+payload beside it. `write_export_inputs` stages both files and renames the
+sidecar last, carrying `capture_sha256` / `capture_sha256_schema`, so no
+sidecar can sit beside a payload it does not describe; it returns the digest.
+(2) `tessera_menu.priced_static_scales` reduces the selected units' rows to
+`tessera_activation_static_scales` (`{"schema":
+"prismaquant.tessera_activation_static_scales.v1", "units": {unit:
+input_global_scale}}`), emitted in `layer_config.json` metadata whenever a
+Tessera unit is selected; the gate reads each selected W4A4 unit's F32 scalar
+from the file and refuses a value that is not the priced one, an allocation
+without the block (unbound), and a unit the block prices no scale for. Stock
+runs' metadata is unchanged. New fields: cost-row `hessian_identity.
+capture_sha256`; layer_config `__prismaquant__.tessera_hessian.capture_sha256`
+and `__prismaquant__.tessera_activation_static_scales`; sidecar
+`capture_sha256`, `capture_sha256_schema`; preflight report
+`hessian_capture_sha256`, `hessian_capture_seal_crosscheck`,
+`input_scales_bound_units`. Consequence: H-aware or W4A4 allocations from
+pre-#204 tables refuse at export until the campaign is re-run and the
+allocation rebuilt. Tests: `test_tessera_priced_export_inputs.py` (pre-fix:
+the codex cases accepted), `test_allocator_tessera_priced_inputs.py` (the
+real allocator's stamp through the gate), `test_tessera_campaign.py`
+additions.
 
 Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
 decision in the paired validation driver** (§7.2; #87). The opt-in
@@ -6457,7 +6500,14 @@ exporter — `TESSERA_HESSIAN` (the campaign's `hessian_capture.pt`) and
 `tessera_export_lane.require_priced_export_inputs` fails closed before the
 plan translation when the allocation's `tessera_hessian` stamp or its
 selected W4A4 routes declare a requirement the supplied files do not satisfy
-(#193): the artifact built must be the artifact priced. The arm opens
+(#193): the artifact built must be the artifact priced. The binding is to
+content, not to names (#204): the allocation carries the campaign capture's
+`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`) and the
+`input_global_scale` each selected W4A4 unit was priced under
+(`tessera_activation_static_scales`), and the gate digests the `.pt` the
+exporter loads and reads each scalar from the safetensors file, refusing a
+payload, sidecar or value that is not what priced the row, and an allocation
+that carries no binding at all as unbound. The arm opens
 a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
 serve, endpoint, gates, KL evaluator and executed activation contracts.
 Allocation uses `tessera_menu` and its reviewed development contract; that
@@ -6466,8 +6516,9 @@ The pending release and supported producer-tool boundary remain D33, rather
 than an absence of pipeline integration. Tests include
 `test_tessera_formats.py`, `test_tessera_footprint.py`,
 `test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
-`test_tessera_menu.py`, `test_tessera_export_lane.py` and
-`test_tessera_priced_export_inputs.py`.
+`test_tessera_menu.py`, `test_tessera_export_lane.py`,
+`test_tessera_priced_export_inputs.py` and
+`test_allocator_tessera_priced_inputs.py`.
 
 ## 6. Export & serving invariants
 

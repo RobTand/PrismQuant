@@ -1009,6 +1009,81 @@ def test_a_legacy_row_and_a_modern_row_are_two_identities():
         }})
 
 
+def test_two_captures_of_one_draw_are_two_identities():
+    """The triple names the token draw, not the Hessian (#204): rows priced
+    against two payloads that digest differently are two captures, and a
+    row with no digest is not the same claim as a row with one."""
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    a = {"supplied": True, "text_sha256": "a" * 64,
+         "fit_ids_sha256": "b" * 64, "fit_tokens": 4096,
+         "capture_sha256": "1" * 64}
+    for other in ({**a, "capture_sha256": "2" * 64},
+                  {**a, "capture_sha256": None}):
+        with pytest.raises(ValueError, match="mixes Hessian identities.*capture_sha256"):
+            assert_uniform_hessian_identity({"m.up": {
+                "TESSERA_E4M3_K1_R1024": {"hessian_identity": a},
+                "TESSERA_E4M3_K1_R1280": {"hessian_identity": other},
+            }})
+    got = assert_uniform_hessian_identity({"m.up": {
+        "TESSERA_E4M3_K1_R1024": {"hessian_identity": dict(a)},
+        "TESSERA_E4M3_K1_R1280": {"hessian_identity": dict(a)},
+    }})
+    assert got["capture_sha256"] == "1" * 64
+
+
+def test_every_cost_row_carries_the_captures_digest():
+    """``campaign_cost_payload`` copies the capture digest the campaign wrote
+    into each row's ``hessian_identity`` (measured and interpolated), which
+    is how it reaches the allocator's stamp and then the export gate."""
+    from prismaquant.tessera_campaign import campaign_cost_payload
+
+    q, fam = "m.0.q_proj", "TESSERA_E2M1_K2"
+    anchors = {q: {fam: [_anchor(q, fam, r, d)
+                         for r, d in ((128, 1e-2), (512, 1e-3), (896, 1e-4))]}}
+    payload = campaign_cost_payload(
+        anchors, _menu(q, fam, {128, 384, 512, 896}), loo={},
+        provenance={"provenance": {"hessian": {
+            "supplied": True, "text_sha256": "a" * 64,
+            "fit_ids_sha256": "b" * 64, "fit_tokens": 4096,
+            "capture_sha256": "9" * 64}}})
+    rows = payload["costs"][q]
+    assert rows[f"{fam}_R512"]["hessian_identity"]["capture_sha256"] == "9" * 64
+    assert rows[f"{fam}_R384"]["hessian_identity"]["capture_sha256"] == "9" * 64
+    weights_only = campaign_cost_payload(
+        anchors, _menu(q, fam, {128, 512}), loo={},
+        provenance={"provenance": {"hessian": {"supplied": False}}})
+    assert weights_only["costs"][q][f"{fam}_R512"]["hessian_identity"][
+        "capture_sha256"] is None
+
+
+def test_the_priced_static_scales_follow_the_selected_rows():
+    """``priced_static_scales`` reduces the selected units' rows to the block
+    the allocator stamps: the value each W4A4 unit was priced under, no
+    default for a row that carried none, nothing for non-Tessera units."""
+    from prismaquant.tessera_export_lane import PRICED_STATIC_SCALES_SCHEMA
+    from prismaquant.tessera_menu import priced_static_scales
+
+    costs = {
+        "m.0.up": {"TESSERA_E2M1_K2_R896": {"input_global_scale": 71.68},
+                   "TESSERA_E2M1_K2_R512": {"input_global_scale": 71.68}},
+        "m.1.up": {"TESSERA_E2M1_K2_R896": {"input_global_scale": 3.5}},
+        "m.2.up": {"TESSERA_E4M3_K1_R1024": {}},
+        "m.3.up": {"TESSERA_E2M1_K2_R896": {}},
+        "m.4.up": {"FP8": {"input_global_scale": 1.0}},
+    }
+    got = priced_static_scales({
+        "m.0.up": "TESSERA_E2M1_K2_R896", "m.1.up": "TESSERA_E2M1_K2_R512",
+        "m.2.up": "TESSERA_E4M3_K1_R1024", "m.3.up": "TESSERA_E2M1_K2_R896",
+        "m.4.up": "FP8",
+    }, costs)
+    assert got == {"schema": PRICED_STATIC_SCALES_SCHEMA,
+                   "units": {"m.0.up": 71.68}}
+    # The selected RUNG's row, not any row of the unit: m.1.up selected a
+    # rung its table did not price, so it carries no priced scale.
+    assert "m.1.up" not in got["units"]
+
+
 def test_the_token_sha_identifies_the_calibration_draw():
     from prismaquant.tessera_hessian import token_ids_sha256
 
