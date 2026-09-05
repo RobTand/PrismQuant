@@ -1771,9 +1771,19 @@ def fill_production_weight_cache_streaming(
     )
     try:
         model = ctx.model
+        from prismaquant.model_profiles import (
+            DeadVendoredOverrideError,
+            profile_from_model,
+        )
         try:
-            from prismaquant.model_profiles import profile_from_model
             profile = profile_from_model(model)
+        except DeadVendoredOverrideError:
+            # The streaming twin of the render fixed in 0a0853f3, and the same
+            # two consequences: the rendered bytes come from UPSTREAM
+            # modelling code, and `profile = None` empties `skip_tokens`
+            # below, so the components `pinned_names()` protects get rendered
+            # too (#202).
+            raise
         except Exception:
             profile = None
         if skip_tokens is None:

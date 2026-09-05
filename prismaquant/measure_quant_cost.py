@@ -3381,9 +3381,16 @@ def run_cost_pass(model: nn.Module,
     if chosen_mode == "auto":
         chosen_mode = "batched" if device.startswith("cuda") else "unbatched"
     print(f"[cost] mode: {chosen_mode}")
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         model_profile = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # This pass measures per-(Linear, format) quantization cost and writes
+        # numbers the allocator later spends. A dead override means it would
+        # measure UPSTREAM modelling code under a profile promising the
+        # vendored copy, so the cost table would be a wrong number with no
+        # exception attached (#202).
+        raise
     except Exception:
         model_profile = None
 

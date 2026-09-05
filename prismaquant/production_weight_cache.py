@@ -6618,9 +6618,19 @@ def fill_production_weight_cache(
         )
     model_profile = recache_profile
     if model_profile is None:
+        from .model_profiles import (
+            DeadVendoredOverrideError,
+            profile_from_model,
+        )
         try:
-            from .model_profiles import profile_from_model
             model_profile = profile_from_model(model)
+        except DeadVendoredOverrideError:
+            # This is the render that produces the production weight cache --
+            # the bytes an export later ships. A dead override means those
+            # bytes would be rendered from UPSTREAM modelling code, and
+            # `model_profile = None` also drops the profile's pinned names, so
+            # components the profile forbids quantizing get quantized (#202).
+            raise
         except Exception:
             model_profile = None
 

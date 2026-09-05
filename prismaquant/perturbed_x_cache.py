@@ -1419,9 +1419,16 @@ def stage_text_only_under_work_root(model_path: str, work_root: str | Path) -> s
         return str(src)
     with open(cfg_path) as f:
         cfg = json.load(f)
+    from .model_profiles import DeadVendoredOverrideError, detect_profile
     try:
-        from .model_profiles import detect_profile
         profile = detect_profile(str(src))
+    except DeadVendoredOverrideError:
+        # The hardcoded default strip-key list below is the answer for a
+        # checkpoint no profile claims. On a dead override it silently stages
+        # the model with a DIFFERENT config than the profile declares, and
+        # every perturbed-activation row cached afterwards is collected from
+        # that wrong staging (#202).
+        raise
     except Exception:
         profile = None
     strip_keys = (

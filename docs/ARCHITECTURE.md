@@ -33,6 +33,29 @@ campaign callback do not move. Gate:
 0.000255718827...`); `test_the_activation_side_is_the_serving_formats_own_quantiser`
 now asserts the served contract alongside the by-reference dynamic callable.
 
+Re-stamped (2026-09-05, `claude/pq-202-detection-swallows`) for **the
+dead-vendored-override refusal reaching every call site** (§8.1; PrismaQuant
+#202, follow-up to #201). #201 made `_resolve` raise
+`DeadVendoredOverrideError` and stopped three gate call sites re-swallowing
+it; the census filed with that issue found 22 more, across 11 modules, each
+wrapping detection in a broad `except Exception` and continuing with a
+substituted profile — so the refusal was converted back into the silent wrong
+answer one level up. All 22 now re-raise this one class ahead of their broad
+handler. Each was read against its own contract, and the answer was the same
+at all 22, including the two the census flagged as possibly legitimate
+swallows: `layer_streaming.py:1140` returns a count, but returning `0` on a
+dead override reports exactly the zero-initialized-experts breakage the
+function exists to prevent; `streaming_model.py:112` returns a bool, but is
+only reached for a native-FP8 block-scaled checkpoint, where `False` runs the
+HF module rewrite the profile would have forbidden. No shared helper was
+added — the rule keeps its single home in the registry, and a helper would
+have had to own each site's differing fallback. No default, format menu,
+serving lane or exported byte moves, and the *absent*-profile path is
+unchanged everywhere; what changes is that a dead vendored path now refuses at
+the call site instead of being answered. The rule is pinned tree-wide by an
+executable census that fails for any future detection call inside a broad
+`except`. Gate: `tests/test_vendored_override_gate.py`.
+
 Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
 decision in the paired validation driver** (§7.2; #87). The opt-in
 `experiments/pq87_paired_validation.py` counted a candidate arm as observed
@@ -8778,14 +8801,30 @@ completeness *gate* that answered `None`), `incremental_probe._detect_profile_fo
 answered `DefaultProfile`) and `validate_native_export._resolve_validation_target_profile` (a
 *validator* that answered `None`). Each documents tolerance for an architecture this build does
 not know, which is a different statement from a known architecture on a dead path.
-**Not fixed here:** 22 further broad-`except` swallows around
-`detect_profile`/`profile_from_config`/`profile_from_model`, across 11 modules, can still convert
-this refusal into `None`, `DefaultProfile`, `False` or a skipped branch at their own call sites.
-Several of those are genuinely optional hints where `None` is the right answer for an *absent*
-profile and the wrong one for a *dead* one, so they need reading one at a time against their own
-contract; censused with `file:line` in #202 rather than swept inside this diff. One site already
-has the right shape and is excluded: `sample_parallel_probe.py:568` re-raises as
-`SampleParallelProbeError(...) from exc`.
+The remaining 22 broad-`except` swallows around
+`detect_profile`/`profile_from_config`/`profile_from_model`, across 11 modules, were closed by
+#202 (2026-09-05). Each was read against its own contract rather than swept: the answer was the
+same at all 22, including the two the census singled out as possible legitimate swallows
+(`layer_streaming.py:1140`, which returns a count, and `streaming_model.py:112`, which returns a
+bool). Both turned out to be the strongest cases rather than the weakest — the first exists
+*because* the packed params would otherwise stay zero-initialized, so a clean `0` reports the
+silent breakage it was written to prevent; the second is only reached for a native-FP8
+block-scaled checkpoint, so `False` is a decision, not a neutral default. Every site keeps its
+other tolerances: the `except DeadVendoredOverrideError: raise` clause sits ahead of the broad
+handler and nothing about the *absent*-profile path changed anywhere.
+
+**Where this rule lives.** No shared "detect or refuse" helper was added, deliberately. The rule —
+what "dead" means and that it must never be answered — has one home, `_refuse_dead_vendored_override`
+and `DeadVendoredOverrideError` in the registry; a helper would have had to own each call site's
+*fallback* too, and those differ (`None`, `DefaultProfile()`, `keep_composite = False`, `return 0`,
+`return False`, a hardcoded prefix guess, `pass`), so it would have moved tolerance policy into the
+registry rather than removing duplication. Each site's import is hoisted just outside its `try` so
+the new `except` clause can always be evaluated. The rule is pinned tree-wide by an executable
+census in `tests/test_vendored_override_gate.py`, which walks `prismaquant/` and fails for any
+detection call inside a broad-`except` `try` that does not either re-raise this class first or
+re-raise unconditionally — so a 23rd such call site fails the suite when it is written.
+`sample_parallel_probe.py:568` already had the second shape (`SampleParallelProbeError(...) from
+exc`) and passes unchanged.
 
 The `DefaultProfile` fallback is *guarded, not silent*: `allocator.py:1550-1554` calls
 `validate_default_profile_format_menu(...)` (`:961-988`), which refuses a multi-format menu
