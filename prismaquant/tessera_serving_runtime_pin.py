@@ -139,38 +139,44 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA2
 #: The exact reviewed Tessera runtime: a commit, the distribution version at
 #: that commit, and the SHA-256 of the ``runtime_contract.json`` it packages.
 #:
-#: Bound at review time by one command, so the commit and the digest cannot be
-#: two independent assertions about one runtime::
+#: Bound at review time by one command against the CANONICAL remote, so the
+#: commit and the digest cannot be two independent assertions about one
+#: runtime -- and so the binding does not depend on whose working tree ran it::
 #:
-#:     SHA=$(git -C /home/rob/tessera rev-parse HEAD)
-#:     git -C /home/rob/tessera show "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
+#:     TS=$(mktemp -d) && git -C "$TS" init -q
+#:     git -C "$TS" fetch -q https://github.com/RobTand/tessera master
+#:     SHA=$(git -C "$TS" rev-parse FETCH_HEAD)
+#:     git -C "$TS" cat-file -p "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
 #:
 #: First recorded 2026-09-04T21:29-04:00 against Tessera master at 5acc2a6f
 #: (contract v17, lane schema ``tessera.lane-eligibility.v6``, its PR #176).
-#: Re-pinned 2026-09-05 to Tessera master at b8b1cb38 -- the merge of its
-#: PR #313 (contract v21, lane schema ``tessera.lane-eligibility.v8``).  The
-#: release checkout Rob named, e78959ed, carried contract v20; between the
-#: two the ONLY published move is the routed-MoE cells' smoke, which #313
-#: re-measured through the checkpoint's own chat template and records as
-#: ``recorded`` (receipt ``docs/measurements/moe-smoke-recorded-2026-09-05.md``;
-#: prismaquant #198 option C).  Relative to the first pin (v17) the lane table
-#: also gained a smoke control and attribution (v7), an encoder artifact (v8)
-#: and the per-extension lane predicate (v20), and
+#: Re-pinned 2026-09-05 to Tessera master at 3efd690 -- the merge of its
+#: PR #324, and master's tip when this was bound (contract v21, lane schema
+#: ``tessera.lane-eligibility.v8``).  The release checkout Rob named,
+#: e78959ed, carried contract v20; the ONE published move past it is the
+#: routed-MoE cells' smoke, which Tessera #313 (b8b1cb38, eleven PR merges
+#: back from the pinned tip) re-measured through the checkpoint's own chat
+#: template and records as ``recorded`` (receipt
+#: ``docs/measurements/moe-smoke-recorded-2026-09-05.md``; prismaquant #198
+#: option C).  Relative to the first pin (v17) the lane table also gained a
+#: smoke control and attribution (v7), an encoder artifact (v8) and the
+#: per-extension lane predicate (v20), and
 #: ``tessera_runtime_contract.TESSERA_DEV_PIN_ANSWER`` moved with all of it in
 #: the same commit.  Re-check it against the COMMIT rather than a past HEAD,
 #: which nobody can re-run::
 #:
-#:     git -C /home/rob/tessera show b8b1cb38d581721d084860db1ae4a25b6afae50f:src/tessera/serving/runtime_contract.json | sha256sum
+#:     git -C "$TS" cat-file -p 3efd690dd4e4a1b71fb604a14bee521dc57badb3:src/tessera/serving/runtime_contract.json | sha256sum
 #:
-#: At the re-pin Tessera master was 8446227d, nine merges (44 commits) past
-#: this commit, and still packaged byte-identical contract bytes (same
-#: ``sha256sum`` at that commit), so the pin admits master too.  That is the property this design is for -- a Tessera
-#: commit only re-stales the pin when it changes what the runtime PUBLISHES.
+#: The 56 commits (11 PR merges: Tessera #312 and #314-#324) between #313's
+#: merge and this tip package byte-identical contract bytes, which is why the
+#: digest below did not move when the commit did.  That is the property this
+#: design is for -- a Tessera commit only re-stales the pin when it changes
+#: what the runtime PUBLISHES.
 #: No git tag names this commit, so ``version_is_release`` stays false in the
 #: JSON beside this module: ``0.1.0`` is what the checkout's ``pyproject``
 #: says, not a cut release.
 TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
-    "b8b1cb38d581721d084860db1ae4a25b6afae50f"
+    "3efd690dd4e4a1b71fb604a14bee521dc57badb3"
 )
 TESSERA_SERVING_RUNTIME_PINNED_VERSION = "0.1.0"
 TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (

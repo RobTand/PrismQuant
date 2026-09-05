@@ -3075,8 +3075,9 @@ def _verify_route_census_record(
     if build.get("tessera_serving_scope") is not None:
         return [f"{slot}: scoped artifact carries an unbound legacy census; retain the producer's v2 receipt"]
     # The same rule fill applies (`make_route_census_record`, #214), from its
-    # one home; live since the pin moved to a table of the scoped schema (v8
-    # at b8b1cb38), dead before it when the pinned table was v4.  With no
+    # one home; live since the pin moved to a table of the scoped schema (v8,
+    # first packaged at b8b1cb38), dead before it when the pinned table was
+    # v4.  With no
     # runtime installed there is no current table to refuse on and the flat
     # rows keep their historical v4 comparison.
     from prismaquant.tessera_route_receipt import current_table_refuses_flat_census

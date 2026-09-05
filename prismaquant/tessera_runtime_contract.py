@@ -147,8 +147,9 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v21 / lane schema v8 (Tessera master b8b1cb38, the merge of its
-#: #313; the release e78959ed carried v20), which is the same commit
+#: contract v21 / lane schema v8 (Tessera master 3efd690, the merge of its
+#: #324; contract v21 landed eleven merges earlier in its #313, at b8b1cb38,
+#: and the release e78959ed carried v20), which is the same commit
 #: ``tessera_serving_runtime_pin`` binds: the two pins name ONE object, and
 #: letting them drift is how two of this repository's own spec files came to
 #: disagree about one runtime.  Between the v17 review and this one the
@@ -177,7 +178,17 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: a human reads before anything is admitted.  Whether routed-MoE Tessera is
 #: PROMOTED past the menu is still Rob's decision under principle 9 (#198
 #: stays open for it).
-TESSERA_DEV_PIN_COMMIT = "b8b1cb38d581721d084860db1ae4a25b6afae50f"
+#:
+#: Re-pinned to master's current tip on 2026-09-05 rather than to b8b1cb38,
+#: the commit that first published this answer: 56 commits (11 PR merges,
+#: Tessera #312 and #314-#324) later, ``src/tessera/serving/
+#: runtime_contract.json`` is byte-identical, so the answer below is
+#: unchanged and the digest is the same one.  That is the property this
+#: design is for -- what re-stales a pin is a move in what the runtime
+#: PUBLISHES, not a move in ``master``.  Verified by fetching
+#: ``RobTand/tessera`` master and hashing the blob at the tip, not a working
+#: tree (the command is in ``tessera_runtime/README.md``).
+TESSERA_DEV_PIN_COMMIT = "3efd690dd4e4a1b71fb604a14bee521dc57badb3"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and

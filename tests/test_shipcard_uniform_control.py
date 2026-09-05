@@ -69,7 +69,7 @@ def _no_current_scoped_table(monkeypatch):
     `_built` means every slot closed and the uniform-control gate is the one
     under test.  Flat rows are attestable only where no current scoped lane
     table exists to refuse them; since the pin moved to a table of that schema
-    (b8b1cb38, v8) the installed contract refuses them by name
+    (v8) the installed contract refuses them by name
     (`tests/test_tessera_route_receipt.py`), so the scaffold runs here as on a
     box with no `tessera` installed -- the `ModuleNotFoundError` leg.
     """

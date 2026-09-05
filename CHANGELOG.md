@@ -106,8 +106,9 @@
 
 ### Added
 
-- **The Tessera pin moves to master `b8b1cb38` (contract v21, lane schema v8;
-  the release `e78959ed` carried v20), and the reader consumes the contract's
+- **The Tessera pin moves to master's tip `3efd690` (contract v21, lane schema
+  v8 — v21 landed eleven PR merges earlier in Tessera #313, `b8b1cb38`, and the
+  release `e78959ed` carried v20), and the reader consumes the contract's
   lane predicate through Tessera's own decision core** (RobTand/tessera#195,
   #198, #264, #313; `lane_eligibility.py`, `tessera_render.py`,
   `tessera_runtime_contract.py`, `tessera_serving_runtime_pin.py`,

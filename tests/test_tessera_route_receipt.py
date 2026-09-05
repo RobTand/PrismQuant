@@ -37,7 +37,7 @@ def _no_runtime_installed(monkeypatch):
     lane table and refuses the flat rows when that table carries the scoped
     schema (`LANE_ELIGIBILITY_SCHEMA_TESSERA`): current cells attest an
     image/mode/residency the rows never recorded.  Since the pin moved to a
-    table of that schema (b8b1cb38, v8) this fires against the installed
+    table of that schema (v8) this fires against the installed
     contract, so the historical comparison is exercised here as it runs on a
     box with no `tessera` at all -- the `ModuleNotFoundError` leg -- rather
     than on whichever table happens to be installed.
