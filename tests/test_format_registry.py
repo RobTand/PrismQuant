@@ -310,3 +310,39 @@ def test_mxfp8_activation_quantizer_uses_e4m3_range():
     raw_amax_mse = torch.mean((raw_amax_reference.float() - x) ** 2)
 
     assert corrected_mse < raw_amax_mse * 0.01
+
+
+def test_every_registered_name_resolves_through_an_upper_cased_spelling():
+    """One rule, one home: whether this registry answers to a name's CASE is
+    the registry's question, and it is settled in ``canonical_format_name``.
+
+    ``canonical_format_name`` already tried the raw spelling and then the
+    upper-cased one, which covers "the caller typed lower case, the row is
+    upper case".  It did not cover the mirror image -- "the caller (or an
+    upstream normalizer) upper-cased, the row is mixed case" -- and exactly
+    one registered row is mixed case, ``INT4_W4A16_g128``.  Every caller that
+    normalizes a requested format name by upper-casing it therefore produced
+    a name no resolver owned, and ``get_format`` raised ``KeyError`` (#218).
+    """
+    import pytest
+
+    # The precondition that makes case-insensitive resolution unambiguous.
+    names = [*fr.REGISTRY, *fr.FORMAT_ALIASES]
+    folded = [name.casefold() for name in names]
+    assert len(folded) == len(set(folded)), "two format names differ only by case"
+
+    assert "INT4_W4A16_g128" in fr.REGISTRY
+    assert fr.canonical_format_name("INT4_W4A16_G128") == "INT4_W4A16_g128"
+    assert fr.get_format("INT4_W4A16_G128").name == "INT4_W4A16_g128"
+    assert fr.get_format("int4_w4a16_g128").name == "INT4_W4A16_g128"
+
+    # The whole registry, enumerated: no registered name or alias is lost by
+    # an upper-case round trip, and none of them resolves to a DIFFERENT spec.
+    for name in names:
+        assert fr.get_format(name.upper()).name == fr.get_format(name).name
+        assert fr.get_format(name.lower()).name == fr.get_format(name).name
+
+    # A name the registry does not own is still unknown, and still raises
+    # naming the registry rather than resolving to something arbitrary.
+    with pytest.raises(KeyError):
+        fr.get_format("NOT_A_REGISTERED_FORMAT_pq218")

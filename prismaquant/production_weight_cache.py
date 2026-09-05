@@ -166,6 +166,19 @@ NVFP4_RENDER_EQUIVALENT = frozenset({"NVFP4", "NVFP4A16"})
 
 
 def _render_base_format(fmt: str) -> str:
+    """The render-base spelling of a requested format name.
+
+    Upper-casing is this module's one normalizer for a format identity: it
+    also spells the cache filenames, the manifest keys and the render-score
+    records, so the render base has to agree with them and it stays as it is.
+    Enumerated over the whole registry (80 rows + 3 aliases), it changes the
+    spelling of exactly one registered name -- ``INT4_W4A16_g128``, the only
+    mixed-case row -- and no other name, alias or Tessera rung.  That one name
+    is not made unresolvable HERE, though: it is unresolvable because case was
+    decided at each caller instead of in the registry, so the fix is in
+    ``format_registry.canonical_format_name``, which now resolves a name
+    case-insensitively as its last probe (#218).  Do not paper over it here.
+    """
     return str(fmt).strip().upper()
 
 
@@ -1538,6 +1551,36 @@ def _render_score_record(
     }
 
 
+def _resolve_format_spec(fmt):
+    """The ``FormatSpec`` a requested format name resolves to, or ``None``.
+
+    ONE home for "does this requested name resolve to a spec, and if so which"
+    (principle 8).  Every predicate in this module that classifies a name off
+    the format menu goes through here, so they cannot answer that question
+    differently again.  Two properties, both load-bearing:
+
+    * It does not upper-case.  ``fr.canonical_format_name`` settles case
+      itself; an extra ``.upper()`` here is redundant at best, and at worst it
+      destroys a mixed-case registered name before any resolver sees it
+      (#218).  These predicates are handed ``_render_base_format`` output,
+      which has already normalized -- so they resolve the name they are given.
+
+    * It answers ``None`` rather than raising.  These are predicates over a
+      requested format MENU, and a menu can carry a name this registry does
+      not own; "not a format we know" is an answer, not an error.  A caller
+      that wants to refuse an unknown format raises its own named refusal
+      where the menu is validated -- not a bare ``KeyError`` escaping from a
+      question about activation scales, mid-fill, before a tensor is
+      rendered.
+    """
+    from prismaquant import format_registry as fr
+
+    try:
+        return fr.get_format(fr.canonical_format_name(str(fmt).strip()))
+    except Exception:
+        return None
+
+
 def _static_activation_contract_of(spec):
     """``spec.static_activation_contract``, tolerant of the bare stand-ins
     tests hand ``fr.get_format`` back (a namespace with only the callable)."""
@@ -1555,11 +1598,11 @@ def _format_uses_static_activation_clip(fmt: str) -> bool:
     contract.  Whether the maximum is applied as a pre-clip or as the G of the
     served oracle is the contract's ``measured_as_served``; this predicate only
     says the maximum belongs to the row.
-    """
-    from prismaquant import format_registry as fr
 
-    spec = fr.get_format(fr.canonical_format_name(str(fmt).strip().upper()))
-    return _static_activation_contract_of(spec) is not None
+    Total over the menu: a name this registry does not resolve is not served
+    under a static activation contract, so it answers False (#218).
+    """
+    return _static_activation_contract_of(_resolve_format_spec(fmt)) is not None
 
 
 def _formats_need_static_activation_max(formats) -> bool:
@@ -1766,25 +1809,14 @@ def _expert_col_weights(
 def _weighted_render_family(fmt: str) -> str | None:
     """The weighted-render family of ``fmt``, or ``None`` for every format
     whose render ignores ``col_weights`` (NVFP4/FP8/MX/BF16/INT)."""
-    from prismaquant import format_registry as fr
-
-    try:
-        family = fr.get_format(str(fmt).strip().upper()).family
-    except Exception:
-        return None
+    family = getattr(_resolve_format_spec(fmt), "family", None)
     return family if family in WEIGHTED_RENDER_FAMILIES else None
 
 
 def _is_cb_format_name(fmt: str) -> bool:
     """Return whether ``fmt`` is one of the two serialized CB families."""
-    from prismaquant import format_registry as fr
-
-    try:
-        return fr.get_format(
-            fr.canonical_format_name(str(fmt).strip().upper())
-        ).family in {"nvfp4_cb", "fp8_cb"}
-    except Exception:
-        return False
+    return getattr(_resolve_format_spec(fmt), "family", None) in {
+        "nvfp4_cb", "fp8_cb"}
 
 
 def _cb_qnames_in_render_scope(

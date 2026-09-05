@@ -1953,3 +1953,35 @@ def test_non_nv_render_gate_scores_on_gptq_clipped_activations():
         step["candidate_score"] if step["accepted"] else step["baseline_score"]
     )
     assert selected_score == pytest.approx(final_clipped, rel=1e-5)
+
+
+def test_the_mixed_case_registry_row_renders_through_the_cache_entry_point():
+    """#218 -- the crash the gate raised was not the only one on this path.
+
+    ``render_production_weight`` normalizes with ``.upper()`` too (and did so
+    before #213), so ``INT4_W4A16_g128`` -- the one mixed-case registry row,
+    and the name ``validation_harness`` maps a 4-bit precision-plan entry to
+    -- was unresolvable at render time as well.  Fixing case resolution in
+    the registry rather than in the gate is what makes the whole fill path
+    answer for this format instead of moving its ``KeyError`` later.
+
+    ``_render_base_format`` deliberately still upper-cases: its output is the
+    cache-identity spelling, and the registry now resolves it.
+    """
+    from prismaquant.production_weight_cache import (
+        _render_base_format,
+        render_production_weight,
+    )
+
+    qname = "model.layers.0.mlp.up_proj"
+    weight = torch.randn(64, 128, dtype=torch.float32)
+    activations = {qname: torch.randn(32, 128, dtype=torch.float32)}
+    for name in ("INT4_W4A16_g128", _render_base_format("INT4_W4A16_g128")):
+        rendered = render_production_weight(
+            weight, name,
+            qname=qname,
+            activations=activations,
+            levers={},
+        )
+        assert rendered.shape == weight.shape
+        assert torch.isfinite(rendered).all()
