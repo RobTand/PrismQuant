@@ -75,6 +75,14 @@ alone is not diagnostic. No launch permission or capacity is implied by this
 document. The original preparation consumed no GPU slot; the physical run and
 its completed GPU handoff are recorded separately in the results document.
 
-After the physical result, the remaining decision is which versioned,
-control-relative rule replaces the current mandatory 64/zero boundary gate.
-That is separate from merging the endpoint/schema and empty-population fixes.
+The selected follow-up policy is available opt-in with candidate argument
+`--decision-policy no-new-failures`. It rejects any new defect kind on a
+matched prompt/seed pair; a repaired sample cannot offset a newly broken one.
+Existing BF16 defects may persist without introducing another kind. Missing,
+incomparable or censored controls are inconclusive. This separately versioned
+decision does not replace the mandatory historical shipping policy or fill a
+shipcard slot. Actual matched quantized-artifact, disjoint held-out and
+additional representative-population validation is still required before
+shipping-default promotion. A new campaign/source closure needs its own fresh
+BF16 control; the completed raw/chat64 instrument characterization need not
+be repeated.
