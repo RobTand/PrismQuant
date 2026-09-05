@@ -3,6 +3,20 @@
 As of: 2026-09-05 · `claude/pq-decisions`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
+decision in the paired validation driver** (§7.2; #87). The opt-in
+`experiments/pq87_paired_validation.py` counted a candidate arm as observed
+when the receipt's stored `decision.verdict` agreed with the client's exit
+status — a stored bit, which `replay_no_new_failures` exists to refuse and
+which had no caller outside the tests (pq-190 review, side-finding 3). The
+driver now replays the stored decision against the control receipt of the
+same run before the verdict counts; a decision that does not replay refuses
+by name (`boundary decision differs from replayed paired policy`) and the
+run stays inconclusive. Nothing else moves: no shipcard slot, threshold or
+default. Gate: `tests/test_pq87_paired_validation.py`
+(`test_stored_candidate_verdict_is_replayed_against_the_control_not_trusted`,
+pre-fix: the forged `accepted` on a refused pair counted as observed).
+
 Re-stamped (2026-09-05, `claude/pq-decisions`) for the **pinned Tessera CI
 dependency's receipt** (§8.6; RobTand/prismaquant#175). RobTand/tessera went
 public on 2026-09-05; the unchanged workflow then installed the pin with
