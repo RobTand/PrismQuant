@@ -1534,18 +1534,6 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     del model
     torch.cuda.empty_cache()
 
-    # The export leg's inputs, written BEFORE the anchor loop so even a
-    # deadline-stopped campaign leaves them (RobTand/prismaquant#193).
-    hessian_capture_path, input_scales_path, capture_sha256 = \
-        write_export_inputs(
-        cache_dir,
-        hessians=hessians if want_h else None,
-        hessian_rows=hessian_rows,
-        hessian_identity=hessian_identity,
-        static_scales=static_scales,
-        static_scale_policy=static_scale_policy,
-    )
-
     # ONE ActivationSource for the whole campaign, and ONE set of encoder
     # keywords per unit PER SCALE PLANE. The block-LDL is a function of the
     # unit's Hessian alone -- not of its rate -- so a twelve-anchor surface
@@ -1642,6 +1630,27 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     if resumed:
         print(f"[campaign] resumed {sum(len(v) for f in measured.values() for v in f.values())} "
               f"verified anchors from {checkpoint}", flush=True)
+
+    # The export leg's inputs, written AFTER the resume identity has accepted
+    # this run's inputs and BEFORE the anchor loop.  Before the loop, so even
+    # a deadline-stopped campaign leaves them (RobTand/prismaquant#193); after
+    # the gate, because they are the export half of whatever table survives a
+    # refusal (RobTand/prismaquant#211).  A refused resume leaves the
+    # checkpoint and the previous cost file alone, so it must leave these
+    # alone too -- overwriting them with the refused draw's Hessians and
+    # scales strands the surviving table, which can then only be re-priced
+    # from scratch.  Nothing above consumes the returned paths or digest, and
+    # an accepted resume re-writes byte-identical files: the identity binds
+    # ``hessians``, ``static_scales`` and ``static_scale_policy``, which are
+    # exactly this call's inputs.
+    hessian_capture_path, input_scales_path, capture_sha256 = write_export_inputs(
+        cache_dir,
+        hessians=hessians if want_h else None,
+        hessian_rows=hessian_rows,
+        hessian_identity=hessian_identity,
+        static_scales=static_scales,
+        static_scale_policy=static_scale_policy,
+    )
 
     def flush_checkpoint() -> None:
         for name in sorted(dirty_checkpoint_units):
