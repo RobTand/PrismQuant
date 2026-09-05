@@ -857,8 +857,8 @@ def synthesize_tessera_spec(
     from . import format_registry as fr
     from .tessera_footprint import TesseraShapeRate
     from .tessera_formats import (
-        artifact_bpp, scale_plane_name, tessera_serving_route,
-        tessera_wire_recipe,
+        artifact_bpp, route_static_activation_contract, scale_plane_name,
+        tessera_serving_route, tessera_wire_recipe,
     )
 
     parsed = parse_tessera_format_name(name)
@@ -937,10 +937,17 @@ def synthesize_tessera_spec(
     else:
         source = fr.get_format(route.activation_source_format)
         activation_qdq = source.activation_quantize_dequantize
+        # WHICH static contract the A side executes is not asked here: it is
+        # ``tessera_formats.route_static_activation_contract``'s one derivation
+        # off the row the route names (#221), shared with the campaign and the
+        # export lane so the three cannot answer it differently.  What stays
+        # here is the step
+        # that is genuinely this function's -- turning the ROW's contract into
+        # the SPEC's by re-stamping the measurement policy.
+        source_contract = route_static_activation_contract(route)
         static_activation_contract = (
-            None if source.static_activation_contract is None
-            else dataclasses.replace(
-                source.static_activation_contract, measured_as_served=True)
+            None if source_contract is None
+            else dataclasses.replace(source_contract, measured_as_served=True)
         )
 
     # The layer_config entry, which is how an allocation survives the trip to

@@ -194,6 +194,103 @@ different refusals, and the shipcard has to be able to tell them apart.
 `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16` and no default, stage or exporter
 moves.
 
+Re-stamped (2026-09-05, `claude/pq-222`) for **an allocation that keeps every
+routed expert in BF16 no longer being refused by its own export gate** (§5
+export lane; RobTand/prismaquant#229, P1). Selecting Tessera for a dense
+Linear while every routed expert stays BF16 is a decision the allocator is
+built to emit: `allocation_expert_projection_block` keeps the population and
+the producer's projection, records the stack's format as `BF16`, and carries
+an empty `tessera_expert_wires` map. The export lane filters the assignment
+to Tessera rows, so the selected routed subset is empty — yet
+`_carried_expert_projection` still returned a projection (with empty `units`
+and `stacks`) and `preflight` tested only that it was non-null, handing the
+empty map to the bundle writer, whose `cached_units_manifest` refuses `no
+priced expert wires to bundle`. Because `run-pipeline.sh` **always** passes
+`--write-cached-expert-units` on the Tessera export path, a valid mixed
+allocation exited 2 and published no build anchor, against `preflight`'s own
+documented contract that an allocation selecting no routed expert unit
+bundles nothing. The predicate is now the receipt's own value from the stamp
+below: the bundle is written exactly when `routed_expert_bytes` is
+`priced_wires`, so an anchor names a bundle in precisely the runs whose bytes
+come from one. The projection provenance is kept, not discarded, and
+`cached_units_manifest` still refuses an empty bundle where one is genuinely
+required. This is the case #222's third value (`no_routed_units`) exists to
+name, and it is distinct from #222's own: #222 is a routed **Tessera**
+selection carrying no projection, which silently re-encodes; #229 has a valid
+carried projection and **no selected Tessera expert at all**.
+
+Re-stamped (2026-09-05, `claude/pq-222`) for **the routed re-encode fallback
+being readable in the receipt** (§5 export lane; RobTand/prismaquant#222, P3).
+#220 made the producer's expert projection an UNLOCK, not a requirement: an
+allocation carrying none keeps the pre-#183 lane byte for byte, and
+`require_assignment_scope` refuses only the INCOHERENT case (priced wires,
+`tessera_expert_stack_formats` or a wire directory carried with the projection
+stripped). That call stands and is unchanged here — the fallback is not
+refused, no unit's bytes move, and making the projection mandatory (#222's
+option (b)) remains Rob's to price, because it would force every profile that
+gains a producer tool to re-run its campaign before it could export again.
+What was wrong is that the fallback was **silent**: an allocation with all
+four keys absent re-encodes its routed units from source and nothing said the
+bytes about to ship were not the bytes the campaign priced. It now says so.
+`_carried_expert_projection` returns the ANSWER beside the bundle —
+`priced_wires`, `reencoded_from_source`, or `no_routed_units` when the
+allocation selects no routed unit at all, so a dense export is never
+mislabelled a fallback — because it is the only function that sees both the
+carried keys and the selection, and a receipt derived anywhere else could
+disagree with the path taken. `require_assignment_scope` stamps it as
+`routed_expert_bytes` in the scope receipt and `preflight` copies it into the
+build anchor as `tessera_routed_expert_bytes`, whence `lane_shipcard open
+--build-json` carries it onto the artifact's ship record. **A reader of the
+old shape sees neither key, and that absence means "this preflight predates
+#222 and does not say" — never `priced_wires`.** New anchors stay readable by
+older consumers: the build block is an open schema (`build_shipcard` stores it
+verbatim, `_verify_build_block` checks only keys it knows and states that a
+card written before a key existed is left alone), so an unknown key is
+carried and ignored. No default, format menu, serving lane, ship gate or byte
+changes.
+
+Re-stamped (2026-09-05, `claude/pq-221`) for **one home for "does this route
+execute a static activation contract"** (§5.1, §5.7; RobTand/prismaquant#221,
+P3). PR #213 (#205) made "which activation quantiser does this spec serve" a
+property of the spec (`FormatSpec.static_activation_contract`) and moved the
+assignment-KL hooks and the production cache scorer onto it; the Tessera
+campaign and export lane kept answering the same question by comparing the
+route's source-format NAME against `"NVFP4"`, in three places and two
+spellings — one of them a helper whose docstring was literally the question.
+The derivation now has one owner:
+`tessera_formats.route_static_activation_contract(route)` returns the contract
+of the registry row the route names (`activation_source_format`), and every
+consumer reads it. `tessera_render.synthesize_tessera_spec` re-stamps its
+result `measured_as_served=True` onto the rung's spec — the one step that
+stays where it was, because turning the ROW's contract into the SPEC's is a
+different question. `tessera_campaign._measure_anchor` prices and refuses
+through the spec's copy (`contract.quantize_dequantize` instead of a hardcoded
+`nvfp4_activation_qdq_served`, and a refusal naming `contract.execution`
+instead of a format name); `_format_executes_static_nvfp4` becomes
+`_format_executes_static_activation_contract` over the same spec field; and
+`tessera_export_lane`'s `--input-scales` gate calls the route accessor
+directly rather than `get_format(<rung>)`, which would reach
+`synthesize_tessera_spec` and pull the `tessera` package into a preflight
+built not to need it (that module's own docstring). **Nothing resolves
+differently today**: over all 80 registry rows `canonical_format_name(name) ==
+"NVFP4"` and `static_activation_contract is not None` agree exactly, and
+`NVFP4` is the only row carrying a contract. The regression is the day a
+second row gets one — `StaticActivationContract` is a general dataclass and
+`FormatSpec` types the field as a spec-level property, not an NVFP4 flag — and
+`test_static_activation_contract_one_home.py` constructs exactly that: with
+`FP8_E4M3` given a static contract the name compare answers "not NVFP4" while
+the cache scorer and the KL hooks, which already read the row, refuse the same
+unit; the campaign then stamps no `input_global_scale` and the export ships a
+unit whose static A-side scale nothing ever bound — the failure #205 was
+opened to close, at a different format name. **Machine-readable change**: the
+preflight report key `w4a4_units` is renamed
+`static_activation_contract_units`, because it can now hold units that are not
+W4A4; its only readers were this module and four test assertions, and no
+receipt, allocation JSON or shipcard carries it (the CLI serialises only
+`report["build"]`). Refusal texts in the campaign and the export lane now name
+the executed contract rather than "NVFP4". No default, format menu, serving
+lane, ship gate or byte changes.
+
 Re-stamped (2026-09-05, `claude/pq-gates`) for **a campaign test that cannot
 leak the child it orphans on purpose** (§3.0; RobTand/prismaquant#219, P3).
 `test_resume_after_coordinator_death_recovers_owned_helper_receipt` kills the
@@ -6448,7 +6545,37 @@ Two properties make the numbers comparable with the rest of the menu:
   `priced == written` on the routed leg: the exporter reuses the campaign's
   blobs instead of re-encoding the source. An allocation with no routed
   expert unit bundles nothing and the encode is byte-identical to one built
-  before this existed.
+  before this existed — **including one that carries the producer's projection
+  and keeps every routed expert in BF16** (#229). That allocation is one the
+  allocator emits by design (`allocation_expert_projection_block` records the
+  stack as BF16 with no wire receipts), and the gate refused it with exit 2
+  until the bundle was made conditional on `routed_expert_bytes ==
+  priced_wires` rather than on a projection merely being carried. Zero
+  selected Tessera experts means no bundle and no `--cached-expert-units`
+  handoff; where a bundle IS required, `cached_units_manifest` still refuses
+  an empty one.
+
+* **And the receipt names which path produced the routed bytes (PrismaQuant
+  #222).** The projection is an unlock, not a requirement, so an allocation
+  carrying none is not refused — its routed units resolve on source-member
+  shapes and the exporter **re-encodes them from the source checkpoint**.
+  That lane is sanctioned and unchanged, but it does not ship the bytes the
+  campaign priced, so it is stated rather than inferred.
+  `_carried_expert_projection` returns which path it took beside the bundle —
+  it is the only function that sees both the carried keys and whether any
+  routed unit was selected — and `require_assignment_scope` stamps that answer
+  into its receipt as `routed_expert_bytes`: `priced_wires`,
+  `reencoded_from_source`, or `no_routed_units` for an allocation that selects
+  none, so a dense export never reads as a fallback. `preflight` copies the
+  same value into the build anchor as `tessera_routed_expert_bytes`, and
+  `lane_shipcard open --build-json` stamps the anchor whole onto the
+  artifact's ship record, so a consumer of the shipped bytes reads it there.
+  **Absence of the key means the preflight predates #222 and does not say; it
+  never means `priced_wires`** — every artifact built before this stamp is in
+  that state, and most of them re-encoded. Whether the fallback should instead
+  be REFUSED once a profile has a producer tool is #222's option (b), open and
+  Rob's to price: it would make every lane whose profile gains one re-run its
+  campaign before its next export.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
@@ -6759,6 +6886,18 @@ name. The contract's `measured_as_served` is the spec's measurement policy:
 `False` on the `NVFP4` row (the dynamic RTN stays the screen baseline; the
 served emulation is `PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES`), `True` on
 a Tessera W4A4 spec (§5.7). Dynamic W8A8 (FP8, MX) and A16 rows carry `None`.
+
+That spec-level answer has one derivation beneath it (#221):
+`tessera_formats.route_static_activation_contract(route)` returns the contract
+of the registry row a Tessera route names in `activation_source_format`.
+`tessera_render.synthesize_tessera_spec` re-stamps that result
+`measured_as_served=True` to build the rung's spec, so a consumer that reaches
+for `FormatSpec.static_activation_contract` and one that asks the route
+directly — `tessera_export_lane`'s `--input-scales` gate, which must not reach
+the synthesizer and pull in the `tessera` package — are reading the same row
+through the same rule, and cannot answer differently. A name compare would
+answer the same today only because `NVFP4` is the one row carrying a contract;
+the field is typed as a spec-level property, not an NVFP4 flag.
 
 ### 5.2 Scale rules and JSO
 
@@ -7268,14 +7407,15 @@ exporter — `TESSERA_HESSIAN` (the campaign's `hessian_capture.pt`) and
 `TESSERA_INPUT_SCALES` (its `input_scales.safetensors`) — and
 `tessera_export_lane.require_priced_export_inputs` fails closed before the
 plan translation when the allocation's `tessera_hessian` stamp or its
-selected W4A4 routes declare a requirement the supplied files do not satisfy
+selected static-activation-contract routes declare a requirement the
+supplied files do not satisfy
 (#193): the artifact built must be the artifact priced. The binding is to
 content, not to names (#204): the allocation carries the campaign capture's
 `capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`, whose
 capture-context roster is read from `tessera.export.CAPTURE_CONTEXT` rather
 than typed, with one documented fallback for pins that predate the constant
 and a by-name refusal when the two rosters disagree — #216) and the
-`input_global_scale` each selected W4A4 unit was priced under
+`input_global_scale` each selected static-contract unit was priced under
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation

@@ -366,7 +366,7 @@ def test_a_w4a4_anchor_with_no_static_scale_refuses_before_encoding(
     from types import SimpleNamespace
 
     with pytest.raises(campaign.ActivationScaleContractError,
-                       match="static NVFP4 activation contract"):
+                       match="static activation contract"):
         campaign._measure_anchor(
             qname="m.q_proj",
             weight=torch.randn(32, 256, dtype=torch.bfloat16),

@@ -57,6 +57,13 @@ which is the failure mode principle 14 exists to prevent.
    Tessera unit must retain the allocation's target and per-unit context,
    agree with the source header and profile topology, and resolve all regimes
    on that context. Legacy calls without scope retain their existing gates.
+   This gate also RECORDS one thing it deliberately does not refuse: whether
+   the routed-expert bytes come from the campaign's priced wires or are
+   re-encoded from source (:data:`ROUTED_EXPERT_BYTES_KEY`, #222). Both lanes
+   are sanctioned -- a carried producer projection is an unlock, not a
+   requirement (#183, #220) -- but which one shipped is a fact about the
+   artifact, so it is a field in the receipt rather than a difference a
+   consumer has to infer.
 7. :func:`require_priced_export_inputs` -- the inputs the allocation was
    PRICED under must be the inputs the exporter is handed
    (RobTand/prismaquant#193): an H-aware allocation needs its identity-matched
@@ -521,15 +528,44 @@ def _source_unit_shapes(model_path: str | Path, profile,
     return by_unit
 
 
+#: What produced the routed-expert bytes this export is about to ship, as the
+#: one function that decides it answers (PrismaQuant #222).  Three values,
+#: because a dense export is not a fallback:
+#:
+#: * ``priced_wires`` -- the allocation carried the producer's projection, its
+#:   priced blobs were checked against their receipts here, and the exporter is
+#:   handed those bytes (``--cached-expert-units``).  Priced == written.
+#: * ``reencoded_from_source`` -- no projection was carried, so the routed
+#:   units resolve on source-member shapes and the exporter RE-ENCODES them
+#:   from the source checkpoint.  Legitimate, unchanged since before #183, and
+#:   the bytes that ship are not the bytes the campaign priced.
+#: * ``no_routed_units`` -- this allocation selects no routed expert unit at
+#:   all, so no routed byte is produced by either path.
+ROUTED_EXPERT_BYTES_PRICED_WIRES = "priced_wires"
+ROUTED_EXPERT_BYTES_REENCODED = "reencoded_from_source"
+ROUTED_EXPERT_BYTES_NONE = "no_routed_units"
+
+#: The key :func:`require_assignment_scope`'s receipt carries it under ...
+ROUTED_EXPERT_BYTES_KEY = "routed_expert_bytes"
+#: ... and the key the build anchor carries the same value under, whence
+#: ``lane_shipcard open --build-json`` stamps it onto the artifact's ship
+#: record.  Namespaced there because that block is shared across lanes.
+#:
+#: **Absence is not a value.** A build anchor, shipcard or scope receipt
+#: written before #222 carries neither key; a reader must take that as "this
+#: preflight predates #222 and does not say", never as ``priced_wires``.
+BUILD_ROUTED_EXPERT_BYTES_KEY = "tessera_routed_expert_bytes"
+
+
 def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping[str, str],
-                               shards: Mapping[str, str]) -> dict | None:
+                               shards: Mapping[str, str]) -> tuple[str, dict | None]:
     """Re-bind the selected routed units to the projection the allocation carries.
 
     A carried projection is an UNLOCK, not a new requirement: an allocation
     that carries none keeps the pre-#183 lane exactly -- routed units resolve
     on their source-member shapes and a predicated cell is still refused for
-    lacking the producer's executed-unit attestation -- so this returns
-    ``None``.  What it will not do is read priced-wire receipts that are bound
+    lacking the producer's executed-unit attestation -- so this returns no
+    bundle.  What it will not do is read priced-wire receipts that are bound
     to nothing: an allocation carrying wires, stack formats or a wire
     directory with the projection stripped out is refused by name.
 
@@ -539,8 +575,16 @@ def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping
     actually lives in, each executed stack must be selected whole at one rung
     (the stamp the allocator wrote must agree), and every selected rung's
     priced bytes must sit in the campaign's wire directory under their
-    receipt.  What comes back is the bundle the exporter's
+    receipt.  The bundle that comes back is what the exporter's
     ``--cached-expert-units`` intake consumes.
+
+    Returned WITH the bundle, and not derived from it by the caller, is which
+    of the two paths this run took (PrismaQuant #222).  The unlock is one
+    decision and it is made here -- this is the only function that sees both
+    the carried keys and whether any routed unit was selected -- so the receipt
+    that names the path and the code that takes it cannot disagree.  Deriving
+    it at the call site from ``bundle is not None`` would be a second rule for
+    one question, and would read a dense export as a re-encode.
     """
     from .tessera_expert_projection import (
         EXPERT_WIRES_KEY, PROJECTION_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY,
@@ -549,6 +593,12 @@ def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping
     )
     from .tessera_formats import parse_tessera_format_name
 
+    # No routed unit selected, no routed bytes: neither path runs, whatever the
+    # allocation happens to carry.  Decided before the keys are read so a dense
+    # export is never stamped as a fallback -- and it changes nothing below,
+    # because every check that follows already iterates over ``selected_routed``.
+    fallback = (ROUTED_EXPERT_BYTES_REENCODED if selected_routed
+                else ROUTED_EXPERT_BYTES_NONE)
     carried = meta.get(PROJECTION_KEY)
     if carried is None:
         orphaned = sorted(key for key in (EXPERT_WIRES_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY)
@@ -558,7 +608,7 @@ def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping
                 f"the allocation carries {orphaned} but no producer expert projection "
                 f"({PROJECTION_KEY}); priced expert wires that are bound to no executed "
                 "unit cannot be handed to the exporter (PrismaQuant #183)")
-        return None
+        return fallback, None
     try:
         source, units, stack_of = carried_units(carried)
         for name in sorted(selected_routed):
@@ -600,10 +650,14 @@ def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping
                 grid=family.payload_grid().name, wire_dir=Path(wire_dir))
     except ExpertProjectionError as exc:
         raise TesseraExportLaneError(f"expert projection: {exc}") from exc
-    return {"source": source, "units": records, "stacks": stack_formats,
-            "wire_dir": wire_dir,
-            "geometry": {name: (units[name]["rows"], units[name]["cols"])
-                         for name in selected_routed}}
+    # A carried projection that no selected unit rides is still not priced
+    # wires shipping: ``records`` is empty and the exporter re-encodes nothing,
+    # so ``fallback`` (``no_routed_units``) is the honest answer.
+    return (ROUTED_EXPERT_BYTES_PRICED_WIRES if selected_routed else fallback), {
+        "source": source, "units": records, "stacks": stack_formats,
+        "wire_dir": wire_dir,
+        "geometry": {name: (units[name]["rows"], units[name]["cols"])
+                     for name in selected_routed}}
 
 
 #: The bundle's name inside the campaign's wire directory.  One name: the
@@ -657,6 +711,13 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     checked against their receipts here, where they are about to be handed to
     the exporter.  See :func:`_carried_expert_projection` for what that
     binding refuses by name.
+
+    Either way the receipt SAYS which it was, under
+    :data:`ROUTED_EXPERT_BYTES_KEY` (#222): the fallback is a legitimate lane
+    and is not refused here, but an export whose routed bytes were re-encoded
+    from source rather than taken from the campaign's priced wires is not the
+    same artifact, and a consumer must not have to infer which one it holds
+    from the absence of another key.
     """
     from .lane_eligibility import (
         SCOPED_LANE_SCHEMAS, QUALIFICATION_DEVICE_QUALIFIED, ROUTE_STATUS_BACKED,
@@ -703,7 +764,7 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
         # The producer's projection first: it is the structural refusal, it is
         # cheaper than a route resolution, and it is what attests the executed
         # geometry the rest of this loop resolves a routed unit on.
-        projection = _carried_expert_projection(
+        routed_expert_bytes, projection = _carried_expert_projection(
             meta, {name: fmt for name, fmt in selected.items()
                    if structures[name] == STRUCTURE_ROUTED_MOE}, shards)
         attested = projection["geometry"] if projection is not None else {}
@@ -754,7 +815,11 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
                     f"{route.unattested_reason or 'every regime must be device_qualified and native'}")
             routes[name] = route.as_dict()
         report = {"target": target.as_dict(), "by_unit": routes,
-                  "contract": table.provenance()}
+                  "contract": table.provenance(),
+                  # Which path produced the routed bytes, as the function that
+                  # chose it answered -- never re-derived from what else is in
+                  # this report (#222).
+                  ROUTED_EXPERT_BYTES_KEY: routed_expert_bytes}
         if projection is not None:
             report["expert_projection"] = projection
         return report
@@ -1036,18 +1101,20 @@ def require_priced_export_inputs(
       unbound and refused by name, never read as "any capture of this draw".
 
     * **The static activation scales.**  Every selected rung whose route
-      executes the static NVFP4 contract was priced under a calibrated
-      ``input_global_scale``, and the exporter refuses NVFP4 routes without
+      executes a static activation contract was priced under a calibrated
+      ``input_global_scale``, and the exporter refuses such routes without
       ``--input-scales`` -- but only after encoding everything else.  This
-      gate requires the file, every selected W4A4 unit's key in it, and (#204)
+      gate requires the file, every selected such unit's key in it, and (#204)
       that the VALUE under each key is the value the allocation's
       ``tessera_activation_static_scales`` block says priced that unit,
-      before a single unit is encoded.
+      before a single unit is encoded.  Which rungs those are is the registry
+      row's answer, not its name's (#221).
     """
     from .footprint import _read_safetensors_header
     from .layer_config import load_assignment, read_layer_config_metadata
     from .tessera_formats import (
-        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+        parse_tessera_format_name, route_static_activation_contract,
+        tessera_serving_route, tessera_wire_recipe,
     )
 
     selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
@@ -1056,7 +1123,8 @@ def require_priced_export_inputs(
         "hessian_required": False, "hessian": None,
         "hessian_capture_sha256": None, "hessian_capture_seal_crosscheck": None,
         "input_scales_required": False, "input_scales": None,
-        "w4a4_units": 0, "input_scales_bound_units": 0,
+        "static_activation_contract_units": 0,
+        "input_scales_bound_units": 0,
     }
     if not selected:
         return report
@@ -1155,7 +1223,15 @@ def require_priced_export_inputs(
             "the flag, or re-price with --hessian require."
         )
 
-    w4a4 = []
+    # Which selected units need a calibrated static A-side scale is the answer
+    # of the registry row the rung's route names, read through the one
+    # derivation that owns it (``route_static_activation_contract``) -- never a
+    # compare of that row's NAME against "NVFP4" (#205's rule, #221's fix).
+    # The ROUTE accessor and not ``format_registry.get_format(fmt)``: resolving
+    # a Tessera rung by name reaches ``synthesize_tessera_spec``, which imports
+    # the ``tessera`` package, and this preflight gates without it (see this
+    # module's docstring).  The accessor reads a plain registry row instead.
+    static_contract_units = []
     for name, fmt in sorted(selected.items()):
         parsed = parse_tessera_format_name(fmt)
         if parsed is None:
@@ -1163,18 +1239,19 @@ def require_priced_export_inputs(
                 f"{name}: {fmt!r} is not a Tessera format name")
         family, rung = parsed
         wire = tessera_wire_recipe(family, rung)
-        if tessera_serving_route(
-                family, wire, rung).activation_source_format == "NVFP4":
-            w4a4.append(name)
-    report["w4a4_units"] = len(w4a4)
-    if w4a4:
+        route = tessera_serving_route(family, wire, rung)
+        if route_static_activation_contract(route) is not None:
+            static_contract_units.append(name)
+    report["static_activation_contract_units"] = len(static_contract_units)
+    if static_contract_units:
         report["input_scales_required"] = True
         if input_scales_path is None:
             raise TesseraExportLaneError(
-                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
-                "activation contract (first: " + w4a4[0] + ") and no "
+                f"{len(static_contract_units)} selected unit(s) execute a "
+                "static activation contract (first: "
+                + static_contract_units[0] + ") and no "
                 "--input-scales file was supplied. The exporter requires one "
-                "input_global_scale per W4A4 module and would refuse -- after "
+                "input_global_scale per such module and would refuse -- after "
                 "encoding everything else. Pass TESSERA_INPUT_SCALES= the "
                 "campaign's input_scales.safetensors (written beside its "
                 "--cache-dir), whose values are the scales the costs were "
@@ -1189,37 +1266,38 @@ def require_priced_export_inputs(
             priced_block, Mapping) else None
         if not isinstance(priced_units, Mapping):
             raise TesseraExportLaneError(
-                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
-                "activation contract but the allocation's metadata carries "
-                "no tessera_activation_static_scales block, so the "
+                f"{len(static_contract_units)} selected unit(s) execute a "
+                "static activation contract but the allocation's metadata "
+                "carries no tessera_activation_static_scales block, so the "
                 "input_global_scale each was priced under is unbound and "
                 "the file's values cannot be checked. This allocation came "
                 "from a pre-#204 allocator; re-allocate from the campaign's "
                 "cost table, whose rows carry the priced scale."
             )
-        unpriced = [name for name in w4a4
+        unpriced = [name for name in static_contract_units
                     if not isinstance(priced_units.get(name), (int, float))
                     or isinstance(priced_units.get(name), bool)]
         if unpriced:
             raise TesseraExportLaneError(
                 "the allocation priced no input_global_scale for selected "
-                f"W4A4 unit(s) {unpriced[:5]}{'...' if len(unpriced) > 5 else ''}"
+                f"unit(s) {unpriced[:5]}{'...' if len(unpriced) > 5 else ''}"
                 " (tessera_activation_static_scales.units has no numeric "
                 "value for them); a static-contract unit whose priced scale "
                 "is unknown cannot be bound to any file. Re-run the campaign "
-                "so every W4A4 row carries its scale, and re-allocate."
+                "so every static-contract row carries its scale, and "
+                "re-allocate."
             )
         input_scales_path = Path(input_scales_path)
         if not input_scales_path.is_file():
             raise TesseraExportLaneError(
                 f"--input-scales {input_scales_path} does not exist")
         header = _read_safetensors_header(str(input_scales_path))
-        missing = [name for name in w4a4
+        missing = [name for name in static_contract_units
                    if f"{name}.input_global_scale" not in header]
         if missing:
             raise TesseraExportLaneError(
                 f"--input-scales {input_scales_path} carries no "
-                "input_global_scale for selected W4A4 unit(s) "
+                "input_global_scale for selected static-contract unit(s) "
                 f"{missing[:5]}{'...' if len(missing) > 5 else ''}; the "
                 "exporter's fused join cannot invent a member's scale, and a "
                 "partial file exports a module the costs did not price."
@@ -1228,13 +1306,13 @@ def require_priced_export_inputs(
 
         with safe_open(str(input_scales_path), framework="pt",
                        device="cpu") as handle:
-            for name in w4a4:
+            for name in static_contract_units:
                 tensor = handle.get_tensor(f"{name}.input_global_scale")
                 if tensor.numel() != 1:
                     raise TesseraExportLaneError(
                         f"--input-scales {input_scales_path}: "
                         f"{name}.input_global_scale has shape "
-                        f"{list(tensor.shape)}; the static NVFP4 contract "
+                        f"{list(tensor.shape)}; a static activation contract "
                         "reads one scalar per unit and nothing else can be "
                         "compared with the priced scale."
                     )
@@ -1264,7 +1342,7 @@ def require_priced_export_inputs(
                         "this file."
                     )
         report["input_scales"] = str(input_scales_path)
-        report["input_scales_bound_units"] = len(w4a4)
+        report["input_scales_bound_units"] = len(static_contract_units)
     return report
 
 
@@ -1282,7 +1360,10 @@ def preflight(model_path: str | Path, *, target=None,
     bundle for the priced expert wires this allocation selected, into the
     campaign's own wire directory, and names it in the build anchor so the
     driver hands the exporter the path rather than reconstructing it.  An
-    allocation that selects no routed expert unit bundles nothing.
+    allocation that selects no routed expert unit bundles nothing -- including
+    one that CARRIES the producer's projection and keeps every routed expert
+    in BF16, which is a decision the allocator emits and this gate refused
+    until #229.
     """
     structure = require_declared_structure(model_path)
     target = require_serving_target(target)
@@ -1311,10 +1392,33 @@ def preflight(model_path: str | Path, *, target=None,
         if scope is not None:
             build["tessera_serving_scope"] = read_layer_config_metadata(
                 assignment_path)["tessera_serving_scope"]
+            # Copied from the scope receipt, never recomputed: the anchor is
+            # the only machine-readable thing this CLI writes, and
+            # `lane_shipcard open --build-json` stamps it whole onto the
+            # artifact's ship record, so this is where a consumer of the
+            # shipped bytes reads which path produced its routed experts
+            # (#222).  Absence means a pre-#222 preflight, not priced wires.
+            build[BUILD_ROUTED_EXPERT_BYTES_KEY] = scope[ROUTED_EXPERT_BYTES_KEY]
             projection = scope.get("expert_projection")
             if projection is not None:
                 build["tessera_expert_stack_formats"] = dict(projection["stacks"])
-                if cached_expert_units:
+                # Bundle exactly when priced wires are what produce the routed
+                # bytes -- not merely when a projection is carried (#229).  An
+                # allocation that keeps every routed expert in BF16 and selects
+                # Tessera only for a dense Linear is one the allocator is
+                # designed to emit: `allocation_expert_projection_block` keeps
+                # the population and the projection and records the stack as
+                # BF16, so the projection here is non-null with no selected
+                # unit under it.  Testing non-null-ness handed that empty map
+                # to the bundle writer, which refuses "no priced expert wires
+                # to bundle" -- exit 2, no build anchor, on the normal driver
+                # path, which always passes the flag.  The receipt's own value
+                # is the predicate, so the anchor names a bundle in exactly the
+                # runs whose bytes come from one, and `cached_units_manifest`
+                # keeps refusing an empty bundle where one IS required.
+                if cached_expert_units and (
+                        scope[ROUTED_EXPERT_BYTES_KEY]
+                        == ROUTED_EXPERT_BYTES_PRICED_WIRES):
                     build["cached_expert_units"] = str(
                         write_cached_expert_units(projection))
         if file_sha256(assignment_path) != assignment_sha:
@@ -1377,7 +1481,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input-scales", default=None,
                         help="safetensors of <unit>.input_global_scale (the "
                              "campaign's input_scales.safetensors); required "
-                             "to cover every selected W4A4 unit")
+                             "to cover every selected unit whose route "
+                             "executes a static activation contract")
     parser.add_argument("--target-profile", default=None,
                         help="serving profile supplying or cross-checking the exact platform")
     parser.add_argument("--write-build-json", default=None,

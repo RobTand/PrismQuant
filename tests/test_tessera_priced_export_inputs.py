@@ -59,10 +59,12 @@ def _assignment(tmp_path, *, formats, hessian_block="modern-supplied",
     if blocks[hessian_block] is not None:
         meta["tessera_hessian"] = blocks[hessian_block]
     if scales is not None:
-        from prismaquant.tessera_campaign import _format_executes_static_nvfp4
+        from prismaquant.tessera_campaign import (
+            _format_executes_static_activation_contract as executes,
+        )
 
         units = ({name: SCALE for name, fmt in formats.items()
-                  if _format_executes_static_nvfp4(fmt)}
+                  if executes(fmt)}
                  if scales == "own" else dict(scales))
         meta["tessera_activation_static_scales"] = {
             "schema": export.PRICED_STATIC_SCALES_SCHEMA, "units": units}
@@ -439,7 +441,8 @@ def test_an_allocation_with_no_tessera_units_needs_nothing(tmp_path):
                       "hessian_capture_sha256": None,
                       "hessian_capture_seal_crosscheck": None,
                       "input_scales_required": False, "input_scales": None,
-                      "w4a4_units": 0, "input_scales_bound_units": 0}
+                      "static_activation_contract_units": 0,
+                      "input_scales_bound_units": 0}
 
 
 def test_the_priced_input_triple_matches_tesseras_roster():
@@ -568,7 +571,7 @@ def test_w4a4_selection_requires_input_scales(tmp_path):
         tmp_path, formats={DENSE_E2M1: "TESSERA_E2M1_K2_R896"},
         hessian_block="modern-weights-only")
     with pytest.raises(export.TesseraExportLaneError,
-                       match="static NVFP4 activation contract.*--input-scales"):
+                       match="static activation contract.*--input-scales"):
         export.require_priced_export_inputs(assignment)
 
 
@@ -592,7 +595,7 @@ def test_the_campaigns_own_scales_file_covers_and_passes(tmp_path):
     report = export.require_priced_export_inputs(
         assignment, input_scales_path=scales)
     assert report["input_scales_required"] is True
-    assert report["w4a4_units"] == 1
+    assert report["static_activation_contract_units"] == 1
     assert report["input_scales"] == str(scales)
     assert report["input_scales_bound_units"] == 1
 
@@ -603,7 +606,7 @@ def test_dense_e4m3_selection_needs_no_scales(tmp_path):
         hessian_block="modern-weights-only")
     report = export.require_priced_export_inputs(assignment)
     assert report["input_scales_required"] is False
-    assert report["w4a4_units"] == 0
+    assert report["static_activation_contract_units"] == 0
 
 
 # -- #204: the VALUE the file carries must be the value that priced the row.
