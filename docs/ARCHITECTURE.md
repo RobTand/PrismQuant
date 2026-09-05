@@ -31,6 +31,154 @@ and answers `None` rather than raising, so an unresolvable menu entry answers
 `False`. No default, menu, lane or gate moves; `INT4_W4A16_g128` remains
 research/registry-only.
 
+Re-stamped (2026-09-05, `claude/pq-211`) for **the export leg's inputs being
+written only after the resume identity has accepted the run** (§5.7;
+RobTand/prismaquant#211, P1). `tessera_campaign.main()` called
+`write_export_inputs` immediately after collecting activations — before
+`prepare_journal` and before the per-row resume verification — so a resume the
+checkpoint identity **refuses** had already overwritten
+`<cache-dir>/hessian_capture.pt`, its `.provenance.json` sidecar and
+`input_scales.safetensors` with the refused draw's Hessians and static scales.
+The checkpoint and the previous cost file correctly survived that refusal; the
+export half of the same surviving table did not, so the table that survived
+could not be exported and had to be re-priced from scratch. #204 bounded the
+damage (the old allocation now refuses the rewritten capture by
+`capture_sha256` instead of exporting under the wrong Hessian and scale) but
+did not stop the destruction. The call is now made **after** the resume
+verification loop and its `[campaign] resumed …` print and **before**
+`started = time.time()`, so #193's guarantee — written before the anchor loop,
+so even a deadline-stopped campaign leaves them — is unchanged, and an
+accepted resume rewrites byte-identical files because the run-level identity
+binds the Hessians, static scales and scale policy that are exactly that
+call's inputs. Nothing between the two sites consumes `hessian_capture_path`,
+`input_scales_path` or `capture_sha256`; the first consumer remains the
+provenance block, and `_campaign_checkpoint_identity` takes the Hessians and
+the calibration identity, never the digest. No file format, field, default or
+gate changes. Regression:
+`test_tessera_campaign_resume.py::test_refused_resume_leaves_the_surviving_tables_export_inputs`,
+which needs the release Tessera's `cached_unit` receipt API to reach the
+resume and therefore skips at the development pin.
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the export lane
+handing the exporter the priced expert wires** (§4.10, §9.4; PrismaQuant
+#183). `require_assignment_scope` now re-binds every selected routed expert
+unit to the projection the allocation carries
+(`_carried_expert_projection`), before it resolves a single route: the unit
+must be one the producer projected, its source tensor must sit in the shard
+the producer hashed, each executed stack must be selected whole at one rung
+(agreeing with the allocator's `tessera_expert_stack_formats` stamp), and
+every selected rung's priced blob must be in the campaign's wire directory
+with its receipt's size and sha256 (`verify_expert_wire_record`). Because the
+producer's record — not a source-member dimension — attests the executed
+unit, a **predicated `routed_moe` cell now resolves** on that geometry
+instead of being refused; a selected routed unit the allocation carries no
+projection for is still refused by name, and a dense unit keeps the
+source-member refusal unchanged. `--write-cached-expert-units` then writes the
+producer's own `tessera.cached_units.v1` bundle
+(`write_cached_expert_units`, schema imported from
+`tessera.cached_unit.CACHE_SCHEMA`, never restated) into that wire directory
+and names it in the build anchor; `run-pipeline.sh` reads the path back from
+the anchor into `TESSERA_CACHED_UNIT_ARGS` and passes it to
+`export_tessera_serving.py --cached-expert-units`, so the exported
+routed-expert bytes ARE the priced bytes rather than a re-encode. A checkout
+whose tessera has no `cached_unit` API cannot bundle and refuses by name
+(PrismaQuant #192). Gate: `tests/test_tessera_export_projection.py` (pre-fix:
+`KeyError: 'expert_projection'`; the predicated case refused with
+`TesseraExportLaneError: ... cells ['routed_moe_decode', 'routed_moe_batch']
+carry predicates requiring the producer's executed-unit projection`; the six
+by-name refusals and the three receipt-damage cases `Failed: DID NOT RAISE
+TesseraExportLaneError`; the two CLI cases `SystemExit: 2` on `unrecognized
+arguments: --write-cached-expert-units`; the driver case `assert
+'--write-cached-expert-units' in ...`). 13 passed / 1 skipped at the dev pin,
+14 passed against the release producer (the bundle case needs
+`tessera.cached_unit`).
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the allocation
+carrying the priced expert population into `__prismaquant__`** (§4.10;
+PrismaQuant #183). `allocator.main` now adds
+`tessera_expert_projection.allocation_expert_projection_block(cost_data,
+assignment_expanded)` to the layer config's metadata, after the metadata dict
+is built and before the file is written: the campaign's `population` block
+verbatim (which units were priced, which omitted), the producer's
+`tessera_expert_projection` they were priced under, `tessera_expert_wires`
+holding -- for every projected unit -- the receipt of exactly the rung
+selected here (checked by `check_expert_wire_receipt` against that unit's
+projection and that rung before it is carried), `tessera_expert_stack_formats`
+(one format per executed stack, `require_stack_uniform_assignment`) and
+`tessera_expert_wire_dir`. Refused by name before the layer config is written
+(`[alloc] ERROR: expert projection: ...`): a projected unit the assignment
+does not place, a stack whose members were given different rungs, a selected
+Tessera rung with no priced-wire receipt, a receipt sealed for another rung or
+another unit, a table with wires but no projection, a population block of
+another schema. A stack kept whole at a non-Tessera format carries no receipt
+and records the format. Additive: a stock cost table adds no keys. Gate:
+`tests/test_allocator_expert_projection.py` (drives the real `allocator.main()`;
+pre-fix: `KeyError: 'tessera_expert_projection'` on the emitted metadata and
+`Failed: DID NOT RAISE SystemExit` for the two by-name refusals). The main()
+tests need a lane table this checkout's `lane_eligibility` reads and skip by
+name against the release producer's v8 table (PrismaQuant #192); the
+block-level refusals run on every checkout.
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the campaign
+pricing the producer-projected packed population** (§4.10; PrismaQuant #183).
+`tessera_campaign.main` now keeps the population `_require_campaign_population`
+admits -- the in-scope packed parameters the profile splits into per-expert
+`gate_up`/`down` projections, with the producer's projection tool declared and
+present -- and prices those per-expert 2-D views beside the dense Linears:
+one producer request per campaign (`_project_expert_population`), the answer
+bound exactly to the profile-declared units, every unit's source tensor read
+from the shard the producer hashed and compared byte-for-byte with the live
+view (a disagreement refuses by name before any encode), expert anchors
+grouped per producer stack, receipts sealed with the producer's
+`unit_input_identity`, measured-only cost rows for wire-backed units, and a
+payload that names the priced and omitted population
+(`provenance.population`, `provenance.tessera_expert_projection`,
+`tessera_expert_wires`). The gate refuses what the bridge does not carry: an
+in-scope packed parameter without a declared split, or no producer tool
+(`TESSERA_REPO` unset), each named before calibration. What is NOT claimed:
+no rung is scored on this branch against either producer checkout (the pin
+lacks `tessera.cached_unit`; the release publishes lane-eligibility v8, which
+PrismaQuant #192 admits), so the main-entry gate runs the producer's real
+encode and receipt without `_measure_anchor`'s route admission and says so.
+Gate: `tests/test_tessera_campaign_packed.py`
+(`test_main_prices_the_producer_projected_expert_population`, pre-fix:
+`RuntimeError: Tessera campaign cannot price the packed expert population
+yet: model.layers.2.feed_forward.experts.down_proj (2, 64, 64), ...` -- the
+old gate refused every packed population; the two by-name refusals and the
+source-mismatch refusal also shown failing before the change).
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
+expert count as the producer states it** (§4.10; PrismaQuant #183).
+`bind_expert_projection` read the stack's `experts` field as a list of
+indices; the producer (`plan_expert_stack`) states the COUNT, having already
+refused a gap or an undeclared index against `config.json`. The binder now
+requires an integer count whose units are exactly `range(count)`; a list is
+refused. Found by the first real run of the tool inside the campaign gate.
+Gate: `tests/test_tessera_expert_projection.py` (pre-fix:
+`producer stack experts 2 disagree with its units' experts [0, 1]`).
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
+expert projection, read in one place** (§4.10, §9.4; PrismaQuant #183).
+`prismaquant/tessera_expert_projection.py` is the only reader of Tessera's
+`tessera.expert_projection.v1` answer (`experiments/tessera_producer_plan.py`,
+now the third declared `producer_tools` entry in `lane_specs/tessera.json`,
+located through `TESSERA_REPO` like the translator and the exporter). It binds
+the producer's per-stack unit records to the profile-declared per-expert units
+exactly -- schema, `unpacked_per_expert` layout, whole-tensor selector, source
+tensor in the hashed roster, `[rows, cols]` geometry, full expert coverage --
+and refuses anything else by name: a packed source layout is refused because
+slicing it here would be a second home for the producer's
+`packed_expert_weight`. The same module owns the export-side rules the later
+stamps use: one rung per executed stack (no role split, no partial stack), the
+priced-wire receipt check that precedes the producer's own `verify_cached_unit`,
+and the producer's `tessera.cached_units.v1` bundle shape. This stamp is the
+vocabulary and the binding only; the campaign, allocator and export-lane uses
+are stamped separately. Gate: `tests/test_tessera_expert_projection.py`
+(vocabulary pinned to `tessera.serving.scheme.MOE_SOURCE_UNPACKED`,
+`tessera.cached_unit.unit_input_identity`'s sealed keys and
+`tessera.serving_parts.source_identity`'s roster where the producer is
+importable) and the roster assertion in `tests/test_lane_gate_recording.py`.
+
 Re-stamped (2026-09-05, `claude/pq-204`) for **binding the Tessera export
 inputs to the payload and the values that priced the allocation** (§5;
 RobTand/prismaquant#204, P0). The #193 gate compared the allocation's identity
@@ -5952,7 +6100,70 @@ Two properties make the numbers comparable with the rest of the menu:
   stored beside the render in the cache. Not two code paths that agree — one
   object. This proves the cached wire is the priced wire, not that an export
   or serving runtime reused it; those paths owe their own exact-byte and
-  served receipts. The packed bridge remains tracked by PrismaQuant #183.
+  served receipts.
+* **The packed expert population, priced as the producer projects it
+  (PrismaQuant #183).** `_require_campaign_population` admits the in-scope
+  packed parameters the profile splits into per-expert `gate_up`/`down`
+  projections *and* for which the producer's projection tool is declared and
+  present; anything else in scope is refused by name before calibration, and
+  the stride's leftovers are recorded as omitted. After the menus exist the
+  campaign asks the producer ONCE (`_project_expert_population`:
+  `experiments/tessera_producer_plan.py` over every in-scope stack, one
+  subprocess because the producer hashes the whole checkpoint), binds the
+  answer exactly to the profile-declared units, reads each unit's source
+  tensor from the shard the producer hashed and refuses, by name, a live view
+  that is not byte-for-byte that tensor. Expert anchors are grouped per
+  producer stack (`_group_key` → `s:<stack>`) so every member measures the
+  same rungs; their wire receipts are sealed with the producer's
+  `unit_input_identity` (the projection record inside the identity, which is
+  what the exporter's `--cached-expert-units` intake recomputes from the
+  source bytes) rather than the dense `encoding_input_identity`; and their
+  cost rows are **measured only** (`campaign_cost_payload(...,
+  wire_backed=)`), because an interpolated rung on a wire-backed unit would
+  be a price with no bytes behind it. The payload says what it priced:
+  `provenance.population` (`prismaquant.tessera_campaign_population.v1`:
+  priced dense / routed experts / packed parameters / stacks; omitted
+  dense-outside-stride, packed-outside-stride, pinned; counts),
+  `provenance.tessera_expert_projection` (the producer's answer verbatim
+  beside the request and the exact binding) and top-level
+  `tessera_expert_wires` (`{unit: {rung: receipt}}`). The checkpoint identity
+  binds the projection, so a resume under another source refuses at the
+  journal. What the producer cannot attest is still refused by name: a packed
+  source layout, an undeclared split, a missing tool.
+
+* **The allocation carries what it selected from (PrismaQuant #183).**
+  `allocator.main` adds `allocation_expert_projection_block(cost_data,
+  assignment_expanded)` to `__prismaquant__`: the campaign's `population`
+  block verbatim, the producer's `tessera_expert_projection` it was priced
+  under, `tessera_expert_wires` holding for every projected unit the receipt
+  of exactly the rung selected (checked against that unit's projection and
+  rung), `tessera_expert_stack_formats` (one format per executed stack) and
+  `tessera_expert_wire_dir`. A projected unit the assignment does not place,
+  a stack given different rungs, or a selected rung with no priced wire is
+  refused by name before the layer config is written; a stock table adds
+  nothing.
+
+* **The export lane hands the exporter the priced bytes (PrismaQuant #183).**
+  `require_assignment_scope` re-binds the selected routed expert units to the
+  carried projection (`_carried_expert_projection`) before it resolves any
+  route: a unit the producer did not project, a source tensor in a shard the
+  producer did not hash, a partly selected or split-rung stack, a
+  `tessera_expert_stack_formats` stamp that disagrees with the selection, a
+  selected rung with no receipt, or a priced blob whose bytes are not the
+  receipt's — each refused by name (`expert projection: ...`). The producer's
+  record is what attests the executed unit here, so a **predicated
+  `routed_moe` cell resolves** on the producer's geometry rather than being
+  refused for lacking one; dense units keep the source-member refusal, which
+  is the honest state for a fused execution shape PrismaQuant cannot see.
+  `--write-cached-expert-units` writes the producer's `tessera.cached_units.v1`
+  manifest into the campaign's wire directory (`write_cached_expert_units`,
+  schema imported from `tessera.cached_unit.CACHE_SCHEMA`) and names it in the
+  build anchor; the driver reads that path back and hands it to
+  `export_tessera_serving.py --cached-expert-units`. That closes
+  `priced == written` on the routed leg: the exporter reuses the campaign's
+  blobs instead of re-encoding the source. An allocation with no routed
+  expert unit bundles nothing and the encode is byte-identical to one built
+  before this existed.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
@@ -6684,7 +6895,17 @@ content, not to names (#204): the allocation carries the campaign capture's
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation
-that carries no binding at all as unbound. The arm opens
+that carries no binding at all as unbound. The campaign writes those two
+files at one point in `main()`: **after** the resume identity has accepted
+this run's inputs and **before** the anchor loop (#211). Before the loop, so a
+deadline-stopped campaign still leaves them (#193); after the gate, because
+they are the export half of whatever table survives a refusal — a resume the
+checkpoint identity refuses leaves the checkpoint and the previous cost file
+untouched, and must leave the capture, its sidecar and the scales untouched
+for the same reason, or the surviving table can no longer be exported at all.
+An accepted resume rewrites byte-identical files, because the identity binds
+the Hessians, the static scales and the scale policy that are exactly that
+call's inputs. The arm opens
 a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
 serve, endpoint, gates, KL evaluator and executed activation contracts.
 Allocation uses `tessera_menu` and its reviewed development contract; that
@@ -9783,7 +10004,13 @@ declares it shells out to must exist under the env var that declaration names
 exact reviewed release (`require_release_pin`). The PENDING release pin still
 refuses shipping. Runtime-scoped v5 adds an explicit validated target before
 work and selected-unit scope/source-shape admission before translation;
-passing the release pin does not bypass those gates. Cached plans must also
+passing the release pin does not bypass those gates. For a selected **routed
+expert** unit that source-shape admission is replaced by the producer's own
+projection, which the allocation carries: the unit, its source shard, its
+stack's single rung and its priced blob's bytes are all checked against the
+producer's record, and `--write-cached-expert-units` bundles exactly those
+blobs for the exporter's `--cached-expert-units` intake (§4.10, #183). Cached
+plans must also
 retain their own exact allocation-content binding, independent of the current
 shipcard build anchor.
 

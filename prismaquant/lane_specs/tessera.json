@@ -75,6 +75,13 @@
       "stability": "unsupported_experiments",
       "tracking_issue": "RobTand/prismaquant#119",
       "description": "The ONLY place the Tessera wire is written. Also tested on the Tessera side, but only by path-loading it (importlib.util.spec_from_file_location in tests/test_serving_export_gate.py, test_export_moe_layouts.py, test_fused_member_rungs.py, test_uniform_control.py) -- which is itself the evidence that it is not an importable entry point. Promotion rides the release-tag commit (RobTand/tessera#17)."
+    },
+    {
+      "repo_env": "TESSERA_REPO",
+      "path": "experiments/tessera_producer_plan.py",
+      "stability": "unsupported_experiments",
+      "tracking_issue": "RobTand/prismaquant#183",
+      "description": "The ONLY place the producer states which source tensor, expert, role and geometry each executed routed-expert unit is (schema tessera.expert_projection.v1, with the checkpoint's source_identity). PrismaQuant's campaign asks it once per run for every in-scope MoE stack and prices exactly the units it answers with (prismaquant/tessera_expert_projection.py); the export lane re-binds the allocation to that answer and hands the exporter the priced wires unchanged (--cached-expert-units). Named, never vendored: deriving the projection from tensor names here would be a second home for the producer's packed_expert_weight."
     }
   ],
   "kl_evaluator": {
