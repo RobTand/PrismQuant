@@ -3,8 +3,37 @@
 As of: 2026-09-05 · `claude/pq-gates`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-gates`) for **the dead-override census
+seeing every handler shape that catches its exception** (§8.1;
+RobTand/prismaquant#217, P3). `tests/test_vendored_override_gate.py`'s
+tree-wide pin that "a dead vendored override must never be *answered*"
+recognised only `except:`, `except Exception:` and `except BaseException:` —
+but `DeadVendoredOverrideError` subclasses `RuntimeError` deliberately, so
+`except RuntimeError:` swallowed the refusal and the census reported the site
+as refusing. Three shapes were invisible: bare `RuntimeError`, a tuple naming
+it, and a dotted `builtins.Exception`; a fourth, a handler that substitutes an
+answer on one branch and re-raises on the fall-through, passed
+`_handler_always_reraises`, which tested only the last statement. The census's
+whole justification is the four call sites with no behavioural test
+(`aqua_activation_cost.py:661`, `build_rtn_cache.py:500`,
+`sensitivity_probe.py:3592`, `streaming_production_cache.py:1776`). Now
+`CATCHES_DEAD_OVERRIDE` is derived from `DeadVendoredOverrideError.__mro__`
+rather than a second typed list, so the census follows the class if it is
+re-parented; `_handler_catches_dead_override` matches bare, dotted and
+tuple clauses against it; and `_handler_always_reraises` additionally requires
+no `return`, and no `break`/`continue` that would carry control past the
+trailing `raise`, ignoring nested scopes and loops written inside the handler.
+No production code changed: the widened census reports **zero** newly
+swallowing sites over `prismaquant/` (31 `try` blocks wrap a detection call —
+25 `except DeadVendoredOverrideError: raise` then broad, 4 `try/finally`, 1
+`SampleParallelProbeError`+broad-that-re-raises, 1 narrow non-catching), so
+the tree was and stays clean; what changed is that the pin now holds the shape
+it claims to hold. The census's own docstring names what it does not cover
+(aliased or dispatched calls, a swallow one frame up, computed exception
+classes, callers outside `prismaquant/`), since it is cited as future-proofing.
+
 Re-stamped (2026-09-05, `claude/pq-gates`) for **the export seal's
-capture-context roster read from Tessera rather than typed** (§5;
+capture-context roster read from Tessera rather than typed** (§5.7;
 RobTand/prismaquant#216, P2). `tessera_export_lane.CAPTURE_CONTEXT_FIELDS` was
 the literal `("model", "seqlen", "source")` and nothing in the tree read
 `tessera.export.CAPTURE_CONTEXT`, so half of the roster
@@ -6660,7 +6689,10 @@ plan translation when the allocation's `tessera_hessian` stamp or its
 selected W4A4 routes declare a requirement the supplied files do not satisfy
 (#193): the artifact built must be the artifact priced. The binding is to
 content, not to names (#204): the allocation carries the campaign capture's
-`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`) and the
+`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`, whose
+capture-context roster is read from `tessera.export.CAPTURE_CONTEXT` rather
+than typed, with one documented fallback for pins that predate the constant
+and a by-name refusal when the two rosters disagree — #216) and the
 `input_global_scale` each selected W4A4 unit was priced under
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a
