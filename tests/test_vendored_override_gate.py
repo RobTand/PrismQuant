@@ -9,13 +9,44 @@ vendoring failure must not break profile *detection*), so the recorded failure
 has to be consulted explicitly or the swallow re-hides it.
 
 These tests pin that consultation, not the vendored machinery itself.
+
+They also pin where the refusal is allowed to STOP (issue #201). A gate that
+raises inside a `try: ... except Exception: continue` is not a gate: until
+`_resolve` was reordered, a recorded dead override merely demoted the profile
+that matched and detection answered `DefaultProfile` — the silent wrong answer
+the gate's own docstring says it refuses. So the refusal must reach the caller
+of `detect_profile`, and it must arrive as its own class, so a caller can tell
+"no profile matched this checkpoint" (a `DefaultProfile`, sometimes fine) from
+"a profile matched and its vendored path is dead" (never fine).
 """
 from __future__ import annotations
+
+import json
 
 import pytest
 
 import prismaquant.vendored as vendored
-from prismaquant.model_profiles.registry import _refuse_dead_vendored_override
+from prismaquant.model_profiles.registry import (
+    DeadVendoredOverrideError,
+    _refuse_dead_vendored_override,
+    detect_profile,
+    detect_profile_with_warning,
+    profile_from_config,
+)
+
+
+def _checkpoint(tmp_path, **config):
+    """A staged checkpoint directory carrying just a `config.json`."""
+    root = tmp_path / "ckpt"
+    root.mkdir()
+    (root / "config.json").write_text(json.dumps(config))
+    return str(root)
+
+
+QWEN3_CONFIG = {
+    "model_type": "qwen3",
+    "architectures": ["Qwen3ForCausalLM"],
+}
 
 
 @pytest.fixture(autouse=True)
@@ -81,3 +112,158 @@ def test_gate_survives_a_missing_vendored_package(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _no_vendored)
     assert _refuse_dead_vendored_override("qwen3") is None
+
+
+# --- where the refusal is allowed to stop (issue #201) ---------------------
+
+
+def test_detect_profile_refuses_a_dead_override_instead_of_defaulting(
+    tmp_path, monkeypatch
+):
+    """The whole point of the gate: `detect_profile` must not answer at all.
+
+    Before #201 this returned `DefaultProfile` — `_resolve` ran the gate inside
+    its per-candidate `except Exception: continue`, which ate the refusal and
+    then walked on to the terminal fallback.
+    """
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert detect_profile(path).name == "qwen3"  # healthy path, for contrast
+
+    monkeypatch.setitem(
+        vendored.OVERRIDE_ERRORS,
+        "qwen3",
+        "synthetic: AutoModelForCausalLM.register no-op'd",
+    )
+    with pytest.raises(DeadVendoredOverrideError) as exc:
+        detect_profile(path)
+    msg = str(exc.value)
+    assert "qwen3" in msg
+    assert "UPSTREAM" in msg
+
+
+def test_the_refusal_has_its_own_class_distinct_from_no_match(
+    tmp_path, monkeypatch
+):
+    """"Nothing matched" and "the match is dead" must not look the same.
+
+    An unregistered architecture legitimately resolves to `DefaultProfile`;
+    a matched profile whose vendored path is dead never does. A caller that
+    tolerates the first must be able to refuse the second without catching
+    every `RuntimeError` detection can raise.
+    """
+    unknown = _checkpoint(
+        tmp_path, model_type="not_an_architecture", architectures=["NopeForCausalLM"]
+    )
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    # Unrelated architecture: unaffected, still the terminal fallback.
+    assert type(detect_profile(unknown)).__name__ == "DefaultProfile"
+
+    assert issubclass(DeadVendoredOverrideError, RuntimeError)
+    assert not issubclass(RuntimeError, DeadVendoredOverrideError)
+
+
+def test_profile_from_config_refuses_a_dead_override(monkeypatch):
+    """The config-object entrypoint shares `_resolve`, so it shares the gate."""
+    assert profile_from_config(dict(QWEN3_CONFIG)).name == "qwen3"
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        profile_from_config(dict(QWEN3_CONFIG))
+
+
+def test_detect_profile_with_warning_does_not_swallow_the_refusal(
+    tmp_path, monkeypatch
+):
+    """The tolerant entrypoint tolerates an unknown arch, not a dead override.
+
+    `detect_profile_with_warning` exists so production entrypoints can keep
+    running on a not-yet-registered model with a logged fallback. Its broad
+    `except Exception` is the same defect one level up: a printed warning is
+    not a refusal, and this failure means the run would execute upstream
+    modelling code.
+    """
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        detect_profile_with_warning(path, entrypoint="test")
+
+
+def test_an_unaskable_candidate_still_falls_through(tmp_path, monkeypatch):
+    """The reordering must not cost `_resolve` its candidate-walk tolerance.
+
+    A profile whose `matches()` explodes is not a match; detection keeps
+    walking, exactly as before. Only the dead-override refusal is promoted.
+    """
+    from prismaquant.model_profiles import registry
+    from prismaquant.model_profiles.base import ModelProfile
+
+    class ExplodingProfile(ModelProfile):
+        priority = 1
+
+        @classmethod
+        def matches(cls, model_type, architectures):
+            raise ValueError("synthetic: this candidate cannot be asked")
+
+        @property
+        def name(self) -> str:
+            return "exploding"
+
+    monkeypatch.setattr(registry, "_REGISTERED", [ExplodingProfile, *registry._REGISTERED])
+    monkeypatch.setattr(registry, "_REGISTRY_GENERATION", registry._REGISTRY_GENERATION + 1)
+    monkeypatch.setattr(registry, "_DETECTION_ORDER_CACHE", None)
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert detect_profile(path).name == "qwen3"
+
+
+# --- the same swallow one level up (issue #201, census in #202) -------------
+#
+# These three call sites each wrap detection in a broad `except Exception` and
+# continue with a substituted profile, so before this they converted the
+# refusal straight back into the silent wrong answer at their own call site.
+# Each documents its tolerance as "an architecture this build does not know",
+# which is a different statement from "a known architecture on a dead path".
+# They are pinned here rather than in each module's own test file because the
+# rule is the registry's -- where this refusal is allowed to stop -- and it has
+# one home. The other 22 such call sites, across 11 modules, are censused with
+# file:line in #202; several are optional-hint paths where `None` is right for
+# an ABSENT profile and wrong for a DEAD one, so each needs its own judgement.
+
+
+def test_the_completeness_gate_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`artifact_completeness._detect_profile_quietly` answered `None`."""
+    from prismaquant.artifact_completeness import _detect_profile_quietly
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _detect_profile_quietly(path).name == "qwen3"
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _detect_profile_quietly(path)
+
+
+def test_the_incremental_probe_shard_detection_does_not_swallow_it(
+    tmp_path, monkeypatch
+):
+    """`incremental_probe._detect_profile_for_shards` answered `DefaultProfile`."""
+    from prismaquant.incremental_probe import _detect_profile_for_shards
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _detect_profile_for_shards(path).name == "qwen3"
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _detect_profile_for_shards(path)
+
+
+def test_the_native_export_validator_does_not_swallow_it(tmp_path, monkeypatch):
+    """`validate_native_export._resolve_validation_target_profile` answered `None`.
+
+    Which then resolved the smoke's serving profile from the `default=`
+    argument — a validator picking its target by fallback, on a checkpoint it
+    had just been told it cannot reason about.
+    """
+    from prismaquant.validate_native_export import _resolve_validation_target_profile
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _resolve_validation_target_profile(path, None)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _resolve_validation_target_profile(path, None)

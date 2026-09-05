@@ -26,10 +26,13 @@ def _restore_profile_detection_globals():
     ``detect_profile`` answers for every test after it in that process:
 
     * ``prismaquant.vendored.OVERRIDE_ERRORS`` -- the dead-vendored-override
-      record. ``registry._refuse_dead_vendored_override`` raises on a hit, and
-      that raise happens *inside* ``_resolve``'s ``except Exception: continue``,
-      so a stray entry does not fail loudly. It DEMOTES the profile that
-      matched, and detection falls through to ``DefaultProfile``.
+      record. ``registry._refuse_dead_vendored_override`` raises on a hit.
+      Since issue #201 that raise escapes ``_resolve`` as a
+      ``DeadVendoredOverrideError``, so a stray entry now fails the next test
+      that detects that architecture, loudly and by name. It used to happen
+      *inside* ``_resolve``'s ``except Exception: continue``, which merely
+      DEMOTED the profile that matched and let detection fall through to
+      ``DefaultProfile`` -- silent, and the reason #197 was so hard to see.
     * ``prismaquant.vendored._QWEN3_REGISTERED`` -- once True, ``register_qwen3``
       returns before the ``OVERRIDE_ERRORS.pop()`` that a successful override
       performs, so a stray ``"qwen3"`` entry can never self-heal.

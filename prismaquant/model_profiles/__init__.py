@@ -7,6 +7,9 @@ Exports:
   - Qwen3_5Profile: covers Qwen3.5 and Qwen3.6 MoE (w/ MTP)
   - Gemma4Profile: covers Gemma 4 dense + MoE multimodal
   - detect_profile(model_path): auto-detect profile from HF config
+  - DeadVendoredOverrideError: detection refused — a profile matched but its
+    vendored-modelling override is known dead (distinct from "nothing matched",
+    which answers DefaultProfile)
   - register_profile(cls): register a custom profile at runtime
   - ModelGraph / ModelStructureSpec: typed model decomposition artifacts
 
@@ -23,6 +26,7 @@ from .qwen3 import Qwen3Profile
 from .qwen3_5 import Qwen3_5Profile
 from .qwen3_5_dense import Qwen3_5DenseProfile
 from .registry import (
+    DeadVendoredOverrideError,
     detect_profile,
     detect_profile_with_warning,
     profile_from_config,
@@ -40,6 +44,7 @@ from .structure import (
 
 __all__ = [
     "ModelProfile",
+    "DeadVendoredOverrideError",
     "DefaultProfile",
     "DeepseekV4Profile",
     "Qwen3Profile",
