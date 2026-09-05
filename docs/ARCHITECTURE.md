@@ -1,7 +1,35 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-211`. Stamps
+As of: 2026-09-05 · `claude/pq-218`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-218`) for **format-name resolution: case is
+the registry's question, and a predicate over a format menu must be total**
+(§5.1; RobTand/prismaquant#218, P1 — a regression in #213/#205). `#213`
+replaced a string membership test on the production-cache fill path with a
+registry lookup, and a lookup can raise where a membership test could only
+answer: `_format_uses_static_activation_clip` upper-cased an already
+upper-cased name and called `get_format`, so any fill whose menu or assignment
+carried `INT4_W4A16_g128` — the one mixed-case registry row, and what
+`validation_harness._entry_format_name` maps a 4-bit precision-plan entry to —
+died with an unhandled `KeyError` at `fill_production_weight_cache` before a
+tensor was rendered. Enumerated over the whole registry (80 rows + 3 aliases),
+that name is the **only** one `_render_base_format`'s `.upper()` makes
+unresolvable, and no name resolves to a *different* spec after an upper- or
+lower-case round trip. The fix is therefore not at the caller: (1)
+`format_registry.canonical_format_name` gains a case-insensitive last probe,
+so every caller that normalizes by upper-casing — the render base, the cache
+identity keys, `render_production_weight` (whose own `.upper()` predates #213
+and crashed on the same name at render time, so fixing only the gate would
+have moved the `KeyError` rather than removed it) — resolves again; identity
+spellings are unchanged, and nothing that resolved before resolves
+differently. (2) `production_weight_cache._resolve_format_spec` is one home
+for "does this requested name resolve to a spec, and if so which", shared by
+`_format_uses_static_activation_clip`, `_is_cb_format_name` and
+`_weighted_render_family`; it does not upper-case (the registry settles case)
+and answers `None` rather than raising, so an unresolvable menu entry answers
+`False`. No default, menu, lane or gate moves; `INT4_W4A16_g128` remains
+research/registry-only.
 
 Re-stamped (2026-09-05, `claude/pq-211`) for **the export leg's inputs being
 written only after the resume identity has accepted the run** (§5.7;
@@ -6342,13 +6370,34 @@ shape-exact rather than a nominal scalar:
 and 3-D packed-expert stacks; `memory_bytes_for_shape` / `effective_bits_for_shape`
 (`:157-168`) are what the DP, `footprint.py`, and the Pareto table consume for
 those formats. Aliases:
-`FP8`/`FP8_DYNAMIC` → `FP8_E4M3`, `MXFP8` → `MXFP8_E4M3` (`:170-188`).
+`FP8`/`FP8_DYNAMIC` → `FP8_E4M3`, `MXFP8` → `MXFP8_E4M3` (`:298-308`).
 `act_quant_changes_input` (`:75-106`) is the **single** predicate for "does the serving kernel
 consume quantized activations" (`act_bits` absent or ≥ 16 ⇒ no): the allocator's bit-exact
 short-circuit (§4.5), the KL validator's activation-quant assignment, `layer_state_cache` and
 `perturbed_x_cache` all key off it, so a format's activation semantics cannot drift between
 pricing and emulation. Registry-vs-callable consistency is pinned by
 `tests/test_bit_exact_cost_pricing.py`.
+
+**Name resolution is the registry's job, and case is not part of a format's
+identity.** `canonical_format_name` (`:330-369`) probes the raw spelling, then
+the upper-cased one, then case-insensitively; `get_format` refuses only a name
+no probe resolves (falling through to the Tessera synthesizer first, §5.7).
+The last probe exists because exactly one registered row is mixed case —
+`INT4_W4A16_g128` — while several callers normalize a requested format name by
+upper-casing it (`production_weight_cache._render_base_format`, the cache
+identity keys, `render_production_weight`), which produced a name no resolver
+owned and a bare `KeyError` on a format PrismaQuant ships and a precision plan
+selects (#218). Callers keep their upper-case identity spelling; the registry
+answers to it. Consequently a **predicate over a requested format menu must be
+total**: `production_weight_cache._resolve_format_spec` is the one resolver
+those predicates share (`_format_uses_static_activation_clip`,
+`_is_cb_format_name`, `_weighted_render_family`), and it answers `None` — not
+an exception — for a name this registry does not own, because "not a format we
+know" is an answer. A refusal for an unknown format belongs where the menu is
+validated, named, not thrown out of an activation-scale gate mid-fill. Pinned
+by `tests/test_format_registry.py` (whole-registry upper/lower round trip, and
+the no-two-names-differ-only-by-case precondition) and
+`tests/test_served_activation_contract.py`.
 
 | Format | line | w-bits / group / scale | eff. bpp (2-D) | Status |
 |---|---|---|---|---|
