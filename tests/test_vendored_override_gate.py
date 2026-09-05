@@ -451,3 +451,24 @@ def test_perturbed_x_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch)
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         stage_text_only_under_work_root(path, tmp_path / "work")
+
+
+def test_production_cache_fill_does_not_swallow_the_refusal(monkeypatch):
+    """`production_weight_cache.fill_production_weight_cache` answered `None`.
+
+    This is the render that produces the bytes an export later ships, and
+    `None` also drops the profile's pinned names, so components the profile
+    forbids quantizing would be quantized.
+    """
+    import torch
+
+    from prismaquant.production_weight_cache import fill_production_weight_cache
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        fill_production_weight_cache(
+            _qwen3_model(),
+            torch.zeros(1, 4, dtype=torch.long),
+            ["a"],
+            progress=False,
+        )
