@@ -71,6 +71,7 @@ if [[ ",${FORMATS}," == *",TESSERA,"* ]]; then
     echo "[pipeline] ERROR: FORMATS contains the TESSERA menu token, whose cost stage is prismaquant.tessera_campaign and is not yet run by this orchestrator. Produce it first:" >&2
     echo "[pipeline]   PRISMAQUANT_TESSERA_MENU=research python -m prismaquant.tessera_campaign --model \"\$MODEL_PATH\" --out \"\$WORK_DIR/artifacts/cost.pkl\" --cache-dir \"\$WORK_DIR/artifacts/tessera-cache\"" >&2
     echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it and COST_MODE matching its explicit provenance.cost_mode. The available Tessera menu comes from the reviewed producer contract and the explicit serving target, not a fixed rung roster. Research mode admits serialisable rungs but does not attest them for export." >&2
+    echo "[pipeline] The campaign also writes the export leg's PRICED INPUTS beside its --cache-dir; hand them back on the re-run or the Tessera export preflight refuses (RobTand/prismaquant#193): TESSERA_HESSIAN=\"\$WORK_DIR/artifacts/tessera-cache/hessian_capture.pt\" TESSERA_INPUT_SCALES=\"\$WORK_DIR/artifacts/tessera-cache/input_scales.safetensors\". A weights-only (--hessian off) campaign supplies neither." >&2
     exit 2
   fi
 fi

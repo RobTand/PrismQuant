@@ -3,6 +3,18 @@
 As of: 2026-09-05 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/pq184-prepriced-cost-override`) for **the
+prepriced override's handoff to the priced-input export gate** (§4.10; #184
+after #193/#196). The cost-builder bypass never reached the export leg's
+priced inputs, and it still does not: `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES` are resolved before the cost stage and consumed in the
+Tessera arm, and the allocation's `tessera_hessian` block comes from the
+supplied table itself, so `require_priced_export_inputs` still refuses an
+H-aware prepriced allocation exported without its capture. Only the operator
+instruction was wrong: the TESSERA-token refusal told the operator to re-run
+with `COST_PATH_OVERRIDE` alone, and now names both priced-input variables
+and where the campaign writes them. No gate, default or byte changes.
+
 Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for **actual
 prepriced cost dispatch** (§4.10; #184). `COST_PATH_OVERRIDE` now runs the
 shared read-only intake before probe/GPU work, passes the original supplied
@@ -4788,6 +4800,19 @@ bypasses all cost builders/finalization, and passes the original input path
 unchanged to the allocator after receipt re-verification. It writes only the
 local `artifacts/prepriced_cost_input.json`, not a supplied cost or its
 settings sidecar. The no-override path keeps normal generation.
+
+Bypassing the cost builders does **not** bypass the export leg's priced-input
+gate (§5, `tessera_export_lane.require_priced_export_inputs`). A prepriced run
+means the campaign ran out of band, so the `hessian_capture.pt` and
+`input_scales.safetensors` it wrote beside its `--cache-dir` are not under this
+run's work directory: the operator hands them back through `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES`, which the driver reads before the cost stage and threads
+into the Tessera arm unchanged. The allocation carries the pricing state either
+way — the allocator stamps `tessera_hessian` into `layer_config.json` from the
+supplied table's own identity, the same block `assert_uniform_hessian_identity`
+checked at intake — so an H-aware prepriced table exported without its capture
+refuses by name rather than shipping weights-only bytes. The TESSERA-token
+refusal at the top of the driver names both variables.
 
 The intake CLI takes `--path`, `--cost-mode` and `--model`, reads the supplied
 trusted pickle without rewriting it, and applies those shared gates plus
