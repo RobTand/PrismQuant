@@ -420,3 +420,19 @@ def test_head_resident_prefixes_do_not_swallow_the_refusal(monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         _head_prefixes(_qwen3_model(), "model")
+
+
+def test_cost_pass_does_not_swallow_the_refusal(monkeypatch):
+    """`measure_quant_cost.run_cost_pass` answered `model_profile = None`.
+
+    And went on to measure per-(Linear, format) cost against upstream
+    modelling code, writing numbers the allocator later spends.
+    """
+    from prismaquant.measure_quant_cost import run_cost_pass
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        run_cost_pass(
+            _qwen3_model(), None, set(), [], [], "m", "p", "cpu", None,
+            "unbatched", 1, "unused",
+        )
