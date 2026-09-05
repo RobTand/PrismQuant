@@ -6435,9 +6435,10 @@ inside one run. Four consequences, all of them enforced rather than described:
 
 * `q256: per_member` is the licence for the fold at all. Withdraw it and the
   fold enumerates nothing, so the group keeps the per-NAME intersection, which
-  asserts nothing per member. **With no contract pinned -- production today,
-  since no Tessera RELEASE tag exists -- there is no licence to read and the
-  fold likewise declines, where before this change it folded.** Either way it
+  asserts nothing per member. With no verified contract pin there is no
+  licence to read and the fold likewise declines. The current exact-commit
+  pin supplies the packaged contract; a release tag is no longer required.
+  Either way it
   stamps `__licence__` into the group report, so a receipt can tell "the
   runtime says one rung" from "nothing was asked" -- but only where the
   question arises: a group with no Tessera rung on any member's menu returns
