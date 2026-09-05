@@ -5,17 +5,19 @@
 # doc-staleness tests that the project had deliberately written to catch exactly
 # that kind of drift. Nobody was ignoring a red signal — there was no signal.
 #
-# WHAT IT CAN AND CANNOT COVER. Re-measured 2026-08-03 ON THE RUNNER, which is
-# the number that matters here: the suite is ~2762 tests taking 10.5-14 min per
-# interpreter with `CUDA_VISIBLE_DEVICES=""` (2762 passed, 96 skipped,
-# 2 xfailed). The previous note in this header claimed 967 tests in ~51 s,
-# measured on the reference box on 2026-07-28; the suite has roughly tripled
-# since and an ARM workstation is not a free x86 runner, so that figure had
-# become misleading in both directions. The `tests` job allows 30 min, so the
-# margin is about 2x rather than the ~35x the old number implied — a further
-# doubling of the suite is a timeout, not a slow build, and should raise
-# `timeout-minutes` in the same PR. The skips are the CUDA-gated tests.
-# GitHub-hosted runners have no GPU, so
+# WHAT IT CAN AND CANNOT COVER. Re-measured 2026-09-05 ON THE RUNNER, which is
+# the number that matters here: the suite is ~4840 tests (4698 passed, 136
+# skipped, 3 xfailed at `main` 8a77b0ad) and the `tests` JOB — install plus
+# suite, which is what `timeout-minutes` bounds — took 15 to 29.5 min across
+# the ten completed runs of 2026-09-05 (job 33973973959 finished at 29m30s
+# against the then 30 min limit; hosted-runner speed is the variable, not
+# the suite). The previous note here, measured 2026-08-03, said ~2762 tests
+# in 10.5-14 min with a ~2x margin and that a further doubling of the suite
+# "should raise `timeout-minutes` in the same PR"; the suite has since grown
+# 1.75x, so this is that PR: 60 min gives ~2x on the worst observed job. A
+# job that reaches the limit is a timeout, not a slow build — re-measure and
+# raise it here again rather than retrying. The skips are the CUDA-gated
+# tests. GitHub-hosted runners have no GPU, so
 # kernel numerics, real-checkpoint streaming and anything touching a served
 # artifact remain a manual gate on the Spark — this is a correctness net for
 # the allocator/solver/footprint/profile logic, which is where the PRs live and
@@ -44,7 +46,7 @@ jobs:
   tests:
     name: tests (py${{ matrix.python }}, cpu)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -75,9 +77,13 @@ jobs:
           tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
           printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
 
-      # Tessera becomes public after its release fixes and audit. Until then,
-      # ordinary checkout access fails here; no private credential is required
-      # or exposed to contributor PRs by this workflow.
+      # RobTand/tessera has been public since 2026-09-05, so the ordinary
+      # checkout credential fetches the pin here, for fork PRs as much as for
+      # branches (first receipt: run 33950707718 on main, both jobs green
+      # end-to-end; #175). No private credential is required or exposed by
+      # this workflow, and none should be added: a repository secret is a
+      # cross-repo credential the issue deliberately avoided, and it would not
+      # reach fork PRs anyway.
       - name: Check out pinned Tessera
         uses: actions/checkout@v7.0.1
         with:
