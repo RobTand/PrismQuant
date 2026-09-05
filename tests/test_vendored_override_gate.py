@@ -571,3 +571,17 @@ def test_rotary_init_does_not_swallow_the_refusal(monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         _init_rotary_inplace(base, "cpu", None)
+
+
+def test_weight_session_does_not_swallow_the_refusal(monkeypatch):
+    """`weight_session.WeightSession` answered `profile = None`.
+
+    The profile builds the qname -> live Linear map the session swaps weights
+    through, so a dead override silently builds it over a different set of
+    tensors and the session reverts and re-renders the wrong ones.
+    """
+    from prismaquant.weight_session import WeightSession
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        WeightSession(_qwen3_model())
