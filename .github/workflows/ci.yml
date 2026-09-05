@@ -75,9 +75,13 @@ jobs:
           tessera_commit="$(python tools/resolve_tessera_dev_pin.py)"
           printf 'commit=%s\n' "$tessera_commit" >> "$GITHUB_OUTPUT"
 
-      # Tessera becomes public after its release fixes and audit. Until then,
-      # ordinary checkout access fails here; no private credential is required
-      # or exposed to contributor PRs by this workflow.
+      # RobTand/tessera has been public since 2026-09-05, so the ordinary
+      # checkout credential fetches the pin here, for fork PRs as much as for
+      # branches (first receipt: run 33950707718 on main, both jobs green
+      # end-to-end; #175). No private credential is required or exposed by
+      # this workflow, and none should be added: a repository secret is a
+      # cross-repo credential the issue deliberately avoided, and it would not
+      # reach fork PRs anyway.
       - name: Check out pinned Tessera
         uses: actions/checkout@v7.0.1
         with:
