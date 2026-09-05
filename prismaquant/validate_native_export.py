@@ -156,12 +156,21 @@ def _resolve_validation_target_profile(
     model_dir: str | Path,
     requested: str | None,
 ) -> str:
-    """Resolve the serving profile for an exported checkpoint smoke."""
-    from .model_profiles.registry import detect_profile
+    """Resolve the serving profile for an exported checkpoint smoke.
+
+    A profile this build cannot name falls back to the `default=` target below.
+    `DeadVendoredOverrideError` does not (#201): it says the architecture is
+    known and its modelling path is dead, and a validator that answers by
+    fallback on a checkpoint it was just told it cannot reason about is
+    validating the wrong thing.
+    """
+    from .model_profiles.registry import DeadVendoredOverrideError, detect_profile
     from .serving_profiles import resolve_target_profile
 
     try:
         profile = detect_profile(str(model_dir))
+    except DeadVendoredOverrideError:
+        raise
     except Exception:
         profile = None
     return resolve_target_profile(

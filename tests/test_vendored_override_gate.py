@@ -213,3 +213,57 @@ def test_an_unaskable_candidate_still_falls_through(tmp_path, monkeypatch):
 
     path = _checkpoint(tmp_path, **QWEN3_CONFIG)
     assert detect_profile(path).name == "qwen3"
+
+
+# --- the same swallow one level up (issue #201, census in #202) -------------
+#
+# These three call sites each wrap detection in a broad `except Exception` and
+# continue with a substituted profile, so before this they converted the
+# refusal straight back into the silent wrong answer at their own call site.
+# Each documents its tolerance as "an architecture this build does not know",
+# which is a different statement from "a known architecture on a dead path".
+# They are pinned here rather than in each module's own test file because the
+# rule is the registry's -- where this refusal is allowed to stop -- and it has
+# one home. The other 22 such call sites, across 11 modules, are censused with
+# file:line in #202; several are optional-hint paths where `None` is right for
+# an ABSENT profile and wrong for a DEAD one, so each needs its own judgement.
+
+
+def test_the_completeness_gate_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`artifact_completeness._detect_profile_quietly` answered `None`."""
+    from prismaquant.artifact_completeness import _detect_profile_quietly
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _detect_profile_quietly(path).name == "qwen3"
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _detect_profile_quietly(path)
+
+
+def test_the_incremental_probe_shard_detection_does_not_swallow_it(
+    tmp_path, monkeypatch
+):
+    """`incremental_probe._detect_profile_for_shards` answered `DefaultProfile`."""
+    from prismaquant.incremental_probe import _detect_profile_for_shards
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _detect_profile_for_shards(path).name == "qwen3"
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _detect_profile_for_shards(path)
+
+
+def test_the_native_export_validator_does_not_swallow_it(tmp_path, monkeypatch):
+    """`validate_native_export._resolve_validation_target_profile` answered `None`.
+
+    Which then resolved the smoke's serving profile from the `default=`
+    argument — a validator picking its target by fallback, on a checkpoint it
+    had just been told it cannot reason about.
+    """
+    from prismaquant.validate_native_export import _resolve_validation_target_profile
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    assert _resolve_validation_target_profile(path, None)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _resolve_validation_target_profile(path, None)

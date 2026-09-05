@@ -235,12 +235,21 @@ def _checkpoint_spellings(unit: str, profile) -> set[str]:
 
 def _detect_profile_quietly(artifact_dir: Path):
     """The artifact's own profile, or None. Never fatal: the gate must still
-    run on an artifact whose architecture this build does not know."""
+    run on an artifact whose architecture this build does not know.
+
+    That tolerance is for an UNKNOWN architecture. A dead vendored-modelling
+    override is a known one whose modelling path is wrong, and quietly
+    answering None there runs this gate name-blind over an artifact the build
+    could name — so it is re-raised (#201)."""
+    from prismaquant.model_profiles import (
+        DeadVendoredOverrideError,
+        detect_profile,
+    )
 
     try:
-        from prismaquant.model_profiles import detect_profile
-
         return detect_profile(str(artifact_dir))
+    except DeadVendoredOverrideError:
+        raise
     except Exception:                      # pragma: no cover - defensive
         return None
 
