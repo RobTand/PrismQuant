@@ -1496,9 +1496,38 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
     its own rung's shipping bytes -- and refusing the table would refuse the
     mixed-family menu this whole stage exists to build. What must match is the
     DRAW and the run's intent, which is what the key holds.
+
+    **The key is the whole identity, the required triple first.**  Tessera's
+    own required roster -- ``text_sha256`` / ``fit_tokens`` / ``fit_ids_sha256``,
+    read from ``tessera_hessian.HESSIAN_IDENTITY_FIELDS`` rather than retyped
+    -- is what names *which* Hessian shaped the bytes, and until 2026-09-05
+    this guard compared only the legacy ``(supplied, text_sha, token_count,
+    kwarg)`` projection, so any number of distinct modern identities collapsed
+    to one key and a table merged from two draws allocated as one
+    (RobTand/prismaquant#195).  Three row classes now exist and are refused
+    from merging with each other:
+
+    * **modern** -- carries the full required triple; keyed on the triple AND
+      the legacy aliases, so aliases that agree cannot launder a triple that
+      does not.
+    * **legacy** -- carries none of the triple (written before it existed);
+      keyed on the legacy fields alone, and never merged with a modern row:
+      "no claim about the triple" and "a matching triple" are different facts
+      (P14).
+    * **partial** -- carries some of the triple; that is a malformed identity
+      and is refused by name rather than downgraded to the legacy comparison.
+
+    The returned dict carries the canonical triple beside the legacy
+    projection, so the allocator's ``tessera_hessian`` metadata block -- which
+    stamps this return verbatim into ``layer_config.json`` -- gives export a
+    Hessian identity it can bind a capture against.
     """
+    from .tessera_hessian import HESSIAN_IDENTITY_FIELDS
+
+    required = tuple(HESSIAN_IDENTITY_FIELDS)
     seen: dict[tuple, int] = {}
     unstamped = 0
+    legacy_rows = 0
     for _qname, rows in (costs or {}).items():
         if not isinstance(rows, dict):
             continue
@@ -1509,15 +1538,33 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
             if not isinstance(ident, dict):
                 unstamped += 1
                 continue
-            key = (bool(ident.get("supplied")), ident.get("text_sha"),
-                   ident.get("token_count"), ident.get("kwarg"))
+            modern = tuple(ident.get(field) for field in required)
+            if any(value is None for value in modern):
+                if any(value is not None for value in modern):
+                    raise ValueError(
+                        f"{_qname}[{fmt}]: hessian_identity carries a partial "
+                        f"required triple "
+                        f"{ {f: ident.get(f) for f in required} }; "
+                        f"tessera.export.HESSIAN_IDENTITY requires all of "
+                        f"{list(required)}. A partial identity cannot name a "
+                        "draw and is refused rather than collapsed to the "
+                        "legacy fields."
+                    )
+                schema, modern = "legacy", None
+                legacy_rows += 1
+            else:
+                schema = "modern"
+            key = (schema, modern, bool(ident.get("supplied")),
+                   ident.get("text_sha"), ident.get("token_count"),
+                   ident.get("kwarg"))
             seen[key] = seen.get(key, 0) + 1
     if len(seen) > 1:
         raise ValueError(
             "Tessera cost table mixes Hessian identities: "
             + "; ".join(
-                f"supplied={k[0]} text_sha={str(k[1])[:12]} "
-                f"tokens={k[2]} kwarg={k[3]} ({n} rows)"
+                f"{k[0]} triple={None if k[1] is None else tuple(str(v)[:12] for v in k[1])} "
+                f"supplied={k[2]} text_sha={str(k[3])[:12]} "
+                f"tokens={k[4]} kwarg={k[5]} ({n} rows)"
                 for k, n in sorted(seen.items(), key=lambda kv: -kv[1]))
             + ". Rows priced with and without a Hessian, or on different "
               "calibration draws, are not comparable prices of the same bytes. "
@@ -1525,12 +1572,17 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
               "separately."
         )
     (key,) = tuple(seen) if seen else (None,)
+    triple = dict(zip(required, key[1])) if key is not None and key[1] is not None \
+        else {field: None for field in required}
     return {
-        "supplied": None if key is None else key[0],
-        "text_sha": None if key is None else key[1],
-        "token_count": None if key is None else key[2],
-        "kwarg": None if key is None else key[3],
+        "supplied": None if key is None else key[2],
+        "text_sha": None if key is None else key[3],
+        "token_count": None if key is None else key[4],
+        "kwarg": None if key is None else key[5],
+        **triple,
+        "identity_schema": None if key is None else key[0],
         "stamped_rows": sum(seen.values()),
+        "legacy_rows": int(legacy_rows),
         "unstamped_rows": int(unstamped),
     }
 

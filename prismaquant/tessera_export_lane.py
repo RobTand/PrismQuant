@@ -477,10 +477,210 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
 
 
 # ---------------------------------------------------------------------------
+# Gate 5 -- the inputs the allocation was PRICED under
+# ---------------------------------------------------------------------------
+#: The identity fields an H-aware allocation must be bound against.  Spelled
+#: here rather than imported from ``tessera_hessian`` so the gate can refuse
+#: on a machine that can read the metadata without loading the ``tessera``
+#: package; ``tessera_hessian.HESSIAN_IDENTITY_FIELDS`` derives the same
+#: triple from ``tessera.export.HESSIAN_IDENTITY`` and
+#: ``test_the_priced_input_triple_matches_tesseras_roster`` pins the two
+#: together.
+PRICED_HESSIAN_IDENTITY_FIELDS = ("text_sha256", "fit_tokens", "fit_ids_sha256")
+
+
+def _hessian_capture_identity(hessian_path: Path) -> "Mapping[str, Any]":
+    """The capture's provenance block, sidecar first.
+
+    The campaign writes ``<capture>.provenance.json`` beside the payload so
+    this gate never loads the Hessian tensors; a capture without the sidecar
+    (Tessera's own ``capture_h_full.py`` writes none) is read through
+    ``torch.load``, which is what the exporter does with the same file moments
+    later anyway.
+    """
+    sidecar = hessian_path.with_name(hessian_path.name + ".provenance.json")
+    if sidecar.is_file():
+        loaded = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(loaded, Mapping):
+            raise TesseraExportLaneError(
+                f"{sidecar} is not a JSON object; the capture's identity "
+                "cannot be read")
+        return loaded
+    import torch
+
+    payload = torch.load(str(hessian_path), map_location="cpu",
+                         weights_only=False)
+    provenance = payload.get("provenance") if isinstance(payload, Mapping) \
+        else None
+    if not isinstance(provenance, Mapping):
+        raise TesseraExportLaneError(
+            f"{hessian_path} carries no provenance block; a capture whose "
+            "identity cannot be read cannot be bound to the allocation")
+    return provenance
+
+
+def require_priced_export_inputs(
+        assignment_path: str | Path, *, hessian_path: str | Path | None = None,
+        input_scales_path: str | Path | None = None) -> dict:
+    """Refuse an export whose priced inputs are not the supplied inputs.
+
+    The allocation was priced by the campaign under two inputs the external
+    exporter must be handed back, or the artifact built is not the artifact
+    priced (RobTand/prismaquant#193):
+
+    * **The Hessian.**  The encoder's shipping default is activation-aware;
+      an allocation whose ``tessera_hessian`` metadata says ``supplied: true``
+      names bytes shaped by a specific ``XᵀX`` capture, and the exporter's
+      ``--hessian`` must carry that capture -- checked by the identity triple
+      the allocation records (#195's canonical stamp) against the capture's
+      own provenance.  ``supplied: false`` is the deliberate weights-only
+      price, and handing the exporter a Hessian then ships bytes the
+      allocation never priced -- refused in that direction too.  An
+      allocation that declares neither is ambiguous and fails closed
+      (AGENTS.md principle 2).
+
+    * **The static activation scales.**  Every selected rung whose route
+      executes the static NVFP4 contract was priced under a calibrated
+      ``input_global_scale``, and the exporter refuses NVFP4 routes without
+      ``--input-scales`` -- but only after encoding everything else.  This
+      gate requires the file, and every selected W4A4 unit's key in it, before
+      a single unit is encoded.
+    """
+    from .footprint import _read_safetensors_header
+    from .layer_config import load_assignment, read_layer_config_metadata
+    from .tessera_formats import (
+        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+    )
+
+    selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
+                if fmt.startswith("TESSERA_")}
+    report = {
+        "hessian_required": False, "hessian": None,
+        "input_scales_required": False, "input_scales": None,
+        "w4a4_units": 0,
+    }
+    if not selected:
+        return report
+
+    block = read_layer_config_metadata(assignment_path).get("tessera_hessian")
+    if not isinstance(block, Mapping) or not isinstance(
+            block.get("supplied"), bool):
+        raise TesseraExportLaneError(
+            "the allocation selects Tessera units but its metadata declares "
+            "no tessera_hessian pricing state (supplied: true|false). Whether "
+            "these bytes were priced H-aware is not recoverable from the "
+            "weights, and an ambiguous allocation fails closed: re-allocate "
+            "from a campaign cost table, which stamps the block."
+        )
+    if block["supplied"]:
+        report["hessian_required"] = True
+        if hessian_path is None:
+            raise TesseraExportLaneError(
+                "the allocation was priced H-aware (tessera_hessian.supplied "
+                "= true) and no --hessian capture was supplied. The exporter "
+                "would encode weights-only without refusing, shipping bytes "
+                "the allocation did not price. Pass TESSERA_HESSIAN= the "
+                "campaign's hessian_capture.pt (written beside its "
+                "--cache-dir), or re-allocate from a --hessian off table to "
+                "price weights-only deliberately."
+            )
+        hessian_path = Path(hessian_path)
+        if not hessian_path.is_file():
+            raise TesseraExportLaneError(
+                f"--hessian {hessian_path} does not exist")
+        expected = {field: block.get(field)
+                    for field in PRICED_HESSIAN_IDENTITY_FIELDS}
+        if any(value is None for value in expected.values()):
+            raise TesseraExportLaneError(
+                "the allocation's tessera_hessian block carries no required "
+                f"identity triple ({sorted(expected)}), so no capture can be "
+                "bound to it. This allocation came from a pre-triple cost "
+                "table; rebuild the cost table with the current campaign and "
+                "re-allocate."
+            )
+        identity = _hessian_capture_identity(hessian_path)
+        role = identity.get("hessian_role")
+        if role is not None and role != "fit":
+            raise TesseraExportLaneError(
+                f"--hessian {hessian_path} is a {role!r} capture and must "
+                "not shape bytes")
+        mismatched = {
+            field: (identity.get(field), value)
+            for field, value in expected.items()
+            if identity.get(field) != value
+        }
+        if mismatched:
+            raise TesseraExportLaneError(
+                f"--hessian {hessian_path} is not the capture that priced "
+                "this allocation: "
+                + "; ".join(
+                    f"{field}: capture={got!r} != allocation={want!r}"
+                    for field, (got, want) in sorted(mismatched.items()))
+                + ". An encode against a different Hessian ships bytes the "
+                  "allocation did not price; hand the campaign's own capture "
+                  "or re-allocate."
+            )
+        report["hessian"] = str(hessian_path)
+    elif hessian_path is not None:
+        raise TesseraExportLaneError(
+            "the allocation was priced weights-only (tessera_hessian."
+            "supplied = false) but --hessian was supplied. An H-aware encode "
+            "of a weights-only-priced allocation ships bytes the allocation "
+            "did not price -- the same drift in the other direction. Drop "
+            "the flag, or re-price with --hessian require."
+        )
+
+    w4a4 = []
+    for name, fmt in sorted(selected.items()):
+        parsed = parse_tessera_format_name(fmt)
+        if parsed is None:
+            raise TesseraExportLaneError(
+                f"{name}: {fmt!r} is not a Tessera format name")
+        family, rung = parsed
+        wire = tessera_wire_recipe(family, rung)
+        if tessera_serving_route(
+                family, wire, rung).activation_source_format == "NVFP4":
+            w4a4.append(name)
+    report["w4a4_units"] = len(w4a4)
+    if w4a4:
+        report["input_scales_required"] = True
+        if input_scales_path is None:
+            raise TesseraExportLaneError(
+                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
+                "activation contract (first: " + w4a4[0] + ") and no "
+                "--input-scales file was supplied. The exporter requires one "
+                "input_global_scale per W4A4 module and would refuse -- after "
+                "encoding everything else. Pass TESSERA_INPUT_SCALES= the "
+                "campaign's input_scales.safetensors (written beside its "
+                "--cache-dir), whose values are the scales the costs were "
+                "priced under."
+            )
+        input_scales_path = Path(input_scales_path)
+        if not input_scales_path.is_file():
+            raise TesseraExportLaneError(
+                f"--input-scales {input_scales_path} does not exist")
+        header = _read_safetensors_header(str(input_scales_path))
+        missing = [name for name in w4a4
+                   if f"{name}.input_global_scale" not in header]
+        if missing:
+            raise TesseraExportLaneError(
+                f"--input-scales {input_scales_path} carries no "
+                "input_global_scale for selected W4A4 unit(s) "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}; the "
+                "exporter's fused join cannot invent a member's scale, and a "
+                "partial file exports a module the costs did not price."
+            )
+        report["input_scales"] = str(input_scales_path)
+    return report
+
+
+# ---------------------------------------------------------------------------
 # The driver's entry point
 # ---------------------------------------------------------------------------
 def preflight(model_path: str | Path, *, target=None,
-              assignment_path: str | Path | None = None) -> dict:
+              assignment_path: str | Path | None = None,
+              hessian_path: str | Path | None = None,
+              input_scales_path: str | Path | None = None) -> dict:
     """Every gate, in the order that puts the cheapest refusal first."""
     structure = require_declared_structure(model_path)
     target = require_serving_target(target)
@@ -489,6 +689,7 @@ def preflight(model_path: str | Path, *, target=None,
     require_release_pin()
     scope = None
     build = None
+    priced_inputs = None
     if assignment_path is not None:
         from .layer_config import read_layer_config_metadata
         from .shipcard import file_sha256
@@ -496,6 +697,9 @@ def preflight(model_path: str | Path, *, target=None,
         assignment_sha = file_sha256(assignment_path)
         if assignment_sha is None:
             raise TesseraExportLaneError(f"cannot hash allocation {assignment_path}")
+        priced_inputs = require_priced_export_inputs(
+            assignment_path, hessian_path=hessian_path,
+            input_scales_path=input_scales_path)
         scope = require_assignment_scope(model_path, assignment_path, target=target)
         build = {
             "source_model": str(model_path), "layer_config": str(assignment_path),
@@ -537,6 +741,8 @@ def preflight(model_path: str | Path, *, target=None,
         report["serving_target"] = target.as_dict()
     if scope is not None:
         report["selected_serving_scope"] = scope
+    if priced_inputs is not None:
+        report["priced_inputs"] = priced_inputs
     if build is not None:
         report["build"] = build
     return report
@@ -553,6 +759,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="the source checkpoint run-pipeline.sh is building")
     parser.add_argument("--assignment", default=None,
                         help="selected layer_config.json to attest before plan translation")
+    parser.add_argument("--hessian", default=None,
+                        help="the Hessian capture the exporter will be handed "
+                             "(the campaign's hessian_capture.pt); required "
+                             "and identity-checked when the allocation was "
+                             "priced H-aware, refused when it was not")
+    parser.add_argument("--input-scales", default=None,
+                        help="safetensors of <unit>.input_global_scale (the "
+                             "campaign's input_scales.safetensors); required "
+                             "to cover every selected W4A4 unit")
     parser.add_argument("--target-profile", default=None,
                         help="serving profile supplying or cross-checking the exact platform")
     parser.add_argument("--write-build-json", default=None,
@@ -570,10 +785,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             platform = load_serving_profile(args.target_profile).target_platform
         target = serving_target_from_args(args, target_platform=platform)
+        priced = {"hessian_path": args.hessian,
+                  "input_scales_path": args.input_scales}
         if target is None and args.assignment is None:
+            if args.hessian is not None or args.input_scales is not None:
+                raise TesseraExportLaneError(
+                    "--hessian/--input-scales bind priced inputs to an "
+                    "allocation; pass --assignment")
             report = preflight(args.model)
         else:
-            report = preflight(args.model, target=target, assignment_path=args.assignment)
+            report = preflight(args.model, target=target,
+                               assignment_path=args.assignment, **priced)
         if args.write_build_json is not None:
             destination = Path(args.write_build_json)
             destination.parent.mkdir(parents=True, exist_ok=True)

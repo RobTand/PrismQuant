@@ -36,6 +36,24 @@ def _context(structure="dense", target=None):
     return {**(target or Target()).as_dict(), "structure": structure}
 
 
+def _hessian_block(*, supplied):
+    """The allocator's tessera_hessian metadata stamp, as a real one looks.
+
+    The canonical identity triple travels whether or not a Hessian was
+    supplied -- a weights-only campaign still names its calibration draw --
+    which is what lets the priced-inputs gate bind a capture to an H-aware
+    allocation and refuse a stray one on a weights-only allocation.
+    """
+    return {
+        "supplied": supplied, "identity_schema": "modern",
+        "text_sha": "b" * 64, "token_count": 4096,
+        "kwarg": ["ldl", "refit_metric"],
+        "text_sha256": "a" * 64, "fit_ids_sha256": "b" * 64,
+        "fit_tokens": 4096, "stamped_rows": 2, "legacy_rows": 0,
+        "unstamped_rows": 0,
+    }
+
+
 def _payload():
     family = "TESSERA_E4M3_K1"
     cells = []
@@ -90,7 +108,7 @@ def case(tmp_path, monkeypatch):
     payload["__prismaquant__"] = {"tessera_serving_scope": {
         "target": Target().as_dict(),
         "by_unit": {DENSE: _context(), EXPERT: _context("routed_moe")},
-    }}
+    }, "tessera_hessian": _hessian_block(supplied=False)}
     assignment.write_text(json.dumps(payload))
     return SimpleNamespace(model=model, assignment=assignment, payload=payload,
                            contract=contract)
