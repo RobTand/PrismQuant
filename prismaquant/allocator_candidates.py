@@ -1610,14 +1610,15 @@ def cost_entry_act_dloss(cost_entry: dict) -> float:
     weights BIT-IDENTICALLY (T1) -- so the DP was pricing a W4A4 format as if it
     were weight-only and systematically over-buying 4-bit.
 
-    The term is a Δloss in the same currency as the weight term (both are
-    mean-Δloss over the calibration), derived from the layer's own activation
-    statistics, so it is a SUM. It is deliberately not a multiplicative penalty:
+    The term is a diagonal activation Δloss approximation derived from the
+    layer's own activation statistics and is added to the weight estimate.
+    A shared Δloss label does not establish equivalence to AURA's KL-adjoint
+    currency or capture weight/activation cross terms (PrismaQuant #237).
+    It is deliberately not a multiplicative penalty:
     ``ActivationFairPricing`` (P5a) is the multiplicative, per-FAMILY, fitted
     transfer of a weight-space number onto the measured output scale, and this
-    is a per-UNIT, mechanistic, already-output-space quantity. They compose --
-    the penalty scales the weight term it was fitted on, then the A-side is
-    added -- and they are not substitutes.
+    is a per-UNIT, mechanistic, already-output-space quantity. The current
+    weight-only branches add this term before applying the family penalty.
 
     It is added ONLY on the weight-only branches. The ``_prices_from_output_mse``
     branch is already activation-inclusive by construction (the row's own
