@@ -162,6 +162,17 @@ if [[ -n "${TESSERA_PLATFORM:-}${TESSERA_RUNTIME_IMAGE:-}${TESSERA_EXECUTION_MOD
   [[ -z "${TESSERA_EXECUTION_MODE:-}" ]] || TESSERA_SCOPE_ARGS+=(--tessera-execution-mode "$TESSERA_EXECUTION_MODE")
   TESSERA_SCOPE_ARGS+=(--tessera-residency "$TESSERA_SERVE_MODE")
 fi
+# The inputs the allocation was PRICED under, handed back to the exporter.
+# TESSERA_HESSIAN is the campaign's hessian_capture.pt (the exact XtX per unit
+# the cost table and any H-aware bytes were built on); TESSERA_INPUT_SCALES is
+# its input_scales.safetensors (one static input_global_scale per unit, fused
+# siblings unified -- the value the W4A4 costs were scored under and the value
+# the serve reads as trellis_input_global_scale). Both default to unset, and
+# the lane preflight FAILS CLOSED when the allocation declares a priced
+# requirement these do not satisfy (RobTand/prismaquant#193): an export
+# without them would build an artifact that is not the artifact priced.
+: "${TESSERA_HESSIAN:=}"
+: "${TESSERA_INPUT_SCALES:=}"
 # `as-allocated` plans exactly the units the allocation names and spells every
 # other body Linear BF16 explicitly. `broadcast-by-role` EXTRAPOLATES a
 # single-layer allocation to every depth and stamps itself as an
@@ -2473,10 +2484,21 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # Re-read the allocation's scope and actual source header dimensions even
   # when an old plan exists: a cached plan is not an admission receipt.
   TESSERA_BUILD_JSON="${WORK_DIR}/artifacts/tessera_build.json"
+  # The priced inputs, threaded to the preflight (which refuses when the
+  # allocation declares a requirement they do not satisfy) and to the exporter
+  # (which consumes them). Built inside the arm so the block is self-contained.
+  TESSERA_PRICED_INPUT_ARGS=()
+  if [[ -n "${TESSERA_HESSIAN:-}" ]]; then
+    TESSERA_PRICED_INPUT_ARGS+=(--hessian "$TESSERA_HESSIAN")
+  fi
+  if [[ -n "${TESSERA_INPUT_SCALES:-}" ]]; then
+    TESSERA_PRICED_INPUT_ARGS+=(--input-scales "$TESSERA_INPUT_SCALES")
+  fi
   if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
       --assignment "${WORK_DIR}/artifacts/layer_config.json" \
       --write-build-json "$TESSERA_BUILD_JSON" \
-      --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}"; then
+      --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}" \
+      "${TESSERA_PRICED_INPUT_ARGS[@]}"; then
     exit 2
   fi
   TESSERA_PLAN="${WORK_DIR}/artifacts/tessera_plan.json"
@@ -2512,10 +2534,17 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   fi
 
   echo "[pipeline] [4/4] exporting to the Tessera wire ..."
+  # The same priced inputs the preflight just validated, handed to the encode:
+  # the Hessian that shaped the priced bytes and the static activation scales
+  # the W4A4 costs were scored under. Omitting them here while the preflight
+  # accepted an H-free/scale-free allocation is the weights-only lane and
+  # correct; omitting them on an H-aware allocation is unreachable -- the
+  # preflight exits 2 above before this line runs.
   python3 "${TESSERA_REPO%/}/experiments/export_tessera_serving.py" \
     "$MODEL_PATH" "${WORK_DIR}/exported" \
     --plan-json "$TESSERA_PLAN" \
     --device "$EXPORT_DEVICE" \
+    "${TESSERA_PRICED_INPUT_ARGS[@]}" \
     2>&1 | tee "${WORK_DIR}/logs/export.log"
 
   echo

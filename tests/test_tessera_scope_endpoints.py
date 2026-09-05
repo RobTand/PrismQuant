@@ -128,7 +128,7 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
     monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", lambda *a, **k: model)
     monkeypatch.setattr(render, "tessera_encoder_hessian_status", lambda: {"accepted": True})
     monkeypatch.setattr(campaign, "_calibration_tokens", lambda *a: ([torch.ones(1, 1, dtype=torch.int64)], "fixture"))
-    monkeypatch.setattr(campaign, "_collect_activations", lambda *a, **k: ({}, {}, {}))
+    monkeypatch.setattr(campaign, "_collect_activations", lambda *a, **k: ({}, {}, {}, {}))
     monkeypatch.setattr(sensitivity_probe, "discover_moe_structure", lambda *a, **k: {
         EXPERT: ("model.layers.0.mlp.gate", "0")})
     seen = {}
