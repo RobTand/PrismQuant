@@ -25,9 +25,11 @@ Three rules, all fail-closed:
    against a default, and a COST_MODE naming no objective is refused rather
    than defaulted.
 
-Tables with no Tessera-currency row are outside this gate's jurisdiction and
-pass through untouched: legacy unstamped stock tables keep their behavior,
-and other gates own those rows.
+Every usable Tessera-format row must carry the campaign's currency stamp;
+dropping that stamp cannot remove a price from this gate's jurisdiction.
+Tables with neither a Tessera format nor a Tessera-currency row pass through
+untouched: legacy unstamped stock tables keep their behavior, and other gates
+own those rows. Diagnostic error rows are not prices.
 """
 from __future__ import annotations
 
@@ -67,15 +69,30 @@ def tessera_campaign_currency() -> str:
 
 def _tessera_rows(costs: Mapping[str, Any]) -> list[tuple[str, str]]:
     """``(unit, format)`` pairs priced in the Tessera campaign currency."""
+    from .tessera_formats import parse_tessera_format_name
+
     if not isinstance(costs, Mapping):
         return []
     wanted = tessera_campaign_currency()
     found: list[tuple[str, str]] = []
+    membership: dict[str, bool] = {}
     for unit, rows in costs.items():
         if not isinstance(rows, Mapping):
             continue
         for fmt, entry in rows.items():
-            if isinstance(entry, Mapping) and entry.get("currency") == wanted:
+            if not isinstance(entry, Mapping) or "error" in entry:
+                continue
+            if fmt not in membership:
+                try:
+                    membership[fmt] = parse_tessera_format_name(fmt) is not None
+                except ValueError as exc:
+                    raise CostCurrencyError(f"cost row {unit}/{fmt}: {exc}") from exc
+            if membership[fmt] and entry.get("currency") != wanted:
+                raise CostCurrencyError(
+                    f"Tessera cost row {unit}/{fmt} has missing or unknown "
+                    f"currency={entry.get('currency')!r}; its producer must "
+                    f"stamp the measured campaign currency {wanted!r}")
+            if entry.get("currency") == wanted:
                 found.append((str(unit), str(fmt)))
     return found
 

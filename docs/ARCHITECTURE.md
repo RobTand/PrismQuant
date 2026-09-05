@@ -1,7 +1,58 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-tessera-audit`. Stamps
+As of: 2026-09-05 · `codex/pq184-prepriced-cost-override`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq184-prepriced-cost-override`) for **the
+prepriced override's handoff to the priced-input export gate** (§4.10; #184
+after #193/#196). The cost-builder bypass never reached the export leg's
+priced inputs, and it still does not: `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES` are resolved before the cost stage and consumed in the
+Tessera arm, and the allocation's `tessera_hessian` block comes from the
+supplied table itself, so `require_priced_export_inputs` still refuses an
+H-aware prepriced allocation exported without its capture. Only the operator
+instruction was wrong: the TESSERA-token refusal told the operator to re-run
+with `COST_PATH_OVERRIDE` alone, and now names both priced-input variables
+and where the campaign writes them. No gate, default or byte changes.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for **actual
+prepriced cost dispatch** (§4.10; #184). `COST_PATH_OVERRIDE` now runs the
+shared read-only intake before probe/GPU work, passes the original supplied
+path to the allocator, and bypasses the entire local/render/AURA cost-builder
+and finalization stage. Its separate local receipt is reverified immediately
+before allocation, including lexical-path resolution and exact SHA-256.
+Supplied files and their sidecars are not rewritten. No-override generation,
+`COST_MODE` defaults and existing allocator/serving gates remain unchanged;
+the requested mode must match the explicit producer stamp, never be inferred
+by changing a default. Evidence: `docs/results/prepriced_cost_override_2026-09-04.md`.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for the
+**read-only prepriced-input validator** (§4.10; #184). The explicit
+`prepriced_cost` CLI validates existing schema, objective currency,
+research provenance and uniform Tessera Hessian identity, requires
+the exact producer-stamped mode and model reference, and records the
+input bytes' SHA-256. Its separate local receipt retains both the original
+absolute argument path and resolved file; re-verification checks both
+resolution and bytes before allocation. The input is never rewritten,
+model-reference equality is not checkpoint-content attestation, and
+historical unstamped Hessian rows retain their owner-reported no-claim
+status. This helper does not itself wire the shell's cost-stage bypass.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**Tessera currency-stamp completeness** (§4.10), encountered during
+#184 intake work. `cost_currency` recognizes Tessera rows through the
+existing format grammar and refuses a usable row with a missing or
+unknown campaign currency. Removing the stamp can no longer evade the
+objective gate. Diagnostic error rows are not prices; unstamped stock
+tables keep their existing behavior. No currency or estimator changes.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**finite cost-schema signals** (§4.10), encountered during #184 intake
+work. `schemas.validate_cost_payload` now refuses non-finite values in
+the existing primary scalar fields and per-expert weight-MSE vector,
+naming the input file and exact field/element. Finite signed values,
+diagnostic error rows and non-cost schema behavior are unchanged. This
+adds no numeric threshold, cost estimator or promotion claim.
 
 Re-stamped (2026-09-05, `claude/pq-tessera-audit`) for **the Tessera
 priced-inputs contract** (§5, §9.4; RobTand/prismaquant#193/#194/#195, one
@@ -94,6 +145,7 @@ router/expert or packed-module facts determine unit structure, cross-checked
 against the declared model profile. Missing facts cannot silently become
 dense. The helper delegates value validation to `ServingContext`; it does
 not change a runtime default or attest any new serving cell.
+
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
 hashes native BF16 source before starting one read-only-model server, then
@@ -4724,6 +4776,64 @@ twin of anything live — it is the only one of the two left, and §4.10 is its
 seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
+
+**Shared cost intake.** `schemas.validate_cost_payload` requires finite
+numbers in each non-error row's existing cost scalar fields and
+`weight_mse_per_expert` elements. A finite sibling field cannot hide a
+NaN or infinity. Refusals name the source file and exact field/element;
+diagnostic error rows remain non-prices, and probe/router schema rules
+are unchanged. This guard applies to every cost consumer, not only to
+an external pipeline override.
+
+`cost_currency.require_run_currency` requires each usable Tessera-format
+row to carry the campaign-owned currency stamp before checking that its
+table's explicit cost mode names the matching objective. Membership comes
+from `tessera_formats.parse_tessera_format_name`, not a prefix guess or
+hardcoded family roster. Missing or unknown currency refuses with the
+unit and format named; dropping a stamp cannot opt a price out of the
+gate. Diagnostic error rows are excluded, and legacy stock rows without
+a Tessera format or currency remain outside this gate's jurisdiction.
+
+**Explicit external prepriced input** (`python -m prismaquant.prepriced_cost`).
+The driver's `COST_PATH_OVERRIDE` runs this preflight before probe/GPU work,
+bypasses all cost builders/finalization, and passes the original input path
+unchanged to the allocator after receipt re-verification. It writes only the
+local `artifacts/prepriced_cost_input.json`, not a supplied cost or its
+settings sidecar. The no-override path keeps normal generation.
+
+Bypassing the cost builders does **not** bypass the export leg's priced-input
+gate (§5, `tessera_export_lane.require_priced_export_inputs`). A prepriced run
+means the campaign ran out of band, so the `hessian_capture.pt` and
+`input_scales.safetensors` it wrote beside its `--cache-dir` are not under this
+run's work directory: the operator hands them back through `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES`, which the driver reads before the cost stage and threads
+into the Tessera arm unchanged. The allocation carries the pricing state either
+way — the allocator stamps `tessera_hessian` into `layer_config.json` from the
+supplied table's own identity, the same block `assert_uniform_hessian_identity`
+checked at intake — so an H-aware prepriced table exported without its capture
+refuses by name rather than shipping weights-only bytes. The TESSERA-token
+refusal at the top of the driver names both variables.
+
+The intake CLI takes `--path`, `--cost-mode` and `--model`, reads the supplied
+trusted pickle without rewriting it, and applies those shared gates plus
+`research_cost_acceptance.accepted_cost_provenance` and
+`tessera_menu.assert_uniform_hessian_identity`. The pipeline has no research
+acceptance override, so research-stamped assembly refuses. Missing, unknown
+or mismatched `provenance.cost_mode` also refuses; the helper changes neither
+the input's stamp nor the run's defaults. It requires at least one explicit
+producer-owned model reference (direct metadata/provenance or retained
+baseline/shard metadata), with all present references equal to the exact
+requested string. This is not a checkpoint-content hash claim.
+
+`--report` writes a separate local JSON receipt containing the exact SHA-256,
+actual and declared format rosters separately, usable-row count, model-reference
+evidence and the shared currency/Hessian reports. Existing unstamped Hessian
+rows remain reported as unstamped, not invented matching claims. Report/input
+path aliases and hardlinks refuse. `--verify-report` checks the retained
+original absolute argument path still resolves to the same file and hashes
+the same bytes immediately before allocation; this catches retargeted file
+or parent-directory symlinks as well as content changes. Per-unit coverage,
+rendering identity and serving admission remain allocator/export decisions.
 
 Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
 is one rate, and a menu is the handful of them a launcher lists. A Tessera family
