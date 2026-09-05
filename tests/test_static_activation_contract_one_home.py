@@ -147,6 +147,42 @@ def test_a_second_contract_reaches_the_synthesized_spec(
     assert fr.REGISTRY["FP8_E4M3"].static_activation_contract.measured_as_served is False
 
 
+def test_the_campaign_predicate_answers_every_rung_as_the_name_compare_did():
+    """Replacing the name compare moved no answer -- it only widened.
+
+    Checked against the old body verbatim, because "nothing resolves
+    differently" is the claim this change rests on.  On every input the helper
+    is actually called with (``anchor.format_name``, always a Tessera rung) the
+    two agree.  Where they differ, the old one *raised* and the new one
+    answers: the old body unpacked ``parse_tessera_format_name`` without
+    checking for None, so it died with ``TypeError`` on any non-Tessera name;
+    a plain registry row now gets the row's own answer.  A widening of the
+    domain, not a changed answer -- and after #218 made ``canonical_format_name``
+    resolve case-insensitively, that includes ``INT4_W4A16_g128``, the one
+    mixed-case registered row, which must classify False rather than raise.
+    """
+    from prismaquant.tessera_campaign import (
+        _format_executes_static_activation_contract as new,
+    )
+
+    def old(format_name):
+        family, rung = parse_tessera_format_name(format_name)
+        return tessera_serving_route(
+            family, tessera_wire_recipe(family, rung), rung
+        ).activation_source_format == "NVFP4"
+
+    for name in (W4A4, W8A8, A16):
+        assert new(name) == old(name), name
+
+    # Non-Tessera rows: the old body raised, the new one answers.
+    for name, expected in (("NVFP4", True), ("FP8_E4M3", False),
+                           ("BF16", False), ("INT4_W4A16_g128", False),
+                           ("INT4_W4A16_G128", False)):
+        assert new(name) is expected, name
+        with pytest.raises(TypeError):
+            old(name)
+
+
 def test_the_campaign_predicate_follows_the_contract_not_the_name(
         fp8_gains_a_static_contract):
     from prismaquant.tessera_campaign import (
