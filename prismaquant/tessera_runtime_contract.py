@@ -146,11 +146,13 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
-#: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
+#: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses. Re-pinned to
+#: ba582d4 (Tessera #356) for the producer snapshot API; the answer remains
+#: byte-identical to the contract last re-read at
 #: contract v22 / lane schema v9 (Tessera master 8ed1d9a, the merge of its
 #: #332, which answers its #327; v21 landed at b8b1cb38 in its #313 and the
-#: release e78959ed carried v20), which is the same commit
-#: ``tessera_serving_runtime_pin`` binds: the two pins name ONE object, and
+#: release e78959ed carried v20). The development and serving pins now both
+#: bind ba582d4: they name ONE object, and
 #: letting them drift is how two of this repository's own spec files came to
 #: disagree about one runtime.  Between the v17 review and this one the
 #: answer moved in exactly four places and nowhere else -- no family, rung,
@@ -176,8 +178,8 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: mechanism working as designed: the evidence block is part of the answer,
 #: so the clean smoke re-staled the pin and this literal's diff is the review
 #: a human reads before anything is admitted.  Whether routed-MoE Tessera is
-#: PROMOTED past the menu is still Rob's decision under principle 9 (#198
-#: stays open for it).
+#: PROMOTED past the menu still requires the independent artifact and serving
+#: gates; #198 records the resolved producer remeasurement decision.
 #:
 #: What moved v21 -> v22 (Tessera #332, answering its #327), and nothing
 #: else -- same ten cell ids in the same order, no family, rung, route
@@ -203,7 +205,7 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: Verified by fetching ``RobTand/tessera`` master into a scratch repository
 #: and hashing the blob at the tip -- never a working tree (the command is in
 #: ``tessera_runtime/README.md``).  No tag names the commit.
-TESSERA_DEV_PIN_COMMIT = "8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a"
+TESSERA_DEV_PIN_COMMIT = "ba582d476a3b6db9057ebd1385dc52926f171451"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
