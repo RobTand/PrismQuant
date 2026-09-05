@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1412,87 +1411,17 @@ def capture_perturbed_activation_cache(
 
 
 def stage_text_only_under_work_root(model_path: str, work_root: str | Path) -> str:
-    """Text-only staging equivalent to sensitivity_probe, but never under /tmp."""
-    src = Path(model_path)
-    cfg_path = src / "config.json"
-    if not cfg_path.exists():
-        return str(src)
-    with open(cfg_path) as f:
-        cfg = json.load(f)
-    from .model_profiles import DeadVendoredOverrideError, detect_profile
-    try:
-        profile = detect_profile(str(src))
-    except DeadVendoredOverrideError:
-        # The hardcoded default strip-key list below is the answer for a
-        # checkpoint no profile claims. On a dead override it silently stages
-        # the model with a DIFFERENT config than the profile declares, and
-        # every perturbed-activation row cached afterwards is collected from
-        # that wrong staging (#202).
-        raise
-    except Exception:
-        profile = None
-    strip_keys = (
-        list(profile.stage_text_only_strip_keys())
-        if profile is not None
-        else [
-            "vision_config",
-            "audio_config",
-            "speech_config",
-            "image_token_id",
-            "video_token_id",
-            "vision_start_token_id",
-            "vision_end_token_id",
-        ]
-    )
-    needs_num_experts_alias = (
-        "num_local_experts" in cfg and "num_experts" not in cfg
-    )
-    if (
-        not any(k in cfg for k in ("vision_config", "text_config", "audio_config", "speech_config"))
-        and not any(k in cfg for k in strip_keys)
-        and not needs_num_experts_alias
-    ):
-        return str(src)
+    """Text-only staging equivalent to sensitivity_probe, but never under /tmp.
 
-    promote_inner_mt = (
-        profile.stage_text_only_promote_inner_model_type()
-        if profile is not None else False
-    )
-    for key in strip_keys:
-        cfg.pop(key, None)
-    if "num_local_experts" in cfg and "num_experts" not in cfg:
-        cfg["num_experts"] = cfg["num_local_experts"]
-    if "text_config" in cfg:
-        text_cfg = cfg.pop("text_config")
-        for key, value in text_cfg.items():
-            if key == "model_type":
-                if promote_inner_mt:
-                    cfg[key] = value
-                continue
-            cfg[key] = value
-    archs = cfg.get("architectures", [])
-    if archs:
-        cfg["architectures"] = [
-            arch.replace("ForConditionalGeneration", "ForCausalLM")
-            for arch in archs
-        ]
-
-    root = Path(work_root)
-    root.mkdir(parents=True, exist_ok=True)
-    staged = Path(tempfile.mkdtemp(prefix="prismaquant_stage_", dir=str(root)))
-    skip = {
-        "config.json",
-        "preprocessor_config.json",
-        "video_preprocessor_config.json",
-        "processor_config.json",
-    }
-    for p in src.iterdir():
-        if p.name in skip:
-            continue
-        (staged / p.name).symlink_to(p.resolve())
-    with open(staged / "config.json", "w") as f:
-        json.dump(cfg, f, indent=2)
-    return str(staged)
+    Thin wrapper around `sensitivity_probe._stage_text_only_impl` (issue
+    #210: one home for the default strip-key list and the staging steps,
+    shared with `sensitivity_probe.stage_text_only`). This name and
+    signature stay so no caller moves; only the staging root differs
+    (an explicit, caller-owned `work_root`, never /tmp, with no `atexit`
+    registration).
+    """
+    from .sensitivity_probe import _stage_text_only_impl
+    return _stage_text_only_impl(model_path, staging_root=work_root)
 
 
 def load_text_model_under_work_root(

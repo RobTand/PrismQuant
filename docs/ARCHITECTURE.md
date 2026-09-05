@@ -1,7 +1,42 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-205`. Stamps
+As of: 2026-09-05 · `claude/pq-cleanup`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-cleanup`) for **one home for text-only
+staging** (PrismaQuant #210). `sensitivity_probe.stage_text_only` and
+`perturbed_x_cache.stage_text_only_under_work_root` each carried their own
+~90-line copy of the same body, including a textually-identical hardcoded
+7-key strip-key fallback (`vision_config`, `audio_config`, `speech_config`,
+`image_token_id`, `video_token_id`, `vision_start_token_id`,
+`vision_end_token_id`). Both names now delegate to one shared
+`sensitivity_probe._stage_text_only_impl(model_path, *, staging_root)`;
+`staging_root=None` keeps `stage_text_only`'s tempdir-under-`/tmp` +
+`atexit` cleanup, an explicit `staging_root` keeps
+`stage_text_only_under_work_root`'s caller-owned, non-`/tmp` root. Both
+public names and their exact signatures are unchanged, so no caller moves.
+Established per the issue's own ask: several live `ModelStructureSpec`s
+already declare a `text_only_strip_keys` that differs from that hardcoded
+7-key fallback — `gemma4.json` adds `audio_token_id` (8 keys);
+`lfm2_moe.json` and `qwen3.json` declare `[]` (strip nothing) — but this
+does not make the two call sites disagree with each other: `detect_profile`
+never actually returns `None` for a real checkpoint (an unregistered
+architecture resolves to `DefaultProfile`, a real profile whose own
+`base.py` default is a *different*, 3-key list, `vision_config`/
+`audio_config`/`speech_config`), so both call sites always took the
+identical `profile.stage_text_only_strip_keys()` branch on independently
+-detected-but-equivalent profiles; the hardcoded 7-key literal itself is
+reachable only if `detect_profile` raises a non-`DeadVendoredOverrideError`
+exception, which does not happen in normal operation. Verified empirically
+on `main` before this merge (byte-identical staged `config.json` for a
+synthetic multimodal+MoE checkpoint) and pinned by
+`tests/test_stage_text_only_shared.py`
+(`test_stage_text_only_and_under_work_root_agree_on_staged_config`) — a pin,
+not a failing-first regression, since the two paths already agreed.
+Severity stays P3: no live divergence found *between* the two staging call
+sites, only between the (dead-in-practice) hardcoded fallback and
+profile-declared lists, which is an existing, unrelated policy split
+untouched by this merge. No default, format menu, or served byte moves.
 
 Re-stamped (2026-09-05, `claude/pq-205`) for the **served activation contract
 as a property of the spec** (§5.1, §5.7; #205). A Tessera W4A4 rung is served

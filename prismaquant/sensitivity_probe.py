@@ -117,7 +117,26 @@ atexit.register(_cleanup_stage_dirs)
 # ---------------------------------------------------------------------------
 # Text-only staging
 # ---------------------------------------------------------------------------
-def stage_text_only(model_path: str) -> str:
+#
+# One rule, one home (issue #210): "which config keys make a checkpoint
+# text-only when no profile claims it" and the staging steps that act on
+# them live ONLY in `_stage_text_only_impl` below. `stage_text_only`
+# (this module) and `perturbed_x_cache.stage_text_only_under_work_root`
+# are both thin wrappers around it, differing only in where the staged
+# directory is created:
+#   - `stage_text_only`: under `_prismaquant_temp_parent()` (TMPDIR-ish),
+#     registered in `_STAGED_TEMP_DIRS` for `atexit` cleanup.
+#   - `stage_text_only_under_work_root`: under an explicit `work_root`
+#     the caller owns, never under /tmp, with no `atexit` registration.
+# Before this merge the two call sites carried separately-typed copies of
+# the same hardcoded fallback strip-key list (7 keys, textually identical
+# in both files). Keep both public names and their exact signatures and
+# behavior so no caller moves.
+def _stage_text_only_impl(
+    model_path: str,
+    *,
+    staging_root: str | Path | None,
+) -> str:
     src = Path(model_path)
     cfg_path = src / "config.json"
     if not cfg_path.exists():
@@ -134,7 +153,9 @@ def stage_text_only(model_path: str) -> str:
         # The hardcoded default strip-key list below is for a checkpoint no
         # profile claims. On a dead override it stages the model with a
         # different config than the profile declares -- and every probe
-        # statistic gathered afterwards describes that wrong staging (#202).
+        # statistic (sensitivity_probe) or cached activation row
+        # (perturbed_x_cache) gathered afterwards describes that wrong
+        # staging (#202).
         raise
     except Exception:
         profile = None
@@ -162,7 +183,6 @@ def stage_text_only(model_path: str) -> str:
     promote_inner_mt = (profile.stage_text_only_promote_inner_model_type()
                         if profile is not None else False)
 
-    import tempfile
     for k in strip_keys:
         cfg.pop(k, None)
 
@@ -203,7 +223,12 @@ def stage_text_only(model_path: str) -> str:
             a.replace("ForConditionalGeneration", "ForCausalLM") for a in archs
         ]
 
-    staged = _mk_stage_dir("prismaquant_stage_")
+    if staging_root is None:
+        staged = _mk_stage_dir("prismaquant_stage_")
+    else:
+        root = Path(staging_root)
+        root.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(prefix="prismaquant_stage_", dir=str(root)))
     skip = {"config.json", "preprocessor_config.json",
             "video_preprocessor_config.json", "processor_config.json"}
     for p in src.iterdir():
@@ -213,6 +238,10 @@ def stage_text_only(model_path: str) -> str:
     with open(staged / "config.json", "w") as f:
         json.dump(cfg, f, indent=2)
     return str(staged)
+
+
+def stage_text_only(model_path: str) -> str:
+    return _stage_text_only_impl(model_path, staging_root=None)
 
 
 # ---------------------------------------------------------------------------
