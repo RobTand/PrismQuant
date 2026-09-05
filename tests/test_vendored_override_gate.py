@@ -321,3 +321,48 @@ def test_rtn_quantizable_tensor_walk_does_not_swallow_the_refusal(monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         list(iter_quantizable_tensors(model))
+
+
+def _dummy_shard_kwargs(**overrides):
+    """Filler for a cost-shard runner's arguments.
+
+    Every shard runner below detects the profile before it reads any of
+    these, so the refusal must arrive without a real activation cache,
+    format spec list or output path.
+    """
+    kwargs = dict(
+        linear_include=".*", probe_stats={}, act_cache=None, specs=[],
+        device="cpu", dtype=None, mode="unbatched", chunk_size=1,
+        h_detail=None, output_path="unused", model_name="m",
+        probe_path="p",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_incremental_body_cost_shard_does_not_swallow_the_refusal(monkeypatch):
+    """`_run_body_cost_shard` answered `profile = None` and sharded on."""
+    from prismaquant.incremental_measure_quant_cost import _run_body_cost_shard
+
+    ctx = SimpleNamespace(
+        model=_qwen3_model(), num_layers=1, layers_prefix="model.layers."
+    )
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _run_body_cost_shard(ctx, shard_kind="body", **_dummy_shard_kwargs())
+
+
+def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(monkeypatch):
+    """`_run_visual_cost_shard` answered `profile = None` and priced on."""
+    from prismaquant.incremental_measure_quant_cost import _run_visual_cost_shard
+
+    mm_ctx = SimpleNamespace(model=_qwen3_model(), visual_module=nn.Module())
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _run_visual_cost_shard(
+            model_path="unused",
+            mm_ctx=mm_ctx,
+            # A non-empty stat the include regex matches, or the runner
+            # short-circuits to an empty shard before it ever detects.
+            **_dummy_shard_kwargs(probe_stats={"visual.blocks.0.attn.qkv": {}}),
+        )
