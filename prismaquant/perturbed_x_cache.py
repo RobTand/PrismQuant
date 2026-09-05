@@ -33,6 +33,9 @@ from prismaquant.memory_management import (
     model_device as _model_device,
     register_budget_evictor,
 )
+from prismaquant.nvfp4_activation_contract import (
+    require_matching_input_global_scale,
+)
 
 _FNAME_SUB = re.compile(r"[^A-Za-z0-9_-]")
 _SHARED_FROZEN_WEIGHT_FORMAT_CACHE: OrderedDict[
@@ -115,6 +118,7 @@ def _activation_qdq(
     act_spec,
     activation_max_abs: dict,
     param_name: str | None,
+    priced_input_global_scales: Mapping[str, float] | None = None,
 ) -> torch.Tensor:
     """Shared activation quantize-dequantize for the emulation hooks.
 
@@ -133,13 +137,30 @@ def _activation_qdq(
     * Static contract, screen default (stock NVFP4): the historical clip +
       dynamic RTN, or the served oracle when
       ``PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES=1`` and the maximum is
-      known."""
+      known.
+
+    ``priced_input_global_scales`` is the G each unit's cached render score was
+    priced at (``ProductionWeightCache`` ``render_scores`` provenance, via
+    ``production_cache_priced_input_global_scales``).  When one is known it is
+    compared against the G this hook is about to apply, and a disagreement
+    refuses by name: measuring an assignment whose costs were priced under one
+    activation-scale policy through a hook quantizing under another compares
+    two different quantizers (#227).  Absent -- no production cache, or a cache
+    with no served rows -- there is nothing to disagree with and the hook is
+    unchanged."""
     contract = getattr(act_spec, "static_activation_contract", None)
     if contract is not None:
         max_abs = _activation_max_abs_lookup(activation_max_abs, param_name)
         if contract.measured_as_served:
             g = contract.require_input_global_scale(
                 max_abs, qname=param_name, consumer="assignment-KL hook")
+            g = require_matching_input_global_scale(
+                _activation_max_abs_lookup(
+                    priced_input_global_scales or {}, param_name),
+                g,
+                qname=param_name,
+                consumer="assignment-KL hook",
+            )
             return contract.quantize_dequantize(x, g)
         if (
             _served_nvfp4_act_qdq_enabled()
@@ -466,6 +487,24 @@ class PerturbedActivationCache:
             self._activation_scales: dict[str, float] = dict(src)
         else:
             self._activation_scales = {}
+        # #227: the maximum above says what the unit's activations reach; it
+        # does NOT say which input-global-scale policy the cache's costs were
+        # priced under, and the same maximum prices G=6/amax or G=448*6/amax.
+        # The cache's own render-score provenance does say, so carry the G each
+        # unit was priced at and let the hook refuse by name when the G it
+        # would apply is a different one.
+        self._priced_input_global_scales: dict[str, float] = {}
+        if production_weight_cache is not None:
+            from prismaquant.production_weight_cache import (
+                production_cache_priced_input_global_scales,
+            )
+
+            self._priced_input_global_scales = (
+                production_cache_priced_input_global_scales(
+                    production_weight_cache,
+                    where="assignment-KL hooks",
+                )
+            )
         # Bounded uniform row reservoirs (M8): per name, at most
         # `input_rows` CPU rows + their float32 priorities, plus a batch
         # counter that keys the shared per-batch priorities.
@@ -901,22 +940,17 @@ class PerturbedActivationCache:
             return next(iter(low_act.values()))
         return None
 
-    def served_activation_scale_gaps(self) -> list[str]:
-        """Names this cache would have to REFUSE in the hook, listed up front.
+    def _served_measurement_units(self) -> list[tuple[str, object]]:
+        """``(name, contract)`` for every member the hook prices as served.
 
-        A member whose spec is measured under the served static-scale
-        contract (``FormatSpec.static_activation_contract.measured_as_served``,
-        a Tessera W4A4 rung) needs its calibrated maximum in this cache's
-        scale identity (``activation_max_abs`` from the production cache);
-        ``_activation_qdq`` refuses it by name otherwise.  Consumers that
-        measure (``kl_measurement.measure_assignment_kl``) ask this before the
-        first forward so the refusal names every unit at once instead of the
-        first hook the model happens to reach.  Capture-only builders, which
-        run before any maximum exists, are not asked.
+        One enumeration for both preflights below, so "which units does this
+        cache measure as served, and under whose contract" cannot be answered
+        two ways.  The contract travels with the name because the G rule is
+        the SPEC's, never a name comparison (#205).
         """
         if not self.include_activation_quant:
             return []
-        gaps: set[str] = set()
+        units: list[tuple[str, object]] = []
         for plan in self.plans:
             members = self._packed_act_plan(plan)
             if members is None:
@@ -932,17 +966,61 @@ class PerturbedActivationCache:
                 weight = next(
                     (p.name for p in plan.params if p.attr == "weight"), None)
                 names = [weight] if weight is not None else plan.cache_names
+                units.extend((name, contract) for name in names)
             else:
-                names = [
-                    m.name for m in members
+                units.extend(
+                    (m.name, m.spec.static_activation_contract)
+                    for m in members
                     if getattr(m.spec.static_activation_contract,
                                "measured_as_served", False)
-                ]
-            for name in names:
-                value = _activation_max_abs_lookup(self._activation_scales, name)
-                if value is None or float(value) <= 0.0:
-                    gaps.add(name)
+                )
+        return units
+
+    def served_activation_scale_gaps(self) -> list[str]:
+        """Names this cache would have to REFUSE in the hook, listed up front.
+
+        A member whose spec is measured under the served static-scale
+        contract (``FormatSpec.static_activation_contract.measured_as_served``,
+        a Tessera W4A4 rung) needs its calibrated maximum in this cache's
+        scale identity (``activation_max_abs`` from the production cache);
+        ``_activation_qdq`` refuses it by name otherwise.  Consumers that
+        measure (``kl_measurement.measure_assignment_kl``) ask this before the
+        first forward so the refusal names every unit at once instead of the
+        first hook the model happens to reach.  Capture-only builders, which
+        run before any maximum exists, are not asked.
+        """
+        gaps: set[str] = set()
+        for name, _contract in self._served_measurement_units():
+            value = _activation_max_abs_lookup(self._activation_scales, name)
+            if value is None or float(value) <= 0.0:
+                gaps.add(name)
         return sorted(gaps)
+
+    def served_activation_policy_conflicts(self) -> list[str]:
+        """Names whose cached cost was priced at a different static G (#227).
+
+        The sibling of :meth:`served_activation_scale_gaps`: that one asks
+        whether a unit HAS a calibrated maximum, which stays true across a
+        change of input-global-scale policy; this one asks whether the G that
+        maximum now derives is the G the unit's retained render score was
+        priced at.  Asked before the first forward for the same reason -- the
+        refusal names every affected unit rather than the first one the model
+        reaches -- and answered from the cache's own score provenance, never
+        from the environment.
+        """
+        conflicts: set[str] = set()
+        if not self._priced_input_global_scales:
+            return []
+        for name, contract in self._served_measurement_units():
+            priced = _activation_max_abs_lookup(
+                self._priced_input_global_scales, name)
+            max_abs = _activation_max_abs_lookup(self._activation_scales, name)
+            if priced is None or max_abs is None or float(max_abs) <= 0.0:
+                continue
+            applied = contract.input_global_scale_from_max_abs(float(max_abs))
+            if float(priced) != float(applied):
+                conflicts.add(name)
+        return sorted(conflicts)
 
     def _nvfp4_fused_param_plan(self, plan: _ModulePlan) -> _ParamPlan | None:
         if not _env_truthy("PRISMAQUANT_FUSED_KERNEL_NVFP4"):
@@ -1030,6 +1108,7 @@ class PerturbedActivationCache:
             # formulation was a no-op (codex round-3).
             x = _activation_qdq(
                 x, act_spec, self._activation_scales, param_plan.name,
+                self._priced_input_global_scales,
             )
         weight = self._weight_for_reference_forward(plan, param_plan)
         return F.linear(x, weight, plan.module.bias)
@@ -1258,7 +1337,8 @@ class PerturbedActivationCache:
                             weight, params[id(base)]) is not None:
                         input = _activation_qdq(
                             input, member.spec, owner._activation_scales,
-                            member.name)
+                            member.name,
+                            owner._priced_input_global_scales)
                 return orig_linear(input, weight, bias)
 
             F.linear = _intercepting_linear
@@ -1292,7 +1372,7 @@ class PerturbedActivationCache:
                     # round-3 caught Q(x/s)*s == Q(x)).
                     x_runtime = _activation_qdq(
                         x_runtime, act_spec, self._activation_scales,
-                        member_name,
+                        member_name, self._priced_input_global_scales,
                     )
                 if x_runtime is not x:
                     args, kwargs = _replace_tensor_input(

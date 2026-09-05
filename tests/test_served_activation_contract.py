@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn as nn
 
 from prismaquant import format_registry as fr
 from prismaquant import nvfp4_activation_contract as owner
@@ -29,6 +30,10 @@ from prismaquant.production_weight_cache import (
 Q = "model.layers.0.self_attn.o_proj"
 W4A4 = "TESSERA_E2M1_K2_R896"
 ENV = "PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES"
+#: The compatibility input the two shipped policies are selected with.
+POLICY_ENV = "PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE"
+LEGACY = owner.LEGACY_INPUT_GLOBAL_SCALE_POLICY
+FULL = owner.FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY
 
 
 def _g_of(max_abs: float) -> float:
@@ -297,3 +302,294 @@ def test_the_fill_gate_is_total_over_names_the_registry_does_not_own():
     # The sibling predicate over the same values already answered False here;
     # they now share one resolver, so they cannot drift apart again.
     assert _is_cb_format_name(junk) is False
+
+
+# ------------------- the policy a cached cost was priced under (#227)
+#
+# A W4A4 score is an activation-aware cost, and the static scale it is priced
+# at is `FP4_MAX[*FP8_MAX] / max_abs`: the SAME calibration maximum prices
+# G=1 under `legacy_6_over_calibration_amax.v1` and G=448 under
+# `full_e4m3_range_448x6_over_calibration_amax.v1`, and the served oracle at
+# those two G underflows a 1e-3 block to zero at one and keeps it at the
+# other.  Measured for RobTand/prismaquant#227 on the frozen `17ca6930` tree
+# and re-derived by the assertions below: amax=6, BF16 [1e-3]*16,
+# W = rendered-W = ones(1,16).
+#
+#   policy 0: G=1,   score=0.00025571882724761963, hook QDQ=0
+#   policy 1: G=448, score=5.622899834634154e-07,  hook QDQ=0.00104522705078125
+#   cache render identity under policy 0 == identity under policy 1: True
+#
+# That last line is the defect: the numbers are each right under their own
+# policy (#205's positive control), and nothing refused when a cache priced
+# under one was resumed and KL-validated under the other.
+
+PRICED_UNDER_POLICY = {
+    "0": (LEGACY, 1.0, 0.00025571882724761963, 0.0),
+    "1": (FULL, 448.0, 5.622899834634154e-07, 0.00104522705078125),
+}
+
+
+@pytest.fixture
+def policy_case():
+    """amax=6 (so G is exactly 1.0 or 448.0) and the underflowing block."""
+    x = torch.full((1, 16), 1e-3, dtype=torch.bfloat16)
+    w = torch.ones((1, 16), dtype=torch.float32)
+    return 6.0, x, w
+
+
+def _score_record(amax, x, w, fmt=W4A4, **kwargs):
+    return _render_score_record(
+        qname=Q, fmt=fmt, render_format=fmt,
+        reference_weight=w, rendered_weight=w,
+        activations=x, activation_max_abs=amax, **kwargs)
+
+
+def test_the_cache_render_identity_binds_the_resolved_scale_policy(monkeypatch):
+    """The pre-fix line: two policies, one identity.
+
+    The resolved levers are where every env-valued render input is turned into
+    a stamped value, and the directory render identity carries them; the scale
+    policy joins ``nvfp4_scale_rule`` there, so the mismatch is named rather
+    than silent.
+    """
+    import prismaquant.production_weight_cache as pwc
+
+    identities = {}
+    resolved = {}
+    for setting in ("0", "1"):
+        monkeypatch.setenv(POLICY_ENV, setting)
+        levers = pwc._resolve_production_render_levers(
+            {"tessera_weights_only": True})
+        resolved[setting] = levers
+        identities[setting] = pwc.build_production_cache_render_identity(
+            render_scope="format-menu",
+            requested_formats=[W4A4],
+            levers=levers,
+            mechanism_plan=pwc._resolve_render_mechanism_plan(levers),
+            calib_hash="a" * 64,
+            eligible_qnames=[Q],
+            render_formats_by_qname={Q: [W4A4]},
+            max_act_rows=1,
+        )
+    # The pre-fix behaviour, stated first: these two were equal, so a cache
+    # priced at G=1 admitted a resume that quantizes activations at G=448.
+    assert identities["0"] != identities["1"], (
+        "the production cache render identity does not bind the resolved "
+        "activation-scale policy")
+    difference = pwc.first_identity_difference(
+        identities["0"], identities["1"])
+    assert difference == (
+        f"levers.{pwc.RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY}", LEGACY, FULL)
+    for setting, levers in resolved.items():
+        assert levers[pwc.RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY] == (
+            PRICED_UNDER_POLICY[setting][0])
+
+
+def test_a_render_score_records_the_policy_its_static_scale_came_from(
+        monkeypatch, policy_case):
+    amax, x, w = policy_case
+    for setting, (policy, g, score, _hook) in PRICED_UNDER_POLICY.items():
+        monkeypatch.setenv(POLICY_ENV, setting)
+        record = _score_record(amax, x, w)
+        assert record["input_global_scale"] == g
+        assert record["input_global_scale_policy"] == policy
+        assert record["score"] == pytest.approx(score, rel=1e-9)
+
+
+def test_a_dynamically_scored_row_records_no_policy(monkeypatch, policy_case):
+    """Stock NVFP4 keeps its screen default, so nothing about its cost depends
+    on the static-scale policy -- and it must not be invalidated by one."""
+    amax, x, w = policy_case
+    monkeypatch.setenv(POLICY_ENV, "0")
+    record = _score_record(amax, x, w, fmt="NVFP4")
+    assert record["input_global_scale"] is None
+    assert record["input_global_scale_policy"] is None
+
+
+def test_one_resolved_policy_prices_a_whole_operation(monkeypatch, policy_case):
+    """A caller that resolved ONE policy for a fill passes it, and the scorer
+    prices with that one -- not with whatever the environment says now."""
+    amax, x, w = policy_case
+    monkeypatch.setenv(POLICY_ENV, "0")
+    record = _score_record(amax, x, w, input_global_scale_policy=FULL)
+    assert record["input_global_scale"] == 448.0
+    assert record["input_global_scale_policy"] == FULL
+    assert record["score"] == pytest.approx(
+        PRICED_UNDER_POLICY["1"][2], rel=1e-9)
+
+
+def test_resume_refuses_a_retained_cost_priced_under_another_policy(
+        monkeypatch, policy_case):
+    """The retained-score half: reusing the weights can be legitimate, reusing
+    their activation-aware cost under another policy is not."""
+    from prismaquant.production_weight_cache import (
+        _check_resumed_render_score_policies as check,
+        _render_score_record_key,
+    )
+
+    amax, x, w = policy_case
+    monkeypatch.setenv(POLICY_ENV, "0")
+    record = _score_record(amax, x, w)
+    key = _render_score_record_key(Q, W4A4)
+
+    # Unchanged policy: the cost is admitted, and it IS checked (1 row).
+    assert check({key: record}, policy=LEGACY, where="resume") == 1
+
+    with pytest.raises(owner.ActivationScalePolicyMismatchError) as excinfo:
+        check({key: record}, policy=FULL, where="resume")
+    message = str(excinfo.value)
+    assert Q in message and "1.0" in message and "448.0" in message
+    assert LEGACY in message and FULL in message
+
+    # A record written before the policy stamp existed is still checked: its
+    # recorded G against the G this policy derives from its recorded maximum.
+    legacy_record = {
+        k: v for k, v in record.items() if k != "input_global_scale_policy"
+    }
+    with pytest.raises(owner.ActivationScalePolicyMismatchError, match=Q):
+        check({key: legacy_record}, policy=FULL, where="resume")
+    assert check({key: legacy_record}, policy=LEGACY, where="resume") == 1
+
+    # A dynamically scored row does not depend on the policy and is not
+    # invalidated by it.
+    stock = _score_record(amax, x, w, fmt="NVFP4")
+    assert check(
+        {_render_score_record_key(Q, "NVFP4"): stock},
+        policy=FULL, where="resume") == 0
+
+
+def test_the_kl_hook_refuses_an_activation_priced_at_another_scale(
+        monkeypatch, policy_case):
+    """The measurement half: the hook derives G from the calibrated maximum
+    and the CURRENT policy, so it must compare it against the G the cost it is
+    measured against was priced at."""
+    amax, x, _w = policy_case
+    spec = fr.get_format(W4A4)
+    monkeypatch.setenv(POLICY_ENV, "0")
+    served = fr.nvfp4_activation_qdq_served(x, 1.0)
+    # Control: the cache priced this unit at the same G the hook applies.
+    assert torch.equal(_activation_qdq(x, spec, {Q: amax}, Q, {Q: 1.0}), served)
+    # And with no priced G at all (no production cache) nothing changes.
+    assert torch.equal(_activation_qdq(x, spec, {Q: amax}, Q, {}), served)
+    with pytest.raises(owner.ActivationScalePolicyMismatchError, match=Q):
+        _activation_qdq(x, spec, {Q: amax}, Q, {Q: 448.0})
+
+
+def test_the_cache_the_scorer_and_the_hook_use_one_effective_g(
+        monkeypatch, policy_case):
+    """Fused siblings share ONE unified maximum, hence ONE static G -- and the
+    record, the cache's priced-scale provenance and the hook must all be that
+    same G under the policy in force."""
+    from prismaquant.production_weight_cache import (
+        ProductionWeightCache,
+        _render_score_record_key,
+        production_cache_priced_input_global_scales,
+    )
+
+    amax, x, w = policy_case
+    siblings = [
+        "model.layers.0.self_attn.q_proj",
+        "model.layers.0.self_attn.k_proj",
+    ]
+    for setting, (_policy, g, _score, hook_value) in PRICED_UNDER_POLICY.items():
+        monkeypatch.setenv(POLICY_ENV, setting)
+        records = {
+            _render_score_record_key(name, W4A4): _render_score_record(
+                qname=name, fmt=W4A4, render_format=W4A4,
+                reference_weight=w, rendered_weight=w,
+                activations=x, activation_max_abs=amax)
+            for name in siblings
+        }
+        assert {r["input_global_scale"] for r in records.values()} == {g}
+        cache = ProductionWeightCache(
+            weights={},
+            levers={},
+            activation_max_abs={name: amax for name in siblings},
+            metadata={"render_scores": {
+                "schema": "prismaquant.production_render_scores.v1",
+                "entries": len(records),
+                "records": records,
+            }},
+        )
+        priced = production_cache_priced_input_global_scales(cache)
+        assert priced == {name: g for name in siblings}
+        spec = fr.get_format(W4A4)
+        for name in siblings:
+            hook = _activation_qdq(
+                x, spec, cache.activation_max_abs, name, priced)
+            assert float(hook[0, 0]) == hook_value
+
+
+class _OneLinear(nn.Module):
+    """The shape ``_build_module_plans`` accepts for a W4A4 rung, as the
+    preflight tests above it use."""
+
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Linear(64, 32, bias=False)
+
+
+def _cache_priced_at(g: float, amax: float):
+    from prismaquant.production_weight_cache import (
+        ProductionWeightCache,
+        _render_score_record_key,
+    )
+
+    return ProductionWeightCache(
+        weights={},
+        levers={},
+        activation_max_abs={"proj": amax},
+        metadata={"render_scores": {
+            "schema": "prismaquant.production_render_scores.v1",
+            "entries": 1,
+            "records": {
+                _render_score_record_key("proj", W4A4): {
+                    "qname": "proj",
+                    "format": W4A4,
+                    "activation_max_abs": amax,
+                    "input_global_scale": g,
+                    "input_global_scale_policy": (
+                        LEGACY if g == 1.0 else FULL),
+                },
+            },
+        }},
+    )
+
+
+def test_the_kl_preflight_names_every_unit_priced_at_another_scale(
+        tmp_path, monkeypatch, policy_case):
+    """As with the missing-maximum gate, the refusal is preflight and lists
+    every affected unit -- a maximum EXISTING says nothing about the policy it
+    was priced under, which is exactly what the earlier gate could not see."""
+    from prismaquant.kl_measurement import measure_assignment_kl
+    from prismaquant.perturbed_x_cache import PerturbedActivationCache
+
+    amax, _x, _w = policy_case
+    monkeypatch.setenv(POLICY_ENV, "0")
+    monkeypatch.setenv("PRISMAQUANT_KL_CUDA_GRAPHS", "0")
+    monkeypatch.setenv("PRISMAQUANT_STRICT_PRODUCTION_CACHE", "0")
+
+    matched = PerturbedActivationCache(
+        _OneLinear(), {"proj": W4A4}, tmp_path / "matched",
+        input_rows=0, cal_hash="c" * 32,
+        production_weight_cache=_cache_priced_at(1.0, amax))
+    assert matched.served_activation_scale_gaps() == []
+    assert matched.served_activation_policy_conflicts() == []
+
+    stale = PerturbedActivationCache(
+        _OneLinear(), {"proj": W4A4}, tmp_path / "stale",
+        input_rows=0, cal_hash="c" * 32,
+        production_weight_cache=_cache_priced_at(448.0, amax))
+    # The maximum is present under either policy: the OLD gate stays quiet.
+    assert stale.served_activation_scale_gaps() == []
+    assert stale.served_activation_policy_conflicts() == ["proj"]
+
+    model = _OneLinear()
+    calib_ids = torch.ones(1, 3, dtype=torch.long)
+    refs = [torch.log_softmax(torch.randn(1, 3, 5), dim=-1)]
+    with pytest.raises(
+            owner.ActivationScalePolicyMismatchError, match="proj"):
+        measure_assignment_kl(
+            model, {"proj": W4A4}, calib_ids, refs,
+            work_root=tmp_path, kl_scope="full_sequence",
+            production_weight_cache=_cache_priced_at(448.0, amax))

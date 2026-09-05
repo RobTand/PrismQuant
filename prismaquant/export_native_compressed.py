@@ -951,17 +951,25 @@ def _nvfp4_input_gscale_fp8_range_enabled() -> bool:
     )
 
 
-def _nvfp4_input_global_scale_from_max_abs(max_abs: float) -> float:
+def _nvfp4_input_global_scale_from_max_abs(
+    max_abs: float, *, policy: str | None = None,
+) -> float:
     """input_global_scale for a calibrated activation ``max_abs``.
 
     The shared policy owner selects the legacy ``6 / amax`` bytes by default
     or the explicit compressed-tensors ``448 * 6 / amax`` opt-in.  This
     compatibility wrapper never defines a second formula.
+
+    ``policy`` is optional and resolves live when omitted, as every historical
+    caller expects.  A caller that has already resolved ONE policy for a whole
+    operation -- the production cache fill, whose render levers stamp it --
+    passes it, so the G that reaches the renderer and the G its score records
+    are priced at cannot come from two different resolutions (#227).
     """
     return _nvfp4_activation_contract.input_global_scale_from_max_abs(
         max_abs,
         policy=(
-            _nvfp4_activation_contract.resolve_input_global_scale_policy()
+            _nvfp4_activation_contract.resolve_input_global_scale_policy(policy)
         ),
         nonpositive_fallback=(
             _nvfp4_activation_contract.UNCALIBRATED_INPUT_GLOBAL_SCALE

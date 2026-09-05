@@ -410,3 +410,100 @@ def test_malformed_trust_admission_refuses_fail_closed(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="rebuild this directory"):
         _fill(_TinyTwoLinear(), calib_ids, tmp_path)
+
+
+# ------------------- the resolved activation-scale policy (#227)
+#
+# A directory's shards are the same bytes under either input-global-scale
+# policy -- the policy only sets the STATIC activation scale G -- but the
+# activation-aware render SCORES beside them are priced at that G, and the
+# served oracle at G=6/amax and at G=448*6/amax are different quantizers.  So
+# the policy is a render input like `nvfp4_scale_rule`, it is resolved once
+# into the levers, and the identity carries it.
+
+W4A4 = "TESSERA_E2M1_K2_R896"
+POLICY_ENV = "PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE"
+
+
+def _scores(cache):
+    return dict(cache.metadata["render_scores"]["records"])
+
+
+def test_resume_refuses_a_changed_activation_scale_policy(
+        tmp_path, monkeypatch):
+    _fake_render_env(monkeypatch)
+    calib_ids = torch.tensor([[0, 1]], dtype=torch.long)
+
+    monkeypatch.setenv(POLICY_ENV, "0")
+    cache = _fill(_TinyTwoLinear(), calib_ids, tmp_path, formats=[W4A4])
+    priced = _scores(cache)
+    assert priced, "the fill must record W4A4 render scores"
+    assert all(
+        record["input_global_scale"] == 6.0 / record["activation_max_abs"]
+        for record in priced.values()
+    )
+
+    # Control: the unchanged policy resumes and keeps the same costs.
+    resumed = _fill(_TinyTwoLinear(), calib_ids, tmp_path, formats=[W4A4])
+    assert _scores(resumed) == priced
+
+    # The pre-fix behaviour, stated first: this fill used to resume the
+    # directory silently, keeping every cost priced at G=6/amax while
+    # quantizing activations at G=448*6/amax.  It now refuses, naming the
+    # field of the render identity that moved.
+    monkeypatch.setenv(POLICY_ENV, "1")
+    with pytest.raises(
+            ValueError, match="nvfp4_input_global_scale_policy") as exc_info:
+        _fill(_TinyTwoLinear(), calib_ids, tmp_path, formats=[W4A4])
+    assert "rebuild this directory" in str(exc_info.value)
+
+    from prismaquant.nvfp4_activation_contract import (
+        ActivationScalePolicyMismatchError,
+        FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY,
+        LEGACY_INPUT_GLOBAL_SCALE_POLICY,
+    )
+
+    # A pre-guard directory (no sidecar) is admitted on TRUST by that gate, so
+    # the retained scores are the line that has to hold -- and they do, by
+    # name, comparing the G each cost was priced at against the G this policy
+    # derives from the same recorded maximum.
+    _sidecar(tmp_path).unlink()
+    with pytest.raises(ActivationScalePolicyMismatchError) as exc_info:
+        _fill(_TinyTwoLinear(), calib_ids, tmp_path, formats=[W4A4])
+    message = str(exc_info.value)
+    assert "l1" in message
+    assert LEGACY_INPUT_GLOBAL_SCALE_POLICY in message
+    assert FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY in message
+
+    # And the provenance the two refusals read: the policy on the identity
+    # sidecar and on each cost the fill priced.
+    assert {
+        record["input_global_scale_policy"] for record in priced.values()
+    } == {LEGACY_INPUT_GLOBAL_SCALE_POLICY}
+    stored = json.loads(_sidecar(tmp_path).read_text())
+    assert stored["levers"]["nvfp4_input_global_scale_policy"] == (
+        FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY
+    )
+
+
+def test_a_fresh_directory_under_the_full_range_policy_prices_at_that_policy(
+        tmp_path, monkeypatch):
+    """The other policy is not broken, it is bound: a fresh cache-dir under it
+    prices every W4A4 row at 448*6/amax and says so (#205's positive control
+    kept honest by #227's provenance)."""
+    from prismaquant.nvfp4_activation_contract import (
+        FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY,
+    )
+
+    _fake_render_env(monkeypatch)
+    calib_ids = torch.tensor([[0, 1]], dtype=torch.long)
+    monkeypatch.setenv(POLICY_ENV, "1")
+    cache = _fill(_TinyTwoLinear(), calib_ids, tmp_path, formats=[W4A4])
+    records = _scores(cache)
+    assert records
+    for record in records.values():
+        assert record["input_global_scale_policy"] == (
+            FULL_E4M3_INPUT_GLOBAL_SCALE_POLICY
+        )
+        assert record["input_global_scale"] == pytest.approx(
+            448.0 * 6.0 / record["activation_max_abs"], rel=1e-6)

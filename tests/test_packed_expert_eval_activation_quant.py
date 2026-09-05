@@ -54,6 +54,10 @@ def _cache_with_plan(model, specs):
     cache = PerturbedActivationCache.__new__(PerturbedActivationCache)
     cache.include_activation_quant = True
     cache._activation_scales = {}
+    # The G each unit's cached render score was priced at (#227). Empty here:
+    # this hand-built cache has no production cache behind it, so there is no
+    # priced cost for the hook to disagree with.
+    cache._priced_input_global_scales = {}
     cache._handles = []
     cache._fused_forward_originals = []
     experts = model.experts

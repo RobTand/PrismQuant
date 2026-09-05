@@ -1194,6 +1194,73 @@ class ActivationScaleContractError(RuntimeError):
     """
 
 
+class ActivationScalePolicyMismatchError(ActivationScaleContractError):
+    """A stored activation-aware cost is being reused at a different G.
+
+    The resolved input-global-scale policy is part of what a score MEANS: the
+    same calibration maximum prices ``G = 6/amax`` under
+    ``legacy_6_over_calibration_amax.v1`` and ``G = 448*6/amax`` under
+    ``full_e4m3_range_448x6_over_calibration_amax.v1``, and the served oracle
+    at those two G values quantizes the same activation differently (a block
+    far below the maximum underflows to zero at the smaller G).  So a cached
+    score priced under one policy is not a cost under the other, even though
+    the weights, the calibration hash and the maximum are all unchanged
+    (RobTand/prismaquant#227).
+
+    Raised by name (the qname), naming both G values, wherever a persisted
+    cost meets a live policy: the production cache's resume, and the
+    assignment-KL hooks that measure against those costs.  A subclass of
+    :class:`ActivationScaleContractError` because it is the same contract
+    refusing -- a consumer already catching that one keeps catching this.
+    """
+
+
+def require_matching_input_global_scale(
+    priced: float | None,
+    applied: float,
+    *,
+    qname: str | None,
+    consumer: str,
+    priced_policy: str | None = None,
+    applied_policy: str | None = None,
+) -> float:
+    """ONE rule for "was this cost priced at the G I am about to apply?".
+
+    ``priced`` is the G recorded beside a persisted activation-aware cost
+    (``None`` when nothing was recorded -- there is then nothing to disagree
+    with, and the caller proceeds).  ``applied`` is the G the caller resolved
+    for the same unit now.  Equality is exact because both sides are the same
+    F32-rounded ``FP4_MAX[*FP8_MAX]/max_abs`` value of the same maximum; a
+    difference therefore means the policy (or the maximum the policy was
+    applied to) changed under a retained cost, which is
+    :class:`ActivationScalePolicyMismatchError` and never a rounding artefact.
+
+    Both the production cache's score resume and the assignment-KL hook call
+    this, so the two cannot answer the question differently (principle 8).
+    """
+    value = float(applied)
+    if priced is None:
+        return value
+    recorded = float(priced)
+    if recorded == value:
+        return value
+    policies = ""
+    if priced_policy is not None or applied_policy is not None:
+        policies = (
+            f" (priced under {priced_policy!r}, applying "
+            f"{applied_policy or resolve_input_global_scale_policy()!r})"
+        )
+    raise ActivationScalePolicyMismatchError(
+        f"{consumer}: {qname!r} carries an activation-aware cost priced at "
+        f"input_global_scale={recorded!r} but this run applies "
+        f"{value!r}{policies}.  The resolved input-global-scale policy is "
+        "part of what that cost means; refusing to reuse it under another "
+        "one.  Re-render the affected scores under a fresh --cache-dir, or "
+        "restore the policy the cache was priced under "
+        "(PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE)."
+    )
+
+
 @dataclass(frozen=True)
 class StaticActivationContract:
     """What a spec's activations execute as under a STATIC per-unit scale.
@@ -1228,11 +1295,28 @@ class StaticActivationContract:
     group_size: int = FP4_GROUP_SIZE
     measured_as_served: bool = False
 
-    def input_global_scale_from_max_abs(self, max_abs: float) -> float:
+    def input_global_scale_from_max_abs(
+        self,
+        max_abs: float,
+        *,
+        policy: str | None = None,
+    ) -> float:
         """The owner's G rule at the resolved policy -- the same number the
-        campaign stamps (``_static_input_scales``) and the export ships."""
+        campaign stamps (``_static_input_scales``) and the export ships.
+
+        ``policy`` is deliberately optional and deliberately NOT a field of
+        this frozen dataclass (#227).  The scale policy is a live process
+        setting wherever nothing has priced anything yet -- a screen, a fresh
+        fill, an export -- so the default stays "resolve it now".  A caller
+        that has already resolved ONE policy for a whole operation (the
+        production cache's render levers, the campaign's ``_static_input
+        _scales``) passes it here instead, so the G it stamps and the G it
+        scores with cannot drift within that operation.
+        """
         return input_global_scale_from_max_abs(
-            max_abs, policy=resolve_input_global_scale_policy())
+            max_abs,
+            policy=resolve_input_global_scale_policy(policy),
+        )
 
     def require_input_global_scale(
         self,
@@ -1240,6 +1324,7 @@ class StaticActivationContract:
         *,
         qname: str | None,
         consumer: str,
+        policy: str | None = None,
     ) -> float:
         """G for ``qname``, or the refusal by name when it has no maximum."""
         if max_abs is None or not math.isfinite(float(max_abs)) or float(max_abs) <= 0.0:
@@ -1251,7 +1336,8 @@ class StaticActivationContract:
                 "production cache's activation_max_abs (fused-sibling unified) "
                 "is the scale identity this needs."
             )
-        return self.input_global_scale_from_max_abs(float(max_abs))
+        return self.input_global_scale_from_max_abs(
+            float(max_abs), policy=policy)
 
     def quantize_dequantize(
         self,
@@ -1271,6 +1357,7 @@ NVFP4_SERVED_ACTIVATION_CONTRACT = StaticActivationContract()
 
 __all__ = [
     "ActivationScaleContractError",
+    "ActivationScalePolicyMismatchError",
     "NVFP4_SERVED_ACTIVATION_CONTRACT",
     "StaticActivationContract",
     "CALIBRATION_SOURCE_PACKED_EXPERT_RENDER",
@@ -1311,6 +1398,7 @@ __all__ = [
     "load_activation_cache_max_abs",
     "load_activation_cache_samples",
     "nvfp4_activation_qdq_served",
+    "require_matching_input_global_scale",
     "resolve_input_global_scale_policy",
     "resolve_input_global_scale_value",
     "routed_moe_attested_module_names",
