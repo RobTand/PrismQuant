@@ -78,6 +78,7 @@ from . import tessera_hessian as th
 from .nvfp4_activation_contract import (
     ActivationScaleContractError as _OwnedActivationScaleContractError,
 )
+from .tessera_expert_projection import EXPERT_WIRES_KEY, POPULATION_KEY, PROJECTION_KEY
 
 __all__ = [
     "SCHEMA",
@@ -397,6 +398,7 @@ def campaign_cost_payload(
     *,
     loo: Mapping[str, Mapping[str, dict]],
     provenance: dict,
+    wire_backed: "frozenset[str] | set[str]" = frozenset(),
 ) -> dict:
     """Turn measured anchors plus a legal menu into a cost payload.
 
@@ -405,6 +407,13 @@ def campaign_cost_payload(
     outside the envelope is **omitted**, because ``TesseraRateSurface.predict``
     refuses to extrapolate and a menu row the surface will not price is a row
     nothing measured.
+
+    ``wire_backed`` names the units whose priced wire IS the exported wire --
+    the producer-projected packed experts, which the export lane hands to the
+    exporter as cached bytes rather than re-encoding.  For those, an
+    interpolated row would price a rung that has no bytes to ship, so they get
+    measured rows only: the allocator can select for them exactly the rungs a
+    wire exists for (priced == written; PrismaQuant #183).
     """
     from .tessera_rate_surface import (
         PROVENANCE_INTERPOLATED, PROVENANCE_MEASURED, TesseraRateSurface,
@@ -500,6 +509,10 @@ def campaign_cost_payload(
                 })
                 continue
             surfaces.setdefault(qname, {})[family] = surface
+            if qname in wire_backed:
+                # Measured rows only: see the docstring.  The surface is still
+                # built so leave-one-out reporting covers these units.
+                continue
             low, high = surface.q256_range
             for rung in menus.get(qname, []):
                 if rung.family != family or rung.format_name in measured_names:
@@ -578,7 +591,8 @@ def _checkpoint_identity_api():
 
 def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
                                   calibration_identity, serving_scope,
-                                  static_scales, static_scale_policy):
+                                  static_scales, static_scale_policy,
+                                  expert_projection=None):
     """Bind the priced population, including score inputs when H is off.
 
     The static A-side contract is a scoring input like the score rows: the
@@ -608,6 +622,18 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
         "prismaquant_source_sha256": _production_cache_source_sha256(),
         "encoder_source_sha256": api.encoder_source_sha256(),
         "input_global_scale_policy": str(static_scale_policy),
+        # The producer's projection the packed units were priced under: its
+        # source checkpoint identity and every sealed unit record.  A resume
+        # from a campaign that projected another checkpoint, or none, refuses
+        # here before a packed row is read (PrismaQuant #183).
+        "expert_projection": (
+            None if expert_projection is None else {
+                "source": dict(expert_projection["producer"]["source"]),
+                "stacks": {
+                    stack: {name: dict(unit) for name, unit in sorted(units.items())}
+                    for stack, units in sorted(expert_projection["stacks"].items())
+                },
+            }),
         "units": {
             name: {
                 "weight": api.tensor_identity(weight),
@@ -626,8 +652,15 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
 
 
 def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
-                                static_scales):
+                                static_scales, projected_units=None):
     """The resumed row's inputs, as this run's producer would stamp them.
+
+    A unit in ``projected_units`` (``{qname: producer unit record}``) is a
+    packed expert the producer projects; its receipt is sealed with the
+    producer's ``unit_input_identity`` -- the same encoding inputs plus the
+    projection record -- because that is the identity the exporter's
+    ``--cached-expert-units`` intake recomputes from the source bytes.  A
+    dense unit keeps ``encoding_input_identity``.
 
     ONE gate per resumed row, in the order the producer resolves the inputs:
     the unit is priced, the format is a Tessera rung on the current menu, the
@@ -657,7 +690,14 @@ def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
     if bool(anchor.hessian_applied) != (activation is not None):
         raise RuntimeError("checkpoint anchor Hessian applicability disagrees with the producer")
     _require_resumable_anchor(anchor, static_scales)
-    return _checkpoint_identity_api().encoding_input_identity(
+    api = _checkpoint_identity_api()
+    projected = (projected_units or {}).get(anchor.qname)
+    if projected is not None:
+        return api.unit_input_identity(
+            weights[anchor.qname], dict(projected), family.payload_grid(), int(rung),
+            activation=activation,
+        )
+    return api.encoding_input_identity(
         weights[anchor.qname], anchor.qname, family.payload_grid(), int(rung),
         activation=activation,
     )
@@ -964,13 +1004,47 @@ def _campaign_layer_scope(names, layer_stride: int) -> list[str]:
     return selected
 
 
-def _require_campaign_population(model, profile, layer_stride: int) -> None:
-    """Refuse packed units before an incomplete dense-only campaign starts.
+@dataclass(frozen=True)
+class ExpertPopulation:
+    """The packed expert population the bridge covers, and what it omits.
+
+    ``members`` are the profile-declared per-expert projections inside the
+    layer scope (``PackedExpertProjection``: the live 2-D view, its packed
+    parent and its stack); ``declared`` is ``{stack: {qname: (rows, cols)}}``
+    for the producer request; ``omitted_outside_layer_stride`` names the
+    packed parameters the stride left out, so the payload can say which
+    population was priced and which was not.
+    """
+
+    members: tuple
+    declared: dict
+    packed_in_scope: dict
+    omitted_outside_layer_stride: dict
+
+    @property
+    def qnames(self) -> list[str]:
+        return [member.qname for member in self.members]
+
+
+def _require_campaign_population(model, profile, layer_stride: int) -> ExpertPopulation:
+    """Admit only the packed units the producer bridge can carry; refuse the rest.
 
     The profile's routed-target discovery owns membership. An arbitrary 3-D
     parameter (for example a convolution) is not an expert by shape alone.
+    The bridge covers a packed parameter when the profile declares its split
+    into per-expert 2-D projections whose input kind the existing routed
+    derivation captures (``gate_up`` / ``down``) and when the producer's
+    projection tool is declared and present -- checked here, before an hour
+    of calibration, so a campaign that cannot ask the producer refuses by
+    name instead of pricing a dense-only table (PrismaQuant #183).
     """
-    from .routed_experts import profile_declared_routed_expert_targets
+    from .routed_experts import (
+        profile_declared_packed_expert_projections,
+        profile_declared_routed_expert_targets,
+    )
+    from .tessera_expert_projection import (
+        ExpertProjectionError, declared_stacks_from_members, producer_plan_tool,
+    )
 
     parameters = dict(model.named_parameters())
     packed = {
@@ -978,14 +1052,153 @@ def _require_campaign_population(model, profile, layer_stride: int) -> None:
         for name in profile_declared_routed_expert_targets(model, profile)
         if name in parameters and parameters[name].ndim == 3
     }
-    missing = _campaign_layer_scope(packed, layer_stride)
-    if missing:
+    in_scope = _campaign_layer_scope(packed, layer_stride)
+    omitted = {name: packed[name] for name in packed if name not in set(in_scope)}
+    if not in_scope:
+        return ExpertPopulation(members=(), declared={}, packed_in_scope={},
+                                omitted_outside_layer_stride=omitted)
+    members = [
+        member for member in profile_declared_packed_expert_projections(model, profile)
+        if member.packed_qname in set(in_scope)
+    ]
+    covered = {member.packed_qname for member in members}
+    # The same input-kind roster ``_collect_activations`` derives from; a
+    # packed parameter the derivation cannot feed is one the bridge does not
+    # cover, and it is named here rather than discovered mid-capture.
+    supported_kinds = {"gate_up_proj", "down_proj"}
+    uncovered = sorted(
+        name for name in in_scope
+        if name not in covered or name.rsplit(".", 1)[-1] not in supported_kinds)
+    if uncovered:
         raise RuntimeError(
-            "Tessera campaign cannot price the packed expert population yet: "
-            + ", ".join(f"{name} {packed[name]}" for name in missing)
-            + ". Refusing an incomplete dense-only cost payload; per-expert "
-            "activation/Hessian capture and the producer's explicit projection "
-            "are required (PrismaQuant #183).")
+            "Tessera campaign cannot price the packed expert population: "
+            + ", ".join(f"{name} {packed[name]}" for name in uncovered)
+            + ". The producer bridge covers only profile-declared gate_up/down "
+            "splits into per-expert 2-D projections; refusing an incomplete "
+            "dense-only cost payload (PrismaQuant #183).")
+    try:
+        producer_plan_tool()
+    except ExpertProjectionError as exc:
+        raise RuntimeError(
+            "Tessera campaign cannot ask the producer for its expert projection, "
+            f"so the packed population {sorted(in_scope)} cannot be priced: {exc}. "
+            "Refusing an incomplete dense-only cost payload (PrismaQuant #183).") from exc
+    return ExpertPopulation(
+        members=tuple(members), declared=declared_stacks_from_members(members),
+        packed_in_scope={name: packed[name] for name in in_scope},
+        omitted_outside_layer_stride=omitted)
+
+
+def _project_expert_population(population: ExpertPopulation, *, weights, menus,
+                               model_path, cache_dir: Path) -> tuple[dict, dict]:
+    """Ask the producer to project every in-scope stack; bind it; check the bytes.
+
+    One subprocess for the whole campaign (the producer hashes the checkpoint
+    to identify its source).  The answer is bound exactly to the
+    profile-declared units -- no name outside the profile's declaration, no
+    2-D slice PrismaQuant chose -- and each unit's source tensor is read from
+    the shard the producer hashed and compared byte-for-byte with the live
+    view this run prices.  Returns ``(carried_block, {qname: unit})``; any
+    disagreement refuses by name (PrismaQuant #183).
+    """
+    from .tessera_expert_projection import (
+        ExpertProjectionError, bind_expert_projection, carried_projection,
+        producer_plan_tool, request_expert_projection, source_unit_weight,
+        stack_plan_request,
+    )
+    from .tessera_formats import parse_tessera_format_name
+    import torch
+
+    # The producer's plan asks for a nominal rung per stack; the unit records
+    # it returns do not depend on it.  The first menu rung of the stack's
+    # first member is the nominal one (every member has the same menu shape
+    # class, and the allocator picks the served rung later).
+    stacks: dict[str, tuple[str, int]] = {}
+    for stack, units in sorted(population.declared.items()):
+        first = sorted(units)[0]
+        menu = list(menus.get(first) or [])
+        if not menu:
+            raise RuntimeError(
+                f"Tessera campaign has no menu for projected expert unit {first} "
+                f"(stack {stack}); refusing to price a stack the allocator could "
+                "not choose a rung for (PrismaQuant #183).")
+        parsed = parse_tessera_format_name(menu[0].format_name)
+        if parsed is None:
+            raise RuntimeError(
+                f"Tessera campaign menu for projected expert unit {first} opens with a "
+                f"non-Tessera rung {menu[0].format_name!r}; the producer cannot plan it "
+                "(PrismaQuant #183).")
+        family, rung = parsed
+        stacks[stack] = (family.payload_grid().name, int(rung))
+    out_path = Path(cache_dir) / "expert_projection.json"
+    try:
+        tool = producer_plan_tool()
+        projection = request_expert_projection(model_path, stacks, out_path=out_path)
+        bound = bind_expert_projection(projection, declared=population.declared)
+    except ExpertProjectionError as exc:
+        raise RuntimeError(
+            "Tessera campaign cannot bind the producer's expert projection to the "
+            f"profile-declared population; refusing to price it: {exc} (PrismaQuant #183)."
+        ) from exc
+    carried = carried_projection(projection, bound, request=stack_plan_request(stacks),
+                                 tool=str(tool))
+    projected: dict[str, dict] = {}
+    mismatched: list[str] = []
+    for stack, units in sorted(bound.items()):
+        for name, unit in sorted(units.items()):
+            try:
+                source = source_unit_weight(model_path, projection["source"], unit)
+            except ExpertProjectionError as exc:
+                raise RuntimeError(
+                    f"Tessera campaign cannot read the producer's source tensor for "
+                    f"{name}: {exc} (PrismaQuant #183).") from exc
+            live = weights[name].detach().cpu()
+            if live.dtype != source.dtype or not torch.equal(live, source):
+                mismatched.append(
+                    f"{name} (live {tuple(live.shape)} {live.dtype} vs source "
+                    f"{unit['source_tensor']} {tuple(source.shape)} {source.dtype})")
+                continue
+            projected[name] = unit
+    if mismatched:
+        raise RuntimeError(
+            "Tessera campaign's live expert view disagrees byte-for-byte with the "
+            "producer's source tensor for " + ", ".join(mismatched)
+            + "; the exporter would encode bytes this table did not price. "
+            "Refusing (PrismaQuant #183).")
+    return carried, projected
+
+
+def _population_block(*, dense_priced, expert_priced, dense_all, pinned,
+                      population: ExpertPopulation, layer_stride: int) -> dict:
+    """Which population the payload prices and which it omits, by name."""
+    from .tessera_expert_projection import POPULATION_SCHEMA
+
+    dense_omitted = sorted(set(dense_all) - set(dense_priced))
+    packed_omitted = {name: list(shape) for name, shape
+                      in sorted(population.omitted_outside_layer_stride.items())}
+    return {
+        "schema": POPULATION_SCHEMA,
+        "layer_stride": int(layer_stride),
+        "priced": {
+            "dense": sorted(dense_priced),
+            "routed_experts": sorted(expert_priced),
+            "packed_parameters": {name: list(shape) for name, shape
+                                  in sorted(population.packed_in_scope.items())},
+            "stacks": sorted(population.declared),
+        },
+        "omitted": {
+            "dense_outside_layer_stride": dense_omitted,
+            "packed_outside_layer_stride": packed_omitted,
+            "pinned": sorted(pinned),
+        },
+        "counts": {
+            "dense_priced": len(dense_priced),
+            "routed_experts_priced": len(expert_priced),
+            "dense_omitted": len(dense_omitted),
+            "packed_omitted": len(packed_omitted),
+            "pinned": len(pinned),
+        },
+    }
 
 
 def _format_executes_static_nvfp4(format_name: str) -> bool:
@@ -1230,18 +1443,28 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     from .model_profiles import detect_profile
 
     profile = detect_profile(args.model)
-    _require_campaign_population(model, profile, args.layer_stride)
-    targets: list[str] = []
+    # The packed expert population the producer bridge covers, or a refusal by
+    # name before calibration.  Its members are priced as the producer's
+    # projected units below (PrismaQuant #183).
+    population = _require_campaign_population(model, profile, args.layer_stride)
+    dense_targets: list[str] = []
+    all_dense: list[str] = []
+    pinned: list[str] = []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.Linear):
             continue
         if name.endswith("lm_head") or "embed" in name:
             continue
         if profile.is_pinned_name(name):
+            pinned.append(name)
             continue
-        targets.append(name)
-    targets = _campaign_layer_scope(targets, args.layer_stride)
-    print(f"[campaign] {len(targets)} target Linears, mode={mode}, "
+        all_dense.append(name)
+    dense_targets = _campaign_layer_scope(all_dense, args.layer_stride)
+    expert_targets = population.qnames
+    expert_members = {member.qname: member for member in population.members}
+    targets = [*dense_targets, *expert_targets]
+    print(f"[campaign] {len(dense_targets)} target Linears + {len(expert_targets)} "
+          f"projected expert units in {len(population.declared)} stacks, mode={mode}, "
           f"device={device}", flush=True)
 
     context_by_unit = None
@@ -1250,8 +1473,15 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         routed = discover_moe_structure(model, profile=profile)
         topology = {
             name: dict(zip(("router_path", "expert_id"), routed.get(name, (None, None))))
-            for name in targets
+            for name in dense_targets
         }
+        for name, member in expert_members.items():
+            # The packed facts the probe would record for this unit: its
+            # packed module and expert count, never a shape guess.
+            topology[name] = {
+                "_packed_experts_module": member.module_qname,
+                "num_experts": int(getattr(member.module, member.param_name).shape[0]),
+            }
         context_by_unit = context_by_unit_from_stats(serving_target, topology, profile)
 
     tokens, corpus_text = _calibration_tokens(
@@ -1259,7 +1489,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     want_h = args.hessian == "require"
     acts, hessians, hessian_rows, act_max_abs = _collect_activations(
         model, targets, tokens, args.max_act_rows, device,
-        want_hessian=want_h)
+        want_hessian=want_h, profile=profile)
     # For the log line and the run-level provenance only; every encode is
     # given its own Linear's count.
     hessian_token_count = (
@@ -1296,7 +1526,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         act_max_abs, profile=profile)
 
     weights = {name: dict(model.named_modules())[name].weight.detach()
-               for name in targets}
+               for name in dense_targets}
+    for name, member in expert_members.items():
+        # The profile-declared 2-D view of the live packed parameter; checked
+        # byte-for-byte against the producer's source tensor below.
+        weights[name] = member.weight.detach()
     del model
     torch.cuda.empty_cache()
 
@@ -1346,6 +1580,19 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         context_by_unit=context_by_unit,
     )
 
+    # The producer's projection of every in-scope stack, asked for ONCE (it
+    # hashes the whole checkpoint), bound exactly to the profile-declared
+    # units, and its source bytes checked against the live views this run
+    # prices.  What the producer will read at export is what is priced here.
+    expert_projection = None
+    projected_units: dict[str, dict] = {}
+    if population.declared:
+        expert_projection, projected_units = _project_expert_population(
+            population, weights=weights, menus=menus, model_path=args.model,
+            cache_dir=cache_dir)
+        print(f"[campaign] producer projected {len(projected_units)} expert units in "
+              f"{len(expert_projection['stacks'])} stacks", flush=True)
+
     from .cost_stage_checkpoint import prepare_journal, write_unit
 
     # The resume identity, run level: everything a price is a function of,
@@ -1358,6 +1605,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         serving_scope=(scope_provenance(serving_target, context_by_unit)
                        if serving_target is not None else None),
         static_scales=static_scales, static_scale_policy=static_scale_policy,
+        expert_projection=expert_projection,
     )
     journal, identity_sha256, resumed = prepare_journal(
         checkpoint.with_name(checkpoint.name + ".parts"), manifest_path=checkpoint,
@@ -1384,7 +1632,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # stamps for its rung, then its wire receipt must verify.
             identity = _checkpoint_anchor_identity(
                 anchor, weights=weights, menus=menus,
-                calibration_source=calibration_source, static_scales=static_scales)
+                calibration_source=calibration_source, static_scales=static_scales,
+                projected_units=projected_units)
             wire_records[name][anchor.format_name] = _checkpoint_wire_record(
                 anchor, wire_dir, identity, existing=state["wire_records"][anchor.format_name])
             measured.setdefault(name, {}).setdefault(anchor.family, []).append(anchor)
@@ -1438,6 +1687,13 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     # do with Tessera. One grid per group, from the intersection of its
     # members' realisable sets, and every member measures the same rungs.
     def _group_key(name: str) -> str:
+        # A projected expert unit anchors with its whole stack: the producer
+        # plans ONE rung per stack, so every member must measure the same
+        # rungs for the allocator's stack-uniform choice to have a priced
+        # (and wire-backed) row on every member.
+        member = expert_members.get(name)
+        if member is not None:
+            return f"s:{member.module_qname}"
         try:
             key = profile.fused_sibling_group(name)
         except Exception:
@@ -1595,7 +1851,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 continue
             identity = _checkpoint_anchor_identity(
                 anchor, weights=weights, menus=menus,
-                calibration_source=calibration_source, static_scales=static_scales)
+                calibration_source=calibration_source, static_scales=static_scales,
+                projected_units=projected_units)
             wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
             measured.setdefault(name, {}).setdefault(family, []).append(anchor)
             dirty_checkpoint_units.add(name)
@@ -1625,6 +1882,17 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "seqlen": int(args.seqlen),
             "max_act_rows": int(args.max_act_rows),
             "layer_stride": int(args.layer_stride),
+            # Which population this table prices and which it omits, by name
+            # (PrismaQuant #183).  ``priced`` is what reached the anchor loop;
+            # ``omitted`` is what the stride left out or the profile pins.
+            # A reader of the payload does not have to infer coverage from
+            # the row keys.
+            POPULATION_KEY: _population_block(
+                dense_priced=dense_targets, expert_priced=expert_targets,
+                dense_all=all_dense, pinned=pinned, population=population,
+                layer_stride=int(args.layer_stride)),
+            **({PROJECTION_KEY: expert_projection}
+               if expert_projection is not None else {}),
             "anchors_round_one": int(args.anchors),
             "max_rounds": int(args.max_rounds),
             "anchor_budget": int(args.anchor_budget),
@@ -1725,7 +1993,17 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         },
     }
     payload = campaign_cost_payload(
-        measured, menus, loo=loo, provenance=provenance)
+        measured, menus, loo=loo, provenance=provenance,
+        wire_backed=frozenset(projected_units))
+    if projected_units:
+        # The producer's receipts for every priced expert wire, keyed by unit
+        # then rung; the allocator carries the selected rung's receipt into
+        # the allocation and the export lane hands the bytes to the exporter
+        # unchanged (PrismaQuant #183).
+        payload[EXPERT_WIRES_KEY] = {
+            name: {fmt: dict(record) for fmt, record in sorted(wire_records[name].items())}
+            for name in sorted(projected_units) if wire_records.get(name)
+        }
     payload["menu_sizes"] = {n: len(m) for n, m in menus.items()}
     payload["anchor_counts"] = {
         n: {f: len(a) for f, a in by_f.items()} for n, by_f in measured.items()

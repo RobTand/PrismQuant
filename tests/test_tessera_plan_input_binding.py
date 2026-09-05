@@ -57,7 +57,18 @@ TESSERA_SCOPE_ARGS=()
 python3() {
   if [[ "$1" == "-m" && "$2" == "prismaquant.pipeline" ]]; then
     "$PYTEST_PYTHON" "$@"
+  elif [[ "$1" == "-c" ]]; then
+    "$PYTEST_PYTHON" "$@"
   elif [[ "$1" == "-m" && "$2" == "prismaquant.tessera_export_lane" ]]; then
+    # The real preflight WRITES the build anchor the arm hands it, and the arm
+    # now reads the priced expert wires' manifest path back out of it
+    # (PrismaQuant #183). A stub that returns 0 without producing the anchor
+    # models a preflight that did not do its job.
+    local previous=""
+    for argument in "$@"; do
+      if [[ "$previous" == "--write-build-json" ]]; then printf '{}\n' > "$argument"; fi
+      previous="$argument"
+    done
     return 0
   elif [[ "$1" == */plan_from_layer_config.py ]]; then
     echo "TEST_TRANSLATOR_REACHED" >&2
