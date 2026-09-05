@@ -2,8 +2,9 @@
 
 Scoped census v2 retains the producer's complete observations and exact input
 texts. Its replay binds price projections to the independent card build and
-artifact sidecars, then compares each owner's actual launch to current v5
-cells at the exact image/mode/residency. A decoder used as a dense fallback
+artifact sidecars, then compares each owner's actual launch to the current
+scoped cells (``LANE_ELIGIBILITY_SCHEMA_TESSERA``) at the exact
+image/mode/residency. A decoder used as a dense fallback
 may be a legitimate routed-MoE launch only where that cell explicitly says so.
 There is no global substitute veto for scoped rows. Legacy flat rows below
 retain the historical v4 check and can never acquire fabricated scope.
@@ -375,7 +376,8 @@ def check_scoped_route_receipt(census, binding, *, build, model_dir=None):
                      "census sidecars differ from independently supplied artifact files")
         table, formats = _current_scoped_contract()
         _require(table.present and table.schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA,
-                 "scoped census needs a current v5 eligibility table; legacy cells attest no image")
+                 f"scoped census needs a current {lane.LANE_ELIGIBILITY_SCHEMA_TESSERA} "
+                 "eligibility table; legacy cells attest no image")
         target, units, owners = _priced_projection_population(binding, build, formats)
         _require(census.get("runtime") == {"image": target.runtime_image, "execution_mode": target.execution_mode}
                  and census.get("compiled") is (target.execution_mode == "compiled"),

@@ -463,7 +463,7 @@ def test_every_derived_lane_slot_names_a_verifier_verify_replays():
         assert callable(verifiers[slot]), f"{slot}: verifier is not callable"
 
 
-def test_verify_replays_route_census_evidence(tmp_path):
+def test_verify_replays_route_census_evidence(tmp_path, monkeypatch):
     """`route.census` refuses silence, and refuses a wrong census.
 
     The replay is the #136 priced-vs-served comparison, dispatched through
@@ -471,9 +471,19 @@ def test_verify_replays_route_census_evidence(tmp_path):
     carried census is refused, a receipt whose records replay to agreement
     closes the slot, and a `passed=true` over substitute-decoder records is
     refused at publication.
+
+    Flat rows are the historical receipt, attestable only where no current
+    scoped table exists to refuse them -- the installed runtime is stood
+    down for this test (`tests/test_tessera_route_receipt.py` covers the
+    refusal the pinned table gives the same rows).
     """
+    import prismaquant.tessera_route_receipt as receipt
     from prismaquant.shipcard import make_record, make_route_census_record
 
+    def _absent():
+        raise ModuleNotFoundError("No module named 'tessera'", name="tessera")
+
+    monkeypatch.setattr(receipt, "_current_scoped_contract", _absent)
     model_dir = _artifact(tmp_path)
     card = load_shipcard(open_lane_shipcard(model_dir, "tessera"))
     sha = card["model_sha"]

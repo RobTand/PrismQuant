@@ -3069,9 +3069,15 @@ def _verify_route_census_record(
     try:
         table, _formats = _current_scoped_contract()
         if table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA:
-            return [f"{slot}: current v5 cells cannot attest an unbound legacy flat census"]
+            # Live since the pin moved to a table of this schema (v8 at
+            # b8b1cb38); dead before it, when the pinned table was v4.
+            return [f"{slot}: current {table.schema} cells cannot attest an "
+                    "unbound legacy flat census; a serve on this runtime is "
+                    "received as route_census/2 with its binding"]
     except ModuleNotFoundError:
-        # Historical, unscoped cards do not acquire a runtime dependency.
+        # Historical, unscoped cards do not acquire a runtime dependency:
+        # with no runtime installed there is no current table to refuse on,
+        # and the flat rows keep their historical v4 comparison.
         pass
     except (ValueError, OSError) as exc:
         return [f"{slot}: cannot inspect current census contract: {exc}"]

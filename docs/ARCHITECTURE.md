@@ -72,6 +72,19 @@ SCOPE (§5.7): the v8 table is scoped and the operator supplies the scope
 through `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/
 --tessera-residency` (`run-pipeline.sh` derives them from `TESSERA_PLATFORM`,
 `TESSERA_RUNTIME_IMAGE`, `TESSERA_EXECUTION_MODE`, `TESSERA_SERVE_MODE`).
+**Fourth, two gates the pin used to hold shut are now reachable** (§7.1).
+The scoped `route.census` leg — dormant under `1221d2a` because the packaged
+table was v4 and the producer emitted `route_census/1` — replays against the
+pinned v8 table, and Tessera's `tools/tessera_route_census.py` at `b8b1cb38`
+emits `route_census/2`; no comparison has yet run against a real serve, so
+the strictness caveat below stands. And `verify` on an UNSCOPED card now
+refuses a flat legacy census by the schema that refused it (`current
+tessera.lane-eligibility.v8 cells cannot attest an unbound legacy flat
+census`) — the rule was on main, comparing the packaged schema to
+`LANE_ELIGIBILITY_SCHEMA_TESSERA`, and never fired while the two differed;
+its only remaining positive path is a historical card verified where no
+`tessera` is installed. `fill-route-census` still accepts a flat row array on
+a box where `verify` will then refuse it (RobTand/prismaquant#214).
 
 Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for **pinning Tessera by
 commit and contract digest instead of by release tag, lane-eligibility v6, and
@@ -7520,21 +7533,23 @@ paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
 match the retained texts and the actual artifact files, so host/container
 checkpoint path aliases are valid but an artifact-free replay is not.
 
-**Dormant at the current pin, by the pin rather than by a flag.** The scoped
+**Reachable at the current pin, by the pin rather than by a flag.** The scoped
 path takes the packaged contract's lane table through
 `lane_eligibility.load_eligibility_table` and refuses anything that is not the
 schema `LANE_ELIGIBILITY_SCHEMA_TESSERA` names, and it refuses any census whose
 schema is not `tessera.serving.route_census/2`. Under
-`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table is
+`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table was
 `tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
-emits `route_census/1`, so **no** scoped receipt can be filled or replayed
-today: `route.census` on a scoped card stays `UNFILLED` until the pin moves to a
-release publishing both. That is the intended fail-closed direction -- this leg
-is the consumer half of Tessera #126, whose producer/pin half is still open --
-but it means the scoped comparison has never run against a real packaged
-contract, only against tables constructed in
-`tests/test_tessera_scoped_route_receipt.py`. Re-pinning is the measurement
-that would change that claim.
+emitted `route_census/1`, so no scoped receipt could be filled or replayed and
+`route.census` on a scoped card stayed `UNFILLED` by the pin. At the pin this
+document is stamped for (`b8b1cb38`, contract v21) the packaged table is
+`tessera.lane-eligibility.v8` -- the schema the constant names -- and the
+producer at that commit emits `route_census/2`, so both refusals lift and the
+comparison below is the live gate on a scoped card. What has NOT changed: no
+scoped receipt from a real serve has been replayed yet (nothing has been
+served on this side), so the scoped comparison is exercised only against
+tables constructed in `tests/test_tessera_scoped_route_receipt.py`, and the
+coverage-strictness caveat below is still uncalibrated.
 
 Coverage is the exact set of Tessera-selected allocation units (not BF16
 passthrough context keys). Their source tensors join explicit manifest
@@ -7566,8 +7581,12 @@ substitute decoder (derived from the pinned contract's `when_unavailable`,
 never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
 with the replay; explicit scope fields cannot be flattened into those rows.
-A scoped card or current v5 table refuses a flat legacy receipt instead of
-inventing the missing runtime. "No census was ever compared" reads as `UNFILLED`. Known
+A scoped card, or a current table of the scoped schema
+(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v8 at the pin), refuses a flat legacy
+receipt instead of inventing the missing runtime, naming the schema that
+refused; flat rows stay attestable only where no `tessera` is installed to
+publish a current table (`tests/test_tessera_route_receipt.py`). At the `1221d2a`
+pin the packaged table was v4, so that refusal never fired; it does now. "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.

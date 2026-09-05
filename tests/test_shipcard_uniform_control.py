@@ -60,6 +60,26 @@ _CONTROL_FINGERPRINT = "e" * 64
 _FAKE_COMMIT = "a" * 40
 _CONTROL_SHA = "b" * 64
 
+
+@pytest.fixture(autouse=True)
+def _no_current_scoped_table(monkeypatch):
+    """Stand the installed runtime down for this module's census scaffold.
+
+    `_fill_census` closes `route.census` with a flat legacy receipt so that
+    `_built` means every slot closed and the uniform-control gate is the one
+    under test.  Flat rows are attestable only where no current scoped lane
+    table exists to refuse them; since the pin moved to a table of that schema
+    (b8b1cb38, v8) the installed contract refuses them by name
+    (`tests/test_tessera_route_receipt.py`), so the scaffold runs here as on a
+    box with no `tessera` installed -- the `ModuleNotFoundError` leg.
+    """
+    import prismaquant.tessera_route_receipt as receipt
+
+    def _absent():
+        raise ModuleNotFoundError("No module named 'tessera'", name="tessera")
+
+    monkeypatch.setattr(receipt, "_current_scoped_contract", _absent)
+
 #: The receipt's own arms: allocated 0.3485 against the byte-matched uniform
 #: 0.1746, 1.9959908361970216x, control 65.1 ppm the fatter arm.
 _ALLOCATED_KL = 0.3485
