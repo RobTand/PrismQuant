@@ -1,7 +1,29 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq186-campaign-identity`. Stamps
+As of: 2026-09-05 · `claude/pq-183-packed-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
+expert projection, read in one place** (§4.10, §9.4; PrismaQuant #183).
+`prismaquant/tessera_expert_projection.py` is the only reader of Tessera's
+`tessera.expert_projection.v1` answer (`experiments/tessera_producer_plan.py`,
+now the third declared `producer_tools` entry in `lane_specs/tessera.json`,
+located through `TESSERA_REPO` like the translator and the exporter). It binds
+the producer's per-stack unit records to the profile-declared per-expert units
+exactly -- schema, `unpacked_per_expert` layout, whole-tensor selector, source
+tensor in the hashed roster, `[rows, cols]` geometry, full expert coverage --
+and refuses anything else by name: a packed source layout is refused because
+slicing it here would be a second home for the producer's
+`packed_expert_weight`. The same module owns the export-side rules the later
+stamps use: one rung per executed stack (no role split, no partial stack), the
+priced-wire receipt check that precedes the producer's own `verify_cached_unit`,
+and the producer's `tessera.cached_units.v1` bundle shape. This stamp is the
+vocabulary and the binding only; the campaign, allocator and export-lane uses
+are stamped separately. Gate: `tests/test_tessera_expert_projection.py`
+(vocabulary pinned to `tessera.serving.scheme.MOE_SOURCE_UNPACKED`,
+`tessera.cached_unit.unit_input_identity`'s sealed keys and
+`tessera.serving_parts.source_identity`'s roster where the producer is
+importable) and the roster assertion in `tests/test_lane_gate_recording.py`.
 
 Re-stamped (2026-09-05, `codex/pq186-campaign-identity`) for **one resume
 identity, including the served A-side contract** (§4.10; merge of the
