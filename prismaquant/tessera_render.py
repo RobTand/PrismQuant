@@ -25,6 +25,7 @@ A second copy of a rate constant is a drift bug waiting for a rate to change.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 from typing import TYPE_CHECKING
 
@@ -752,18 +753,40 @@ def synthesize_tessera_spec(
     # assignment and the caches all see a Tessera rung's A side the way they
     # see NVFP4's (``format_registry.py:738``) and FP8's (``:878``).
     #
-    # The activation RTN is the *serving* format's own callable, taken by
-    # reference: an A-side priced with a second implementation of NVFP4's
-    # dynamic per-group quantiser would be a rendering confound on the axis
-    # that measurement showed dominates at W4A4.
+    # The activation side is the *serving* format's own, taken by reference
+    # from its registry row: an A-side priced with a second implementation of
+    # NVFP4's quantiser would be a rendering confound on the axis that
+    # measurement showed dominates at W4A4.  Two things come across:
+    #
+    #   * ``activation_quantize_dequantize`` -- the row's no-G callable, which
+    #     for NVFP4 is the dynamic FP32-scale RTN.  It stays what it is (the
+    #     screen baseline consumers without a calibrated maximum can run, and
+    #     the campaign's dynamic *control* in tests/test_tessera_campaign.py).
+    #   * ``static_activation_contract`` -- what the kernel actually executes
+    #     when it has the unit's calibrated maximum: static G, UE4M3 block
+    #     scales (``nvfp4_activation_contract.StaticActivationContract``).
+    #     Re-stamped ``measured_as_served=True`` because a Tessera rung HAS
+    #     no dynamic serving path: the plugin reads the artifact's
+    #     ``trellis_input_global_scale`` and calls ``scaled_fp4_quant``, so the
+    #     served oracle is the measurement -- in the assignment-KL hooks and
+    #     the production cache scorer as it already is in the campaign (#196)
+    #     -- and a unit with no maximum refuses rather than being priced under
+    #     a quantiser the runtime never runs (#205).  Stock ``NVFP4`` keeps its
+    #     own default-off screen policy on the same contract object.
     route = tessera_serving_route(family, wire, rung)
     if route.activation_source_format is None:
         # Weight-only: the identity, spelled the way every A16 row in the
         # registry spells it (``NVFP4A16``, ``INT8_W8A16``).
         activation_qdq = _identity_activation
+        static_activation_contract = None
     else:
-        activation_qdq = fr.get_format(
-            route.activation_source_format).activation_quantize_dequantize
+        source = fr.get_format(route.activation_source_format)
+        activation_qdq = source.activation_quantize_dequantize
+        static_activation_contract = (
+            None if source.static_activation_contract is None
+            else dataclasses.replace(
+                source.static_activation_contract, measured_as_served=True)
+        )
 
     # The layer_config entry, which is how an allocation survives the trip to
     # disk and back.  ``schemas.validate_layer_config_payload`` requires
@@ -817,6 +840,7 @@ def synthesize_tessera_spec(
         min_capability_sm=route.min_capability_sm,
         quantize_dequantize=tessera_quantize_dequantize(name, wire),
         activation_quantize_dequantize=activation_qdq,
+        static_activation_contract=static_activation_contract,
         # Producer-eligibility is the AND of two independent gates, and
         # conflating them is how a rung reaches the DP that cannot be written:
         #   (a) the wire can carry it -- the grid's digest is a permanent

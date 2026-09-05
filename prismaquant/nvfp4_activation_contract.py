@@ -19,6 +19,7 @@ W4A4 dispatch.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 import hashlib
 import math
 import os
@@ -1180,7 +1181,98 @@ def nvfp4_activation_qdq_served(
     return output.reshape(original_shape).to(original_dtype)
 
 
+class ActivationScaleContractError(RuntimeError):
+    """A consumer had to price the served static-scale contract and had no
+    calibrated maximum to derive its ``input_global_scale`` from.
+
+    Raised by name (the qname) so the refusal says which unit, and raised
+    BEFORE anything is measured: an activation-KL hook or a cache score that
+    silently fell back to the dynamic FP32-scale RTN would price an activation
+    tensor the runtime never executes (RobTand/prismaquant#194, #205).  The
+    campaign's own refusal (``tessera_campaign.ActivationScaleContractError``)
+    is this class under its historical name.
+    """
+
+
+@dataclass(frozen=True)
+class StaticActivationContract:
+    """What a spec's activations execute as under a STATIC per-unit scale.
+
+    The served W4A4 kernel (vLLM ``scaled_fp4_quant``) takes a calibrated
+    ``input_global_scale`` G per unit, snaps each ``group_size`` block's scale
+    to UE4M3 relative to G, and rounds to the E2M1 grid -- the oracle
+    :func:`nvfp4_activation_qdq_served`.  That is a different quantiser from
+    the dynamic FP32-scale RTN a registry row's ``activation_quantize_dequantize``
+    runs without a G, and the two disagree hardest exactly where it matters
+    (a block far below the calibration amax underflows to zero when served).
+
+    A ``FormatSpec`` that is served this way carries one of these as
+    ``static_activation_contract`` so the question "which activation quantizer
+    does this spec serve, and what is its G for this unit" is answered by the
+    spec -- never by comparing the format's NAME to ``"NVFP4"``, which a
+    Tessera rung routed through the same kernel does not have.
+
+    ``measured_as_served`` is the measurement policy the spec asks for:
+
+    * ``False`` -- stock ``NVFP4``: the dynamic RTN stays the long-standing
+      screen baseline and the served emulation is the documented env opt-in
+      (``PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES``, runtime_flags.md);
+    * ``True`` -- a Tessera W4A4 rung: the plugin has no dynamic path, so the
+      served oracle IS the measurement, in the hooks and the cache scorer as
+      it already is in the campaign (#196), and a unit without a calibrated
+      maximum refuses (:class:`ActivationScaleContractError`) rather than
+      being priced under a quantiser the runtime never runs.
+    """
+
+    execution: str = NVFP4_ACTIVATION_EXECUTION
+    group_size: int = FP4_GROUP_SIZE
+    measured_as_served: bool = False
+
+    def input_global_scale_from_max_abs(self, max_abs: float) -> float:
+        """The owner's G rule at the resolved policy -- the same number the
+        campaign stamps (``_static_input_scales``) and the export ships."""
+        return input_global_scale_from_max_abs(
+            max_abs, policy=resolve_input_global_scale_policy())
+
+    def require_input_global_scale(
+        self,
+        max_abs: float | None,
+        *,
+        qname: str | None,
+        consumer: str,
+    ) -> float:
+        """G for ``qname``, or the refusal by name when it has no maximum."""
+        if max_abs is None or not math.isfinite(float(max_abs)) or float(max_abs) <= 0.0:
+            raise ActivationScaleContractError(
+                f"{consumer}: {qname!r} is served under the static "
+                f"{self.execution} activation contract but has no calibrated "
+                f"activation maximum (got {max_abs!r}); refusing to price it "
+                "under a dynamic quantiser the runtime never executes.  The "
+                "production cache's activation_max_abs (fused-sibling unified) "
+                "is the scale identity this needs."
+            )
+        return self.input_global_scale_from_max_abs(float(max_abs))
+
+    def quantize_dequantize(
+        self,
+        x: torch.Tensor,
+        input_global_scale: float,
+    ) -> torch.Tensor:
+        """The served oracle at G.  No pre-clip: the clamp lives in G."""
+        return nvfp4_activation_qdq_served(x, input_global_scale)
+
+
+# The one served static-scale contract there is today, as stock ``NVFP4``
+# carries it (screen default).  A spec routed through the same kernel whose
+# measurement must be the served contract derives from this with
+# ``dataclasses.replace(..., measured_as_served=True)``.
+NVFP4_SERVED_ACTIVATION_CONTRACT = StaticActivationContract()
+
+
 __all__ = [
+    "ActivationScaleContractError",
+    "NVFP4_SERVED_ACTIVATION_CONTRACT",
+    "StaticActivationContract",
     "CALIBRATION_SOURCE_PACKED_EXPERT_RENDER",
     "CALIBRATION_SOURCE_PARENT_MODULE_CACHE",
     "CALIBRATION_SOURCE_SUPPLEMENTAL_MAX_ABS",
