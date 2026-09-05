@@ -1,7 +1,49 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-gates`. Stamps
+As of: 2026-09-05 · `claude/pq-221`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-221`) for **one home for "does this route
+execute a static activation contract"** (§5.1, §5.7; RobTand/prismaquant#221,
+P3). PR #213 (#205) made "which activation quantiser does this spec serve" a
+property of the spec (`FormatSpec.static_activation_contract`) and moved the
+assignment-KL hooks and the production cache scorer onto it; the Tessera
+campaign and export lane kept answering the same question by comparing the
+route's source-format NAME against `"NVFP4"`, in three places and two
+spellings — one of them a helper whose docstring was literally the question.
+The derivation now has one owner:
+`tessera_formats.route_static_activation_contract(route)` returns the contract
+of the registry row the route names (`activation_source_format`), and every
+consumer reads it. `tessera_render.synthesize_tessera_spec` re-stamps its
+result `measured_as_served=True` onto the rung's spec — the one step that
+stays where it was, because turning the ROW's contract into the SPEC's is a
+different question. `tessera_campaign._measure_anchor` prices and refuses
+through the spec's copy (`contract.quantize_dequantize` instead of a hardcoded
+`nvfp4_activation_qdq_served`, and a refusal naming `contract.execution`
+instead of a format name); `_format_executes_static_nvfp4` becomes
+`_format_executes_static_activation_contract` over the same spec field; and
+`tessera_export_lane`'s `--input-scales` gate calls the route accessor
+directly rather than `get_format(<rung>)`, which would reach
+`synthesize_tessera_spec` and pull the `tessera` package into a preflight
+built not to need it (that module's own docstring). **Nothing resolves
+differently today**: over all 80 registry rows `canonical_format_name(name) ==
+"NVFP4"` and `static_activation_contract is not None` agree exactly, and
+`NVFP4` is the only row carrying a contract. The regression is the day a
+second row gets one — `StaticActivationContract` is a general dataclass and
+`FormatSpec` types the field as a spec-level property, not an NVFP4 flag — and
+`test_static_activation_contract_one_home.py` constructs exactly that: with
+`FP8_E4M3` given a static contract the name compare answers "not NVFP4" while
+the cache scorer and the KL hooks, which already read the row, refuse the same
+unit; the campaign then stamps no `input_global_scale` and the export ships a
+unit whose static A-side scale nothing ever bound — the failure #205 was
+opened to close, at a different format name. **Machine-readable change**: the
+preflight report key `w4a4_units` is renamed
+`static_activation_contract_units`, because it can now hold units that are not
+W4A4; its only readers were this module and four test assertions, and no
+receipt, allocation JSON or shipcard carries it (the CLI serialises only
+`report["build"]`). Refusal texts in the campaign and the export lane now name
+the executed contract rather than "NVFP4". No default, format menu, serving
+lane, ship gate or byte changes.
 
 Re-stamped (2026-09-05, `claude/pq-gates`) for **a campaign test that cannot
 leak the child it orphans on purpose** (§3.0; RobTand/prismaquant#219, P3).
@@ -6555,6 +6597,18 @@ name. The contract's `measured_as_served` is the spec's measurement policy:
 served emulation is `PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES`), `True` on
 a Tessera W4A4 spec (§5.7). Dynamic W8A8 (FP8, MX) and A16 rows carry `None`.
 
+That spec-level answer has one derivation beneath it (#221):
+`tessera_formats.route_static_activation_contract(route)` returns the contract
+of the registry row a Tessera route names in `activation_source_format`.
+`tessera_render.synthesize_tessera_spec` re-stamps that result
+`measured_as_served=True` to build the rung's spec, so a consumer that reaches
+for `FormatSpec.static_activation_contract` and one that asks the route
+directly — `tessera_export_lane`'s `--input-scales` gate, which must not reach
+the synthesizer and pull in the `tessera` package — are reading the same row
+through the same rule, and cannot answer differently. A name compare would
+answer the same today only because `NVFP4` is the one row carrying a contract;
+the field is typed as a spec-level property, not an NVFP4 flag.
+
 ### 5.2 Scale rules and JSO
 
 NVFP4 scale rules live in the *exporter*, not the registry
@@ -6967,14 +7021,15 @@ exporter — `TESSERA_HESSIAN` (the campaign's `hessian_capture.pt`) and
 `TESSERA_INPUT_SCALES` (its `input_scales.safetensors`) — and
 `tessera_export_lane.require_priced_export_inputs` fails closed before the
 plan translation when the allocation's `tessera_hessian` stamp or its
-selected W4A4 routes declare a requirement the supplied files do not satisfy
+selected static-activation-contract routes declare a requirement the
+supplied files do not satisfy
 (#193): the artifact built must be the artifact priced. The binding is to
 content, not to names (#204): the allocation carries the campaign capture's
 `capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`, whose
 capture-context roster is read from `tessera.export.CAPTURE_CONTEXT` rather
 than typed, with one documented fallback for pins that predate the constant
 and a by-name refusal when the two rosters disagree — #216) and the
-`input_global_scale` each selected W4A4 unit was priced under
+`input_global_scale` each selected static-contract unit was priced under
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation
