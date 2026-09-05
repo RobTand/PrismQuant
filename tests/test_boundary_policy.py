@@ -134,6 +134,35 @@ def test_replay_does_not_coerce_serialized_counter_types(monkeypatch, field, val
         bc.replay_no_new_failures(result, control, candidate)
 
 
+def test_default_measurement_records_no_decision_and_no_control_self_certification(campaign, monkeypatch):
+    """Without the flag the instrument stays a measurement: no verdict, no exit change."""
+    from tools import measure_boundary_control as tool
+
+    model, _weight, run, post, _requests = campaign
+    run("control.json")
+    def candidate_post(url, body):
+        if url.endswith("/tokenize"):
+            return post(url, body)
+        return _response(body["max_tokens"], text=ZERO)
+    monkeypatch.setattr(bc.vqm, "_post_json", candidate_post)
+    output = model.parent / "candidate.json"
+    argv = ["candidate", "--base-url", "http://fixture", "--model-name", "nonce",
+            "--model-dir", str(model), "--image", "fixture@sha256:" + "a" * 64,
+            "--control", str(model.parent / "control.json"), "--campaign-id", "same-campaign",
+            "--out", str(output)]
+    assert tool.main(argv) == 0
+    arm = json.loads(output.read_text())
+    assert "decision" not in arm
+    assert "verdict" not in arm["comparison"]
+    # A control arm can never grade itself: the policy needs a candidate.
+    with pytest.raises(SystemExit):
+        tool.main(["control", "--base-url", "http://fixture", "--model-name", "nonce",
+                   "--model-dir", str(model), "--image", "fixture@sha256:" + "a" * 64,
+                   "--contract", str(model.parent / "contract.json"),
+                   "--campaign-id", "same-campaign", "--out", str(model.parent / "self.json"),
+                   "--decision-policy", "no-new-failures"])
+
+
 @pytest.mark.parametrize("broken", [False, True])
 def test_real_measurement_cli_emits_opt_in_decision_and_preserves_exit_status(campaign, monkeypatch, broken):
     from tools import measure_boundary_control as tool
