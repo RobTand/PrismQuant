@@ -21,7 +21,11 @@ import json
 import pytest
 
 from prismaquant import tessera_export_lane as tel
-from prismaquant.lane_eligibility import EVIDENCE_SMOKE_REFUSALS
+from conftest import down_convert_lane_table
+from prismaquant.lane_eligibility import (
+    EVIDENCE_SMOKE_REFUSALS,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+)
 from prismaquant.model_profiles.structure import (
     DEFAULT_EXPORT_LANE,
     EXPORT_LANES,
@@ -351,7 +355,15 @@ def test_a_routed_moe_checkpoint_is_decided_by_the_contracts_own_evidence(
     # The contract v17 through v20 published: the same cells with the
     # degenerate smoke transplanted back, and the same gate refuses -- naming
     # the structure, the contract's own word, and whose decision it is not.
-    historical = json.loads(json.dumps(contract))
+    #
+    # Down-converted to v8 first.  The installed table is v9 since the pin
+    # moved to contract v22, and a v9 status is DERIVED from the cell's
+    # smoke.record: writing "repetitive" over rows that derive "recorded"
+    # builds a table this reader refuses by name, and rightly.  The world
+    # being reconstructed had no record at all.
+    historical = down_convert_lane_table(
+        json.loads(json.dumps(contract)),
+        LANE_ELIGIBILITY_SCHEMA_TESSERA_V8)
     for cell in historical["lane_eligibility"]["cells"]:
         if cell["structure"] == "routed_moe":
             cell["evidence"]["smoke"]["status"] = "repetitive"

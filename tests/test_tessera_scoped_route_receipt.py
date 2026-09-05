@@ -102,13 +102,17 @@ def fixture(tmp_path, monkeypatch, *, structure="routed_moe"):
               "executes": [{"symbol": symbol.split(":", 1)[0], "decoder": decoder}],
               "runtime": {"image": IMAGE, "execution_modes": ["eager"],
                           "vllm": "0.0.0+fixture", "torch": "0.0.0+fixture"},
-              # The smallest evidence block the CURRENT lane grammar (v8)
+              # The smallest evidence block the CURRENT lane grammar (v9)
               # reads; this fixture is about the census binding, not the
-              # evidence, and a not_recorded smoke with no control and no
-              # artifact is the honest empty value of each field.
+              # evidence, and a not_recorded smoke with no record, no control
+              # and no artifact is the honest empty value of each field.
+              # It tracks the constant above deliberately, so a schema bump
+              # lands here as "add the new field's empty value", which is the
+              # review this fixture is supposed to force.
               "evidence": {"grade": "route_only", "kl": [],
                            "smoke": {"status": "not_recorded", "receipt": None,
-                                     "attribution": "unattributed", "control": None},
+                                     "attribution": "unattributed",
+                                     "control": None, "record": None},
                            "artifact": None}}
              for regime in ("decode", "batch")]
     block = {"schema": lane.LANE_ELIGIBILITY_SCHEMA_TESSERA, "platforms": {"sm_121": {}},
