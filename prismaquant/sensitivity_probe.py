@@ -127,9 +127,15 @@ def stage_text_only(model_path: str) -> str:
 
     # Profile-driven: ask the registered ModelProfile which config keys
     # to strip and whether to promote `text_config.model_type`.
+    from .model_profiles import DeadVendoredOverrideError, detect_profile
     try:
-        from .model_profiles import detect_profile
         profile = detect_profile(str(src))
+    except DeadVendoredOverrideError:
+        # The hardcoded default strip-key list below is for a checkpoint no
+        # profile claims. On a dead override it stages the model with a
+        # different config than the profile declares -- and every probe
+        # statistic gathered afterwards describes that wrong staging (#202).
+        raise
     except Exception:
         profile = None
     strip_keys = (list(profile.stage_text_only_strip_keys())
@@ -1383,9 +1389,14 @@ def discover_moe_structure(
     That Linear is the router.
     """
     if profile is None:
+        from .model_profiles import DeadVendoredOverrideError, profile_from_model
         try:
-            from .model_profiles import profile_from_model
             profile = profile_from_model(model)
+        except DeadVendoredOverrideError:
+            # The profile names the packed-expert projections this walk looks
+            # for. `None` narrows the candidate set silently, so MoE experts
+            # go undiscovered and simply never get probed (#202).
+            raise
         except Exception:
             profile = None
     projection_candidates = _packed_expert_projection_candidate_names(profile)
@@ -1510,9 +1521,14 @@ def discover_moe_routers(
     numbered expert container or a profile-declared packed 3-D parameter.
     """
     if profile is None:
+        from .model_profiles import DeadVendoredOverrideError, profile_from_model
         try:
-            from .model_profiles import profile_from_model
             profile = profile_from_model(model)
+        except DeadVendoredOverrideError:
+            # As in `discover_moe_structure` (#202): the profile declares the
+            # packed 3-D parameters this discovery keys on, so `None` silently
+            # under-reports routers and the coverage accounting built on them.
+            raise
         except Exception:
             profile = None
     packed_names = _packed_expert_param_name_set(profile)
@@ -2001,9 +2017,20 @@ class FisherAccumulator:
         self._packed_act_snaps: dict[str, list[torch.Tensor]] = defaultdict(list)
         self._packed_act_rows: dict[str, int] = defaultdict(int)
         if model_profile is None:
+            from .model_profiles import (
+                DeadVendoredOverrideError,
+                profile_from_model,
+            )
             try:
-                from .model_profiles import profile_from_model
                 model_profile = profile_from_model(model)
+            except DeadVendoredOverrideError:
+                # The comment below is careful that a DefaultProfile fallback
+                # is "an explicit declaration, not a silent degrade". That
+                # holds when no profile matched. On a dead override the
+                # declaration would be false: a profile DID match, and every
+                # Fisher statistic this accumulator records would be projected
+                # through the wrong names (#202).
+                raise
             except Exception:
                 model_profile = None
         self.model_profile = model_profile
@@ -3535,7 +3562,11 @@ def run_streaming_multimodal_visual_probe_pass(
         _compute_attention_mask,
         _compute_position_embeddings,
     )
-    from .model_profiles import DefaultProfile, profile_from_model
+    from .model_profiles import (
+        DeadVendoredOverrideError,
+        DefaultProfile,
+        profile_from_model,
+    )
     from .streaming_model import _build_streaming_context
 
     try:
@@ -3590,6 +3621,12 @@ def run_streaming_multimodal_visual_probe_pass(
     visual_prefix = ctx.visual_prefix or ""
     try:
         model_profile = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # `DefaultProfile()` is the answer for an architecture this build does
+        # not know. On a dead override the build DOES know it, and probing the
+        # visual tower under a default profile records Fisher statistics for a
+        # model assembled from upstream modelling code (#202).
+        raise
     except Exception:
         model_profile = DefaultProfile()
 

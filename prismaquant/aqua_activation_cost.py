@@ -655,10 +655,21 @@ def main() -> int:
     # no profile claims must not become a hard failure for those models. When
     # one IS detected it supplies the checkpoint aliases the generic index
     # cannot derive (see build_weight_resolver).
+    #
+    # "No profile claims this path" is the tolerated case. A dead vendored
+    # override is not it (#202): the architecture IS claimed, and dropping to
+    # generic name matching would price AQUA activation cost through an index
+    # built without the aliases that profile exists to supply. The import is
+    # hoisted out of the `try` so the handler below can always be evaluated.
     profile = None
+    from .model_profiles.registry import (
+        DeadVendoredOverrideError,
+        detect_profile,
+    )
     try:
-        from .model_profiles.registry import detect_profile
         profile = detect_profile(args.model_path)
+    except DeadVendoredOverrideError:
+        raise
     except Exception as exc:
         log(f"no model profile for {args.model_path} ({exc}); "
             f"falling back to generic name matching")
