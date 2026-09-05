@@ -342,18 +342,32 @@ def _cmd_fill_route_census(args: argparse.Namespace) -> int:
     """Close `route.census` from the priced routes and the served records."""
     from prismaquant.tessera_route_receipt import (
         TesseraRouteReceiptError,
+        parse_census_json,
         substitute_decoders_from_contract_answer,
     )
 
     model_dir = args.model_dir or str(Path(args.shipcard).resolve().parent)
     try:
-        records = json.loads(Path(args.census).read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        records = parse_census_json(Path(args.census).read_bytes().decode("utf-8"), where=str(args.census))
+    except (OSError, ValueError) as exc:
         print(f"[shipcard] ERROR: cannot read census rows from "
               f"{args.census}: {exc}", file=sys.stderr)
         return 2
+    card = load_shipcard(args.shipcard)
+    scoped = isinstance(records, dict)
+    binding = None
+    if scoped:
+        try:
+            if not args.layer_config:
+                raise TesseraRouteReceiptError("v2 census requires --layer-config exact allocation input")
+            binding = {"layer_config_json": Path(args.layer_config).read_bytes().decode("utf-8"),
+                       "config_json": (Path(model_dir) / "config.json").read_bytes().decode("utf-8"),
+                       "manifest_json": (Path(model_dir) / "tessera_serving_manifest.json").read_bytes().decode("utf-8")}
+        except (OSError, ValueError) as exc:
+            print(f"[shipcard] REFUSED: cannot bind scoped census: {exc}", file=sys.stderr)
+            return 2
     substitutes = list(args.substitute_decoder or ())
-    if not substitutes:
+    if not substitutes and not scoped:
         try:
             from prismaquant import tessera_runtime_contract as trc
 
@@ -365,7 +379,7 @@ def _cmd_fill_route_census(args: argparse.Namespace) -> int:
         except trc.TesseraContractError as exc:
             print(f"[shipcard] ERROR: {exc}", file=sys.stderr)
             return 2
-    if not substitutes:
+    if not substitutes and not scoped:
         print("[shipcard] ERROR: no substitute decoder is known -- pass "
               "--substitute-decoder explicitly (repeatable) or set "
               "PRISMAQUANT_TESSERA_DEV_PIN so the pinned contract answer "
@@ -379,6 +393,9 @@ def _cmd_fill_route_census(args: argparse.Namespace) -> int:
             priced_routes=list(args.priced_route),
             route_records=records,
             substitute_decoders=substitutes,
+            binding=binding,
+            build=card.get("build"),
+            model_dir=model_dir,
         )
     except TesseraRouteReceiptError as exc:
         print(f"[shipcard] REFUSED: {args.census} cannot be a census "
@@ -388,7 +405,6 @@ def _cmd_fill_route_census(args: argparse.Namespace) -> int:
     # (`lane_shipcard open --lane tessera`).  Filling a card that never
     # opened it is a refusal, not an auto-added key -- a slot the card does
     # not owe is a slot the receipt does not belong on.
-    card = load_shipcard(args.shipcard)
     if ROUTE_CENSUS_SLOT not in (card.get("slots") or {}):
         print(f"[shipcard] REFUSED: {args.shipcard} has no "
               f"{ROUTE_CENSUS_SLOT} slot; open a Tessera lane card first "
@@ -571,11 +587,12 @@ def main(argv: list[str] | None = None) -> int:
     p_census.add_argument("shipcard")
     p_census.add_argument(
         "--census", required=True,
-        help="JSON array of {route, decoder[, count]} rows as Tessera's "
-             "tools/tessera_route_census.py parses them from the serve log")
+        help="Complete Tessera route_census/2 JSON (scoped), or historical unscoped row array")
+    p_census.add_argument("--layer-config", default=None,
+                         help="Exact allocation JSON bound by card.build.layer_config_sha; required for v2")
     p_census.add_argument(
-        "--priced-route", required=True, action="append", default=[],
-        help="a route the artifact priced (repeatable, at least one)")
+        "--priced-route", action="append", default=[],
+        help="legacy priced route (repeatable, required for flat rows); optional cross-check for v2")
     p_census.add_argument(
         "--substitute-decoder", action="append", default=[],
         help="a decoder a serve falls back to (repeatable; default: derived "
