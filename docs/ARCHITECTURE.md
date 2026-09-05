@@ -3,6 +3,27 @@
 As of: 2026-09-05 · `claude/pq-gates`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-gates`) for **a campaign test that cannot
+leak the child it orphans on purpose** (§3.0; RobTand/prismaquant#219, P3).
+`test_resume_after_coordinator_death_recovers_owned_helper_receipt` kills the
+coordinator while a stage child polls a release file, and after #206 replaced
+that child's self-limiting `time.sleep(1.0)` with an unbounded wait, writing
+the release file became the only thing that could ever end it — the worker's
+`timeout_seconds` enforcement (`cluster_campaign.py:1164-1178`,
+`start_new_session=True` then `_terminate_child_process_group`) is dead by
+construction. The write sat outside the guard: anything raising between
+`coordinator.terminate()` and it — most concretely the 120 s wedge backstop, or
+the session being killed, which happened to agents on this box today — left a
+`python -c` polling at 50 Hz forever, on a release file that `tmp_path` cleanup
+then made unreachable. Its sibling
+`test_abrupt_worker_death_leaves_stage_lock_owned_by_child` already had the
+`finally` and the comment explaining why. Now both share one home for it:
+`_orphaned_helper(release_path)` releases and, if the child did not take the
+release, kills its session on every path out, and the child announces its PID
+so `helper.assert_exited()` can make "this test leaves nothing running" an
+assertion rather than an arrangement. Test-only; no production code, no
+pipeline behaviour and no contract changes.
+
 Re-stamped (2026-09-05, `claude/pq-gates`) for **the dead-override census
 seeing every handler shape that catches its exception** (§8.1;
 RobTand/prismaquant#217, P3). `tests/test_vendored_override_gate.py`'s
