@@ -50,6 +50,78 @@ producer bridge, and it makes no packed-MoE qualification claim. Gate:
 `tests/test_tessera_campaign_packed.py` (real main-entry synthetic mixed
 dense/packed regressions, both shown failing before the refusal).
 
+Re-stamped (2026-09-05, `codex/pq-census-v5-integration`) for **naming the
+scoped census leg dormant at the current pin** (§7.1; Tessera #126). No code
+moved. The scoped replay requires the packaged lane table to carry the schema
+`LANE_ELIGIBILITY_SCHEMA_TESSERA` names and the census to be
+`tessera.serving.route_census/2`; at `TESSERA_DEV_PIN_COMMIT = 1221d2a` the
+packaged table is `tessera.lane-eligibility.v4` and the pinned producer emits
+`route_census/1`, so the leg refuses everything by the pin. The doc said which
+gates the leg applies but not that none of them can be reached yet, which reads
+as a live comparison. Re-pinning, not an edit here, is what makes it reachable.
+
+Re-stamped (2026-09-04, `codex/pq-census-v5-binding`) for **runtime-bound
+route census replay** (§7.1; Tessera #126). The complete producer
+`tessera.serving.route_census/2` record retains exact runtime, execution mode,
+residency, both driven phases, owner maps, backend-qualified launches and
+checkpoint-sidecar seals. Exact allocation text is rehashed against the
+independent card build anchor, and artifact sidecars are independently
+rehash-checked at fill and verification. Current v5 cells, not an embedded
+agreement or a global decoder blacklist, decide launch eligibility. Legacy
+unscoped rows remain compatible only without a scoped build/current v5 table.
+No default, bytes, promotion threshold or reviewed runtime pin moves.
+
+Re-stamped (2026-09-05, `codex/pq184-prepriced-cost-override`) for **the
+prepriced override's handoff to the priced-input export gate** (§4.10; #184
+after #193/#196). The cost-builder bypass never reached the export leg's
+priced inputs, and it still does not: `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES` are resolved before the cost stage and consumed in the
+Tessera arm, and the allocation's `tessera_hessian` block comes from the
+supplied table itself, so `require_priced_export_inputs` still refuses an
+H-aware prepriced allocation exported without its capture. Only the operator
+instruction was wrong: the TESSERA-token refusal told the operator to re-run
+with `COST_PATH_OVERRIDE` alone, and now names both priced-input variables
+and where the campaign writes them. No gate, default or byte changes.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for **actual
+prepriced cost dispatch** (§4.10; #184). `COST_PATH_OVERRIDE` now runs the
+shared read-only intake before probe/GPU work, passes the original supplied
+path to the allocator, and bypasses the entire local/render/AURA cost-builder
+and finalization stage. Its separate local receipt is reverified immediately
+before allocation, including lexical-path resolution and exact SHA-256.
+Supplied files and their sidecars are not rewritten. No-override generation,
+`COST_MODE` defaults and existing allocator/serving gates remain unchanged;
+the requested mode must match the explicit producer stamp, never be inferred
+by changing a default. Evidence: `docs/results/prepriced_cost_override_2026-09-04.md`.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for the
+**read-only prepriced-input validator** (§4.10; #184). The explicit
+`prepriced_cost` CLI validates existing schema, objective currency,
+research provenance and uniform Tessera Hessian identity, requires
+the exact producer-stamped mode and model reference, and records the
+input bytes' SHA-256. Its separate local receipt retains both the original
+absolute argument path and resolved file; re-verification checks both
+resolution and bytes before allocation. The input is never rewritten,
+model-reference equality is not checkpoint-content attestation, and
+historical unstamped Hessian rows retain their owner-reported no-claim
+status. This helper does not itself wire the shell's cost-stage bypass.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**Tessera currency-stamp completeness** (§4.10), encountered during
+#184 intake work. `cost_currency` recognizes Tessera rows through the
+existing format grammar and refuses a usable row with a missing or
+unknown campaign currency. Removing the stamp can no longer evade the
+objective gate. Diagnostic error rows are not prices; unstamped stock
+tables keep their existing behavior. No currency or estimator changes.
+
+Re-stamped (2026-09-04, `codex/pq184-prepriced-cost-override`) for
+**finite cost-schema signals** (§4.10), encountered during #184 intake
+work. `schemas.validate_cost_payload` now refuses non-finite values in
+the existing primary scalar fields and per-expert weight-MSE vector,
+naming the input file and exact field/element. Finite signed values,
+diagnostic error rows and non-cost schema behavior are unchanged. This
+adds no numeric threshold, cost estimator or promotion claim.
+
 Re-stamped (2026-09-05, `claude/pq-tessera-audit`) for **the Tessera
 priced-inputs contract** (§5, §9.4; RobTand/prismaquant#193/#194/#195, one
 story). The campaign now writes the export leg's inputs beside its cache —
@@ -141,6 +213,7 @@ router/expert or packed-module facts determine unit structure, cross-checked
 against the declared model profile. Missing facts cannot silently become
 dense. The helper delegates value validation to `ServingContext`; it does
 not change a runtime default or attest any new serving cell.
+
 Re-stamped (2026-09-04, `codex/pq87-physical-ab`) for the opt-in bounded
 physical boundary controller. `experiments/pq87_physical_ab.py` freezes and
 hashes native BF16 source before starting one read-only-model server, then
@@ -4772,6 +4845,64 @@ seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
 
+**Shared cost intake.** `schemas.validate_cost_payload` requires finite
+numbers in each non-error row's existing cost scalar fields and
+`weight_mse_per_expert` elements. A finite sibling field cannot hide a
+NaN or infinity. Refusals name the source file and exact field/element;
+diagnostic error rows remain non-prices, and probe/router schema rules
+are unchanged. This guard applies to every cost consumer, not only to
+an external pipeline override.
+
+`cost_currency.require_run_currency` requires each usable Tessera-format
+row to carry the campaign-owned currency stamp before checking that its
+table's explicit cost mode names the matching objective. Membership comes
+from `tessera_formats.parse_tessera_format_name`, not a prefix guess or
+hardcoded family roster. Missing or unknown currency refuses with the
+unit and format named; dropping a stamp cannot opt a price out of the
+gate. Diagnostic error rows are excluded, and legacy stock rows without
+a Tessera format or currency remain outside this gate's jurisdiction.
+
+**Explicit external prepriced input** (`python -m prismaquant.prepriced_cost`).
+The driver's `COST_PATH_OVERRIDE` runs this preflight before probe/GPU work,
+bypasses all cost builders/finalization, and passes the original input path
+unchanged to the allocator after receipt re-verification. It writes only the
+local `artifacts/prepriced_cost_input.json`, not a supplied cost or its
+settings sidecar. The no-override path keeps normal generation.
+
+Bypassing the cost builders does **not** bypass the export leg's priced-input
+gate (§5, `tessera_export_lane.require_priced_export_inputs`). A prepriced run
+means the campaign ran out of band, so the `hessian_capture.pt` and
+`input_scales.safetensors` it wrote beside its `--cache-dir` are not under this
+run's work directory: the operator hands them back through `TESSERA_HESSIAN` /
+`TESSERA_INPUT_SCALES`, which the driver reads before the cost stage and threads
+into the Tessera arm unchanged. The allocation carries the pricing state either
+way — the allocator stamps `tessera_hessian` into `layer_config.json` from the
+supplied table's own identity, the same block `assert_uniform_hessian_identity`
+checked at intake — so an H-aware prepriced table exported without its capture
+refuses by name rather than shipping weights-only bytes. The TESSERA-token
+refusal at the top of the driver names both variables.
+
+The intake CLI takes `--path`, `--cost-mode` and `--model`, reads the supplied
+trusted pickle without rewriting it, and applies those shared gates plus
+`research_cost_acceptance.accepted_cost_provenance` and
+`tessera_menu.assert_uniform_hessian_identity`. The pipeline has no research
+acceptance override, so research-stamped assembly refuses. Missing, unknown
+or mismatched `provenance.cost_mode` also refuses; the helper changes neither
+the input's stamp nor the run's defaults. It requires at least one explicit
+producer-owned model reference (direct metadata/provenance or retained
+baseline/shard metadata), with all present references equal to the exact
+requested string. This is not a checkpoint-content hash claim.
+
+`--report` writes a separate local JSON receipt containing the exact SHA-256,
+actual and declared format rosters separately, usable-row count, model-reference
+evidence and the shared currency/Hessian reports. Existing unstamped Hessian
+rows remain reported as unstamped, not invented matching claims. Report/input
+path aliases and hardlinks refuse. `--verify-report` checks the retained
+original absolute argument path still resolves to the same file and hashes
+the same bytes immediately before allocation; this catches retargeted file
+or parent-directory symlinks as well as content changes. Per-unit coverage,
+rendering identity and serving admission remain allocator/export decisions.
+
 Every other entry on the format menu is a *point*: `NVFP4` is one rate, `FP8_E4M3`
 is one rate, and a menu is the handful of them a launcher lists. A Tessera family
 is an *axis* — a rate addressable at a 1/256-bpp quantum, realised as a per-column
@@ -7036,14 +7167,64 @@ that the routes the serve actually emitted -- each stamped by the plugin with
 the decoder that ran -- are the routes the artifact priced
 (`prismaquant/tessera_route_receipt.py`, `make_route_census_record`; CLI
 `fill-route-census`; the lane spec's `route.census` gate names this slot).
+For a scoped artifact, `fill-route-census --census <raw-v2.json>
+--layer-config <allocation.json> --model-dir <artifact>` retains the complete
+producer census as `route_census`, exact UTF-8 allocation/config/manifest
+texts as `census_binding`, and the derived `scoped_verdict`. The allocation's
+SHA256 and `__prismaquant__.tessera_serving_scope` must independently match
+`card.build.layer_config_sha` and `card.build.tessera_serving_scope`; audit
+paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
+match the retained texts and the actual artifact files, so host/container
+checkpoint path aliases are valid but an artifact-free replay is not.
+
+**Dormant at the current pin, by the pin rather than by a flag.** The scoped
+path takes the packaged contract's lane table through
+`lane_eligibility.load_eligibility_table` and refuses anything that is not the
+schema `LANE_ELIGIBILITY_SCHEMA_TESSERA` names, and it refuses any census whose
+schema is not `tessera.serving.route_census/2`. Under
+`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table is
+`tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
+emits `route_census/1`, so **no** scoped receipt can be filled or replayed
+today: `route.census` on a scoped card stays `UNFILLED` until the pin moves to a
+release publishing both. That is the intended fail-closed direction -- this leg
+is the consumer half of Tessera #126, whose producer/pin half is still open --
+but it means the scoped comparison has never run against a real packaged
+contract, only against tables constructed in
+`tests/test_tessera_scoped_route_receipt.py`. Re-pinning is the measurement
+that would change that claim.
+
+Coverage is the exact set of Tessera-selected allocation units (not BF16
+passthrough context keys). Their source tensors join explicit manifest
+projections and config-group owners, with exact shape/grid/rung/context
+checks. Each owner must appear exactly once in both driven phases, with
+recorded owner maps matching the replay. Every unit needs a current
+device-qualified backed cell for the same platform, image, mode and residency
+in every declared regime. Actual state, activation contract, launch pair and
+serve flags must agree. Backend suffixes stay in the retained record; a
+routed launch may compare its declared base plus a nonempty backend suffix.
+Thus a named dense fallback is permitted for MoE only when that exact scoped
+cell declares the pair. Dense compiled aggregate traces, packed/aggregate
+source projections, and nonidentity checkpoint/runtime owner mappings remain
+explicit unsupported refusals, not guessed equivalences.
+Nonempty predicates in relevant scoped/family/rung cells also refuse: a
+manifest member's dimensions are not an attestation of the executed fused
+unit's dimensions or role-split facts. This matches the export endpoint's
+bounded support rather than manufacturing a serving-shape projection.
+Eager phases retain
+canonical shape evidence and must actually name their one-row decode versus
+multi-row prefill regime. No new runtime is attested by this adapter.
+
 The requirement travels with the lane declaration (`required_slots` UNIONS
 the lane's slots), not with a rate-axis special case. `verify` replays the
 priced-vs-served comparison from the carried records
-rather than trusting the carried boolean, and refuses a census run on a known
+rather than trusting the carried boolean. Historical unscoped flat rows retain
+the v4 comparison and refuse a census run on a known
 substitute decoder (derived from the pinned contract's `when_unavailable`,
 never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
-with the replay. "No census was ever compared" reads as `UNFILLED`. Known
+with the replay; explicit scope fields cannot be flattened into those rows.
+A scoped card or current v5 table refuses a flat legacy receipt instead of
+inventing the missing runtime. "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.

@@ -156,6 +156,8 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
 
 
 def _allocator_inputs(tmp_path, fmt="BF16"):
+    from prismaquant.cost_currency import RENDER_SCORE_COST_MODE
+    from prismaquant.tessera_campaign import CURRENCY
     from prismaquant.tessera_formats import SUPERBLOCK_WEIGHTS
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -171,10 +173,11 @@ def _allocator_inputs(tmp_path, fmt="BF16"):
     # A scoped Tessera route quantizes activations: the legitimate guard must
     # not mistake this synthetic fixture for a measured zero-cost identity.
     cost_row = ({"weight_mse": 1e-4, "output_mse": 4e-4,
-                 "output_mse_measured": True}
+                 "output_mse_measured": True, "currency": CURRENCY}
                 if fmt.startswith("TESSERA_") else {"predicted_dloss": 0.0})
     costs.write_bytes(pickle.dumps({"costs": {
-        name: {fmt: dict(cost_row)} for name in stats}, "formats": [fmt]}))
+        name: {fmt: dict(cost_row)} for name in stats}, "formats": [fmt],
+        "provenance": {"cost_mode": RENDER_SCORE_COST_MODE}}))
     return ["--probe", str(probe), "--costs", str(costs), "--formats", fmt,
             "--allow-legacy-fisher-norm",
             "--target-profile", "tessera_research_sm121", "--target-bits", "16",
