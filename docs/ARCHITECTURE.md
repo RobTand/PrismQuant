@@ -3,6 +3,19 @@
 As of: 2026-09-05 · `codex/pq183-packed-capture`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/pq183-packed-capture`) for **one campaign
+capture, dense or packed** (§4.10; merge of the packed source-unit capture
+below with the priced-inputs contract stamped beneath it). The campaign has
+one Hessian-capture accumulator: a dense Linear's pre-hook and a packed
+projection's derived routed rows land in the same three per-unit outputs
+(bounded scoring rows, the exact XᵀX, and the max|x| behind the static
+`input_global_scale`), so a packed unit feeds `hessian_capture.pt` and
+`input_scales.safetensors` by the dense path rather than by a second capture.
+Nothing packed reaches those artifacts yet: the main-entry population refusal
+below still turns a live packed population away before calibration, by name,
+until the exact cached-wire/stack-plan bridge (PrismaQuant #183) lands. Gate:
+`tests/test_tessera_campaign_packed.py` (max|x| asserted per packed unit).
+
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
 campaign exclusions** (§4.10). The dense target walk now consults the existing
 `ModelProfile.is_pinned_name` accessor before capture/menuing. In particular,
