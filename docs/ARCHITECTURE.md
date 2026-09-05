@@ -1,7 +1,37 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-decisions`. Stamps
+As of: 2026-09-05 · `claude/pq-205`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-205`) for the **served activation contract
+as a property of the spec** (§5.1, §5.7; #205). A Tessera W4A4 rung is served
+by `scaled_fp4_quant` with a STATIC per-unit `input_global_scale` and UE4M3
+block scales; the campaign priced it that way (#196) but the assignment-KL
+hooks (`perturbed_x_cache._activation_qdq`) and the production cache scorer
+(`production_weight_cache._render_score_record`) decided "which activation
+quantizer does this spec serve" by `canonical_format_name(spec.name) ==
+"NVFP4"`, which a Tessera name fails — so both priced the rung under NVFP4's
+dynamic FP32-scale RTN, the Tessera record could never retain a calibration
+maximum (the fill only measured max|x| when `"NVFP4"` was in the format set),
+and at G=1 a 1e-3 block that serves as exactly 0 was priced at 1e-3 (codex's
+`prismaquant_activation_consumers.py`). One rule, one home:
+`FormatSpec.static_activation_contract`
+(`nvfp4_activation_contract.StaticActivationContract`: execution, group
+size, the owner's G rule, the served oracle, and `measured_as_served`) is set
+on the `NVFP4` row (screen default, served emulation stays the env opt-in) and
+re-stamped `measured_as_served=True` on a Tessera W4A4 spec, whose plugin has
+no dynamic path. `_activation_qdq`, `_render_score_record` (now recording
+`activation_max_abs` and `input_global_scale`), the fill's two max|x| gates
+(`_formats_need_static_activation_max`) and `measure_assignment_kl`'s hook
+construction (`PerturbedActivationCache.served_activation_scale_gaps`, a
+preflight refusal by name before the first forward) all read the spec; the
+refusal is the owner's `ActivationScaleContractError`, which the campaign's
+class of the same name now subclasses. The stock-NVFP4 screen default and the
+campaign callback do not move. Gate:
+`tests/test_served_activation_contract.py` (pre-fix: `Tessera hook priced
+0.00099945068359375 where the served oracle gives 0.0`; cache score `0.0 ==
+0.000255718827...`); `test_the_activation_side_is_the_serving_formats_own_quantiser`
+now asserts the served contract alongside the by-reference dynamic callable.
 
 Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
 decision in the paired validation driver** (§7.2; #87). The opt-in
@@ -6069,6 +6099,21 @@ uses a static `input_global_scale` (`:674-676`). The `torch.compile` RTN hot pat
 MSE-identical but not bit-identical to eager (~0.036% of elements flip at codebook midpoints,
 `:445-458`).
 
+What serving *does* execute travels on the spec as well (#205):
+`FormatSpec.static_activation_contract`
+(`nvfp4_activation_contract.StaticActivationContract`) names the served
+static-scale contract — execution `e2m1_group16_ue4m3_static`, group 16, the
+owner's `input_global_scale_from_max_abs` rule at the resolved policy, and the
+served oracle `nvfp4_activation_qdq_served` — for any spec the kernel serves
+against a calibrated per-unit G. `activation_quantize_dequantize` takes no G
+and so can only ever be the dynamic quantiser; a consumer holding the unit's
+calibrated maximum (the assignment-KL hooks, the production cache scorer, the
+campaign) asks the contract which quantiser and which G, never the format's
+name. The contract's `measured_as_served` is the spec's measurement policy:
+`False` on the `NVFP4` row (the dynamic RTN stays the screen baseline; the
+served emulation is `PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES`), `True` on
+a Tessera W4A4 spec (§5.7). Dynamic W8A8 (FP8, MX) and A16 rows carry `None`.
+
 ### 5.2 Scale rules and JSO
 
 NVFP4 scale rules live in the *exporter*, not the registry
@@ -6358,6 +6403,31 @@ over a block plane, E2M1 over CHANNEL, any free grid — is the kernel route,
 weight-only decode inside the GEMV, and no runtime serves it. Pricing the route
 is what stops the allocator comparing a W4A4 rung against a W8A8 one as if the
 activation side were free — the NVFP4_CB lesson of 2026-08-17 (§4 P8).
+
+**The W4A4 route is priced as it serves, everywhere it is measured (#205).**
+The synthesized spec takes two things by reference from the route's source row
+(`synthesize_tessera_spec`): NVFP4's no-G `activation_quantize_dequantize` —
+the dynamic FP32-scale RTN, kept as the screen baseline a consumer without a
+calibrated maximum can run and as the campaign tests' dynamic *control* — and
+NVFP4's `static_activation_contract` (§5.1), re-stamped
+`measured_as_served=True` because the plugin has no dynamic path: it reads the
+artifact's `trellis_input_global_scale` and calls `scaled_fp4_quant`. That
+flag is what routes the assignment-KL hooks (`perturbed_x_cache._activation_qdq`)
+and the production cache scorer (`_render_score_record`, which retains the
+row's `activation_max_abs` and the `input_global_scale` it was priced at)
+through the served oracle at the unit's G, the same operation the campaign's
+`_measure_anchor` already prices (§"Priced as served", #196) — and what makes a
+unit with no calibrated maximum refuse by name
+(`nvfp4_activation_contract.ActivationScaleContractError`; the campaign's own
+class subclasses it) instead of being priced under a quantiser the runtime
+never runs. The fill's max|x| measurement is gated on the same property
+(`_formats_need_static_activation_max`), so a Tessera-only cache has the scale
+identity its records and hooks need, and `measure_assignment_kl` asks
+`PerturbedActivationCache.served_activation_scale_gaps()` at hook construction
+so the refusal lists every such unit before the first forward. The question
+"which activation quantizer does this spec serve" is answered by the spec, not
+by comparing its name to `"NVFP4"`, which a Tessera name can never satisfy
+(`tests/test_served_activation_contract.py`).
 
 **Admission is a lookup, not a constant — and Tessera's own table is what it
 reads.** Principle 9 makes "a runtime executes this rung natively" a measured

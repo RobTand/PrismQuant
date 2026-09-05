@@ -1438,26 +1438,50 @@ def _render_score_record(
     metric = raw_metric
     activation_quantized = False
     activation_clipped = False
-    activation_clip_max = (
-        activation_max_abs
-        if _format_uses_static_activation_clip(fmt) else
-        None
-    )
+    from prismaquant import format_registry as fr
+
+    spec = fr.get_format(fr.canonical_format_name(fmt))
+    contract = _static_activation_contract_of(spec)
+    # Which activation quantizer the row is scored under is the SPEC's answer
+    # (``static_activation_contract``), not its name's (#205):
+    #
+    #   * served-measurement contract (a Tessera W4A4 rung): the served oracle
+    #     at the unit's calibrated G, no pre-clip (the clamp lives in G), and
+    #     the record keeps the maximum and the G it was priced at.  A unit
+    #     with no maximum refuses by name -- there is no dynamic serving path
+    #     whose score would mean anything.
+    #   * screen-default contract (stock NVFP4): the historical clip to the
+    #     calibrated maximum + the row's dynamic RTN.
+    #   * no contract (FP8/MX dynamic W8A8): the row's dynamic quantizer,
+    #     unclipped -- applying NVFP4's maximum there prices the wrong kernel.
+    #
+    # Either contract retains the calibration maximum in the record: it is the
+    # unit's scale identity, and a reader must be able to see which contract
+    # the row was priced under.
+    served_measurement = contract is not None and contract.measured_as_served
+    recorded_max_abs = activation_max_abs if contract is not None else None
+    activation_clip_max = None if served_measurement else recorded_max_abs
+    input_global_scale: float | None = None
     if (
         activations is not None
         and activations.numel() > 0
         and int(activations.shape[-1]) == int(reference_weight.shape[1])
     ):
+        if served_measurement:
+            input_global_scale = contract.require_input_global_scale(
+                activation_max_abs, qname=qname,
+                consumer=f"production cache render score @ {fmt}")
+            g = float(input_global_scale)
+            activation_quantize = lambda t: contract.quantize_dequantize(t, g)  # noqa: E731
+        else:
+            activation_quantize = spec.activation_quantize_dequantize
         try:
-            from prismaquant import format_registry as fr
-
-            spec = fr.get_format(fr.canonical_format_name(fmt))
             score, metric, activation_quantized, activation_clipped = (
                 _local_forward_render_score(
                     reference_weight=reference_weight,
                     rendered_weight=rendered_weight,
                     activations=activations,
-                    activation_quantize=spec.activation_quantize_dequantize,
+                    activation_quantize=activation_quantize,
                     activation_max_abs=activation_clip_max,
                 )
             )
@@ -1500,26 +1524,54 @@ def _render_score_record(
         "activation_quantized": bool(activation_quantized),
         "activation_clipped": bool(activation_clipped),
         "activation_max_abs": (
-            float(activation_clip_max)
-            if activation_clip_max is not None and activation_clip_max > 0
+            float(recorded_max_abs)
+            if recorded_max_abs is not None and recorded_max_abs > 0
             else None
+        ),
+        # The static G the row was priced at, when its contract is the served
+        # one; None for rows scored under a dynamic quantizer.
+        "input_global_scale": (
+            float(input_global_scale) if input_global_scale is not None else None
         ),
         "out_features": int(rows),
         "in_features": int(cols),
     }
 
 
+def _static_activation_contract_of(spec):
+    """``spec.static_activation_contract``, tolerant of the bare stand-ins
+    tests hand ``fr.get_format`` back (a namespace with only the callable)."""
+    return getattr(spec, "static_activation_contract", None)
+
+
 def _format_uses_static_activation_clip(fmt: str) -> bool:
     """Return whether local scoring should apply a calibrated activation max.
 
-    NVFP4 serving uses a calibrated tensor-level activation scale plus local
-    tensor-group quantization. MXFP8/FP8 dynamic serving computes activation
-    scales at runtime, so applying the NVFP4 activation max to those formats
-    prices the wrong kernel contract.
+    True for a format whose serving contract is a calibrated STATIC per-unit
+    activation scale (``FormatSpec.static_activation_contract``, read from the
+    spec -- a Tessera W4A4 rung answers yes with no "NVFP4" in its name).
+    MXFP8/FP8 dynamic serving computes activation scales at runtime, so
+    applying a calibrated maximum to those formats prices the wrong kernel
+    contract.  Whether the maximum is applied as a pre-clip or as the G of the
+    served oracle is the contract's ``measured_as_served``; this predicate only
+    says the maximum belongs to the row.
     """
     from prismaquant import format_registry as fr
 
-    return fr.canonical_format_name(str(fmt).strip().upper()) == "NVFP4"
+    spec = fr.get_format(fr.canonical_format_name(str(fmt).strip().upper()))
+    return _static_activation_contract_of(spec) is not None
+
+
+def _formats_need_static_activation_max(formats) -> bool:
+    """Whether a cache fill over ``formats`` must measure per-unit max|x|.
+
+    The fill collects the calibrated activation maximum only when some
+    requested format is served under a static per-unit activation scale; it
+    used to ask ``"NVFP4" in formats``, which a Tessera-only fill answered
+    "no" -- so its records could never retain a maximum and its assignment-KL
+    hooks never had a scale identity to price with (#205).
+    """
+    return any(_format_uses_static_activation_clip(fmt) for fmt in formats)
 
 
 def _local_forward_render_score(
@@ -6726,6 +6778,13 @@ def fill_production_weight_cache(
         for fmt in fmts
     }
     render_base_fmt_set = {_render_base_format(fmt) for fmt in fmt_set}
+    # Whether any requested format is served under a calibrated STATIC
+    # activation scale, so the fill must measure per-unit max|x| (the scale
+    # identity its records retain and the assignment-KL hooks price with).
+    # Read from the specs, not from ``"NVFP4" in`` the set: a Tessera W4A4
+    # rung is served under the same contract with a different name (#205).
+    needs_static_activation_max = _formats_need_static_activation_max(
+        render_base_fmt_set)
     # Store activations for every missing rendered format.  NVFP4 needs them
     # for GPTQ/JSO; FP8_DYNAMIC/FP8_E4M3 and explicit MX formats need them
     # for their activation-aware renders, and the production-render allocator
@@ -6794,7 +6853,7 @@ def fill_production_weight_cache(
         and not qnames_needing_activation
         and (
             (sidecar_path is not None and sidecar_path.is_file())
-            or "NVFP4" not in render_base_fmt_set
+            or not needs_static_activation_max
         )
     )
     collector = None  # may stay None on the skip_forward path
@@ -6956,7 +7015,7 @@ def fill_production_weight_cache(
                 flush=True,
             )
 
-    if "NVFP4" in render_base_fmt_set:
+    if needs_static_activation_max:
         # Group by fused sibling key for max-across-siblings unification.
         from prismaquant.decision_units import fused_group_key
 
