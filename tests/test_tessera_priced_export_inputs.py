@@ -291,7 +291,12 @@ def test_the_digest_rule_is_tesseras_capture_seal(tmp_path):
     """Where the pinned Tessera publishes ``capture_sha256`` (release
     e78959e+), the producer's rule must reproduce it byte for byte and the
     gate cross-checks the two on every bind; at a pin that predates the seal
-    the gate reports the cross-check as unavailable."""
+    the gate reports the cross-check as unavailable.
+
+    This is the *runtime* half of the drift guard and it can only run where
+    the seal exists.  The roster half needs no ``capture_sha256`` and runs at
+    every pin: ``test_the_capture_context_roster_is_tesseras`` below.
+    """
     tessera_export = pytest.importorskip("tessera.export")
     source_cls = tessera_export.ActivationSource
     if not hasattr(source_cls, "capture_sha256"):
@@ -446,6 +451,113 @@ def test_the_priced_input_triple_matches_tesseras_roster():
 
     assert set(export.PRICED_HESSIAN_IDENTITY_FIELDS) == set(
         HESSIAN_IDENTITY_FIELDS)
+
+
+def test_the_capture_context_roster_is_tesseras():
+    """The other half of the same seal's roster, read from its owner.
+
+    Runs at **both** pins, unlike the runtime seal comparison: a tuple
+    equality needs no ``ActivationSource.capture_sha256``.
+
+    * At a Tessera that publishes ``CAPTURE_CONTEXT`` (the release tip), the
+      gate must have read the constant, not a typed copy of it -- compared as
+      an ordered tuple, not a set, because a rename leaves the set alone while
+      the digest's ``.get`` starts sealing ``None``.
+    * At a Tessera that predates the constant (the pinned dev 1221d2a), the
+      gate must be using the ONE documented fallback and saying so, since that
+      pin also has no ``capture_sha256`` and nothing else can see the roster.
+
+    RobTand/prismaquant#216: before this, the roster was typed at
+    ``tessera_export_lane.py:494`` and nothing read
+    ``tessera.export.CAPTURE_CONTEXT`` anywhere in the tree.
+    """
+    tessera_export = pytest.importorskip("tessera.export")
+    published = getattr(tessera_export, "CAPTURE_CONTEXT", None)
+    if published is None:
+        assert export.CAPTURE_CONTEXT_FIELDS == export._CAPTURE_CONTEXT_FALLBACK
+        assert export.CAPTURE_CONTEXT_FIELDS_SOURCE == \
+            export._CAPTURE_CONTEXT_FROM_FALLBACK
+        assert not hasattr(tessera_export.ActivationSource, "capture_sha256"), \
+            "a Tessera that seals but publishes no roster is a new state"
+        return
+    assert tuple(export.CAPTURE_CONTEXT_FIELDS) == tuple(published)
+    assert export.CAPTURE_CONTEXT_FIELDS_SOURCE == \
+        export._CAPTURE_CONTEXT_FROM_TESSERA
+
+
+def _pretend_tessera_publishes(monkeypatch, fields):
+    """Run as if the installed Tessera's ``CAPTURE_CONTEXT`` were ``fields``.
+
+    Patched at the module attribute the release tip publishes, so the refusal
+    is driven through the gate's real read of Tessera; at a pin that predates
+    the constant (1221d2a) there is no such attribute and the gate's own
+    reader is patched instead.  Either way ``CAPTURE_CONTEXT_FIELDS`` keeps
+    the roster it resolved at import -- which is the drift being staged.
+    """
+    tessera_export = pytest.importorskip("tessera.export")
+    if hasattr(tessera_export, "CAPTURE_CONTEXT"):
+        monkeypatch.setattr(tessera_export, "CAPTURE_CONTEXT", tuple(fields))
+    else:
+        monkeypatch.setattr(export, "_tessera_capture_context",
+                            lambda: tuple(fields))
+
+
+def test_a_capture_context_field_our_roster_lacks_refuses(monkeypatch):
+    """Failure state (a) of #216, and it needs no ``capture_sha256``.
+
+    A Tessera whose ``CAPTURE_CONTEXT`` names a field this roster lacks makes
+    the two digest rules cover different provenance.  Where the running
+    Tessera also predates the seal, ``_crosscheck_capture_seal`` compares
+    nothing, so two captures differing only in the new field digest
+    identically and ``require_priced_export_inputs`` binds an allocation to a
+    capture that did not price it -- #204's failure, reintroduced silently.
+    It is now refused by name, before a byte is digested, at every pin.
+    """
+    _pretend_tessera_publishes(
+        monkeypatch, tuple(export.CAPTURE_CONTEXT_FIELDS) + ("layout",))
+    with pytest.raises(export.TesseraExportLaneError,
+                       match="tessera.export.CAPTURE_CONTEXT names"):
+        export.hessian_capture_sha256(HESSIANS, {**TRIPLE,
+                                                 "hessian_role": "fit"})
+
+
+def test_the_roster_refusal_names_both_rosters_and_where_ours_came_from(
+        monkeypatch):
+    """A refusal an operator can act on: which fields each side names, which
+    are missing here, and whether ours was read from Tessera or fell back."""
+    _pretend_tessera_publishes(monkeypatch, ("model", "seqlen", "layout"))
+    with pytest.raises(export.TesseraExportLaneError) as excinfo:
+        export._require_capture_context_roster()
+    message = str(excinfo.value)
+    assert "missing here: ('layout',)" in message
+    assert "not in Tessera: ('source',)" in message
+    assert export.CAPTURE_CONTEXT_FIELDS_SOURCE in message
+
+
+def test_the_gate_refuses_a_bind_under_a_drifted_roster(tmp_path, monkeypatch):
+    """The roster refusal reaches the export gate itself, not only the digest
+    helper: nothing binds while the two rules cover different provenance."""
+    assignment = _assignment(
+        tmp_path, formats={DENSE_E4M3: "TESSERA_E4M3_K1_R1024"})
+    capture = _capture(tmp_path)
+    _pretend_tessera_publishes(
+        monkeypatch, tuple(export.CAPTURE_CONTEXT_FIELDS) + ("layout",))
+    with pytest.raises(export.TesseraExportLaneError,
+                       match="different provenance"):
+        export.require_priced_export_inputs(assignment, hessian_path=capture)
+
+
+def test_a_tessera_without_the_constant_uses_the_documented_fallback(
+        monkeypatch):
+    """The fallback is reached only through ``_tessera_capture_context``
+    returning None, and it is the tuple copied from tessera 3efd690 -- the one
+    place the roster is typed."""
+    monkeypatch.setattr(export, "_tessera_capture_context", lambda: None)
+    fields, source = export._capture_context_fields()
+    assert fields == export._CAPTURE_CONTEXT_FALLBACK == (
+        "model", "seqlen", "source")
+    assert source == export._CAPTURE_CONTEXT_FROM_FALLBACK
+    assert "3efd690" in source
 
 
 # ---------------------------------------------------------------------------

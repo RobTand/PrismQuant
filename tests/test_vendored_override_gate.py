@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -612,14 +613,34 @@ DETECTION_ENTRYPOINTS = {
 }
 
 
-def _handler_is_broad(handler: ast.ExceptHandler) -> bool:
-    """True for `except:`, `except Exception:`, `except BaseException:`."""
+#: Every class name whose `except` clause catches a `DeadVendoredOverrideError`
+#: — derived from the exception's own MRO, never typed, so the census follows
+#: the class if it is ever re-parented (RobTand/prismaquant#217). Today:
+#: `DeadVendoredOverrideError`, `RuntimeError`, `Exception`, `BaseException`.
+#: `RuntimeError` is in there deliberately: the class subclasses it so that
+#: "existing `except RuntimeError` handlers ... are unchanged" (its own
+#: docstring), which is exactly why such a handler swallows the refusal.
+CATCHES_DEAD_OVERRIDE = frozenset(
+    cls.__name__ for cls in DeadVendoredOverrideError.__mro__
+    if issubclass(cls, BaseException)
+)
+
+
+def _handler_catches_dead_override(handler: ast.ExceptHandler) -> bool:
+    """True when this `except` clause catches a `DeadVendoredOverrideError`.
+
+    `except:` catches everything; otherwise any clause naming a class in
+    :data:`CATCHES_DEAD_OVERRIDE` does, whether written bare (`RuntimeError`),
+    dotted (`builtins.Exception`, `registry.DeadVendoredOverrideError`) or
+    inside a tuple (`except (ImportError, RuntimeError):`).
+    """
     node = handler.type
     if node is None:
         return True
     parts = node.elts if isinstance(node, ast.Tuple) else [node]
     return any(
-        isinstance(p, ast.Name) and p.id in ("Exception", "BaseException")
+        (getattr(p, "id", None) or getattr(p, "attr", None))
+        in CATCHES_DEAD_OVERRIDE
         for p in parts
     )
 
@@ -632,23 +653,46 @@ def _handler_always_reraises(handler: ast.ExceptHandler) -> bool:
     from exc`, which refuses by name and keeps the cause. A handler that always
     raises never converts the refusal into an answer, so it needs no
     `DeadVendoredOverrideError` clause of its own.
+
+    Ending in a `raise` is necessary but not sufficient: a handler that
+    substitutes an answer on one branch and re-raises on the fall-through
+    answers a dead override on that branch (#217). So the body must also
+    contain no `return`, and no `break`/`continue` that would carry control
+    past the trailing `raise` into the enclosing loop. Two scopes are not the
+    handler's own and are not walked into: a nested function or class (its
+    `return` is its own) and a loop written inside the handler (its
+    `break`/`continue` binds there, not to the enclosing loop).
     """
-    return bool(handler.body) and isinstance(handler.body[-1], ast.Raise)
+    if not handler.body or not isinstance(handler.body[-1], ast.Raise):
+        return False
+    stack = [(stmt, True) for stmt in handler.body]
+    while stack:
+        sub, in_handler_loop = stack.pop()
+        if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef,
+                            ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(sub, ast.Return):
+            return False
+        if in_handler_loop and isinstance(sub, (ast.Break, ast.Continue)):
+            return False
+        nested = in_handler_loop and not isinstance(
+            sub, (ast.For, ast.AsyncFor, ast.While))
+        stack.extend((child, nested) for child in ast.iter_child_nodes(sub))
+    return True
 
 
 def _refuses_dead_override(node: ast.Try) -> bool:
-    """True when a dead override escapes this `try` instead of being answered."""
+    """True when a dead override escapes this `try` instead of being answered.
+
+    Handlers are tried in source order, as Python does: the first one that
+    catches a `DeadVendoredOverrideError` is the one that decides, and it must
+    be unable to fall through to a substituted answer. A `try` no handler of
+    which catches it lets it escape, which is the point.
+    """
     for handler in node.handlers:
-        if _handler_is_broad(handler):
-            # Reached the catch-all without having refused first.
+        if _handler_catches_dead_override(handler):
             return _handler_always_reraises(handler)
-        named = handler.type
-        parts = named.elts if isinstance(named, ast.Tuple) else [named]
-        for part in parts:
-            name = getattr(part, "id", None) or getattr(part, "attr", None)
-            if name == "DeadVendoredOverrideError":
-                return True
-    return True  # no broad handler at all: nothing swallows it
+    return True  # nothing here catches it: the refusal escapes
 
 
 def _swallowing_detection_sites() -> list[str]:
@@ -674,6 +718,126 @@ def _swallowing_detection_sites() -> list[str]:
     return sorted(set(bad))
 
 
+def _census_flags(handler_source: str) -> bool:
+    """True when the census reports a detection call under this handler as
+    swallowing the refusal."""
+    tree = ast.parse("try:\n    profile = detect_profile(path)\n"
+                     + textwrap.dedent(handler_source).strip("\n"))
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try)]
+    assert len(tries) == 1, handler_source
+    return not _refuses_dead_override(tries[0])
+
+
+#: The handler shapes that answer a dead override instead of letting it out.
+#: The first three are #217's A, B and C — `DeadVendoredOverrideError`
+#: subclasses `RuntimeError` deliberately, so `except RuntimeError` catches it
+#: exactly as `except Exception` did; the fourth is D, a broad handler that
+#: substitutes on one branch and re-raises on the fall-through; the fifth is
+#: the shape #202 actually removed, kept as the control.
+SWALLOWING_HANDLERS = {
+    "except RuntimeError": """
+        except RuntimeError:
+            profile = None
+    """,
+    "except (ImportError, RuntimeError)": """
+        except (ImportError, RuntimeError):
+            profile = None
+    """,
+    "except builtins.Exception (dotted)": """
+        except builtins.Exception:
+            profile = None
+    """,
+    "broad handler returning before its raise": """
+        except Exception as exc:
+            if _looks_recoverable(exc):
+                return DefaultProfile()
+            raise
+    """,
+    "except DeadVendoredOverrideError that answers": """
+        except DeadVendoredOverrideError:
+            profile = None
+    """,
+    "control: except Exception (already caught pre-#217)": """
+        except Exception:
+            profile = None
+    """,
+}
+
+#: Shapes that do NOT answer a dead override and must stay unflagged, so the
+#: widening cannot start reporting correct sites (#217: "do not widen the
+#: census to catch shapes that do not swallow").
+REFUSING_HANDLERS = {
+    "the 28 live sites: named clause first, then broad": """
+        except DeadVendoredOverrideError:
+            raise
+        except Exception:
+            profile = None
+    """,
+    "dotted named clause first": """
+        except registry.DeadVendoredOverrideError:
+            raise
+        except Exception:
+            profile = None
+    """,
+    "sample_parallel_probe: broad, always re-raises by name": """
+        except Exception as exc:
+            raise SampleParallelProbeError("cannot prepare") from exc
+    """,
+    "tessera_export_lane: narrow clauses that do not catch it": """
+        except (OSError, ValueError, TypeError, KeyError):
+            raise TesseraExportLaneError("unreadable")
+    """,
+    "no handler at all": """
+        finally:
+            _close()
+    """,
+    "a loop inside the handler: its continue is not a fall-through": """
+        except Exception:
+            for note in notes:
+                if not note:
+                    continue
+                _log(note)
+            raise
+    """,
+}
+
+
+@pytest.mark.parametrize("shape", sorted(SWALLOWING_HANDLERS))
+def test_the_census_sees_every_handler_shape_that_swallows(shape):
+    """#217's A, B, C and D, plus the control.
+
+    `DeadVendoredOverrideError` subclasses `RuntimeError` so that "existing
+    `except RuntimeError` handlers and the gate's original contract are
+    unchanged" (`model_profiles/registry.py:98,114`) — which is precisely why
+    such a handler swallows the refusal, and `detect_profile` itself raises a
+    bare `RuntimeError` for a non-directory `model_path` (`registry.py:169`),
+    so narrowing one of these handlers from `Exception` to `RuntimeError` is
+    the ordinary edit that silently reopens #202 at that site. Pre-#217 the
+    census reported all of these as refusing.
+    """
+    assert _census_flags(SWALLOWING_HANDLERS[shape]), shape
+
+
+@pytest.mark.parametrize("shape", sorted(REFUSING_HANDLERS))
+def test_the_census_still_passes_the_shapes_that_refuse(shape):
+    """The widening must not start reporting sites that let the refusal out —
+    including every shape the live tree actually uses."""
+    assert not _census_flags(REFUSING_HANDLERS[shape]), shape
+
+
+def test_the_catching_roster_is_derived_from_the_exceptions_mro():
+    """One rule, one home: the class names that catch the refusal come from
+    `DeadVendoredOverrideError.__mro__`, so re-parenting the class moves the
+    census with it instead of leaving a second list to be edited by hand."""
+    assert CATCHES_DEAD_OVERRIDE == frozenset(
+        cls.__name__ for cls in DeadVendoredOverrideError.__mro__
+        if issubclass(cls, BaseException))
+    assert "RuntimeError" in CATCHES_DEAD_OVERRIDE
+    assert "object" not in CATCHES_DEAD_OVERRIDE  # not an exception clause
+    for name in CATCHES_DEAD_OVERRIDE:
+        assert _census_flags(f"except {name}:\n    profile = None"), name
+
+
 def test_no_call_site_swallows_the_dead_override_refusal():
     """The refusal must reach the operator from every detection call site.
 
@@ -694,7 +858,16 @@ def test_no_call_site_swallows_the_dead_override_refusal():
     fails for a call site added next month, which no per-site test would.
 
     The allowed shapes are (a) `except DeadVendoredOverrideError: raise` ahead
-    of the broad handler, or (b) a broad handler that always re-raises, which
-    is what `sample_parallel_probe` already did correctly.
+    of the handler that catches it, or (b) a handler that always re-raises,
+    which is what `sample_parallel_probe` already did correctly.
+
+    What this census does NOT cover, since it is cited as future-proofing
+    (#217): it is a syntactic walk of `prismaquant/`, so it cannot see a
+    detection call reached through an alias or a variable
+    (`fn = detect_profile; fn(path)`), a `getattr`/`importlib` dispatch, a
+    swallow one frame up in a caller's own `try`, an `except` clause whose
+    class is computed rather than named, or anything outside the package tree
+    (`scripts/`, notebooks, callers in other repositories). It pins the shape
+    of the 32 in-tree call sites, not the whole reachability graph.
     """
     assert _swallowing_detection_sites() == []
