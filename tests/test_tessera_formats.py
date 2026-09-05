@@ -1349,10 +1349,19 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
     A-side priced by a private copy of the group-16 dynamic RTN is a rendering
     confound on the axis that decides the comparison.  Taken by reference from
     the registry, it cannot drift.
+
+    Two things are taken (#205).  The no-G callable is NVFP4's dynamic RTN,
+    by reference -- the screen baseline a consumer without a calibrated
+    maximum can run.  What the rung SERVES is the static-scale contract
+    (``static_activation_contract``): the plugin reads the artifact's
+    ``trellis_input_global_scale`` and calls vLLM's ``scaled_fp4_quant``,
+    so the served oracle is the rung's measurement (``measured_as_served``),
+    where stock NVFP4 keeps the same contract behind its opt-in.
     """
     import torch
 
     from prismaquant import format_registry as fr
+    from prismaquant import nvfp4_activation_contract as owner
     from prismaquant.tessera_formats import recipe_from_wire_names
     from prismaquant.tessera_render import synthesize_tessera_spec
 
@@ -1360,10 +1369,29 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
     x = torch.randn(8, 256)
 
     w4 = synthesize_tessera_spec("TESSERA_E2M1_K2_R896")
+    nvfp4 = fr.get_format("NVFP4")
+    assert w4.activation_quantize_dequantize is nvfp4.activation_quantize_dequantize
     assert torch.equal(
         w4.activation_quantize_dequantize(x),
-        fr.get_format("NVFP4").activation_quantize_dequantize(x),
+        nvfp4.activation_quantize_dequantize(x),
     )
+    contract = w4.static_activation_contract
+    assert contract is not None
+    assert contract.execution == nvfp4.static_activation_contract.execution
+    assert contract.group_size == nvfp4.static_activation_contract.group_size
+    assert contract.measured_as_served is True
+    assert nvfp4.static_activation_contract.measured_as_served is False
+    g = contract.input_global_scale_from_max_abs(float(x.abs().max()))
+    assert torch.equal(
+        contract.quantize_dequantize(x, g),
+        owner.nvfp4_activation_qdq_served(x, g),
+    )
+    # And the two quantisers are not the same thing, which is why the spec
+    # has to name which one it serves: at G=1 a 1e-3 block underflows the
+    # UE4M3 scale to zero when served and survives the dynamic RTN.
+    small = torch.full((1, 16), 1e-3)
+    assert torch.all(contract.quantize_dequantize(small, 1.0) == 0)
+    assert torch.any(w4.activation_quantize_dequantize(small) != 0)
 
     w8 = synthesize_tessera_spec(
         "TESSERA_E4M3_K1_R1024",
@@ -1374,12 +1402,16 @@ def test_the_activation_side_is_the_serving_formats_own_quantiser():
         w8.activation_quantize_dequantize(x),
         fr.get_format("FP8_E4M3").activation_quantize_dequantize(x),
     )
+    # Dynamic W8A8: the kernel computes its scales from the batch, so there
+    # is no static contract to carry.
+    assert w8.static_activation_contract is None
 
     # Weight-only stays the identity -- E4M3 over a block plane, which is the
     # wire E4M3 left on 2026-09-02 and still a legal thing to price.
     kernel = synthesize_tessera_spec(
         "TESSERA_E4M3_K1_R1024", recipe=recipe_from_wire_names(2, "lut16"))
     assert torch.equal(kernel.activation_quantize_dequantize(x), x)
+    assert kernel.static_activation_contract is None
 
     # And the W side: a spec synthesized for a recipe must *render* that
     # recipe, or the price and the callable inside one FormatSpec describe two

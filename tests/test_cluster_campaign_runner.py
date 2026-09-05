@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import copy
 import hashlib
 import json
@@ -22,6 +23,95 @@ _WRITE_BYTES = (
     "Path(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True); "
     "Path(sys.argv[1]).write_bytes(sys.argv[2].encode('utf-8'))"
 )
+
+
+# ---------------------------------------------------------------------------
+# Cross-process waits.
+#
+# Every wait in this file is "a child process will make an observable thing
+# appear" -- a state file, a pid file, a receipt.  What that costs is dominated
+# by interpreter start plus this package's import graph, not by the work the
+# child was asked to do.  Measured on sparklina (2026-09-05, CPU only): a cold
+# `python -m prismaquant.cluster_campaign` reached its first state file in
+# 2.7s on an idle box and in 10.9 / 17.3 / 19.3s at 1-minute load 41 / 76 / 90.
+#
+# A wall-clock constant sized against the first number is a coin flip under the
+# second, which is what issue #199 measured and what turned three tests in this
+# file red under `-n 2` on a loaded box.  So no wait here is sized in seconds.
+# Each waits while the producer can still satisfy it and gives up the moment it
+# cannot.  A slow box makes this file slower; it cannot make it red.  A
+# producer that dies without doing the work, which is the failure these tests
+# are actually about, still fails at once and by name.
+# ---------------------------------------------------------------------------
+
+_WEDGE_BACKSTOP_SECONDS = 120
+"""Last-resort bound on every cross-process wait and stage in this file.
+
+Not a budget for the work.  It answers only "the producer is wedged and nothing
+will ever satisfy this", so it sits far above anything a healthy run reaches --
+the slowest wait measured under load was 19.3s.  A healthy run never observes
+it; a run that does has found a real defect, and reports it as one.
+"""
+
+
+def _wait_until(
+    condition: Callable[[], bool],
+    *,
+    unmet: str,
+    alive: Callable[[], bool] | None = None,
+    diagnose: Callable[[], str] | None = None,
+    poll_interval: float = 0.02,
+) -> None:
+    """Wait for ``condition`` for as long as its producer can still satisfy it.
+
+    ``alive`` reports whether the process expected to satisfy ``condition`` is
+    still running.  When it stops being true the condition gets one last look --
+    the producer may have done the work in the window before it exited -- and
+    then the wait fails, because nothing can satisfy it any more.  Omit
+    ``alive`` only where the test holds no handle on the producer, such as a
+    deliberately orphaned helper; the backstop is then the sole bound.
+
+    ``unmet`` is the failure sentence and ``diagnose`` appends state to it.
+    """
+    backstop = time.monotonic() + _WEDGE_BACKSTOP_SECONDS
+
+    def _fail(why: str) -> None:
+        detail = f"; {diagnose()}" if diagnose is not None else ""
+        raise AssertionError(f"{unmet} -- {why}{detail}")
+
+    while True:
+        if condition():
+            return
+        if alive is not None and not alive():
+            if condition():
+                return
+            _fail("its producer exited first")
+        if time.monotonic() >= backstop:
+            _fail(
+                f"nothing happened in {_WEDGE_BACKSTOP_SECONDS}s, so the "
+                "producer is wedged"
+            )
+        time.sleep(poll_interval)
+
+
+def _nonempty(path: Path) -> Callable[[], bool]:
+    """Predicate for "this file exists *and* its bytes have landed".
+
+    A file becomes visible in its directory before the writer's bytes reach it,
+    so waiting on existence alone hands the next line a half-written file.  That
+    is not theoretical: with the waits above fixed, `-n 2` under load got as far
+    as reading `child.pid` and raised `ValueError: invalid literal for int() with
+    base 10: ''`.  Every producer here writes its file in one `write_text` /
+    `write_bytes` call, so non-empty is the same thing as complete.
+    """
+
+    def _ready() -> bool:
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
+
+    return _ready
 
 
 def _digest(text: str) -> str:
@@ -90,7 +180,14 @@ def _stage(
     argv: list[str],
     receipts: list[dict[str, str]],
     max_attempts: int = 2,
-    timeout_seconds: int = 10,
+    # The runner's own bound on the stage argv, and the same rule as the waits
+    # above: no test in this file asserts that a stage times out, so this is a
+    # wedge detector rather than a budget.  Every stage argv here is a trivial
+    # `python -c` or the sealed-stage wrapper, whose cost is interpreter start
+    # rather than the work in the argv -- which is why the previous default of
+    # 10s terminal-failed materialize-plan under load, where the wrapper pays a
+    # cold prismaquant import and then starts a second interpreter.
+    timeout_seconds: int = _WEDGE_BACKSTOP_SECONDS,
 ) -> dict[str, object]:
     return {
         "id": stage_id,
@@ -278,13 +375,16 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
     fast_path = tmp_path / "fast.receipt"
     gate_path = tmp_path / "gate.receipt"
     waiting_path = tmp_path / "waiting.receipt"
+    # No private deadline in the child: the stage's own timeout_seconds is the
+    # authoritative bound and the worker enforces it by terminating the child's
+    # process group (cluster_campaign.py, `_exec-request`). A second, shorter
+    # guess in here only turned a slow gate into `exit 8` -- a terminal stage
+    # failure -- on a box where the gate stage was merely still starting up.
     wait_script = (
         "from pathlib import Path; import sys, time; "
         "gate=Path(sys.argv[1]); out=Path(sys.argv[2]); "
-        "deadline=time.monotonic()+12; "
-        "exec(\"while not gate.exists() and time.monotonic() < deadline:\\n"
-        " time.sleep(0.02)\"); "
-        "sys.exit(8) if not gate.exists() else out.write_bytes(b'waiting')"
+        "exec(\"while not gate.exists():\\n time.sleep(0.02)\"); "
+        "out.write_bytes(b'waiting')"
     )
     stages = [
         _stage(
@@ -309,7 +409,6 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
             ],
             receipts=[_receipt(waiting_path, "waiting")],
             max_attempts=1,
-            timeout_seconds=20,
         ),
         _stage(
             tmp_path,
@@ -508,7 +607,6 @@ def test_terminal_failure_stops_other_owned_active_helpers(tmp_path):
             argv=[sys.executable, "-c", slow_script, str(slow_path)],
             receipts=[_receipt(slow_path, "slow")],
             max_attempts=2,
-            timeout_seconds=60,
         ),
     ]
     manifest = _manifest(tmp_path, stages, ssh=True, max_parallel=2)
@@ -563,19 +661,45 @@ def test_state_hash_tamper_and_concurrent_coordinator_lock_are_refused(tmp_path)
 def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
     receipt_path = tmp_path / "slow-receipt.json"
     receipt = _receipt(receipt_path, "slow-done")
+    started_path = tmp_path / "helper-started"
+    release_path = tmp_path / "release-the-helper"
+    # The helper announces itself, then waits for this test to release it,
+    # instead of sleeping 1.0s.  Two races die with that sleep, and both are
+    # the load-sensitive kind:
+    #
+    #  * The state records `running` with a pid as soon as the coordinator has
+    #    *spawned* its worker (cluster_campaign.py `bind_process`), which is
+    #    before the worker has been handed its request on stdin.  Terminating
+    #    the coordinator in that window closed the pipe, the worker exited at
+    #    EOF without ever launching a stage child, and no receipt was ever
+    #    written.  Waiting for the helper to announce itself proves the child
+    #    exists before the coordinator is allowed to die.
+    #  * Once the child did exist, the test had whatever was left of its 1.0s
+    #    sleep to kill the coordinator.  Lose that and the coordinator finishes
+    #    the campaign normally, so the resume has nothing to adopt and the
+    #    "exact receipts recovered" assertion fails instead.
     script = (
         "from pathlib import Path; import sys, time; "
-        "time.sleep(1.0); Path(sys.argv[1]).write_bytes(b'slow-done')"
+        "release=Path(sys.argv[2]); "
+        "Path(sys.argv[3]).write_bytes(b'started'); "
+        "exec(\"while not release.exists():\\n time.sleep(0.02)\"); "
+        "Path(sys.argv[1]).write_bytes(b'slow-done')"
     )
     stage = _stage(
         tmp_path,
         stage_id="slow-stage",
         host_id="sparky",
         dependencies=[],
-        argv=[sys.executable, "-c", script, str(receipt_path)],
+        argv=[
+            sys.executable,
+            "-c",
+            script,
+            str(receipt_path),
+            str(release_path),
+            str(started_path),
+        ],
         receipts=[receipt],
         max_attempts=2,
-        timeout_seconds=10,
     )
     manifest = _manifest(tmp_path, [stage])
     manifest_path = tmp_path / "manifest.json"
@@ -596,42 +720,69 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    deadline = time.monotonic() + 8.0
-    observed_running = False
-    while time.monotonic() < deadline:
-        if state_path.is_file():
-            try:
-                raw = json.loads(state_path.read_text(encoding="utf-8"))
-                attempt = raw["stages"]["slow-stage"]["attempts"][-1]
-                observed_running = (
-                    raw["stages"]["slow-stage"]["status"] == "running"
-                    and attempt["pid"] is not None
-                )
-            except (json.JSONDecodeError, KeyError, IndexError):
-                observed_running = False
-            if observed_running:
-                break
-        time.sleep(0.02)
-    assert observed_running, (
-        "coordinator never recorded slow-stage as running with a pid; "
-        f"state={state_path.read_text(encoding='utf-8') if state_path.is_file() else '(absent)'}"
-    )
-    coordinator.terminate()
-    coordinator.wait(timeout=5)
+    def _recorded_running_with_pid() -> bool:
+        if not state_path.is_file():
+            return False
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            attempt = raw["stages"]["slow-stage"]["attempts"][-1]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return False
+        return (
+            raw["stages"]["slow-stage"]["status"] == "running"
+            and attempt["pid"] is not None
+        )
 
-    # Wait for the orphaned helper to finish, on its receipt rather than on
-    # the clock. What this test asserts is that a resume ADOPTS a completed
+    try:
+        # Nearly all of this latency is the coordinator's cold start rather
+        # than its campaign work, so the wait is on the coordinator, not on a
+        # clock.
+        _wait_until(
+            _recorded_running_with_pid,
+            unmet="coordinator never recorded slow-stage as running with a pid",
+            alive=lambda: coordinator.poll() is None,
+            diagnose=lambda: "state="
+            + (
+                state_path.read_text(encoding="utf-8")
+                if state_path.is_file()
+                else "(absent)"
+            ),
+        )
+        # ...and the stage child must actually exist before the coordinator is
+        # allowed to die, or the worker exits at EOF with no work to do and
+        # there is never a receipt to adopt.  The coordinator has to stay alive
+        # to get the worker that far, so this wait is bounded by it too.
+        _wait_until(
+            _nonempty(started_path),
+            unmet="the coordinator never got a stage child running",
+            alive=lambda: coordinator.poll() is None,
+        )
+    except BaseException:
+        release_path.write_bytes(b"go")
+        raise
+
+    coordinator.terminate()
+    _wait_until(
+        lambda: coordinator.poll() is not None,
+        unmet="coordinator did not exit after terminate()",
+    )
+
+    # Now let the orphaned helper finish, and wait on its receipt rather than
+    # on the clock. What this test asserts is that a resume ADOPTS a completed
     # helper's work instead of redoing it -- so the helper has to have
     # completed. Probing the instant the coordinator dies asserts something
     # else: that the helper wins a race against the resume. It usually did,
     # and lost under load, which is how this arrived in CI as a flake.
-    helper_deadline = time.monotonic() + 30.0
-    while time.monotonic() < helper_deadline and not receipt_path.is_file():
-        time.sleep(0.02)
-    assert receipt_path.is_file(), (
-        "the orphaned helper never wrote its receipt, so there is nothing "
-        "for the resume to adopt -- the coordinator's termination most "
-        "likely took the helper with it"
+    # The helper was deliberately orphaned, so this test holds no handle on it:
+    # the backstop is the only bound available here.
+    release_path.write_bytes(b"go")
+    _wait_until(
+        _nonempty(receipt_path),
+        unmet=(
+            "the orphaned helper never wrote its receipt, so there is nothing "
+            "for the resume to adopt -- the coordinator's termination most "
+            "likely took the helper with it"
+        ),
     )
 
     state = campaign.run_campaign_v2(
@@ -651,10 +802,18 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
 def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
     child_pid_path = tmp_path / "child.pid"
     receipt_path = tmp_path / "orphan.receipt"
+    release_path = tmp_path / "release-the-child"
     receipt = _receipt(receipt_path, "orphan-complete")
+    # The child holds the stage lock until this test releases it, rather than
+    # for a fixed 2.5s.  The window this test needs -- kill the worker, prove
+    # the lock is still held -- was previously whatever was left of that sleep
+    # after a cold interpreter start, which is the same load-sensitive budget
+    # as the deadlines this file just lost.
     script = (
         "from pathlib import Path; import os, sys, time; "
-        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(2.5); "
+        "Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "release=Path(sys.argv[3]); "
+        "exec(\"while not release.exists():\\n time.sleep(0.02)\"); "
         "Path(sys.argv[2]).write_bytes(b'orphan-complete')"
     )
     stage = _stage(
@@ -668,9 +827,9 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
             script,
             str(child_pid_path),
             str(receipt_path),
+            str(release_path),
         ],
         receipts=[receipt],
-        timeout_seconds=10,
     )
     manifest = _manifest(tmp_path, [stage])
     owner = campaign._owner_token(
@@ -696,17 +855,24 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
         assert worker.stdin is not None
         worker.stdin.write(json.dumps(request).encode("utf-8"))
         worker.stdin.close()
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline and not child_pid_path.is_file():
-            time.sleep(0.02)
-        assert child_pid_path.is_file()
-        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        _wait_until(
+            _nonempty(child_pid_path),
+            unmet="the worker never launched the stage child",
+            alive=lambda: worker.poll() is None,
+        )
+        child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
         snapshot = campaign._proc_snapshot(child_pid)
         assert snapshot is not None
         child_ticks = snapshot[0]
 
         worker.kill()
-        worker.wait(timeout=5)
+        _wait_until(
+            lambda: worker.poll() is not None,
+            unmet="worker did not exit after kill()",
+        )
+        # The child is still holding the lock by construction -- it is blocked
+        # on the release file -- so a short timeout here is the assertion, not
+        # a budget: the lock must refuse to open promptly.
         with pytest.raises(TimeoutError, match="worker lock"):
             campaign._worker_lock(
                 Path(request["lock_path"]),
@@ -714,20 +880,37 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
                 timeout_seconds=1,
             )
 
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not receipt_path.is_file():
-            time.sleep(0.02)
+        release_path.write_bytes(b"go")
+        # The stage child outlived its worker in its own process group, so its
+        # liveness is a pid probe rather than a Popen handle.  Waiting on the
+        # receipt to exist also keeps a slow box from turning this into a
+        # FileNotFoundError instead of a named failure.
+        _wait_until(
+            _nonempty(receipt_path),
+            unmet="the orphaned stage child never wrote its receipt",
+            alive=lambda: campaign._proc_snapshot(child_pid) is not None,
+        )
         assert receipt_path.read_bytes() == b"orphan-complete"
+        # The child releases the lock by exiting, which it has not necessarily
+        # done at the instant the receipt lands.  Bound that on the backstop
+        # rather than on a guess at how long an interpreter takes to shut down.
         lock_fd = campaign._worker_lock(
             Path(request["lock_path"]),
             Path(request["work_root"]),
-            timeout_seconds=1,
+            timeout_seconds=_WEDGE_BACKSTOP_SECONDS,
         )
         os.close(lock_fd)
     finally:
+        # Unblock the child on every path out of this test: a failure above
+        # must not leave an orphan spinning on a release file that never lands.
+        # Its worker is dead by then, so nothing else would enforce a bound.
+        release_path.write_bytes(b"go")
         if worker.poll() is None:
             worker.kill()
-            worker.wait(timeout=5)
+            _wait_until(
+                lambda: worker.poll() is not None,
+                unmet="worker did not exit after kill() during cleanup",
+            )
         if child_pid is not None and child_ticks is not None:
             snapshot = campaign._proc_snapshot(child_pid)
             if snapshot is not None and snapshot[0] == child_ticks:

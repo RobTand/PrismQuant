@@ -75,6 +75,9 @@ if TYPE_CHECKING:
     from .lane_eligibility import ServingContext
 
 from . import tessera_hessian as th
+from .nvfp4_activation_contract import (
+    ActivationScaleContractError as _OwnedActivationScaleContractError,
+)
 
 __all__ = [
     "SCHEMA",
@@ -195,7 +198,7 @@ def next_anchor_rate(
 # Measurement
 # ---------------------------------------------------------------------------
 
-class ActivationScaleContractError(RuntimeError):
+class ActivationScaleContractError(_OwnedActivationScaleContractError):
     """A static-activation-contract rung has no calibrated input scale.
 
     Its own class for the same reason ``HessianContractError`` has one: the
@@ -205,6 +208,12 @@ class ActivationScaleContractError(RuntimeError):
     FP32-scale quantiser instead would price an activation regime the serve
     does not execute -- exactly the defect this refusal exists to make loud
     (RobTand/prismaquant#194).
+
+    The same refusal, raised by the assignment-KL hooks and the production
+    cache scorer, is the owner's
+    ``nvfp4_activation_contract.ActivationScaleContractError``; this is that
+    class under the campaign's historical name (#205), so a caller catching
+    either sees one contract error.
     """
 
 
@@ -419,6 +428,10 @@ def campaign_cost_payload(
         "text_sha256": _h.get("text_sha256"),
         "fit_ids_sha256": _h.get("fit_ids_sha256"),
         "fit_tokens": _h.get("fit_tokens"),
+        # The content digest of the capture written for the export leg, so
+        # the allocation binds to the payload and not only to the draw's
+        # triple (RobTand/prismaquant#204); None on a weights-only campaign.
+        "capture_sha256": _h.get("capture_sha256"),
         "kwarg": tuple(_h.get("kwargs", ())) or _h.get("kwarg"),
     }
 
@@ -1034,20 +1047,27 @@ def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
                         hessian_identity, static_scales, static_scale_policy):
     """Write the exporter's ``--hessian`` and ``--input-scales`` inputs.
 
-    ``(hessian_capture_path | None, input_scales_path | None)``.  The
-    allocation an allocator builds on this campaign's table is priced under
-    exactly these Hessians and these static activation scales, so the export
-    leg must be handed them back or the artifact built is not the artifact
-    priced (RobTand/prismaquant#193).  Both files are in the shapes Tessera's
-    exporter consumes:
+    ``(hessian_capture_path | None, input_scales_path | None,
+    capture_sha256 | None)``.  The allocation an allocator builds on this
+    campaign's table is priced under exactly these Hessians and these static
+    activation scales, so the export leg must be handed them back or the
+    artifact built is not the artifact priced (RobTand/prismaquant#193).
+    Both files are in the shapes Tessera's exporter consumes:
 
     * ``hessian_capture.pt`` -- ``{"H": {unit: XᵀX}, "counts", "provenance"}``,
       what ``ActivationSource.from_capture`` loads; the H tensors are the
       campaign's own un-normalised accumulators, the identity is the same
       triple stamped on every cost row, and ``hessian_role: "fit"`` marks it
-      as bytes-shaping (Tessera refuses a held-out capture there).  A JSON
-      sidecar ``<capture>.provenance.json`` repeats the identity so the export
-      gate can bind capture to allocation without loading the tensors.
+      as bytes-shaping (Tessera refuses a held-out capture there).  The
+      returned ``capture_sha256`` is the content digest of exactly this
+      payload (``tessera_export_lane.hessian_capture_sha256``, Tessera's own
+      seal rule); every cost row carries it and the export gate binds the
+      allocation to the payload by it (RobTand/prismaquant#204).  A JSON
+      sidecar ``<capture>.provenance.json`` repeats the identity and carries
+      the same digest, so it can only ever describe the payload beside it:
+      both files are staged and renamed, the old sidecar is removed before
+      the new payload lands, and the sidecar lands last -- at no point does a
+      sidecar sit beside a payload it does not seal.
     * ``input_scales.safetensors`` -- one ``<unit>.input_global_scale`` F32
       scalar per unit, the exporter's stock-NVFP4 spelling, valued exactly as
       the W4A4 costs were scored.
@@ -1057,24 +1077,40 @@ def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
     """
     import torch
 
+    from .tessera_export_lane import (
+        HESSIAN_CAPTURE_SHA256_SCHEMA, hessian_capture_sha256,
+    )
+
     hessian_capture_path = None
+    capture_sha256 = None
     if hessians is not None:
         hessian_capture_path = cache_dir / "hessian_capture.pt"
         capture_provenance = {**dict(hessian_identity), "hessian_role": "fit"}
+        saved_hessians = {name: h for name, h in hessians.items()
+                          if h is not None}
+        capture_sha256 = hessian_capture_sha256(saved_hessians,
+                                                capture_provenance)
+        sidecar = hessian_capture_path.with_name(
+            hessian_capture_path.name + ".provenance.json")
         tmp_capture = hessian_capture_path.with_suffix(".pt.tmp")
+        tmp_sidecar = sidecar.with_suffix(".json.tmp")
         torch.save({
-            "H": {name: h for name, h in hessians.items() if h is not None},
+            "H": saved_hessians,
             "counts": dict(hessian_rows),
             "provenance": capture_provenance,
         }, tmp_capture)
+        tmp_sidecar.write_text(json.dumps({
+            **capture_provenance,
+            "capture_sha256": capture_sha256,
+            "capture_sha256_schema": HESSIAN_CAPTURE_SHA256_SCHEMA,
+        }, indent=2, sort_keys=True) + "\n")
+        if sidecar.exists():
+            sidecar.unlink()
         os.replace(tmp_capture, hessian_capture_path)
-        sidecar = hessian_capture_path.with_name(
-            hessian_capture_path.name + ".provenance.json")
-        sidecar.write_text(json.dumps(capture_provenance, indent=2,
-                                      sort_keys=True) + "\n")
+        os.replace(tmp_sidecar, sidecar)
         print(f"[campaign] wrote {hessian_capture_path} "
-              f"({sum(1 for h in hessians.values() if h is not None)} "
-              "Hessians)", flush=True)
+              f"({len(saved_hessians)} Hessians, capture_sha256 "
+              f"{capture_sha256[:12]})", flush=True)
     input_scales_path = None
     if static_scales:
         from safetensors.torch import save_file
@@ -1090,7 +1126,7 @@ def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
         )
         print(f"[campaign] wrote {input_scales_path} "
               f"({len(static_scales)} static input scales)", flush=True)
-    return hessian_capture_path, input_scales_path
+    return hessian_capture_path, input_scales_path, capture_sha256
 
 
 def main(argv: "Sequence[str] | None" = None) -> int:
@@ -1266,7 +1302,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     # The export leg's inputs, written BEFORE the anchor loop so even a
     # deadline-stopped campaign leaves them (RobTand/prismaquant#193).
-    hessian_capture_path, input_scales_path = write_export_inputs(
+    hessian_capture_path, input_scales_path, capture_sha256 = \
+        write_export_inputs(
         cache_dir,
         hessians=hessians if want_h else None,
         hessian_rows=hessian_rows,
@@ -1671,6 +1708,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 # for the export leg's --hessian input; None on --hessian off.
                 "capture_path": (None if hessian_capture_path is None
                                  else str(hessian_capture_path)),
+                # The content digest of that payload (Tessera's own seal
+                # rule), stamped on every row so the allocation binds to
+                # the capture BY CONTENT, not by the draw's triple alone
+                # (RobTand/prismaquant#204); None on --hessian off.
+                "capture_sha256": capture_sha256,
                 "token_count": int(hessian_token_count),
                 "token_count_min": int(hessian_token_min),
                 # The identity triple Tessera requires, plus its context. The

@@ -1525,6 +1525,19 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
     projection, so the allocator's ``tessera_hessian`` metadata block -- which
     stamps this return verbatim into ``layer_config.json`` -- gives export a
     Hessian identity it can bind a capture against.
+
+    **The capture's content digest is part of the key too**
+    (RobTand/prismaquant#204).  The triple names the token draw and not the
+    Hessian: two captures of one draw with different ``H`` -- a different
+    sequence layout, a re-capture, a rewritten payload -- carry one triple
+    and encode different bytes at the same format name.  The campaign stamps
+    every row with ``capture_sha256``, the digest of exactly the payload it
+    wrote for the export leg, and rows carrying two digests under one triple
+    are two captures, refused from merging.  ``None`` (a weights-only
+    campaign, or a table written before the digest existed) is its own
+    value, never wildcarded against a digest: the returned ``capture_sha256``
+    is what the export gate binds the payload to, and a table without one
+    yields an allocation the gate refuses as unbound.
     """
     from .tessera_hessian import HESSIAN_IDENTITY_FIELDS
 
@@ -1560,7 +1573,7 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
                 schema = "modern"
             key = (schema, modern, bool(ident.get("supplied")),
                    ident.get("text_sha"), ident.get("token_count"),
-                   ident.get("kwarg"))
+                   ident.get("kwarg"), ident.get("capture_sha256"))
             seen[key] = seen.get(key, 0) + 1
     if len(seen) > 1:
         raise ValueError(
@@ -1568,12 +1581,14 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
             + "; ".join(
                 f"{k[0]} triple={None if k[1] is None else tuple(str(v)[:12] for v in k[1])} "
                 f"supplied={k[2]} text_sha={str(k[3])[:12]} "
-                f"tokens={k[4]} kwarg={k[5]} ({n} rows)"
+                f"tokens={k[4]} kwarg={k[5]} "
+                f"capture_sha256={None if k[6] is None else str(k[6])[:12]} "
+                f"({n} rows)"
                 for k, n in sorted(seen.items(), key=lambda kv: -kv[1]))
-            + ". Rows priced with and without a Hessian, or on different "
-              "calibration draws, are not comparable prices of the same bytes. "
-              "Rebuild the cost table with one campaign, or allocate them "
-              "separately."
+            + ". Rows priced with and without a Hessian, on different "
+              "calibration draws, or against different captures of one draw, "
+              "are not comparable prices of the same bytes. Rebuild the cost "
+              "table with one campaign, or allocate them separately."
         )
     (key,) = tuple(seen) if seen else (None,)
     triple = dict(zip(required, key[1])) if key is not None and key[1] is not None \
@@ -1584,6 +1599,7 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
         "token_count": None if key is None else key[4],
         "kwarg": None if key is None else key[5],
         **triple,
+        "capture_sha256": None if key is None else key[6],
         "identity_schema": None if key is None else key[0],
         "stamped_rows": sum(seen.values()),
         "legacy_rows": int(legacy_rows),
@@ -1591,7 +1607,48 @@ def assert_uniform_hessian_identity(costs: "dict") -> dict:
     }
 
 
-__all__ = list(__all__) + ["assert_uniform_hessian_identity"]
+def priced_static_scales(assignment: "Mapping[str, str]",
+                         costs: "Mapping") -> dict:
+    """The static A-side scale VALUE each selected Tessera unit was priced under.
+
+    ``{"schema": PRICED_STATIC_SCALES_SCHEMA, "units": {unit: scale}}`` for
+    every unit the assignment gives a Tessera format whose cost row carries
+    ``input_global_scale`` (the campaign stamps it on every row whose route
+    executes the static NVFP4 contract, measured and interpolated alike).
+    Empty ``units`` when no selected row carries one -- still a claim, and a
+    different one from the block being absent.
+
+    The allocator stamps this beside ``tessera_hessian`` in the layer_config
+    metadata; the export gate (``tessera_export_lane.
+    require_priced_export_inputs``) reads the file the exporter is handed
+    and refuses a W4A4 unit whose served scalar is not the value here
+    (RobTand/prismaquant#204).  Until then the gate checked only that the
+    unit's key existed in the file, so a file carrying 1.0 and one carrying
+    10000.0 at the same key were both "the priced scales".
+
+    A selected W4A4 unit whose row carries no scale is deliberately left
+    out rather than given a default: the gate refuses it by name as unbound,
+    which is the honest answer for a row that never said what priced it.
+    """
+    from .tessera_export_lane import PRICED_STATIC_SCALES_SCHEMA
+
+    units: dict[str, float] = {}
+    for name, fmt in sorted((assignment or {}).items()):
+        fmt = str(fmt)
+        if parse_tessera_format_name(fmt) is None:
+            continue
+        rows = (costs or {}).get(name)
+        row = rows.get(fmt) if isinstance(rows, Mapping) else None
+        scale = row.get("input_global_scale") if isinstance(row, Mapping) \
+            else None
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+            continue
+        units[name] = float(scale)
+    return {"schema": PRICED_STATIC_SCALES_SCHEMA, "units": units}
+
+
+__all__ = list(__all__) + ["assert_uniform_hessian_identity",
+                           "priced_static_scales"]
 
 
 # ---------------------------------------------------------------------------

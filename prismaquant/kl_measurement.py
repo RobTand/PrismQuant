@@ -42,6 +42,7 @@ from prismaquant.perturbed_x_cache import (
     PerturbedActivationCache,
     calibration_data_hash,
 )
+from prismaquant.nvfp4_activation_contract import ActivationScaleContractError
 from prismaquant.nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_assignment_payload_breakdown,
@@ -1131,6 +1132,23 @@ def measure_assignment_kl(
                     f"activation quant silently skipped.  sample="
                     f"{hooks.skipped[:3]}"
                 )
+        # A unit whose spec is measured under the served static-scale
+        # activation contract (a Tessera W4A4 rung) is priced through the
+        # served oracle at ITS calibrated G, or not at all: the hook refuses
+        # by name, and this asks the same question before the first forward
+        # so the refusal lists every such unit rather than the first one the
+        # model reaches.  Not gated by the strict-coverage lever -- there is
+        # no dynamic serving path to fall back to (#205).
+        scale_gaps = hooks.served_activation_scale_gaps()
+        if scale_gaps:
+            raise ActivationScaleContractError(
+                "assignment-KL: these units are served under the static "
+                "activation contract but the hooks have no calibrated "
+                "activation maximum for them (production cache "
+                "activation_max_abs); refusing to measure them under a "
+                f"dynamic quantiser the runtime never runs.  missing="
+                f"{len(scale_gaps)} sample={scale_gaps[:5]}"
+            )
     values = []
     nll_values: list[float] = []
     if use_cuda_graphs is None:

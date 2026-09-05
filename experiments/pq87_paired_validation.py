@@ -66,8 +66,20 @@ def server_argv(nonce, model):
     return argv
 
 
-def completed_candidate(receipt, returncode):
-    verdict = receipt.get("decision", {}).get("verdict")
+def completed_candidate(receipt, returncode, control, replay):
+    """A candidate arm is observed only when its stored decision replays.
+
+    `receipt["decision"]` is written by the measurement client the driver
+    launched; it is a claim, not evidence. `replay` (the module's
+    `replay_no_new_failures`) recomputes the whole decision from the control
+    and candidate measurements and raises by name if the stored one differs,
+    so a verdict bit can never certify the arm on its own. The exit status is
+    then required to agree with the replayed verdict.
+    """
+    decision = receipt.get("decision")
+    if not isinstance(decision, dict) or "measurement" not in receipt:
+        return False
+    verdict = replay(decision, control["measurement"], receipt["measurement"])["verdict"]
     return (verdict == "accepted" and returncode == 0) or (verdict == "refused" and returncode == 2)
 
 
@@ -262,7 +274,11 @@ def inside(args):
                     role_status[population] = {"returncode": result.returncode,
                         "decision": receipt.get("decision"), "ppl": receipt.get("result")}
                     if role == "candidate" and population != "ppl":
-                        observed = completed_candidate(receipt, result.returncode)
+                        # The control arm of this same run wrote this file; the
+                        # candidate client bound its digest. Replay before trusting.
+                        control_receipt = json.loads(Path(f"/run/control-{population}.json").read_text())
+                        observed = completed_candidate(receipt, result.returncode, control_receipt,
+                                                       _bc.replay_no_new_failures)
                     else:
                         observed = bool(receipt) and result.returncode == 0
                     if not observed:
