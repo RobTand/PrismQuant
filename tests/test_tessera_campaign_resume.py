@@ -184,6 +184,54 @@ def test_main_refuses_changed_encoding_or_scoring_inputs(monkeypatch, tmp_path, 
     assert checkpoint.read_bytes() == original_manifest
 
 
+def _export_inputs_state(cache_dir):
+    """What the export leg would be handed, read back from the cache."""
+    from safetensors.torch import load_file
+
+    capture = torch.load(cache_dir / "hessian_capture.pt", weights_only=False)
+    sidecar = json.loads(
+        (cache_dir / "hessian_capture.pt.provenance.json").read_text())
+    scales = load_file(str(cache_dir / "input_scales.safetensors"))
+    return {
+        "hessian": float(capture["H"][UNIT][0, 0]),
+        "capture_provenance": capture["provenance"],
+        "capture_sha256": sidecar["capture_sha256"],
+        "input_global_scale": float(scales[f"{UNIT}.input_global_scale"]),
+    }
+
+
+def test_refused_resume_leaves_the_surviving_tables_export_inputs(monkeypatch, tmp_path):
+    """A refused resume must not have rewritten the export leg's inputs first.
+
+    The checkpoint and the previous cost file already survive a refusal, but
+    ``hessian_capture.pt``, its sidecar and ``input_scales.safetensors`` are
+    the export leg's half of the same surviving table: destroy them and the
+    table that survived cannot be exported at all (#211).  The pytest form of
+    ``pq-audit-caches/pq-204/proofs/rejected_resume_postfix.py``; it needs the
+    release Tessera's ``cached_unit`` receipt API to reach ``main()``'s resume
+    at all, so it skips at the development pin.  The menu is left empty (the
+    ``priced=False`` fixture) so the refusal is the run-level identity's and
+    not the released contract's lane-eligibility schema.
+    """
+    pytest.importorskip("tessera.cached_unit")
+    campaign, checkpoint, argv, _model, inputs = _main_fixture(monkeypatch, tmp_path)
+    argv[argv.index("--hessian") + 1] = "require"
+    assert campaign.main(argv) == 0
+    cache_dir = tmp_path / "cache"
+    before = _export_inputs_state(cache_dir)
+    original_manifest = checkpoint.read_bytes()
+    original_cost = (tmp_path / "cost.pkl").read_bytes()
+    # Another draw's Hessian and another static A-side scale: exactly the run
+    # the run-level checkpoint identity refuses.
+    inputs["hessian"] = 2 * torch.eye(256)
+    inputs["max_abs"] *= 2
+    with pytest.raises(RuntimeError, match="checkpoint identity mismatch"):
+        campaign.main(argv)
+    assert checkpoint.read_bytes() == original_manifest
+    assert (tmp_path / "cost.pkl").read_bytes() == original_cost
+    assert _export_inputs_state(cache_dir) == before
+
+
 @pytest.mark.parametrize("damage", ["missing", "bytes", "symlink"])
 def test_main_refuses_missing_or_changed_priced_wire(monkeypatch, tmp_path, damage):
     (campaign, checkpoint, argv, _model, _inputs), _payload = _fresh_priced_campaign(
