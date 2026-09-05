@@ -488,35 +488,154 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
 #: together.
 PRICED_HESSIAN_IDENTITY_FIELDS = ("text_sha256", "fit_tokens", "fit_ids_sha256")
 
+#: The capture-context fields Tessera's seal covers beside the triple
+#: (``tessera.export.CAPTURE_CONTEXT``): two captures of one token prefix
+#: differ only here when the sequence layout differs (tessera#214).
+CAPTURE_CONTEXT_FIELDS = ("model", "seqlen", "source")
 
-def _hessian_capture_identity(hessian_path: Path) -> "Mapping[str, Any]":
-    """The capture's provenance block, sidecar first.
+#: The schema string sealed into the digest, Tessera's own spelling.
+HESSIAN_CAPTURE_SHA256_SCHEMA = "tessera.hessian_capture.v1"
 
-    The campaign writes ``<capture>.provenance.json`` beside the payload so
-    this gate never loads the Hessian tensors; a capture without the sidecar
-    (Tessera's own ``capture_h_full.py`` writes none) is read through
-    ``torch.load``, which is what the exporter does with the same file moments
-    later anyway.
+#: The block the allocator stamps beside ``tessera_hessian`` when a Tessera
+#: unit is selected: ``{"schema": ..., "units": {unit: input_global_scale}}``,
+#: the static A-side scale VALUE each selected unit's cost row was priced
+#: under (RobTand/prismaquant#204).
+PRICED_STATIC_SCALES_SCHEMA = "prismaquant.tessera_activation_static_scales.v1"
+
+
+def hessian_capture_sha256(hessians: "Mapping[str, Any]",
+                           provenance: "Mapping[str, Any]") -> str:
+    """The content digest that binds an allocation to one Hessian capture.
+
+    The identity triple names the token draw, not the Hessian: two captures of
+    one draw with different ``H`` (a different sequence layout, a different
+    model revision, a corrupted or rewritten payload) carry the same triple
+    and encode different bytes at the same format name.  This digest tells
+    them apart.  It is **Tessera's own rule**, ``tessera.export.
+    ActivationSource.capture_sha256`` at release e78959e, reimplemented here
+    with torch alone because the pinned development Tessera (1221d2a) predates
+    it and the gate must refuse on a machine that can read the payload
+    without importing the ``tessera`` package:
+
+    ``sha256(json.dumps({"schema": "tessera.hessian_capture.v1", "identity":
+    {triple + capture context, via .get}}, sort_keys=True, default=str))``,
+    then for every unit name in sorted order ``b"\\0" + name + b"\\0"`` and the
+    hex of ``sha256(json.dumps({"dtype", "shape"}, sort_keys=True) + b"\\0" +
+    contiguous bytes)`` of its ``H`` (``cached_unit.tensor_identity``,
+    ``sha256.dtype_shape_contiguous.v1``).
+
+    Where the running Tessera publishes ``capture_sha256`` the gate computes
+    both and refuses on disagreement, so a drift in either rule is a refusal
+    here rather than a silent divergence
+    (``test_the_digest_rule_is_tesseras_capture_seal``).
     """
-    sidecar = hessian_path.with_name(hessian_path.name + ".provenance.json")
-    if sidecar.is_file():
-        loaded = json.loads(sidecar.read_text(encoding="utf-8"))
-        if not isinstance(loaded, Mapping):
-            raise TesseraExportLaneError(
-                f"{sidecar} is not a JSON object; the capture's identity "
-                "cannot be read")
-        return loaded
+    import hashlib
+
+    import torch
+
+    identity = {field: provenance.get(field)
+                for field in PRICED_HESSIAN_IDENTITY_FIELDS}
+    identity.update({field: provenance.get(field)
+                     for field in CAPTURE_CONTEXT_FIELDS})
+    digest = hashlib.sha256()
+    digest.update(json.dumps({"schema": HESSIAN_CAPTURE_SHA256_SCHEMA,
+                              "identity": identity},
+                             sort_keys=True, default=str).encode())
+    for name in sorted(hessians):
+        value = hessians[name].detach().cpu().contiguous()
+        unit = hashlib.sha256()
+        unit.update(json.dumps({"dtype": str(value.dtype),
+                                "shape": list(value.shape)},
+                               sort_keys=True).encode())
+        unit.update(b"\0")
+        unit.update(value.view(torch.uint8).numpy().tobytes())
+        digest.update(b"\0" + name.encode() + b"\0")
+        digest.update(unit.hexdigest().encode())
+    return digest.hexdigest()
+
+
+def _tessera_capture_seal(hessians, provenance) -> "str | None":
+    """Tessera's own ``capture_sha256`` of the same payload, or None where the
+    running Tessera predates the seal (the pinned 1221d2a does)."""
+    try:
+        from tessera.export import ActivationSource
+    except ImportError:
+        return None
+    if not hasattr(ActivationSource, "capture_sha256"):
+        return None
+    try:
+        source = ActivationSource(hessians=hessians, provenance=dict(provenance))
+        return str(source.capture_sha256())
+    except Exception as exc:  # tessera's GrammarError has no stable import
+        raise TesseraExportLaneError(
+            f"tessera.export.ActivationSource refuses this capture: {exc}"
+        ) from exc
+
+
+def _bound_hessian_capture(hessian_path: Path) -> tuple:
+    """``(hessians, provenance, capture_sha256)`` of the payload itself.
+
+    Until RobTand/prismaquant#204 this read ``<capture>.provenance.json``
+    first and touched the payload only when there was none -- but Tessera's
+    ``ActivationSource.from_capture`` never reads the sidecar, so the gate
+    compared the allocation against a file the encode ignores.  The identity
+    is now read from the ``.pt`` the exporter loads, and its content is
+    digested (:func:`hessian_capture_sha256`).  A sidecar, when present, must
+    carry ``capture_sha256`` equal to that digest: the campaign writes it so
+    (``tessera_campaign.write_export_inputs``), and a sidecar that seals a
+    different payload -- stale, or written before the seal existed -- is
+    refused by name rather than read.
+    """
     import torch
 
     payload = torch.load(str(hessian_path), map_location="cpu",
                          weights_only=False)
-    provenance = payload.get("provenance") if isinstance(payload, Mapping) \
-        else None
+    hessians = payload.get("H") if isinstance(payload, Mapping) else None
+    if not isinstance(hessians, Mapping) or not all(
+            hasattr(h, "detach") for h in hessians.values()):
+        raise TesseraExportLaneError(
+            f"--hessian {hessian_path} carries no 'H' mapping of unit -> "
+            "tensor; a capture payload is {'H': {unit: [cols, cols]}, "
+            "'provenance': {...}} and nothing else can be bound to the "
+            "allocation")
+    provenance = payload.get("provenance")
     if not isinstance(provenance, Mapping):
         raise TesseraExportLaneError(
-            f"{hessian_path} carries no provenance block; a capture whose "
-            "identity cannot be read cannot be bound to the allocation")
-    return provenance
+            f"--hessian {hessian_path} carries no provenance block; a capture "
+            "whose identity cannot be read cannot be bound to the allocation")
+    digest = hessian_capture_sha256(hessians, provenance)
+    sidecar = hessian_path.with_name(hessian_path.name + ".provenance.json")
+    if sidecar.is_file():
+        loaded = json.loads(sidecar.read_text(encoding="utf-8"))
+        sealed = loaded.get("capture_sha256") if isinstance(loaded, Mapping) \
+            else None
+        if sealed != digest:
+            raise TesseraExportLaneError(
+                f"{sidecar} does not seal the payload beside it (sidecar "
+                f"capture_sha256={sealed!r}, payload={digest}). Tessera's "
+                "exporter reads only the payload, so a sidecar that describes "
+                "something else is a stale or pre-#204 record: re-run the "
+                "campaign, which writes both files sealed together, or delete "
+                "the sidecar and let the gate read the payload alone."
+            )
+    return hessians, provenance, digest
+
+
+def _crosscheck_capture_seal(hessian_path, hessians, provenance,
+                             digest) -> "str | None":
+    """Refuse when Tessera's own seal of the payload is not ours; the name of
+    the rule cross-checked, or None where the running Tessera has none."""
+    producer = _tessera_capture_seal(hessians, provenance)
+    if producer is None:
+        return None
+    if producer != digest:
+        raise TesseraExportLaneError(
+            f"--hessian {hessian_path}: PrismaQuant's hessian_capture_sha256 "
+            f"({digest}) disagrees with tessera.export.ActivationSource."
+            f"capture_sha256 ({producer}) for the same payload. The two "
+            "digest rules have drifted and no allocation can be bound "
+            "against this Tessera until they agree.")
+    return "tessera.export.ActivationSource.capture_sha256"
 
 
 def require_priced_export_inputs(
@@ -532,19 +651,24 @@ def require_priced_export_inputs(
       an allocation whose ``tessera_hessian`` metadata says ``supplied: true``
       names bytes shaped by a specific ``XᵀX`` capture, and the exporter's
       ``--hessian`` must carry that capture -- checked by the identity triple
-      the allocation records (#195's canonical stamp) against the capture's
-      own provenance.  ``supplied: false`` is the deliberate weights-only
-      price, and handing the exporter a Hessian then ships bytes the
-      allocation never priced -- refused in that direction too.  An
-      allocation that declares neither is ambiguous and fails closed
-      (AGENTS.md principle 2).
+      the allocation records (#195's canonical stamp) AND by the content
+      digest of the payload (#204's ``capture_sha256``,
+      :func:`hessian_capture_sha256`) against the ``.pt`` the exporter loads,
+      never against a sidecar it does not read.  ``supplied: false`` is the
+      deliberate weights-only price, and handing the exporter a Hessian then
+      ships bytes the allocation never priced -- refused in that direction
+      too.  An allocation that declares neither is ambiguous and fails closed
+      (AGENTS.md principle 2); one that carries the triple but no digest is
+      unbound and refused by name, never read as "any capture of this draw".
 
     * **The static activation scales.**  Every selected rung whose route
       executes the static NVFP4 contract was priced under a calibrated
       ``input_global_scale``, and the exporter refuses NVFP4 routes without
       ``--input-scales`` -- but only after encoding everything else.  This
-      gate requires the file, and every selected W4A4 unit's key in it, before
-      a single unit is encoded.
+      gate requires the file, every selected W4A4 unit's key in it, and (#204)
+      that the VALUE under each key is the value the allocation's
+      ``tessera_activation_static_scales`` block says priced that unit,
+      before a single unit is encoded.
     """
     from .footprint import _read_safetensors_header
     from .layer_config import load_assignment, read_layer_config_metadata
@@ -556,13 +680,15 @@ def require_priced_export_inputs(
                 if fmt.startswith("TESSERA_")}
     report = {
         "hessian_required": False, "hessian": None,
+        "hessian_capture_sha256": None, "hessian_capture_seal_crosscheck": None,
         "input_scales_required": False, "input_scales": None,
-        "w4a4_units": 0,
+        "w4a4_units": 0, "input_scales_bound_units": 0,
     }
     if not selected:
         return report
 
-    block = read_layer_config_metadata(assignment_path).get("tessera_hessian")
+    metadata = read_layer_config_metadata(assignment_path)
+    block = metadata.get("tessera_hessian")
     if not isinstance(block, Mapping) or not isinstance(
             block.get("supplied"), bool):
         raise TesseraExportLaneError(
@@ -598,7 +724,18 @@ def require_priced_export_inputs(
                 "table; rebuild the cost table with the current campaign and "
                 "re-allocate."
             )
-        identity = _hessian_capture_identity(hessian_path)
+        priced_digest = block.get("capture_sha256")
+        if not isinstance(priced_digest, str) or not priced_digest:
+            raise TesseraExportLaneError(
+                "the allocation's tessera_hessian block carries no "
+                "capture_sha256, so the capture that priced it is unbound: "
+                "the identity triple names the token draw, not the Hessian "
+                "content, and two captures of one draw can encode different "
+                "bytes. This allocation came from a pre-#204 cost table; "
+                "re-run the campaign (its rows now carry the digest of the "
+                "capture it writes) and re-allocate."
+            )
+        hessians, identity, digest = _bound_hessian_capture(hessian_path)
         role = identity.get("hessian_role")
         if role is not None and role != "fit":
             raise TesseraExportLaneError(
@@ -620,7 +757,21 @@ def require_priced_export_inputs(
                   "allocation did not price; hand the campaign's own capture "
                   "or re-allocate."
             )
+        if digest != priced_digest:
+            raise TesseraExportLaneError(
+                f"--hessian {hessian_path} is not the capture that priced "
+                f"this allocation: capture_sha256 payload={digest} != "
+                f"allocation={priced_digest}. Its identity triple agrees, so "
+                "this is the same token draw over different Hessian content "
+                "or capture context (model, seqlen, source) -- a rewritten, "
+                "re-captured or corrupted payload. An encode against it ships "
+                "bytes the allocation did not price; hand the campaign's own "
+                "capture or re-allocate."
+            )
         report["hessian"] = str(hessian_path)
+        report["hessian_capture_sha256"] = digest
+        report["hessian_capture_seal_crosscheck"] = _crosscheck_capture_seal(
+            hessian_path, hessians, identity, digest)
     elif hessian_path is not None:
         raise TesseraExportLaneError(
             "the allocation was priced weights-only (tessera_hessian."
@@ -655,6 +806,35 @@ def require_priced_export_inputs(
                 "--cache-dir), whose values are the scales the costs were "
                 "priced under."
             )
+        # The allocation's own record of what priced each unit comes before
+        # the file: an allocation with nothing to compare against is unbound,
+        # and a file that merely has the key is exactly what #204 refused to
+        # keep accepting.
+        priced_block = metadata.get("tessera_activation_static_scales")
+        priced_units = priced_block.get("units") if isinstance(
+            priced_block, Mapping) else None
+        if not isinstance(priced_units, Mapping):
+            raise TesseraExportLaneError(
+                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
+                "activation contract but the allocation's metadata carries "
+                "no tessera_activation_static_scales block, so the "
+                "input_global_scale each was priced under is unbound and "
+                "the file's values cannot be checked. This allocation came "
+                "from a pre-#204 allocator; re-allocate from the campaign's "
+                "cost table, whose rows carry the priced scale."
+            )
+        unpriced = [name for name in w4a4
+                    if not isinstance(priced_units.get(name), (int, float))
+                    or isinstance(priced_units.get(name), bool)]
+        if unpriced:
+            raise TesseraExportLaneError(
+                "the allocation priced no input_global_scale for selected "
+                f"W4A4 unit(s) {unpriced[:5]}{'...' if len(unpriced) > 5 else ''}"
+                " (tessera_activation_static_scales.units has no numeric "
+                "value for them); a static-contract unit whose priced scale "
+                "is unknown cannot be bound to any file. Re-run the campaign "
+                "so every W4A4 row carries its scale, and re-allocate."
+            )
         input_scales_path = Path(input_scales_path)
         if not input_scales_path.is_file():
             raise TesseraExportLaneError(
@@ -670,7 +850,47 @@ def require_priced_export_inputs(
                 "exporter's fused join cannot invent a member's scale, and a "
                 "partial file exports a module the costs did not price."
             )
+        from safetensors import safe_open
+
+        with safe_open(str(input_scales_path), framework="pt",
+                       device="cpu") as handle:
+            for name in w4a4:
+                tensor = handle.get_tensor(f"{name}.input_global_scale")
+                if tensor.numel() != 1:
+                    raise TesseraExportLaneError(
+                        f"--input-scales {input_scales_path}: "
+                        f"{name}.input_global_scale has shape "
+                        f"{list(tensor.shape)}; the static NVFP4 contract "
+                        "reads one scalar per unit and nothing else can be "
+                        "compared with the priced scale."
+                    )
+                served = float(tensor.reshape(-1)[0].item())
+                # The campaign prices and writes the F32-rounded scalar; the
+                # comparison is between the F32 the file carries and the F32
+                # of what the row says priced it, exactly.
+                try:
+                    priced = struct.unpack(
+                        "<f", struct.pack("<f", float(priced_units[name])))[0]
+                except (OverflowError, struct.error) as exc:
+                    raise TesseraExportLaneError(
+                        f"the allocation's priced input_global_scale for "
+                        f"{name} ({priced_units[name]!r}) is not an F32 "
+                        "scalar and cannot have priced any served unit"
+                    ) from exc
+                if served != priced:
+                    raise TesseraExportLaneError(
+                        f"--input-scales {input_scales_path}: "
+                        f"{name}.input_global_scale = {served!r} but the "
+                        f"allocation priced {priced!r} for {name}. The "
+                        "served activation quantisation is a function of this "
+                        "scalar, so this file exports a unit the costs did not "
+                        "price; hand the campaign's own input_scales."
+                        "safetensors (written beside its --cache-dir with the "
+                        "capture) or re-allocate from a table priced under "
+                        "this file."
+                    )
         report["input_scales"] = str(input_scales_path)
+        report["input_scales_bound_units"] = len(w4a4)
     return report
 
 
