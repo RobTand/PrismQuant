@@ -6,7 +6,7 @@ PrismaQuant's allocator is **AURA** (*Production-Faithful KL–Fisher Allocation
 
 - **`compressed-tensors`** — vanilla vLLM serves it natively (`vllm serve $WORK_DIR/exported`), no custom kernels. NVFP4 / FP8 / BF16 per Linear, CUTLASS kernels on Blackwell.
 - **GGUF** — llama.cpp *and* vLLM (via the GGUF plugin) serve the same file, again with no PrismaQuant kernels. Full k-quant + IQ menu, per-tensor mixed, imatrix-weighted. This is how a 295B MoE fits on one 128 GB box.
-- **Tessera** — the Tessera trellis wire, served by **Tessera's own** out-of-tree vLLM plugin (`tessera.serving`, `quant_method = "tessera"`), using native kernels only. Still an unforked vLLM: install the exact commit in `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, no core patches; a route the pinned contract does not device-qualify fails closed. The lane is declared and fail-closed until a Tessera release tag exists.
+- **Tessera** — the Tessera trellis wire, served by **Tessera's own** out-of-tree vLLM plugin (`tessera.serving`, `quant_method = "tessera"`), using native kernels only. Still an unforked vLLM: install the exact commit in `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, no core patches; a route the pinned contract does not device-qualify fails closed. The lane is declared and fail-closed unless the installed Tessera IS that commit and its packaged `runtime_contract.json` hashes to the pinned digest.
 
 ---
 

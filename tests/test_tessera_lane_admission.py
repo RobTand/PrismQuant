@@ -29,9 +29,11 @@ import pytest
 
 from prismaquant import tessera_render as tr
 from prismaquant.lane_eligibility import (
+    EVIDENCE_SMOKE_REFUSALS,
     FORMAT_KIND_TESSERA_WIRE,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LaneEligibilityError,
+    cell_evidence_admits,
     load_eligibility_table,
     load_published_formats,
 )
@@ -46,7 +48,8 @@ from prismaquant.tessera_serving_runtime_pin import (
     TesseraServingRuntimePinError,
     load_tessera_serving_runtime_pin,
     parse_tessera_serving_runtime_pin,
-    require_exact_tessera_runtime_release,
+    require_exact_tessera_runtime_pin,
+    require_pinned_tessera_runtime,
     tessera_serving_runtime_pin_path,
 )
 
@@ -55,6 +58,25 @@ from prismaquant.tessera_serving_runtime_pin import (
 #: fixture here can ever be mistaken for an attestation.
 FIXTURE_COMMIT = "0" * 39 + "1"
 FIXTURE_VERSION = "0.1.0"
+
+
+def _default_serve_image() -> str:
+    """The serve image the packaged contract publishes as its default."""
+    return _packaged_contract()["versions"]["default_serve_image"]
+
+
+def _dense_context():
+    """The scope the eight dense cells of the pinned (v8) table publish.
+
+    The table is scoped: a cell attests a rung only at an exact platform,
+    image, execution mode and residency, so an admission is asked at one --
+    the operator's ``--tessera-*`` flags in production.  A context-free ask
+    is refused by SCOPE, asserted apart from the pin's refusal below.
+    """
+    from prismaquant.lane_eligibility import ServingContext
+    return ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
 
 
 def _packaged_contract() -> dict:
@@ -78,13 +100,14 @@ def _write(tmp_path, contract, name="contract.json"):
 
 @pytest.fixture()
 def released_pin(tmp_path, monkeypatch):
-    """A RELEASED Tessera pin, built through the real reader.
+    """A RESOLVED Tessera pin, built through the real reader and the real gate.
 
-    The fixture writes a pin file with a resolved commit/version, points the
-    two reviewed-release constants at it, and substitutes the loader on the pin
+    The fixture writes a pin file with a resolved commit/version/digest, points
+    the three pinned constants at it, and substitutes the loader on the pin
     MODULE -- which is where ``tessera_render._release_pin_satisfied`` looks it
-    up, at call time.  Nothing here weakens the parser or the release check:
-    both run exactly as they will on the day Rob cuts a tag.
+    up, at call time.  Nothing here weakens the parser or the gate: the digest
+    is the INSTALLED contract's real one, so the enforced conjunct runs for
+    real and only the two recorded-identity values are synthetic.
     """
     payload = {
         "schema": TESSERA_SERVING_RUNTIME_PIN_SCHEMA,
@@ -92,6 +115,7 @@ def released_pin(tmp_path, monkeypatch):
         "commit": FIXTURE_COMMIT,
         "version": FIXTURE_VERSION,
         "version_is_release": True,
+        "contract_sha256": pin_module.installed_tessera_contract_sha256(),
         "runtime_contract_schema": "tessera.runtime-contract.v1",
         "plugin_entry_point": "tessera = tessera.serving:register",
         "serving_residency_env": TESSERA_SERVING_RESIDENCY_ENV,
@@ -111,38 +135,44 @@ def released_pin(tmp_path, monkeypatch):
     path = tmp_path / "released_pin.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_COMMIT", FIXTURE_COMMIT)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_COMMIT", FIXTURE_COMMIT)
     monkeypatch.setattr(
-        pin_module, "TESSERA_SERVING_RUNTIME_RELEASE_VERSION", FIXTURE_VERSION)
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_VERSION", FIXTURE_VERSION)
+    monkeypatch.setattr(
+        pin_module, "TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256",
+        payload["contract_sha256"])
     pin = pin_module.load_tessera_serving_runtime_pin(path)
     monkeypatch.setattr(
         pin_module, "load_tessera_serving_runtime_pin", lambda *a, **k: pin)
-    require_exact_tessera_runtime_release(pin)   # the real gate, satisfied
+    require_pinned_tessera_runtime(pin)   # the real gate, satisfied
     return pin
 
 
 # ---------------------------------------------------------------------------
 # The pin
 # ---------------------------------------------------------------------------
-def test_the_tracked_pin_is_pending_and_the_release_gate_refuses_it():
-    """Admission answers False TODAY BY THE PIN, not by an edit.
+def test_the_tracked_pin_is_an_exact_commit_and_the_installed_contracts_digest():
+    """Admission answers TODAY BY THE PIN, not by an edit.
 
-    The tracked pin is structurally valid -- so it can be reviewed -- and is
-    refused by the only function any gate consults. Both sentinels are pinned
-    verbatim: they are the conspicuous marks that say "no release tag exists",
-    and a silent drift to a resolved-looking value would be an admission.
+    Until 2026-09-04 this asserted the opposite -- the pin carried PENDING
+    sentinels and refused everything, because there was no Tessera release
+    tag. Rob retired the tag requirement, so what the pin now carries is an
+    exact commit plus the SHA-256 of the contract that commit packages, and
+    the gate compares the digest against the INSTALLED bytes. Same property,
+    a fact this process can check instead of a tag nobody wants to cut.
     """
     pin = load_tessera_serving_runtime_pin()
-    assert pin.commit == TESSERA_SERVING_RUNTIME_COMMIT_PENDING
-    assert pin.version == TESSERA_SERVING_RUNTIME_VERSION_PENDING
-    assert pin.version_is_release is False
-    assert pin.commit_is_resolved is False
-    assert pin.version_is_resolved is False
+    assert pin.commit_is_resolved and pin.version_is_resolved
+    assert pin.contract_sha256_is_resolved
     assert pin.plugin_entry_point == "tessera = tessera.serving:register"
 
-    with pytest.raises(TesseraServingRuntimePinError, match="PENDING"):
-        require_exact_tessera_runtime_release(pin)
-    assert tr._release_pin_satisfied() is False
+    require_pinned_tessera_runtime(pin)
+    assert tr._release_pin_satisfied() is True
+
+    with pytest.raises(TesseraServingRuntimePinError,
+                       match="the installed Tessera is not the pinned Tessera"):
+        require_exact_tessera_runtime_pin(
+            pin, installed_contract_sha256="e" * 64)
 
 
 def test_the_pin_file_on_disk_is_the_one_the_reader_parses():
@@ -154,23 +184,29 @@ def test_the_pin_file_on_disk_is_the_one_the_reader_parses():
 
 
 def test_a_pending_pin_cannot_be_marked_released():
-    """The one structural rule that stops a half-edit admitting anything."""
+    """The one structural rule that stops a half-edit admitting anything.
+
+    ``version_is_release`` is advisory since pin schema v2 -- no gate reads it
+    -- but the rule that keeps it TRUE when it is read is still enforced.
+    """
     payload = json.loads(
         tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
+    payload["commit"] = TESSERA_SERVING_RUNTIME_COMMIT_PENDING
     payload["version_is_release"] = True
     with pytest.raises(TesseraServingRuntimePinError, match="cannot be marked"):
         parse_tessera_serving_runtime_pin(payload)
 
 
-def test_a_resolved_pin_that_is_not_the_reviewed_release_is_refused():
-    """Resolving the JSON alone admits nothing: the constants must move too,
+def test_a_pin_that_is_not_the_reviewed_one_is_refused():
+    """Editing the JSON alone admits nothing: the constants must move too,
     in the same reviewed commit."""
     payload = json.loads(
         tessera_serving_runtime_pin_path().read_text(encoding="utf-8"))
     payload.update(commit="a" * 40, version="9.9.9", version_is_release=True)
     pin = parse_tessera_serving_runtime_pin(payload)
-    with pytest.raises(TesseraServingRuntimePinError, match="reviewed release"):
-        require_exact_tessera_runtime_release(pin)
+    with pytest.raises(TesseraServingRuntimePinError, match="ONE reviewed change"):
+        require_exact_tessera_runtime_pin(
+            pin, installed_contract_sha256=payload["contract_sha256"])
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +237,22 @@ def test_the_packaged_tessera_contract_parses_and_every_cell_names_the_plugin():
         TESSERA_SERVING_PLUGIN_NAME]
     assert {e["kind"] for e in formats.values()} == {FORMAT_KIND_TESSERA_WIRE}
     assert table.trellis_families == frozenset(formats)
-    # dense-only, and that is the honest state: no served measurement covers
-    # routed experts, so the contract carries no routed_moe cell.
-    assert table.structures == ("dense",)
+    # Since contract v17 the table DECLARES routed_moe. Declaring a structure
+    # is not admitting it: v17 through v20 published, on those cells, a greedy
+    # smoke that degenerated and the evidence gate refused them; v21 (Tessera
+    # #313) re-measured it through the checkpoint's own chat template and
+    # records "recorded", so the SAME gate stops refusing them. The honest
+    # assertion is neither verdict -- what v21's "recorded" is worth is open
+    # (RobTand/tessera#327, prismaquant #198) -- but that admission FOLLOWS the
+    # cells' own published evidence, read from the table and from nothing else.
+    assert table.structures == ("dense", "routed_moe")
+    routed = [cell for cell in table.cells if cell.structure == "routed_moe"]
+    assert routed
+    for cell in routed:
+        admitted, why = cell_evidence_admits(cell)
+        assert admitted is (
+            cell.evidence.smoke_status not in EVIDENCE_SMOKE_REFUSALS), (
+                cell.id, cell.evidence.smoke_status, why)
 
 
 def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path):
@@ -249,26 +298,39 @@ def test_admission_is_true_under_a_released_pin_on_the_real_packaged_contract(
     refusal above is the pin's and not an artefact of an unreadable table.
     """
     assert tr._release_pin_satisfied() is True
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896") is True
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024") is True
+    context = _dense_context()
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K2_R896", serving_context=context) is True
+    assert tr.tessera_lane_attested(
+        "TESSERA_E4M3_K1_R1024", serving_context=context) is True
     # a serialisable rate no cell names, on a published family
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R512") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K2_R512", serving_context=context) is False
     # the family's own terminal rate, which the reader range excludes
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R2048") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E4M3_K1_R2048", serving_context=context) is False
     # a family the contract does not publish at all
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K1_R640") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K1_R640", serving_context=context) is False
+    # and the same admitted rung, asked with no scope at all: refused by the
+    # SCOPE of the v8 table, not by the pin the fixture satisfied.
+    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896") is False
 
 
 def test_the_synthesized_spec_reads_the_same_lookup(released_pin):
     """``producer_eligible`` is the AND of "the wire can carry it" and "a
     runtime serves it". The second conjunct is this lookup, so the menu admits
-    exactly the attested rungs and nothing else."""
+    exactly the attested rungs and nothing else -- at the scope the lookup is
+    asked; a context-free spec on the scoped table is not eligible."""
+    context = _dense_context()
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E2M1_K2_R896").producer_eligible is True
+        "TESSERA_E2M1_K2_R896", serving_context=context).producer_eligible is True
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E4M3_K1_R1024").producer_eligible is True
+        "TESSERA_E4M3_K1_R1024", serving_context=context).producer_eligible is True
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E2M1_K2_R512").producer_eligible is False
+        "TESSERA_E2M1_K2_R512", serving_context=context).producer_eligible is False
+    assert tr.synthesize_tessera_spec(
+        "TESSERA_E2M1_K2_R896").producer_eligible is False
 
 
 @pytest.mark.parametrize("mutation,name", [
@@ -310,12 +372,15 @@ def test_the_rungs_a_cell_names_are_the_whole_admitted_set(tmp_path,
             row["attested_rungs_q256"] = [896]
             row["reader_rate_range_q256"] = [768, 896]
     table, formats = _load(_write(tmp_path, contract, "narrow.json"))
+    context = _dense_context()
     assert tr.tessera_lane_attested(
-        "TESSERA_E2M1_K2_R896", table=table, formats=formats) is True
+        "TESSERA_E2M1_K2_R896", table=table, formats=formats,
+        serving_context=context) is True
     # inside the reader range, so the rate RESOLVES -- and is still refused,
     # because no cell names it.
     assert tr.tessera_lane_attested(
-        "TESSERA_E2M1_K2_R768", table=table, formats=formats) is False
+        "TESSERA_E2M1_K2_R768", table=table, formats=formats,
+        serving_context=context) is False
 
 
 def test_an_absent_table_admits_nothing(tmp_path, released_pin):
@@ -488,7 +553,7 @@ def test_route_admission_refuses_a_drifted_a_side(tmp_path, monkeypatch):
     table, formats = _load(_write(tmp_path, contract, "a_side_drift.json"))
     monkeypatch.setattr(tr, "_pinned_serving_table", lambda: (table, formats))
     with pytest.raises(tm.TesseraMenuError, match="not what the attesting cells execute"):
-        tm.route_admission("TESSERA_E2M1_K2_R896")
+        tm.route_admission("TESSERA_E2M1_K2_R896", serving_context=_dense_context())
 
 
 def test_the_tessera_lane_is_declared_and_advisory():
@@ -538,21 +603,29 @@ def test_the_stamped_attestation_source_names_the_table_that_answered():
 
 
 def test_the_unattested_detail_names_the_conjunct_that_actually_refused():
-    """The refusal today is the PIN's, and the detail has to say so.
+    """The context-free refusal today is the SCOPE's, and the detail says so.
 
     The packaged contract publishes ``TESSERA_E2M1_K2`` and carries a
     device-qualified native cell naming R896 -- the released-pin test above
-    proves it by admitting the same rung with only the release boundary
-    moved.  So a detail reading "the pinned serving release publishes no cell
-    covering this family and rate" is false about the contract on disk, and it
-    points a reader at re-pinning a table that already carries the row.
+    proves it by admitting the same rung at the dense scope.  So a detail
+    reading "the pinned serving release publishes no cell covering this
+    family and rate" is false about the contract on disk, and it points a
+    reader at re-pinning a table that already carries the row.  Before the
+    pin resolved, the conjunct that refused here was the PIN (and the detail
+    said "pin"); with the pin resolved and the table scoped (v8), the
+    conjunct is the missing serving context, and the detail names that.
     """
     from prismaquant import tessera_menu as tm
 
     admission = tm.route_admission("TESSERA_E2M1_K2_R896")
     assert admission.route_status == tm.ROUTE_STATUS_UNATTESTED
     assert "no cell covering" not in admission.detail
-    assert "pin" in admission.detail
+    assert admission.requires_serving_context is True
+    assert "explicit serving context" in admission.detail
+    assert "pin" not in admission.detail
+    # the same rung, at the scope the cell publishes: admitted, by the pin.
+    scoped = tm.route_admission("TESSERA_E2M1_K2_R896", serving_context=_dense_context())
+    assert scoped.route_status in {tm.ROUTE_STATUS_BACKED, tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG}
 
     # and a family the packaged contract never publishes keeps its OWN reason,
     # so the two refusals are not spelled the same: this one is fixed by a

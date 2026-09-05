@@ -100,11 +100,27 @@ def fixture(tmp_path, monkeypatch, *, structure="routed_moe"):
               "qualification": "device_qualified", "requires_plugin": "tessera", "predicates": [],
               "requires_serve_flags": ["TESSERA_SERVE_MODE=resident"],
               "executes": [{"symbol": symbol.split(":", 1)[0], "decoder": decoder}],
-              "runtime": {"image": IMAGE, "execution_modes": ["eager"]}}
+              "runtime": {"image": IMAGE, "execution_modes": ["eager"],
+                          "vllm": "0.0.0+fixture", "torch": "0.0.0+fixture"},
+              # The smallest evidence block the CURRENT lane grammar (v9)
+              # reads; this fixture is about the census binding, not the
+              # evidence, and a not_recorded smoke with no record, no control
+              # and no artifact is the honest empty value of each field.
+              # It tracks the constant above deliberately, so a schema bump
+              # lands here as "add the new field's empty value", which is the
+              # review this fixture is supposed to force.
+              "evidence": {"grade": "route_only", "kl": [],
+                           "smoke": {"status": "not_recorded", "receipt": None,
+                                     "attribution": "unattributed",
+                                     "control": None, "record": None},
+                           "artifact": None}}
              for regime in ("decode", "batch")]
     block = {"schema": lane.LANE_ELIGIBILITY_SCHEMA_TESSERA, "platforms": {"sm_121": {}},
              "structures": [structure], "regimes": ["decode", "batch"], "cells": cells}
-    table = lane._parse_table(block, list(formats.values()), "fixture", "fixture", "fixture")
+    # No extension launch in this fixture (torch / vLLM symbols only), so no
+    # lane row is needed for the reader to bind launches to.
+    table = lane._parse_table(block, list(formats.values()), "fixture", "fixture", "fixture",
+                              native_extensions=[])
     monkeypatch.setattr(receipt, "_current_scoped_contract", lambda: (table, formats), raising=False)
     return census, binding, build, model_dir, units
 
@@ -217,10 +233,23 @@ def test_legacy_flat_parser_never_discards_explicit_runtime_context():
 
 def test_scoped_card_cannot_replay_flat_legacy_receipt(tmp_path, monkeypatch):
     data = fixture(tmp_path, monkeypatch)
-    legacy = shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
-        priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
-        substitute_decoders=["fallback"])
+    # A historical flat receipt: filled where no current scoped table existed
+    # to refuse it (fill applies the same rule as verify, #214), then carried
+    # onto a scoped card.
+    with monkeypatch.context() as historical:
+        def absent():
+            raise ModuleNotFoundError("No module named 'tessera'", name="tessera")
+        historical.setattr(receipt, "_current_scoped_contract", absent)
+        legacy = shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
+            priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
+            substitute_decoders=["fallback"])
     assert shipcard._verify_route_census_record("route.census", legacy, card={"build": data[2]})
+    # Filling that same flat list where the scoped table IS current refuses
+    # by name, before any card sees it.
+    with pytest.raises(receipt.TesseraRouteReceiptError, match="cannot attest an unbound legacy flat census"):
+        shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
+            priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
+            substitute_decoders=["fallback"])
 
 
 def test_scoped_verification_requires_independent_artifact_files(tmp_path, monkeypatch):

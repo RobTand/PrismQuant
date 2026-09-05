@@ -62,10 +62,11 @@ EXPORT_LANES = ("compressed-tensors", "gguf", "tessera")
 #
 # Being IN this vocabulary is not permission to build: `require_lane_supported`
 # still refuses an architecture that does not DECLARE the lane, and the tessera
-# arm additionally refuses until the Tessera serving pin names a reviewed
-# release (RobTand/tessera#17). What this entry buys is that the refusal is the
-# pin's, spoken where an operator can act on it, instead of "unknown export
-# lane" from a vocabulary check three layers up.
+# arm additionally refuses unless the installed Tessera IS the pinned commit
+# and its packaged contract hashes to the pinned digest (RobTand/tessera#17).
+# What this entry buys is that the refusal is the pin's, spoken where an
+# operator can act on it, instead of "unknown export lane" from a vocabulary
+# check three layers up.
 #: Lanes that WERE in the vocabulary and are not any more, each with the wall
 #: its code went behind.  Named so a retirement is a fact a test can read
 #: rather than a literal re-typed into one: the property is "a retired lane is

@@ -77,8 +77,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .lane_eligibility import (
+    CellEvidence,
+    SCOPED_LANE_SCHEMAS,
+    cell_evidence_admits,
+    cell_lane_admits,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
+    LaneClaim,
     LaneEligibilityError,
     ServingContext,
     QUALIFICATION_DEVICE_QUALIFIED,
@@ -86,6 +91,7 @@ from .lane_eligibility import (
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     _parse_table,
     cell_matches_serving_context,
+    parse_lane_claim,
 )
 
 __all__ = [
@@ -119,9 +125,13 @@ class TesseraContractError(RuntimeError):
 #: The schema ids this reader accepts.  Both are checked before any key is
 #: read: an older table is not a subset of this one, and "missing field" is the
 #: wrong error to hand someone whose contract predates the field.
+#: ``TESSERA_LANE_SCHEMA`` is the CURRENT lane grammar and follows
+#: ``lane_eligibility.LANE_ELIGIBILITY_SCHEMA_TESSERA`` (v8 since 2026-09-05)
+#: so that the two readers cannot disagree about which schema is newest.
 TESSERA_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
 TESSERA_LANE_SCHEMA = LANE_ELIGIBILITY_SCHEMA_TESSERA
-TESSERA_LANE_SCHEMAS = frozenset({TESSERA_LANE_SCHEMA, LANE_ELIGIBILITY_SCHEMA_TESSERA_V4})
+TESSERA_LANE_SCHEMAS = frozenset(
+    {LANE_ELIGIBILITY_SCHEMA_TESSERA_V4} | SCOPED_LANE_SCHEMAS)
 #: The ``fused_module`` block's own schema id, checked the same way.
 FUSED_MODULE_SCHEMA = "tessera.fused-module.v1"
 
@@ -137,18 +147,70 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v14 / lane schema v4 (Tessera 1221d2a). Launches, residency,
-#: native extensions and fused-module licences are part of the reviewed
-#: answer. The release pin remains PENDING: this is development admission,
-#: not a serving release or routed-MoE promotion.
-TESSERA_DEV_PIN_COMMIT = "1221d2a4207a6baeffbe9726bce13125fc1649ae"
+#: contract v22 / lane schema v9 (Tessera master 8ed1d9a, the merge of its
+#: #332, which answers its #327; v21 landed at b8b1cb38 in its #313 and the
+#: release e78959ed carried v20), which is the same commit
+#: ``tessera_serving_runtime_pin`` binds: the two pins name ONE object, and
+#: letting them drift is how two of this repository's own spec files came to
+#: disagree about one runtime.  Between the v17 review and this one the
+#: answer moved in exactly four places and nowhere else -- no family, rung,
+#: route status, launch, image or version moved, and the ten cell ids are the
+#: same ten in the same order: the lane schema (v6 -> v8); every cell's
+#: evidence gained ``smoke.attribution`` / ``smoke.control`` (v7) and
+#: ``artifact`` (v8); every native extension gained its ``lane`` predicate
+#: (v20); and the two ``routed_moe`` cells' ``smoke.status`` moved from
+#: ``repetitive`` to ``recorded`` (v21, Tessera #313, receipt
+#: ``docs/measurements/moe-smoke-recorded-2026-09-05.md``), with the v18
+#: control retired from them (``attribution: unattributed``, ``control:
+#: null`` -- the shape the BF16 cells already used).
+#:
+#: The answer below TRANSCRIBES what the runtime publishes, including its two
+#: ``routed_moe`` cells.  Transcribing them does not admit them: admission is
+#: a separate predicate (``lane_eligibility.cell_evidence_admits``) that
+#: refuses on ``smoke.status`` alone.  Under v17 and v20 it refused both
+#: routed-MoE cells on the degenerate greedy smoke the runtime recorded
+#: (``repetitive``); under v21 the runtime records a smoke through the
+#: checkpoint's own chat template that does not degenerate on either arm, the
+#: status reads ``recorded``, and the SAME status-only rule admits both cells
+#: with no predicate change here (prismaquant #198, option C).  That is the
+#: mechanism working as designed: the evidence block is part of the answer,
+#: so the clean smoke re-staled the pin and this literal's diff is the review
+#: a human reads before anything is admitted.  Whether routed-MoE Tessera is
+#: PROMOTED past the menu is still Rob's decision under principle 9 (#198
+#: stays open for it).
+#:
+#: What moved v21 -> v22 (Tessera #332, answering its #327), and nothing
+#: else -- same ten cell ids in the same order, no family, rung, route
+#: status, launch, image or version:
+#:   1. lane_schema v8 -> v9;
+#:   2. every cell's ``evidence.smoke`` gained ``record`` -- ``null`` on the
+#:      eight dense cells, and on the two ``routed_moe`` cells the
+#:      instrument, the rule, the reference and the rows the status was
+#:      derived over;
+#:   3. those two cells' ``smoke.attribution`` moved ``unattributed`` ->
+#:      ``shared_with_reference``, DERIVED from the record by Tessera's own
+#:      ``derive_smoke_attribution`` rather than asserted.
+#: Why that is a re-review and not a bump: at v21 the ``recorded`` status
+#: rested on a repetition rule that lived only in a dated measurements file,
+#: was checked by nothing, and was satisfiable by an empty completion
+#: (Tessera #327, P1).  v22 puts the rule and its observations in the
+#: contract, so the status this pin admits on is one a reader can re-derive
+#: -- which ``lane_eligibility.parse_cell_evidence`` does, through Tessera's
+#: ``derive_smoke_status``, refusing a published status the record does not
+#: derive.  The admission itself is unchanged: ``cell_evidence_admits`` is
+#: still status-only and still ``{repetitive}``.
+#:
+#: Verified by fetching ``RobTand/tessera`` master into a scratch repository
+#: and hashing the blob at the tip -- never a working tree (the command is in
+#: ``tessera_runtime/README.md``).  No tag names the commit.
+TESSERA_DEV_PIN_COMMIT = "8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
 #: compared into provenance against the bytes this run read, so prose-only
 #: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "cb0ccccb7d0ec296cacfdb02329e881e0d65761848d03acd8b0ee32158e605b3"
+    "719daa02da1564b56a141ca2702ae29d4fda553460978efbb6510ddcd1824927"
 )
 
 #: The ANSWER this pin was reviewed against -- every value the ADMISSION
@@ -160,8 +222,22 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 #: published native extension (its prefix, its glob, the ``match`` rule, the
 #: routes that need it, or what runs when it is absent) does -- with a
 #: field-level diff naming it.  The git diff of this literal is the review.
+#:
+#: It also re-stales when the PROJECTION widens, which is the other half of
+#: the same property: reading lane schema v9 gave ``CellEvidence.answer()`` a
+#: seventh member for the smoke's record, and a reader that widened what it
+#: looks at without re-reviewing would be admitting a field nobody had read.
+#:
+#: Against the v22 contract that seventh member is where the review is.  The
+#: eight dense cells publish ``record: null`` and project a trailing ``None``,
+#: so they did not move at all; the drift from the v21 answer was exactly
+#: three entries -- ``lane_schema`` (v8 -> v9) and the two ``routed_moe``
+#: cells, which gained the record and whose ``attribution`` moved
+#: ``unattributed`` -> ``shared_with_reference`` because v9 DERIVES it from
+#: that record.  Read those three and nothing else changed.
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
- 'lane_schema': 'tessera.lane-eligibility.v4',
+ 'lane_schema': 'tessera.lane-eligibility.v9',
+ 'required_regimes': ['batch', 'decode'],
  'quant_method': 'tessera',
  'fused_module': {'schema': 'tessera.fused-module.v1',
                   'fields': {'body': 'shared',
@@ -180,7 +256,9 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
                         'routes': ['TESSERA_NVFP4'],
                         'when_unavailable': {'resident': {'status': 'substituted',
                                                           'decoder': 'torch_materialize_stock'},
-                                             'streamed': {'status': 'refused', 'decoder': None}}},
+                                             'streamed': {'status': 'refused',
+                                                          'decoder': None}},
+                        'lane': {'decoder': 'native_span2', 'requires': None}},
                        {'module_name_prefix': 'tessera_window_gemv',
                         'filename_glob': 'tessera_window_gemv*.so',
                         'match': 'basename_fnmatch',
@@ -188,7 +266,17 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
                         'when_unavailable': {'resident': {'status': 'substituted',
                                                           'decoder': 'torch_window'},
                                              'streamed': {'status': 'substituted',
-                                                          'decoder': 'torch_window'}}}],
+                                                          'decoder': 'torch_window'}},
+                        'lane': {'decoder': 'window_gemv',
+                                 'requires': {'column_rates': [1, 2, 4],
+                                              'window_bits': [14],
+                                              'body': 'window',
+                                              'plane': 'channel',
+                                              'release_overrides': False,
+                                              'diagonals': False,
+                                              'rotation': ['none'],
+                                              'start_state': False,
+                                              'grid_arities': [1]}}}],
  'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
                                   'attested_rungs_q256': [1792],
                                   'max_world_size': 1},
@@ -210,7 +298,18 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident|streamed'],
             [['torch.mm', 'torch_window']],
-            ['resident', 'streamed']],
+            ['resident', 'streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             None,
+             None]],
            ['tessera_bf16_k1_dense_sm121_decode',
             'sm_121',
             'TESSERA_BF16_K1',
@@ -223,7 +322,12 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident|streamed'],
             [['torch.mm', 'torch_window']],
-            ['resident', 'streamed']],
+            ['resident', 'streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['route_only', 'recorded', [], 'unattributed', None, None, None]],
            ['tessera_e2m1_k2_dense_sm121_batch',
             'sm_121',
             'TESSERA_E2M1_K2',
@@ -236,7 +340,18 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident|streamed'],
             [['torch._scaled_mm', 'native_span2']],
-            ['resident', 'streamed']],
+            ['resident', 'streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             None,
+             None]],
            ['tessera_e2m1_k2_dense_sm121_decode',
             'sm_121',
             'TESSERA_E2M1_K2',
@@ -249,7 +364,18 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident|streamed'],
             [['torch._scaled_mm', 'native_span2']],
-            ['resident', 'streamed']],
+            ['resident', 'streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['route_only',
+             'not_recorded',
+             [],
+             'unattributed',
+             None,
+             None,
+             None]],
            ['tessera_e4m3_k1_dense_sm121_batch_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -262,7 +388,23 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident'],
             [['torch._scaled_mm', 'torch_window']],
-            ['resident']],
+            ['resident'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower'],
+             None]],
            ['tessera_e4m3_k1_dense_sm121_batch_streamed',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -274,8 +416,25 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'device_qualified',
             'tessera',
             ['TESSERA_SERVE_MODE=streamed'],
-            [['tessera_window_gemv::gemv', 'window_gemv'], ['torch._scaled_mm', 'window_gemv']],
-            ['streamed']],
+            [['tessera_window_gemv::gemv', 'window_gemv'],
+             ['torch._scaled_mm', 'window_gemv']],
+            ['streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower'],
+             None]],
            ['tessera_e4m3_k1_dense_sm121_decode_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -288,7 +447,23 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=resident'],
             [['torch._scaled_mm', 'torch_window']],
-            ['resident']],
+            ['resident'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['route_only',
+             'not_recorded',
+             [],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower'],
+             None]],
            ['tessera_e4m3_k1_dense_sm121_decode_streamed',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -301,7 +476,180 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             'tessera',
             ['TESSERA_SERVE_MODE=streamed'],
             [['tessera_window_gemv::gemv', 'window_gemv']],
-            ['streamed']]]}
+            ['streamed'],
+            {'image': 'vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14',
+             'execution_modes': ['compiled', 'eager']},
+            '0.28.0',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024',
+              'topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower'],
+             None]],
+           ['tessera_e4m3_k1_routed_moe_sm121_batch_resident',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'routed_moe',
+            'batch',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident'],
+            [['vllm.fused_moe.modular_kernel', 'torch_materialize_stock']],
+            ['resident'],
+            {'image': 'eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c',
+             'execution_modes': ['eager']},
+            '0.28.1rc1.dev397+gfd4a15126.d20260904',
+            '2.13.0+cu130',
+            ['kl_lower_bound',
+             'recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'shared_with_reference',
+             None,
+             None,
+             ['experiments/moe_greedy_smoke.py',
+              'repetitive iff the completion ends in a cycle: some period p '
+              'with 2p <= L has a p-periodic suffix holding >= 2 full periods '
+              '(s >= 2p), whatever its share of the completion; not_recorded '
+              'iff the completion is empty (L = 0), which is no completion '
+              'for a verdict to be true of; recorded otherwise; tokens are '
+              "the artifact tokenizer's canonical encoding of the returned "
+              'text',
+              'bf16_source',
+              [['P0',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2', 'campaign', 'raw_completion', 'recorded', 'repetitive'],
+               ['P3',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P6', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P0',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P3',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P6',
+                'pure_greedy',
+                'chat_template',
+                'recorded',
+                'recorded']]]]],
+           ['tessera_e4m3_k1_routed_moe_sm121_decode_resident',
+            'sm_121',
+            'TESSERA_E4M3_K1',
+            'routed_moe',
+            'decode',
+            [1024],
+            'fp8_per_token_dynamic',
+            'backed_with_serve_flag',
+            'device_qualified',
+            'tessera',
+            ['TESSERA_SERVE_MODE=resident'],
+            [['vllm.fused_moe.modular_kernel', 'torch_materialize_stock']],
+            ['resident'],
+            {'image': 'eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c',
+             'execution_modes': ['eager']},
+            '0.28.1rc1.dev397+gfd4a15126.d20260904',
+            '2.13.0+cu130',
+            ['route_only',
+             'recorded',
+             [],
+             'shared_with_reference',
+             None,
+             None,
+             ['experiments/moe_greedy_smoke.py',
+              'repetitive iff the completion ends in a cycle: some period p '
+              'with 2p <= L has a p-periodic suffix holding >= 2 full periods '
+              '(s >= 2p), whatever its share of the completion; not_recorded '
+              'iff the completion is empty (L = 0), which is no completion '
+              'for a verdict to be true of; recorded otherwise; tokens are '
+              "the artifact tokenizer's canonical encoding of the returned "
+              'text',
+              'bf16_source',
+              [['P0',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2', 'campaign', 'raw_completion', 'recorded', 'repetitive'],
+               ['P3',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P6', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P0',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P3',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P6',
+                'pure_greedy',
+                'chat_template',
+                'recorded',
+                'recorded']]]]]]}
 
 #: Route statuses under which a cell says a native route EXECUTES.
 _NATIVE_ROUTE_STATUSES = frozenset(
@@ -399,6 +747,14 @@ class TesseraNativeExtension:
     #: a NAMED substitute decoder and is a different numeric object, in the
     #: other there is no serve at all.
     when_unavailable: Mapping[str, Mapping[str, Any]]
+    #: What the extension's kernel READS (contract v20): the decoder name it
+    #: stamps and, when it publishes one, the predicate a unit's wire must
+    #: satisfy for the lane to take it (``lane.requires``).  Parsed by
+    #: ``lane_eligibility.parse_lane_claim`` -- the same reader the serving
+    #: pin's table uses -- and decided by ``cell_lane_admits`` in
+    #: :meth:`TesseraContract.native_cells`, so the development contract
+    #: admits a rung on exactly the terms the pinned one does.
+    lane: LaneClaim
 
     def as_contract_row(self) -> dict:
         """The four fields a residency predicate -- and the reading of an
@@ -434,6 +790,11 @@ class TesseraRouteCell:
     residency_modes: tuple[str, ...]
     runtime_image: str
     execution_modes: tuple[str, ...]
+    #: v6's per-cell runtime versions and evidence block; empty/``None`` under
+    #: the pre-v6 grammars, which published neither.
+    runtime_vllm: str = ""
+    runtime_torch: str = ""
+    evidence: "CellEvidence | None" = None
 
     @property
     def native(self) -> bool:
@@ -552,7 +913,13 @@ class TesseraContract:
     quant_method: str
     contract_version: int
     plugin_version: str
-    attested_on: Mapping[str, str]
+    #: ``versions.default_serve_image``: the ONE serve-image pin every harness
+    #: reads. It replaced ``versions.attested_on`` at contract v17, which had
+    #: made a single global claim about the runtime every cell was measured on
+    #: -- false the moment one cell was measured on a dev wheel. The per-cell
+    #: truth now lives on the cells (``runtime_image``/``runtime_vllm``/
+    #: ``runtime_torch``); this is a default, and identity, not a gate input.
+    default_serve_image: str
     #: Identity -- what travels into provenance.
     commit: str
     sha256: str
@@ -562,7 +929,7 @@ class TesseraContract:
 
     @property
     def requires_serving_context(self) -> bool:
-        return self.lane_schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        return self.lane_schema in SCOPED_LANE_SCHEMAS
 
     def governs(self, family: str) -> bool:
         """Does the contract publish this payload family at all?"""
@@ -586,12 +953,28 @@ class TesseraContract:
             if cell.family == str(family)
             and int(rate_q256) in cell.rungs_q256
             and cell.native
+            # The development menu reads the SAME evidence predicate the
+            # export gate reads (``lane_eligibility.cell_evidence_admits``).
+            # A rung the dev menu offers and the export refuses is the
+            # split-brain principle 8 exists to stop.
+            and cell_evidence_admits(cell)[0]
+            # And the SAME lane predicate: the lane a cell launches through
+            # must read what this producer plans at the rung
+            # (``lane_eligibility.cell_lane_admits``, deciding
+            # ``native_extensions[].lane.requires`` over
+            # ``tessera_render.planned_wire_facts``).
+            and cell_lane_admits(cell, int(rate_q256), self.lanes)[0]
             and (not self.requires_serving_context
                  or cell_matches_serving_context(cell, serving_context))
         )
         if self.requires_serving_context and {cell.regime for cell in selected} != set(self.regimes):
             return ()
         return selected
+
+    @property
+    def lanes(self) -> tuple[LaneClaim, ...]:
+        """Every extension's lane claim, in table order, for the lane gate."""
+        return tuple(ext.lane for ext in self.native_extensions)
 
     def identity(self) -> dict:
         """The ``tessera_dev_pin`` provenance block.
@@ -615,7 +998,7 @@ class TesseraContract:
             "contract_version": self.contract_version,
             "plugin_version": self.plugin_version,
             "quant_method": self.quant_method,
-            "attested_on": dict(self.attested_on),
+            "default_serve_image": self.default_serve_image,
             "native_extensions": [
                 {
                     "module_name_prefix": ext.module_name_prefix,
@@ -684,7 +1067,7 @@ def contract_answer(contract: "TesseraContract") -> dict:
     Principle 14's line, made mechanical.  ``detail``, ``rationale``, the
     changelog and every other prose field explains; none of them is a value a
     gate reads, so none of them appears here.  Neither do ``contract_version``,
-    ``plugin_version`` or ``attested_on``: those are the table's *identity*,
+    ``plugin_version`` or ``default_serve_image``: those are the table's *identity*,
     which travels into provenance, and a version bump that moved no answer is
     not a thing to re-review.
 
@@ -709,7 +1092,11 @@ def contract_answer(contract: "TesseraContract") -> dict:
     all).  Those move the fingerprint's behaviour, so they are answer.
     ``source`` and ``loaded_by`` name files and modules in the runtime's own
     tree and move nothing on this side, so they are identity and stay out,
-    exactly like ``plugin_version``.
+    exactly like ``plugin_version``.  ``lane`` (contract v20) IS answer: its
+    ``decoder`` is what binds a cell's launch to the extension, and its
+    ``requires`` is the predicate ``native_cells`` and the export gate
+    decide this producer's plan against -- a lane that widens or narrows
+    what it reads changes which rungs are admitted, and is a re-review.
 
     ``fused_module`` is here for a third (prismaquant #132): the group
     knapsack's fold reads it, so a contract that re-tightened ``q256`` to
@@ -739,6 +1126,7 @@ def contract_answer(contract: "TesseraContract") -> dict:
                            "decoder": behaviour["decoder"]}
                     for mode, behaviour in sorted(ext.when_unavailable.items())
                 },
+                "lane": ext.lane.answer(),
             }
             for ext in sorted(contract.native_extensions,
                               key=lambda e: e.module_name_prefix)
@@ -770,6 +1158,15 @@ def contract_answer(contract: "TesseraContract") -> dict:
             ] + ([{"image": cell.runtime_image,
                    "execution_modes": sorted(cell.execution_modes)}]
                  if contract.requires_serving_context else [])
+            # v6's per-cell runtime versions and evidence. Both are ANSWER,
+            # not identity: ``cell_evidence_admits`` decides on the evidence
+            # block, so a flipped smoke status or a new KL kind changes which
+            # units this producer may put on the menu -- and a re-review is
+            # exactly what should stand between Tessera recording a smoke and
+            # PrismaQuant admitting the route it names. The versions are here
+            # for the same reason the image is: they scope the claim.
+            + ([cell.runtime_vllm, cell.runtime_torch, cell.evidence.answer()]
+               if cell.evidence is not None else [])
             for cell in contract.cells
         ),
     }
@@ -903,7 +1300,7 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 
 _NATIVE_EXTENSION_MEMBERS = (
     "module_name_prefix", "filename_glob", "match", "source", "loaded_by",
-    "routes", "when_unavailable",
+    "routes", "when_unavailable", "lane",
 )
 
 
@@ -985,6 +1382,13 @@ def _parse_native_extensions(
                 or isinstance(routes, (str, bytes)) or not routes):
             raise TesseraContractError(
                 f"{at}.routes must name at least one route that needs it")
+        # The lane block is read by the serving pin's reader, so the two
+        # contracts a producer holds -- the pinned one and this development
+        # one -- refuse the same block for the same reason, once.
+        try:
+            lane = parse_lane_claim(entry["lane"], f"{at}.lane", extension=prefix)
+        except LaneEligibilityError as exc:
+            raise TesseraContractError(str(exc)) from exc
         parsed.append(TesseraNativeExtension(
             module_name_prefix=prefix,
             filename_glob=glob,
@@ -993,6 +1397,7 @@ def _parse_native_extensions(
             loaded_by=str(entry["loaded_by"]),
             routes=tuple(str(r) for r in routes),
             when_unavailable=behaviours,
+            lane=lane,
         ))
     return tuple(parsed)
 
@@ -1175,6 +1580,15 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             )
         attested[family] = frozenset(int(r) for r in rungs)
 
+    # The extension table is read BEFORE the lane table because the lane
+    # table's cells launch through it: its own refusals (no table, an empty
+    # one, a match rule this reader cannot apply, a lane block it cannot
+    # decide) come first and by their own names.
+    extensions = _parse_native_extensions(
+        _require(payload, "native_extensions", path),
+        where=f"{path}.native_extensions",
+    )
+
     lane = _require(payload, "lane_eligibility", path)
     if not isinstance(lane, Mapping):
         raise TesseraContractError(f"{path}.lane_eligibility must be an object")
@@ -1185,7 +1599,13 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             f"got {lane_schema!r}"
         )
     try:
-        table = _parse_table(lane, formats, "", commit, sha)
+        # The lane table is read beside the extension table it launches
+        # through (contract v20): the reader binds every extension launch a
+        # cell names to that extension's lane. The predicate itself is NOT
+        # decided here -- loading a contract imports no encoder and no
+        # serving code; admission (``native_cells``) does.
+        table = _parse_table(lane, formats, "", commit, sha,
+                             native_extensions=payload["native_extensions"])
     except LaneEligibilityError as exc:
         raise TesseraContractError(f"{path}: {exc}") from exc
     cells: list[TesseraRouteCell] = []
@@ -1214,12 +1634,10 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             residency_modes=cell.residency_modes,
             runtime_image=cell.runtime_image,
             execution_modes=cell.execution_modes,
+            runtime_vllm=cell.runtime_vllm,
+            runtime_torch=cell.runtime_torch,
+            evidence=cell.evidence,
         ))
-
-    extensions = _parse_native_extensions(
-        _require(payload, "native_extensions", path),
-        where=f"{path}.native_extensions",
-    )
 
     tp = _require(payload, "tensor_parallel", path)
     if str(tp.get("semantics")) != "closed_world":
@@ -1249,8 +1667,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
         quant_method=str(method.get("canonical", "")),
         contract_version=int(payload.get("contract_version", 0)),
         plugin_version=str(versions.get("tessera", "")),
-        attested_on={str(k): str(v)
-                     for k, v in dict(versions.get("attested_on", {})).items()},
+        default_serve_image=str(versions.get("default_serve_image", "")),
         commit=commit,
         sha256=sha,
         path=path,

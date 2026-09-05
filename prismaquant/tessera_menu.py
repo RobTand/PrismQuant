@@ -29,11 +29,14 @@ The table that answers is **Tessera's own** packaged
 withdrawn (``archive/gridbook_lane_2026-09-02/``).  It publishes
 ``TESSERA_E2M1_K2`` and ``TESSERA_E4M3_K1``, and it carries device-qualified
 native cells for the two receipted rungs, so the family and the rate are *not*
-what refuses.  **The pin is.**  There is no reviewed Tessera release tag, so
-``tessera_serving_runtime_pin`` carries PENDING sentinels,
-``require_exact_tessera_runtime_release`` refuses them, and every rung answers
-:data:`ROUTE_STATUS_UNATTESTED`.  Cutting a release tag is what flips it -- an
-edit here cannot, and that is the point.
+what refuses.  **The pin is.**  Since 2026-09-04 ``tessera_serving_runtime_pin``
+names an exact Tessera commit and the SHA-256 of the ``runtime_contract.json``
+that commit packages; ``require_pinned_tessera_runtime`` admits only the
+Tessera whose installed contract hashes to it, and any other tree on
+``PYTHONPATH`` -- including a master that has moved past the pin -- answers
+:data:`ROUTE_STATUS_UNATTESTED`.  Moving the pin is ONE reviewed commit that
+edits the JSON and the module constants together; an edit here cannot flip it,
+and that is the point.
 
 Which is why the ``detail`` on an unattested rung names the conjunct that
 actually refused (``tessera_render.tessera_lane_admission`` returns it beside
@@ -77,7 +80,7 @@ if TYPE_CHECKING:
     from .lane_eligibility import ServingContext
 
 from .lane_eligibility import (
-    LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    SCOPED_LANE_SCHEMAS,
     legacy_runtime_scope_refusal,
     ROUTE_STATUS_BACKED,
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
@@ -468,9 +471,10 @@ def route_admission(
     resolves the rung against **Tessera's own** packaged
     ``runtime_contract.json`` through the shared ``lane_eligibility`` parser.
     That table publishes the attested Tessera families and their receipted
-    rungs, so what refuses is the third conjunct -- there is no reviewed
-    Tessera release tag -- and the answer is :data:`ROUTE_STATUS_UNATTESTED`
-    for every rung.  The ``detail`` says which conjunct, verbatim from the
+    rungs, so what refuses is the third conjunct whenever the installed
+    Tessera is not the pinned commit/digest, and the fourth whenever the
+    cell's own packaged evidence records a degenerate smoke.  The answer is
+    then :data:`ROUTE_STATUS_UNATTESTED`.  The ``detail`` says which conjunct, verbatim from the
     admission, because a rung refused by the pin and a rung refused by an
     absent cell need different fixes and must not read the same.
 
@@ -558,7 +562,7 @@ def route_admission(
     else:
         table, formats = _pinned_serving_table()
         source = _packaged_attestation_source(table)
-        requires_context = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        requires_context = table.schema in SCOPED_LANE_SCHEMAS
         scope = ({"serving_context": serving_context}
                  if serving_context is not None else {})
         # The VERDICT stays ``tessera_lane_attested``: it is the seam every

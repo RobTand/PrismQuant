@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from conftest import down_convert_lane_table
 
 
 IMAGE = "example/runtime@sha256:" + "a" * 64
@@ -223,9 +224,17 @@ def test_allocator_real_endpoint_records_each_selected_scope(tmp_path, monkeypat
 def _v5_contract(monkeypatch, *, with_experts=True):
     from prismaquant import tessera_runtime_contract as contract
     from prismaquant import tessera_menu as menu
-    payload = json.loads(contract.contract_path().read_text())
+    # A v5 fixture this file owns: the installed contract is v6, whose cells
+    # carry an ``evidence`` block v5 cannot express. The dense base is taken
+    # explicitly rather than inherited, because v6 also publishes routed_moe
+    # cells -- and this test is about SCOPE, not about evidence, so it must
+    # decide for itself whether an expert cell exists.
+    payload = down_convert_lane_table(
+        json.loads(contract.contract_path().read_text()),
+        "tessera.lane-eligibility.v5")
     block = payload["lane_eligibility"]
-    block["schema"] = "tessera.lane-eligibility.v5"
+    block["cells"] = [c for c in block["cells"] if c["structure"] == "dense"]
+    block["structures"] = [s for s in block["structures"] if s == "dense"]
     for cell in block["cells"]:
         cell["runtime"] = {"image": IMAGE, "execution_modes": ["eager"]}
     if with_experts:

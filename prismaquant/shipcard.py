@@ -2976,6 +2976,7 @@ def make_route_census_record(
     """
     from prismaquant.tessera_route_receipt import (
         TesseraRouteReceiptError, check_route_receipt, check_scoped_route_receipt,
+        current_table_refuses_flat_census,
     )
 
     if isinstance(route_records, Mapping):
@@ -2991,6 +2992,15 @@ def make_route_census_record(
                    "served_decoders": verdict["served_decoders"]})
     if binding is not None or (build or {}).get("tessera_serving_scope") is not None:
         raise TesseraRouteReceiptError("scoped artifact cannot fill route.census from an unbound legacy flat list")
+    # The rule `verify` replays, applied here first (#214): a producer that
+    # says passed=True where the verifier on the same box then refuses is two
+    # homes for one decision.
+    try:
+        refusal = current_table_refuses_flat_census()
+    except (ValueError, OSError) as exc:
+        raise TesseraRouteReceiptError(f"cannot inspect current census contract: {exc}") from exc
+    if refusal is not None:
+        raise TesseraRouteReceiptError(refusal)
 
     verdict = check_route_receipt(
         priced_routes=list(priced_routes),
@@ -3064,17 +3074,19 @@ def _verify_route_census_record(
         return problems
     if build.get("tessera_serving_scope") is not None:
         return [f"{slot}: scoped artifact carries an unbound legacy census; retain the producer's v2 receipt"]
-    from prismaquant.tessera_route_receipt import _current_scoped_contract
-    from prismaquant.lane_eligibility import LANE_ELIGIBILITY_SCHEMA_TESSERA
+    # The same rule fill applies (`make_route_census_record`, #214), from its
+    # one home; live since the pin moved to a table of the scoped schema (v8,
+    # first packaged at b8b1cb38), dead before it when the pinned table was
+    # v4.  With no
+    # runtime installed there is no current table to refuse on and the flat
+    # rows keep their historical v4 comparison.
+    from prismaquant.tessera_route_receipt import current_table_refuses_flat_census
     try:
-        table, _formats = _current_scoped_contract()
-        if table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA:
-            return [f"{slot}: current v5 cells cannot attest an unbound legacy flat census"]
-    except ModuleNotFoundError:
-        # Historical, unscoped cards do not acquire a runtime dependency.
-        pass
+        refusal = current_table_refuses_flat_census()
     except (ValueError, OSError) as exc:
         return [f"{slot}: cannot inspect current census contract: {exc}"]
+    if refusal is not None:
+        return [f"{slot}: {refusal}"]
     priced = record.get("priced_routes")
     rows = record.get("route_records")
     substitutes = record.get("substitute_decoders")

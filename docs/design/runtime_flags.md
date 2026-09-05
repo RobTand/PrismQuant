@@ -373,8 +373,9 @@ Producer-side only; none of these reach a serving runtime. See
 ## 8a. Tessera lane (`EXPORT_CONTAINER=tessera`, ARCHITECTURE.md §9.4)
 
 The arm NAMES Tessera's own plan translator and exporter rather than vendoring
-either, so the one path knob is where that checkout lives. It refuses on the
-PENDING release pin today (RobTand/tessera#17) before it reads any of the rest.
+either, so the one path knob is where that checkout lives. It refuses, before it reads any of
+the rest, unless the installed Tessera is the pinned commit and its packaged
+`runtime_contract.json` hashes to the pinned digest (RobTand/tessera#17).
 
 | env var | default | what it does |
 |---|---|---|

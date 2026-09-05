@@ -1,4 +1,12 @@
-"""A legacy family claim cannot attest a newly supplied runtime context."""
+"""A legacy family claim cannot attest a newly supplied runtime context.
+
+The v4 table here is a FIXTURE, down-converted from the installed contract by
+``conftest.legacy_v4_contract``. Until 2026-09-04 this file read the installed
+contract directly and asserted it was v4 -- true when it was written, false the
+day Tessera shipped ``tessera.lane-eligibility.v6``. A test about a legacy
+grammar has to own its legacy table; reading whichever grammar happens to be
+installed is how a fixture becomes a version assertion nobody meant to make.
+"""
 import json
 
 import pytest
@@ -13,18 +21,19 @@ FAMILY = "TESSERA_E4M3_K1"
 
 
 @pytest.fixture
-def legacy(monkeypatch):
-    payload = json.loads(contract.contract_path().read_text(encoding="utf-8"))
+def legacy(monkeypatch, legacy_v4_contract):
+    payload = legacy_v4_contract
     assert payload["lane_eligibility"]["schema"] == "tessera.lane-eligibility.v4"
     parsed = contract._parse(payload, commit="fixture", sha="fixture", path="fixture")
     table = lane._parse_table(payload["lane_eligibility"], payload["formats"],
-                              "fixture", "fixture", "fixture")
+                              "fixture", "fixture", "fixture",
+                              native_extensions=payload["native_extensions"])
     formats = {row["family"]: row for row in payload["formats"]}
     monkeypatch.setattr(render, "_pinned_serving_table", lambda: (table, formats))
     monkeypatch.setattr(render, "_release_pin_satisfied", lambda: True)
     context = lane.ServingContext(
         platform="sm_121", structure="dense", residency="resident",
-        runtime_image=payload["versions"]["attested_on"]["image"],
+        runtime_image=payload["versions"]["default_serve_image"],
         execution_mode="eager")
     return parsed, table, context
 

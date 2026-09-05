@@ -46,7 +46,8 @@ def released_table(monkeypatch):
         "schema": "tessera.lane-eligibility.v5", "platforms": {"sm_121": {}},
         "regimes": ["decode", "batch"], "structures": ["dense", "routed_moe"],
         "cells": rows,
-    }, list(formats.values()), "fixture", "fixture", "fixture")
+    }, list(formats.values()), "fixture", "fixture", "fixture",
+        native_extensions=[])
     monkeypatch.setattr(render, "_pinned_serving_table", lambda: (table, formats))
     monkeypatch.setattr(render, "_release_pin_satisfied", lambda: True)
     return table, formats

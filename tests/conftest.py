@@ -8,12 +8,108 @@ that declaration and the export tests that used it all went into
 ``archive/gridbook_lane_2026-09-02/`` when the Gridbook codebook serving lane
 was retired on 2026-09-02, so the fixture has no subject left.
 
-What is here now is one autouse fixture, and it exists because profile
-detection is process-global (issue #197). See its docstring.
+What is here now is one autouse fixture, which exists because profile
+detection is process-global (issue #197; see its docstring), and the
+legacy-lane-grammar fixtures (``legacy_v4_contract``, ``legacy_v5_contract``,
+``down_convert_lane_table``), which exist so a test about an OLDER Tessera
+lane grammar owns its fixture instead of asserting that the installed
+contract is a version it no longer is.
 """
 from __future__ import annotations
 
+import copy
+import json
+
 import pytest
+
+
+def _installed_contract() -> dict:
+    """The Tessera contract the environment installs, parsed."""
+    from importlib.resources import as_file
+
+    from prismaquant import tessera_runtime_contract as contract
+
+    with as_file(contract.contract_path()) as path:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def down_convert_lane_table(payload: dict, schema: str) -> dict:
+    """The installed contract, expressed in an OLDER lane grammar.
+
+    Legacy-grammar tests need a legacy table. They used to get one by reading
+    the installed contract, which was v4 at the time -- so on the day Tessera
+    shipped ``tessera.lane-eligibility.v6`` (its PR #176) every such test began
+    asserting that the installed contract was a version it no longer is. That
+    is a fixture problem, not a reader problem: a test about a legacy grammar
+    must OWN its legacy fixture, exactly as ``test_tessera_contract_v5`` already
+    did by rewriting ``runtime`` onto every cell.
+
+    Down-converting rather than hand-writing keeps the fixture honest about
+    everything the grammar did not change -- families, rungs, route statuses,
+    launches -- so the test still exercises real cells. It is a FIXTURE and
+    never an attestation: nothing derived from it is recorded anywhere.
+
+    ``schema`` is ``tessera.lane-eligibility.v8`` (drop the v9
+    ``smoke.record``), ``...v7`` (drop the v8 ``evidence.artifact`` as well),
+    ``...v6`` (drop v7's ``smoke.attribution`` and ``smoke.control`` too),
+    ``...v5`` (drop the whole ``evidence`` block and the ``runtime`` version
+    fields) or ``...v4`` (drop the per-cell ``runtime`` scope as well).
+
+    Dropping v9's record is not only a key removal: v9 DERIVES
+    ``smoke.attribution`` from the record, and v7/v8 derive it from the
+    control.  A fixture that removed the record and kept the derived
+    attribution would be a table no validator would accept, so the
+    attribution is re-derived under the older rule -- through the reader's own
+    ``derive_smoke_attribution``, which is that rule's home here.
+    """
+    from prismaquant.lane_eligibility import (
+        EVIDENCE_ATTRIBUTION_UNATTRIBUTED, EVIDENCE_OUTCOME_IDENTICAL,
+        EVIDENCE_ATTRIBUTION_SHARED, EVIDENCE_ATTRIBUTION_NOT_SHARED)
+
+    payload = copy.deepcopy(payload)
+    lane = payload["lane_eligibility"]
+    lane["schema"] = schema
+    version = int(schema.rsplit(".v", 1)[1])
+    for cell in lane["cells"]:
+        if version <= 5:
+            cell.pop("evidence", None)
+        else:
+            evidence = cell["evidence"]
+            if version <= 8:
+                smoke = evidence["smoke"]
+                if smoke.pop("record", None) is not None:
+                    control = smoke.get("control")
+                    smoke["attribution"] = (
+                        EVIDENCE_ATTRIBUTION_UNATTRIBUTED if control is None
+                        else EVIDENCE_ATTRIBUTION_SHARED
+                        if control["outcome"] == EVIDENCE_OUTCOME_IDENTICAL
+                        else EVIDENCE_ATTRIBUTION_NOT_SHARED)
+            if version <= 7:
+                evidence.pop("artifact", None)
+            if version <= 6:
+                evidence["smoke"].pop("attribution", None)
+                evidence["smoke"].pop("control", None)
+        if version <= 4:
+            cell.pop("runtime", None)
+        elif version <= 5:
+            runtime = cell.get("runtime", {})
+            cell["runtime"] = {"image": runtime["image"],
+                               "execution_modes": runtime["execution_modes"]}
+    return payload
+
+
+@pytest.fixture
+def legacy_v4_contract() -> dict:
+    """The installed contract expressed as a v4 lane table."""
+    return down_convert_lane_table(_installed_contract(),
+                                   "tessera.lane-eligibility.v4")
+
+
+@pytest.fixture
+def legacy_v5_contract() -> dict:
+    """The installed contract expressed as a v5 lane table."""
+    return down_convert_lane_table(_installed_contract(),
+                                   "tessera.lane-eligibility.v5")
 
 
 @pytest.fixture(autouse=True)

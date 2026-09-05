@@ -106,6 +106,114 @@
 
 ### Added
 
+- **The Tessera pin moves to master's tip `8ed1d9a` (contract v22, lane schema
+  v9 — v21 landed at `b8b1cb38` in Tessera #313 and the release `e78959ed`
+  carried v20), and the reader consumes the contract's
+  lane predicate through Tessera's own decision core** (RobTand/tessera#195,
+  #198, #264, #313; `lane_eligibility.py`, `tessera_render.py`,
+  `tessera_runtime_contract.py`, `tessera_serving_runtime_pin.py`,
+  `tessera_runtime/tessera_serving_runtime_pin.json`). Between the reviewed v17
+  answer and v21 exactly four things moved and nothing else — no family, rung,
+  route status, launch, image or version, and the same ten cell ids in the same
+  order: the lane schema (`v6` → `v8`; v7 adds a greedy smoke's `control` and
+  the `attribution` derived from it, v8 the encoder `artifact` a cell was
+  measured from); every `native_extensions[]` row gained a `lane {decoder,
+  requires}` block (v20); and the two `routed_moe` cells' `smoke.status` moved
+  `repetitive` → `recorded` (v21: Tessera re-measured the smoke through the
+  checkpoint's own chat template, receipt
+  `docs/measurements/moe-smoke-recorded-2026-09-05.md`, control retired). The
+  reader parses v7/v8 closed (`LANE_ELIGIBILITY_SCHEMA_TESSERA` is v8; the
+  scoped route receipt and the shipcard's census record gate on it), and the
+  `lane.requires` predicate — what the window-GEMV kernel reads: column rates
+  `[1,2,4]`, a 14-bit window, `window`/`channel`, no diagonals, rotation or
+  release overrides, grid arity 1 — is decided at every admission leg (menu, dev
+  pin, export) over the wire THIS producer plans at the rung
+  (`tessera_render.planned_wire_facts`) by calling
+  `tessera.serving.scheme.decide_lane_requirements`, the rule's one home; every
+  `extension::symbol` launch a cell names is bound at parse to that extension's
+  declared lane. **Admission under the re-pin:** the eight dense cells (E4M3
+  1024 resident/streamed, E2M1 896, BF16 1792, decode and batch) are admitted
+  on their own evidence exactly as at v17; the two `routed_moe` cells, refused
+  from v17 through v20 on `smoke.status: repetitive` (v20's
+  `shared_with_reference` control was read and not admitted on), are no longer
+  refused by the unchanged status-only rule (`cell_evidence_admits`), because
+  v21 publishes `recorded` — #198 option C, the review event being this pin
+  move. That is not a promotion: whether routed-MoE Tessera goes on the menu
+  is Rob's under principle 9. The tests assert the mechanism — the predicate's
+  answer tracks the status the pinned table publishes — rather than typing a
+  verdict, so the same tests hold whichever status a re-pin installs.
+
+- **Lane-eligibility schema v9: a smoke's RECORD, re-derived through Tessera's
+  own functions** (RobTand/tessera#327; `lane_eligibility.py`,
+  `tests/test_tessera_lane_v9.py`). #327 (P1) found that contract v21's
+  `smoke.status: recorded` rested on a repetition rule that lived only in a
+  dated measurements file — derived and checked by nothing in the contract,
+  and satisfiable by an empty completion. Tessera's v22 puts it in the table:
+  `smoke` gains one nullable `record` (`{instrument, rule, reference,
+  rows[{prompt, form, interface, status, reference_status}]}`; `null` on a
+  cell nobody re-ran), and the lane schema moves `v8` → `v9`. This reader
+  parses it closed and **delegates the derivation**: on a v9 table the status
+  and the attribution are re-derived by calling
+  `tessera.serving.contract.derive_smoke_status` /
+  `derive_smoke_attribution`, and a published value they do not derive is
+  refused as a contract defect — a repetition rule over completion text is
+  not a projection this repository can restate, and a second copy of it is
+  the same two-homes defect #327 reports one level down. `EVIDENCE_SMOKE_
+  INTERFACES`, `EVIDENCE_SMOKE_FORMS`, `EVIDENCE_SMOKE_RECORD_KEYS` and
+  `EVIDENCE_SMOKE_ROW_KEYS` are read from Tessera for the same reason, and
+  whether a status was derived at all is asked through Tessera's
+  `smoke_status_is_derived` rather than inferred from the key — it reaches
+  provenance so a shipcard can tell an attested status from an asserted one.
+  One refusal is mirrored rather than re-derived: a `record` beside a
+  non-null v7 `control` is refused by name, as Tessera's validator refuses
+  it. Two shape rules this reader adds, both #327's finding in the grammar:
+  a record must name a non-empty `instrument`, `rule` and `reference`, and
+  its `rows` must be non-empty — a status derived over zero observations is
+  the empty completion wearing a schema. A `record` on a v8 table is refused
+  as an unknown field, and v5–v8 stay SCOPED.
+  The lane predicate refuses nothing on the pinned table (only the two
+  streamed E4M3 cells launch through the lane and their plan is what it reads);
+  a BF16 cell that ever claimed the window-GEMV launch at 1792 (column rate 7)
+  would be refused by name. Every admission is scoped: a context-free
+  `tessera_lane_attested(name)` answers `False` under the pinned table by SCOPE, so
+  the allocator admits Tessera rungs only when the operator passes
+  `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/--tessera-residency`.
+  Dev pin, serving pin and their reviewed answer moved in one commit.
+
+- **Tessera admission is pinned to an exact commit plus the packaged contract's
+  digest, and the lane reader speaks schema v6** (RobTand/tessera#176;
+  `tessera_serving_runtime_pin.py`, `lane_eligibility.py`,
+  `tessera_runtime_contract.py`, `tessera_export_lane.py`,
+  `tessera_runtime/tessera_serving_runtime_pin.json`). Rob retired the
+  release-tag requirement ("we won't have to keep cutting releases"), so
+  immutability now rests on the pair a producer can actually check: the pin
+  schema is `prismaquant.tessera_serving_runtime_pin.v2`, carrying `commit`,
+  `version` and `contract_sha256`, and `require_pinned_tessera_runtime` refuses
+  unless the pin equals the reader's constants AND the INSTALLED
+  `tessera/serving/runtime_contract.json` hashes to the pinned digest. The
+  digest is the enforced half because it is the only half that can be attested
+  (principle 14): the packaged contract publishes `versions.tessera`,
+  `plugin_entry_point` and `default_serve_image` and no commit field at all, so
+  a commit is recorded identity and the digest is the gate.
+  `version_is_release` is still parsed, still recorded, and still cannot be
+  `true` over a PENDING commit — it is advisory, and no gate reads it. A stray
+  Tessera checkout on `PYTHONPATH` is refused exactly as the PENDING sentinels
+  refused it, and a new gate (`require_producer_repo_is_pinned`) closes the
+  hole the change itself opens by hashing the contract inside `$TESSERA_REPO`,
+  the checkout that encodes. The reader now parses `tessera.lane-eligibility.v6`
+  (v3/v4/v5 still parse): per-cell `runtime.vllm`/`runtime.torch`,
+  `versions.default_serve_image` in place of the removed `versions.attested_on`,
+  and a required per-cell `evidence {grade, kl, smoke}` whose `grade` must equal
+  what its own `kl` entries derive.
+  **Refusal, deliberately:** contract v17 declares `routed_moe` for the first
+  time, and publishes on both routed_moe cells `evidence.smoke.status
+  "repetitive"` — the runtime's own record that a greedy smoke on that route
+  degenerated. PrismaQuant does not admit them. The refusal is the runtime's
+  measurement read back (`lane_eligibility.cell_evidence_admits`), not a
+  structure ban this repository typed, and it fires in the menu, the render
+  admission, `native_cells` and the export lane's structure gate. Promoting
+  routed MoE is a decision on the evidence under principle 9 and it is Rob's.
+
 - **A lane's declared gates are recorded on a lane-gated ship record** (#119 in
   part, #162 filed; `lane_spec.py`, `lane_shipcard.py`, `shipcard.py`,
   `lane_specs/*.json`, `run-pipeline.sh`). `route.census` — principle 12's

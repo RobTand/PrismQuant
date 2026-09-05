@@ -1,7 +1,198 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-222`. Stamps
+As of: 2026-09-05 · `claude/tessera-pin-v0.1.0`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/tessera-pin-v0.1.0`) for **reading the lane
+table Tessera publishes at the pinned commit** (§5.7, §9.4). Tessera released
+at `e78959ed83b3ebb2f9ea838888bd725fef47b3f2` (contract v20) while this branch
+was open, then landed contract v21 (its #313) before it merged,
+and the lane-eligibility schema moved twice under it: `v7` (Tessera
+#195) gives a greedy smoke a `control` — the same prompt against the BF16
+SOURCE — and an `attribution` DERIVED from it; `v8` (Tessera #198) gives
+`evidence` an `artifact`, the encoder commit that wrote the bytes a cell's KL
+was measured on and a single-unit re-encode screen at a later commit. The
+reader (`lane_eligibility.parse_cell_evidence`) parses both closed at the
+table's own schema — vocabularies transcribed from Tessera's validator,
+attribution re-derived from the control exactly as the grade is re-derived
+from the KL entries, an `identical` payload with a non-`equal` weight error
+refused, a v7 field on a v6 table refused as unknown — and carries them into
+the refusal text, into `RegimeRoute` provenance (`evidence_attribution`,
+`evidence_artifact`) and into the reviewed dev-pin answer. **What the reader
+does NOT do:** Tessera's v18 changelog states the consumer rule it expects
+("refuses on status `repetitive` AND attribution other than
+`shared_with_reference`"), and on the v20 table that rule would have ADMITTED
+both `routed_moe` cells, whose control showed the BF16 source returning the
+same degenerate completion. `cell_evidence_admits` still refuses on the status
+alone: the control removes the evidence against the route without adding any
+for it, and admitting a structure this producer has never shipped on that
+basis is a promotion. The refusal names the control it read; the decision was
+put to Rob in RobTand/prismaquant#198 and resolved by its option C on the
+Tessera side: contract v21 (Tessera #313) re-measures the routed-MoE smoke
+through the checkpoint's own chat template, both cells read `status:
+recorded` (receipt `docs/measurements/moe-smoke-recorded-2026-09-05.md`,
+control retired, `attribution: unattributed`), and the UNCHANGED status-only
+rule therefore stops refusing them. Consequence on the pinned (v21) table:
+all ten cells pass the evidence gate on their own published evidence — the
+eight dense cells exactly as at v17, the two routed-MoE cells for the first
+time, by a Tessera measurement and not by a predicate change here.
+
+**Which raised the question of who checks a status, answered by lane schema
+v9.** RobTand/tessera#327 (P1) found that v21's `recorded` rested on a
+repetition rule that lived only in a dated measurements file: derived and
+checked by nothing in the contract, and satisfiable by an empty completion —
+a status a consumer could only take on trust. Tessera's contract v22 puts the
+rule and its observations INSIDE the table. `smoke` gains one nullable
+`record` (`{instrument, rule, reference, rows[{prompt, form, interface,
+status, reference_status}]}`; `null` on a cell nobody re-ran, which the eight
+dense cells are), and the lane schema goes `v8` → `v9`.
+
+What this reader does with it is DELEGATE, not re-implement
+(`lane_eligibility._parse_smoke_record`). The grade is re-derived here from
+the KL kinds and the v7 attribution from the control, because both are
+one-line projections this repository can state exactly. A repetition rule
+over completion text is not, and a second implementation of it is the same
+two-homes defect #327 reports one level down — so on a v9 table the status
+and the attribution are re-derived by calling Tessera's own
+`derive_smoke_status` / `derive_smoke_attribution`, and a published value
+that disagrees with what they return is refused as a contract defect rather
+than resolved. The `interface` and `form` vocabularies are read from
+`tessera.serving.contract` for the same reason, never transcribed beside the
+parser — as are the record's and the row's own member sets
+(`EVIDENCE_SMOKE_RECORD_KEYS`, `EVIDENCE_SMOKE_ROW_KEYS`), so a member Tessera
+adds widens this reader on the re-pin that installs it. Whether a cell's word
+was DERIVED or merely asserted is likewise asked, not inferred: Tessera names
+that state `smoke_status_is_derived`, and a reader that spelled it `record is
+not None` would be restating the rule one level up from the one it refuses to
+restate. It reaches provenance, so a shipcard can tell an attested status from
+an asserted one. One refusal is mirrored rather than re-derived — a `record`
+beside a non-null v7 `control` is refused by name, as Tessera's validator
+refuses it, because two homes for one derivation is how they drift; a v9 cell
+that was re-measured records its rows and retires the control. Two shape rules
+this reader does add, both #327's finding in the grammar: a record must name a
+non-empty `instrument`, `rule` and `reference`, and its `rows` must be
+non-empty — a status derived over zero observations is the empty completion
+wearing a schema.
+
+**The pin names v22, so v9 is the CURRENT grammar, not one this reader merely
+accepts.** `LANE_ELIGIBILITY_SCHEMA_TESSERA` is `tessera.lane-eligibility.v9`,
+which is what `tessera_route_receipt` compares a packaged table against, so
+the scoped-census gate fires against the table actually installed. v5–v8 stay
+in `SCOPED_LANE_SCHEMAS` — a bump must never demote the grammar it succeeds to
+"legacy unscoped" — and the tests that are ABOUT those grammars now own their
+fixtures through `conftest.down_convert_lane_table`, which learned the v9 → v8
+step: dropping the record also re-derives the attribution under the older
+rule, because v9 derives it from the record and v7/v8 from the control, and a
+fixture that dropped one and kept the other would be a table no validator
+would accept. On the pinned table both routed-MoE cells publish `recorded`
+with `attribution: shared_with_reference` — derived from the rows, not
+asserted — and the reviewed answer moved in exactly three places against v21:
+`lane_schema`, and those two cells. The eight dense cells did not move at all. Under v9 both routed-MoE cells still
+publish `recorded`, now with the rows behind it, so the unchanged status-only
+predicate admits them on evidence a reader can check. The four dense E4M3
+cells now
+carry an encoder scope into provenance — their KL was measured on a checkpoint
+built at `8070ec6…`, and a same-source `down_proj` re-encode at `3317036…`
+produced a DIFFERENT payload (lower weight SSE), which a shipcard now says
+rather than a receipt. **Second, the lane predicate (contract v20, Tessera
+#264).** Every `native_extensions[]` row now publishes `lane.{decoder,
+requires}`, the predicate its kernel gates on; the reader parses it closed
+(`lane_eligibility.parse_lane_claim`), binds every `extension::symbol`
+launch a cell names to that extension's lane, and at every admission leg
+(menu, dev pin, export) decides it over the wire THIS producer plans at the
+rung (`tessera_render.planned_wire_facts`) by calling Tessera's own
+`tessera.serving.scheme.decide_lane_requirements` — the rule's one home;
+nothing here restates it. Nothing on the pinned table is refused by it today
+(only the two streamed dense E4M3 cells launch through the window-GEMV lane,
+and their plan is what the lane reads); a BF16 cell claiming that launch at
+1792 (column rate 7, outside `[1,2,4]`) would be, by name. **Third, the
+pin itself moved**: `TESSERA_DEV_PIN_COMMIT`, `TESSERA_DEV_PIN_CONTRACT_SHA256`,
+the serving pin JSON and its module constants all name `8ed1d9a…` /
+`719daa02…` (contract v22, lane schema v9) in one commit, and
+`TESSERA_DEV_PIN_ANSWER` was re-derived from what that contract publishes;
+the answer's diff against the v17 review is exactly the four moves above
+(schema, evidence fields, lane rows, the routed-MoE smoke `repetitive` →
+`recorded`) and no family, rung, route status, launch, image or version — the
+same ten cell ids in the same order. The pin names master's TIP at review time
+(`8ed1d9a`, the merge of Tessera #332) rather than `b8b1cb38`, the commit that
+first published this answer: the 56 commits between them (11 PR merges,
+Tessera #312 and #314–#324) package byte-identical contract bytes, so the
+answer and the digest did not move when the commit did — which is the property
+a digest-enforced pin is for. No tag names the pinned
+commit, so `version_is_release` stays `false`. **The admission flip, stated
+once:** before this branch `tessera_lane_attested` answered `False` for every
+rung by the PENDING sentinel — no pin, so nothing admitted. After it the
+answer is digest-gated: under the pinned v21 table, with an explicit serving
+context (`sm_121`, the cell's image, `eager`, a residency), the eight dense
+rungs (E4M3 1024 resident and streamed, E2M1 896, BF16 1792; decode and
+batch) answer `True`, and so — for the first time — do the two routed-MoE
+E4M3 1024 resident cells. A context-free call still answers `False`, now by
+SCOPE (§5.7): the pinned table is scoped and the operator supplies the scope
+through `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/
+--tessera-residency` (`run-pipeline.sh` derives them from `TESSERA_PLATFORM`,
+`TESSERA_RUNTIME_IMAGE`, `TESSERA_EXECUTION_MODE`, `TESSERA_SERVE_MODE`).
+**Fourth, two gates the pin used to hold shut are now reachable** (§7.1).
+The scoped `route.census` leg — dormant under `1221d2a` because the packaged
+table was v4 and the producer emitted `route_census/1` — replays against the
+pinned v8 table, and Tessera's `tools/tessera_route_census.py` at the pinned
+commit emits `route_census/2`; no comparison has yet run against a real serve, so
+the strictness caveat below stands. And `verify` on an UNSCOPED card now
+refuses a flat legacy census by the schema that refused it (`current
+tessera.lane-eligibility.v8 cells cannot attest an unbound legacy flat
+census`) — the rule was on main, comparing the packaged schema to
+`LANE_ELIGIBILITY_SCHEMA_TESSERA`, and never fired while the two differed;
+its only remaining positive path is a historical card verified where no
+`tessera` is installed; `fill-route-census` applies the same rule at fill
+time, from the same home (RobTand/prismaquant#214).
+
+Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for **pinning Tessera by
+commit and contract digest instead of by release tag, lane-eligibility v6, and
+the evidence gate** (§5.7, §9.4). Rob retired the tag — *"can we just pin
+prismaquant to latest version of tessera? then we won't have to keep cutting
+releases"* — so the pin is now an exact Tessera commit
+(`5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68`) plus the SHA-256 of the
+`runtime_contract.json` that commit packages
+(`ba3a3c69…e055e6`, contract v17). The digest is the ENFORCED half:
+`require_pinned_tessera_runtime` hashes the installed contract and refuses any
+Tessera whose bytes are not the pinned bytes, which keeps the fail-closed
+property the PENDING sentinels used to provide. `version_is_release` is
+demoted to advisory — recorded, structurally constrained, read by no gate —
+because requiring it would re-impose the tag. Pin schema
+`prismaquant.tessera_serving_runtime_pin.v2`. Two consequences of admitting,
+in the same commit because they are the same landing: the checkout that
+ENCODES must be the pinned Tessera too (gate 5,
+`require_producer_repo_is_pinned` — gate 1 hashes the package this process
+*imports*, and nothing bound that to `$TESSERA_REPO`), and a cell the packaged
+contract's own `evidence` refuses is not admitted — which is what keeps
+contract v17's two `routed_moe` cells out, on their published
+`smoke.status: "repetitive"` rather than on a structural ban.
+
+The reader moves to `tessera.lane-eligibility.v6`: per-cell
+`runtime {image, execution_modes, vllm, torch}`, `versions.attested_on`
+withdrawn in favour of `versions.default_serve_image`, and a required per-cell
+`evidence {grade, kl[], smoke}` block whose grade this reader RE-DERIVES rather
+than reading as written. `lane_eligibility.cell_evidence_admits` is one
+predicate read by both admission legs, and it refuses a cell whose greedy smoke
+the runtime recorded as degenerate — principle 9's "generates correctly" leg,
+failing in a structured field. **Consequence, stated because it is a
+promotion boundary: the two `routed_moe` cells contract v17 introduced are
+NOT admitted.** Both publish `evidence.smoke.status: "repetitive"`; one rests
+on a top-1024 intersection LOWER BOUND scored in batch and the other on no KL
+at all. Promoting routed-MoE Tessera is Rob's decision under principle 9, and
+nothing here bans the structure: the refusal is what was measured, and the
+evidence block is part of the reviewed dev-pin answer so a cleaner smoke
+re-stales the pin and asks a human rather than silently promoting.
+
+**What this flips, precisely.** The PIN conjunct stops refusing, so a SCOPED
+query — an explicit `ServingContext` naming platform, structure, residency,
+runtime image and execution mode — now admits the dense E2M1/E4M3 rungs the
+contract attests. Context-free `producer_eligible` on a `FormatSpec` stays
+False, and the reason is the SCOPE, not the pin: the installed lane table has
+required an explicit serving context since schema v5, and a rung admitted
+without one would be borrowing a claim scoped to a runtime nobody named. Two
+different refusals, and the shipcard has to be able to tell them apart.
+`FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16` and no default, stage or exporter
+moves.
 
 Re-stamped (2026-09-05, `claude/pq-222`) for **an allocation that keeps every
 routed expert in BF16 no longer being refused by its own export gate** (§5
@@ -2979,7 +3170,7 @@ by measurement, not by the cost model (§2).
 | Lane | Container | Runtime | Formats | Status |
 |---|---|---|---|---|
 | Native | `compressed-tensors` | vanilla vLLM, Blackwell CUTLASS | maintained: NVFP4, FP8_DYNAMIC/E4M3, BF16; FP8_SOURCE remains a source-artifact compatibility codec | production default for the maintained W4A4/W8A8/BF16 menu; W8A16/source FP8 is not SM120 performance eligibility |
-| **Tessera** | `tessera` wire (`quant_method = "tessera"`) | vLLM + **Tessera's own** plugin (`tessera.serving`), installed into the stock image from an immutable pin; PrismaQuant consumes only the packaged `runtime_contract.json` | the Tessera trellis wire, synthesized and priced by name (§5.7) | **declared, with a container arm, and refused by exactly one thing**: `EXPORT_CONTAINER=tessera` is a lane the driver can act on since 2026-09-02 (§9.4), and the pin's PENDING sentinels are the only refusal left — `tessera_lane_attested` answers False for every rung by the pin, not by an edit. Dense-only at TP=1; the contract carries no `routed_moe` cell |
+| **Tessera** | `tessera` wire (`quant_method = "tessera"`) | vLLM + **Tessera's own** plugin (`tessera.serving`), installed into the stock image from an immutable pin; PrismaQuant consumes only the packaged `runtime_contract.json` | the Tessera trellis wire, synthesized and priced by name (§5.7) | **declared, with a container arm, and admitted by the pin**: `EXPORT_CONTAINER=tessera` is a lane the driver can act on since 2026-09-02 (§9.4), and since 2026-09-04 the pin names an exact Tessera commit plus the SHA-256 of the `runtime_contract.json` it packages — `tessera_lane_attested` answers True for the dense rungs when the installed Tessera hashes to that digest, and False for any other tree, by the pin rather than by an edit. Dense-only at TP=1 for anything shipped; the contract's two `routed_moe` cells are decided by their own packaged `evidence.smoke.status` — refused on `"repetitive"` (v17–v20), not refused on `"recorded"` (v21), with no predicate change either way. Lane schema v9 (Tessera #327) puts the rule and the rows behind a status into the contract, and this reader re-derives both the status and the attribution by calling Tessera's own functions rather than restating the rule |
 | GGUF | single `.gguf` | llama.cpp; vLLM via `vllm-gguf-plugin` | Q2_K…Q8_0 k-quants + IQ family + BF16 | enabled end-to-end; the only 2–3 bpw path |
 
 A fourth container — the **codebook (CB) / gridbook** lane — was **retired 2026-09-02** on Robert's decision (*"put Tessera in PrismaQuant and remove Gridbook"*) and archived whole at `archive/gridbook_lane_2026-09-02/`, its served measurements included. `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s. See §9.2 for what went with it.
@@ -3783,7 +3974,8 @@ preflight **refuses a lane the architecture has not declared** (`supported_lanes
 re-vet R6) — an undeclared lane does not fail at serve time, it serves uninitialised expert
 memory and generates coherent-looking garbage. Being in the vocabulary is therefore not
 permission to build: `tessera` is declared by `qwen3` alone, and its own preflight
-(`prismaquant/tessera_export_lane.py`) still refuses every run on the PENDING release pin.
+(`prismaquant/tessera_export_lane.py`) refuses every run whose installed Tessera is not the
+pinned commit/contract digest.
 
 **`COST_MODE=aura` is the default since 2026-07-30 (re-vet R2).** Both flagship artifacts
 (regen-27B, 35B arm-E) were produced with it and its served margin over the previous default
@@ -5761,15 +5953,20 @@ contract without changing any function object, and the stale verdict came
 straight back). The whole lookup is ~0.1 ms and `expand_tessera_menu` is
 memoised above it.
 
-**The default menu is three rungs under the dev pin, and empty without it — and
-the reason is the PIN, not the table.** With no development contract pinned,
+**The default menu is the rungs the pinned Tessera attests under an explicit
+serving context — and what decides is the PIN, not an edit here.**
 `route_admission` reads Tessera's **own** packaged `runtime_contract.json`
 through `tessera_render._pinned_serving_table`, which publishes
 `TESSERA_E2M1_K2`, `TESSERA_E4M3_K1` and (contract v5) `TESSERA_BF16_K1`, and
-carries `device_qualified` native cells for the receipted rungs. What withholds them is
-`_release_pin_satisfied()` — no reviewed Tessera release tag exists — so every
-rung answers `unattested` (*absence of a claim*, not `unbacked`) and the default
-`attested` menu holds none of them. `tessera_lane_admission` returns that reason
+carries `device_qualified` native cells for the receipted rungs.
+`_release_pin_satisfied()` admits them only while the installed
+`tessera/serving/runtime_contract.json` hashes to the pinned digest; any other
+Tessera on `PYTHONPATH` — a master that has moved past the pin included —
+makes every rung answer `unattested` (*absence of a claim*, not `unbacked`) and
+empties the default `attested` menu. A scoped table (lane schema v5/v6) also
+requires the caller's complete serving context: context-free lookups against a
+scoped contract answer with nothing, which is absence of a claim rather than a
+refusal by the pin. `tessera_lane_admission` returns that reason
 beside the verdict and `RouteAdmission.detail` carries it verbatim, because a
 rung refused by the pin and a rung refused by an absent cell need different
 fixes and must not read the same. `RouteAdmission.source` names the table that
@@ -5819,9 +6016,17 @@ Tessera RELEASE tag is what retires the override.
 covers what the *allocator menu* is made of. The export lane reads three other
 values out of the same file — `lane_eligibility.structures`, `platforms` and
 `regimes`, through `lane_eligibility.load_eligibility_table` in
-`tessera_export_lane.require_declared_structure` — and those are the RELEASE
-pin's to gate: an exact commit and sha, fail-closed today on `PENDING`
-sentinels. Folding them into the dev pin would make an export-lane edit
+`tessera_export_lane.require_declared_structure` — and those are the SERVING
+pin's to gate: an exact commit and the packaged contract's digest.
+`require_declared_structure` reads the structures whose cells are
+**admissible**, not the `structures` vocabulary: contract v17 declared
+`routed_moe` while both its routed-MoE cells published
+`evidence.smoke.status: "repetitive"`, so the vocabulary alone would have let a
+MoE checkpoint past a gate on a structure name whose every cell the runtime
+itself reported as generating incorrectly (from v17 through v20 the gate
+refused them; the pinned v21 records the smoke as `recorded` and the same
+gate stops refusing, Tessera #313 — what that `recorded` is worth is open
+under RobTand/tessera#327, which lane schema v9 answers by putting the rule and its rows in the contract). Folding them into the dev pin would make an export-lane edit
 re-stale the allocator's menu, which is #38's own failure mode wearing a
 different hat. Each pin covers the values its own gate reads.
 
@@ -6432,7 +6637,7 @@ licence and the route admission cannot come from two Tessera builds in one run.
 A packed-expert component takes the uniform path even under a per-member word:
 `expert_parallel` publishes a closed world with no unit in it, so per-expert
 rungs under one family is a claim nothing attests. With no contract pinned --
-production, while no Tessera release tag exists -- there is no table to derive
+or with a Tessera the pin does not admit -- there is no table to derive
 the rate's freedom from and every component takes the uniform path; a contract
 that re-tightens `q256` to `shared` collapses fused groups the same way and
 re-stales the dev pin with the field named, because the word is in the pin's
@@ -6615,7 +6820,7 @@ the no-two-names-differ-only-by-case precondition) and
 | `MXFP8_E4M3` | `:720-728` | 8 / 32 / e8m0 | 8.25 | Registered, profile-allowed, **de-menued** |
 | `NVFP4A16`, `MXFP4`, `MXFP8A16`, `MXFP8_E5M2`, `FP8_E5M2`, `INT8_W8A16`, `INT4_W4A16_g128` | `:678-795` | — | — | Research / registry-only |
 | GGUF k-quants + IQ | `:884-902` | `_make_gguf_spec :864` | 2.0625–8.5 | GGUF lane (§9.3) |
-| `TESSERA_<grid>_K<arity>_R<q256>` (e.g. `TESSERA_E2M1_K2_R896`) | synthesized, `tessera_render.py` via `format_registry.py:1322-1338` | E2M1 (4-bit) or E4M3 (8-bit) base, arity 1–2, body rate in 1/256-bpp steps, scale plane from the family's wire recipe; route priced (W4A4 / W8A8 / kernel) | exact per shape (`bits_for_shape`); 4.00 at `E2M1_K2_R896` on (2048, 4096) | **Research** (§5.7): priced and rendered by name; producer-eligible only through `tessera_lane_attested`, which reads Tessera's own packaged contract and is **False under the PENDING Tessera serving pin** (no release tag exists); lane spec declared (§9.4), no exporter in this repo |
+| `TESSERA_<grid>_K<arity>_R<q256>` (e.g. `TESSERA_E2M1_K2_R896`) | synthesized, `tessera_render.py` via `format_registry.py:1322-1338` | E2M1 (4-bit) or E4M3 (8-bit) base, arity 1–2, body rate in 1/256-bpp steps, scale plane from the family's wire recipe; route priced (W4A4 / W8A8 / kernel) | exact per shape (`bits_for_shape`); 4.00 at `E2M1_K2_R896` on (2048, 4096) | **Research** (§5.7): priced and rendered by name; producer-eligible only through `tessera_lane_attested`, which reads Tessera's own packaged contract and is **True for the dense rungs under the pinned Tessera commit/digest, False for any other installed Tessera**; lane spec declared (§9.4), no exporter in this repo |
 | `NVFP4_CB_K1..K25`; FP8-CB reader K4/K8/K12/K16/K20/K24 + every K28..K48; FP8-CB producer K4..K48 step 4 | `cb_layout.py`, registry construction in `format_registry.py` | product-VQ codebook, g256 | NVFP4 v2 body `k/8 + 0.28125` bpw; FP8 index stream `k/8` bpw plus per-row FP32 scales; both add a deduplicated codebook sidecar | NVFP4 reader/producer domains are both every integer K1..K25; K26..K32 exist only in direct lattice/codec research and have no public format id. New endpoint artifacts remain Gridbook-v11 route-attestation and measurement gated. New FP8-CB producers emit exactly K4/K8/K12/K16/K20/K24/K28/K32/K36/K40/K44/K48; reader-only off-law K29–K47 artifacts remain inspectable but cannot enter a new menu, assignment, bundle, or export. Strict Ada profile allows only this FP8 ladder + `FP8_E4M3` + BF16 (§9.2) |
 | ~~`NVFP4_CB_S13..S16`~~ | — | signed codebook, g256 | — | **DELETED 2026-08-17** — every native Gridbook FP4 route requires the unsigned two-tier product layout (`n_sub == 2 and type_size == 4*k + 9`), so a signed rung could only ever ride a fallback; it had already lost 78.48% of matched weight-MSE comparisons. Registry, encoder, exporter and footprint branches removed; `cb_layout.subtable_bit_widths(..., "signed", ...)` and a recipe carrying `cb_mode: "signed"` now **refuse** rather than resolve to the product rung of the same `k` (§9.2) |
 
@@ -7021,7 +7226,7 @@ the name to its payload family and rate through
 `lane_eligibility.resolve_payload_rung` against the contract that
 plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
 `importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
-and answers True only on the AND of three conjuncts, each of which fails closed
+and answers True only on the AND of five conjuncts, each of which fails closed
 alone:
 
 1. **The table admits the rung.** The contract publishes the family and carries
@@ -7037,26 +7242,122 @@ alone:
    requirement travels into provenance through `resolve_unit_route`, which
    aggregates it onto every `UnitRoute` / `RegimeRoute` as `requires_plugins`
    and into `EligibilityTable.provenance()` as `required_plugins`.
-3. **The pinned runtime is an exact reviewed release.**
-   `require_exact_tessera_runtime_release(load_tessera_serving_runtime_pin())`.
-   Without this conjunct the answer would flip to True the moment the `tessera`
-   package became importable — which it already is, as the render adapter's own
-   dependency — and a producer-side import is not a serving release.
+3. **The installed runtime is the exact pinned Tessera.**
+   `require_pinned_tessera_runtime()` — the tracked pin equals the module's
+   three pinned constants, AND the installed `runtime_contract.json` hashes to
+   the pinned `contract_sha256`. Without this conjunct the answer would flip to
+   True the moment the `tessera` package became importable — which it already
+   is, as the render adapter's own dependency — and a producer-side import is
+   not a reviewed runtime.
+4. **Every matching cell's own evidence admits it.**
+   `lane_eligibility.cell_evidence_admits` (schemas v6–v8). It refuses a cell
+   whose `evidence.smoke.status` is one the runtime records as a generation
+   failure (`repetitive`), which is principle 9's "generates correctly" leg
+   read off a structured field. It deliberately does NOT gate on
+   `evidence.grade`: every cell in the installed table is `route_only` or
+   `kl_lower_bound` — the publisher's changelog records that every served KL
+   in that repository is a top-K intersection lower bound — so a grade bar
+   would refuse the whole lane, which is a promotion-ladder move and belongs
+   to a human. Nor, yet, does it decide on v7's `smoke.attribution`: Tessera's
+   stated consumer rule (admit `repetitive` when the attribution is
+   `shared_with_reference`) would have admitted both routed-MoE cells on the
+   v20 table, and that is the same promotion in a different field
+   (RobTand/prismaquant#198; v21 retired those controls, so the branch is
+   exercised on the v20 shape in `tests/test_tessera_lane_v8.py`). The grade,
+   the attribution and v8's encoder scope travel into `RegimeRoute`
+   (`evidence_grade`, `evidence_attribution`, `evidence_artifact`) and into
+   provenance instead (principle 12).
+5. **The lane the cell launches through can read THIS producer's plan.**
+   Since Tessera contract v20 (Tessera #264) every `native_extensions[]` row
+   publishes a `lane` block: the `decoder` name its kernel stamps and, where
+   the kernel is narrower than the route, a `requires` predicate — the
+   window-GEMV lane reads `column_rates [1,2,4]`, `window_bits [14]`, `body
+   window`, `plane channel`, no release overrides, no diagonals, rotation
+   `none`, no start state, `grid_arities [1]`; the NVFP4 lane publishes none.
+   A cell's `executes` names a lane launch only for the rungs the ATTESTED
+   wire stamp reaches, and that stamp is not this producer's plan.
+   `lane_eligibility.cell_lane_admits(cell, rung, table.lanes)` therefore
+   reads the plan off `tessera_render.planned_wire_facts(family, rung)` — the
+   rate set (`tessera.grammar.rate_set` over the family's root and cap), the
+   recipe's window width, body and plane, and the render's own decoration
+   constants (`TESSERA_PLANNED_ROTATION / _DIAGONALS / _RELEASE_OVERRIDES`,
+   the values `_encode_planned_unit` encodes with) — and hands those facts to
+   **Tessera's own decision core, `tessera.serving.scheme.decide_lane_requirements`**.
+   That function is the rule's ONE home; PrismaQuant holds the facts and the
+   refusal, never a copy of the predicate. `parse_lane_claim` reads the block
+   closed (a requirement this reader cannot decide, an unknown rotation
+   state, body or plane, a non-ascending rate list or a non-boolean carry is
+   refused by name), `_parse_table` binds every `extension::symbol` launch a
+   cell names to that extension's lane (an undeclared extension or a
+   mismatched decoder is a contract inconsistency and is refused at parse),
+   and the same gate runs at every admission leg — `tessera_attesting_cells`
+   / `tessera_lane_admission` (menu), `TesseraContract.native_cells` (dev
+   pin) and `resolve_unit_route` (export), whose refusal lands in the same
+   `RegimeRoute.detail` slot as an evidence refusal, cell id named. The lane
+   rows travel into `EligibilityTable.provenance()["lanes"]` and into the
+   reviewed dev-pin answer (`native_extensions[].lane`), so a lane that
+   widens or narrows what it reads is a re-review, not a silent widening.
+   Consequence on the pinned table today: nothing changes hands — the only
+   cells that launch through the window-GEMV lane are the two streamed dense
+   E4M3 cells at rung 1024, whose plan (`rates (4,)`, 14-bit window, WINDOW /
+   CHANNEL, arity 1, no decoration) the lane reads; every E4M3 resident,
+   BF16 and E2M1 cell launches through torch or the NVFP4 lane. The gate has
+   teeth for the row the contract already routes: the lane's `routes` names
+   `TESSERA_BF16`, and BF16's one attested rung (1792 → column rate 7) is
+   outside `column_rates [1,2,4]`, so a BF16 cell that ever claimed the
+   window-GEMV launch would be refused here by name rather than exported to a
+   kernel that cannot read it (`tests/test_tessera_lane_requires.py`).
 
-**It is False today by the PIN, not by an edit and not by an absent table.**
-Tessera's packaged contract publishes its attested families with `device_qualified`
-native cells and the package imports fine here; what withholds them is
-`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`, whose `commit`
-and `version` are the conspicuous sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
-`PENDING_TESSERA_RELEASE_VERSION` with `version_is_release: false`. There is no
-Tessera release tag and cutting one is Rob's decision; when it happens, the pin
-file and the reader's two release constants
-(`TESSERA_SERVING_RUNTIME_RELEASE_{VERSION,COMMIT}`) resolve in ONE reviewed
-commit, because the reader requires them to be equal and neither half admits
-anything alone. `tests/test_tessera_lane_admission.py` proves both directions:
-the tracked pin is refused with "PENDING", and under a released-pin fixture on
-the REAL packaged contract `TESSERA_E2M1_K2_R896` and `TESSERA_E4M3_K1_R1024`
-are admitted while `TESSERA_E2M1_K2_R512` is not.
+**It answers by the PIN, not by an edit and not by an absent table.** Until
+2026-09-04 the answer was False for every rung, because the pin carried PENDING
+sentinels and no Tessera release tag existed. Rob retired the tag requirement,
+so the pin now names an exact commit and the digest of the contract that commit
+packages, and the dense rungs are ADMITTED under it. What is refused instead is
+any *other* Tessera: `require_pinned_tessera_runtime` hashes
+`tessera/serving/runtime_contract.json` as installed and refuses when it is not
+`719daa02…824927` (Tessera master `8ed1d9a…`, contract v22; the release
+`e78959ed…` carried v20 at `374ce4a9…625dd4`, and the first pin, 2026-09-04,
+was `ba3a3c69…e055e6` at `5acc2a6f…`, contract v17). A stray
+checkout on `PYTHONPATH` is refused exactly as a
+PENDING pin refused it — from a fact this process can check rather than from a
+tag, because a commit string is a claim about another repository and a digest
+is not.
+
+Moving the pin stays ONE reviewed commit:
+`prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`'s
+`commit`/`version`/`contract_sha256` AND the reader's
+`TESSERA_SERVING_RUNTIME_PINNED_{COMMIT,VERSION,CONTRACT_SHA256}`, together,
+because the reader requires them to be equal and neither half admits anything
+alone. The development pin (`TESSERA_DEV_PIN_COMMIT` /
+`TESSERA_DEV_PIN_CONTRACT_SHA256`) now names the same Tessera object, and
+`tests/test_tessera_serving_pin.py` refuses a drift between them — two of this
+repository's own spec files disagreeing about one runtime is a failure mode it
+has already had.
+
+**A consequence, by design:** a developer checkout of Tessera that has moved
+past the pin turns this repository's Tessera tests red. That is fail-closed
+working. The fix is environmental — install Tessera at the pinned commit — never
+a check that reads whatever happens to be installed.
+
+`tests/test_tessera_serving_pin.py` is the guard on the pin itself (it replaced
+`test_tessera_release_pin_flip.py`, whose whole subject was a tag that no longer
+gates anything). It holds the "one reviewed change" rule in both directions —
+a JSON edit alone and a constant edit alone each admit nothing — asserts that
+the installed contract's bytes are the pinned bytes, proves the stray-checkout
+refusal against a wrong digest, pins `version_is_release` as advisory by
+admitting under both values, and binds the development pin and the serving pin
+to the same commit and digest. Deliberately absent: any test that reads the
+installed Tessera's version and demands the pin follow it. That would redden
+`main` on the next Tessera bump with a message saying "re-pin to 0.2.0", which
+is a moving `master` made into a review event — the rule
+`TESSERA_DEV_PIN_COMMIT`'s docstring states, read backwards.
+`tests/test_tessera_lane_v6.py` is the guard on the v6 grammar and the evidence
+gate, including that a cell whose published smoke status is refused is
+refused and every dense cell is not; `tests/test_tessera_lane_v8.py` pins the
+v7/v8 grammar and, for the routed-MoE cells, the MECHANISM rather than a
+verdict — the predicate's answer tracks the status the pinned table publishes,
+which holds whatever status the pinned table publishes; `tests/test_tessera_lane_v9.py` pins the v9 record grammar and the DELEGATION (Tessera derives the status, this reader refuses a published value that disagrees). `prismaquant/tessera_runtime/README.md` carries the exact edit that
+moves the pin and the command that verifies it.
 
 Until 2026-09-02 this was a module constant (`False`), then briefly a lookup
 against GRIDBOOK's serving pin, whose unreleased contract v13/v14 carried the
@@ -7076,7 +7377,7 @@ carries both the residency and launches. The reviewed development answer
 includes those values, so changing a decoder cannot retain the old answer.
 Explicit legacy Tessera v3 tables retain their original grammar and carry no
 fabricated launches. Gridbook schemas remain refused. Release admission is
-still gated by the exact PENDING release pin.
+still gated by the exact pinned commit and contract digest.
 Legacy context-free behavior is preserved, not expanded: supplying new
 runtime-image/execution scope to a legacy schema is refused with the shared
 `legacy_runtime_scope_refusal` message. The caller's requested context remains
@@ -7994,21 +8295,23 @@ paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
 match the retained texts and the actual artifact files, so host/container
 checkpoint path aliases are valid but an artifact-free replay is not.
 
-**Dormant at the current pin, by the pin rather than by a flag.** The scoped
+**Reachable at the current pin, by the pin rather than by a flag.** The scoped
 path takes the packaged contract's lane table through
 `lane_eligibility.load_eligibility_table` and refuses anything that is not the
 schema `LANE_ELIGIBILITY_SCHEMA_TESSERA` names, and it refuses any census whose
 schema is not `tessera.serving.route_census/2`. Under
-`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table is
+`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table was
 `tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
-emits `route_census/1`, so **no** scoped receipt can be filled or replayed
-today: `route.census` on a scoped card stays `UNFILLED` until the pin moves to a
-release publishing both. That is the intended fail-closed direction -- this leg
-is the consumer half of Tessera #126, whose producer/pin half is still open --
-but it means the scoped comparison has never run against a real packaged
-contract, only against tables constructed in
-`tests/test_tessera_scoped_route_receipt.py`. Re-pinning is the measurement
-that would change that claim.
+emitted `route_census/1`, so no scoped receipt could be filled or replayed and
+`route.census` on a scoped card stayed `UNFILLED` by the pin. At the pin this
+document is stamped for (`8ed1d9a`, contract v22) the packaged table is
+`tessera.lane-eligibility.v8` -- the schema the constant names -- and the
+producer at that commit emits `route_census/2`, so both refusals lift and the
+comparison below is the live gate on a scoped card. What has NOT changed: no
+scoped receipt from a real serve has been replayed yet (nothing has been
+served on this side), so the scoped comparison is exercised only against
+tables constructed in `tests/test_tessera_scoped_route_receipt.py`, and the
+coverage-strictness caveat below is still uncalibrated.
 
 Coverage is the exact set of Tessera-selected allocation units (not BF16
 passthrough context keys). Their source tensors join explicit manifest
@@ -8040,8 +8343,17 @@ substitute decoder (derived from the pinned contract's `when_unavailable`,
 never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
 with the replay; explicit scope fields cannot be flattened into those rows.
-A scoped card or current v5 table refuses a flat legacy receipt instead of
-inventing the missing runtime. "No census was ever compared" reads as `UNFILLED`. Known
+A scoped card, or a current table of the scoped schema
+(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v8 at the pin), refuses a flat legacy
+receipt instead of inventing the missing runtime, naming the schema that
+refused; flat rows stay attestable only where no `tessera` is installed to
+publish a current table (`tests/test_tessera_route_receipt.py`). At the `1221d2a`
+pin the packaged table was v4, so that refusal never fired; it does now. Fill
+and verify apply the same rule from one home
+(`tessera_route_receipt.current_table_refuses_flat_census`): `fill-route-census`
+/ `make_route_census_record` refuse a flat row array by name at fill time on
+the box where `verify` would refuse it, rather than stamping `passed=True`
+first (RobTand/prismaquant#214). "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.
@@ -10039,20 +10351,23 @@ advisory and the shipcard is what refuses — at **publication**, via `tools/pub
 `EXPORT_CONTAINER` lanes can act on and the runtime each requires (§1.1). The Gridbook
 codebook container and its plugin, its RTX 4090 candidate and its sm_120
 validation profile were removed with the lane (§9.2) and are gone from the
-diagram; the Tessera container (§9.4) is drawn **fail-closed on the release pin**:
+diagram; the Tessera container (§9.4) is drawn **gated on the exact pinned runtime**:
 since 2026-09-03 `run-pipeline.sh` has a real `EXPORT_CONTAINER=tessera` arm that
 plans and encodes through Tessera's own tools under `TESSERA_REPO` — which the lane
-declares as `producer_tool`s rather than vendoring — and the pin's PENDING sentinels
-are the only refusal left (`tessera_lane_attested` answers False for every rung
-until a Tessera release tag exists). No served measurement covers the lane yet, so
-its runtime edge stays dashed.
+declares as `producer_tool`s rather than vendoring — and since 2026-09-04 the
+refusal is a digest rather than a tag: the arm is **fail-closed** on the pin
+(`tessera_lane_attested` answers True for the dense rungs only while the
+installed `runtime_contract.json` hashes to the pinned SHA-256), and fail-closed
+again on the contract's own evidence, cell by cell, on the smoke status each
+cell publishes.
+No served measurement covers the lane yet, so its runtime edge stays dashed.
 
 ```mermaid
 flowchart LR
   subgraph CONT["artifact containers"]
     A1["compressed-tensors<br/>maintained: NVFP4 / FP8_DYNAMIC / BF16<br/>FP8_SOURCE: source-artifact compatibility<br/>export_native_compressed.py"]
     A3["GGUF<br/>Q2_K..Q8_0 + IQ family<br/>export_gguf.py"]
-    A4["Tessera wire<br/>quant_method = tessera<br/>planned + encoded via TESSERA_REPO tools<br/>fail-closed: PENDING release pin"]
+    A4["Tessera wire<br/>quant_method = tessera<br/>planned + encoded via TESSERA_REPO tools<br/>gated: pinned commit + contract digest"]
   end
 
   subgraph RT["runtimes"]
@@ -10070,12 +10385,12 @@ flowchart LR
   A1 -->|"serving profile vllm_packed_moe"| R1
   A3 -->|"serving profile gguf"| R3
   A3 -->|"serving profile gguf"| R4
-  A4 -->|"lane spec tessera, fail-closed on PENDING pin"| R5
+  A4 -->|"lane spec tessera, gated on the pinned commit + digest"| R5
 
   R1 -->|"Spark-proven -- shipped rdtand artifacts"| H1
   R3 -->|"Spark-proven -- 295B-class at 2.8 bpp; the KL harness for this lane"| H1
   R4 -->|"smoke-verified on the 0.19.2 venv only, never KL-measured"| H1
-  R5 -.->|"no admittable artifact until a Tessera release tag exists"| H1
+  R5 -.->|"no served measurement on this lane yet"| H1
 
   R3 -.->|"no qualified deployment"| H2
   R4 -.->|"no qualified deployment"| H2
@@ -10223,9 +10538,17 @@ architecture and only one is declared); the lane spec's
 `formats[]` rows imply (`require_executes_derived_from_contract`), principle 14
 in the field that asserts what the runtime executes; every tool the lane
 declares it shells out to must exist under the env var that declaration names
-(`require_producer_tools`); and the pinned Tessera serving runtime must be an
-exact reviewed release (`require_release_pin`). The PENDING release pin still
-refuses shipping. Runtime-scoped v5 adds an explicit validated target before
+(`require_producer_tools`); the INSTALLED Tessera must be the pinned
+one — the pin's commit plus the SHA-256 of the `runtime_contract.json` this
+process imports (`require_release_pin` → `require_pinned_tessera_runtime`); and
+the checkout those tools come from must be that SAME Tessera —
+`require_producer_repo_is_pinned` hashes the contract `$TESSERA_REPO` packages
+against the pin's `contract_sha256`, because gate 1 hashes the package this
+process *imports* and nothing else bound the two. That hole is one the move to
+a commit pin OPENS rather than closes: while the pin carried PENDING sentinels
+the lane could not build at all, so the attesting Tessera and the encoding
+Tessera could never diverge in a run that produced bytes (principle 8). Any
+other Tessera tree, on either side, refuses shipping. Runtime-scoped v5/v6 add an explicit validated target before
 work and selected-unit scope/source-shape admission before translation;
 passing the release pin does not bypass those gates. For a selected **routed
 expert** unit that source-shape admission is replaced by the producer's own
@@ -10275,15 +10598,17 @@ are NAMED by the lane spec, never vendored.
 
 **The boundary is two objects, both machine-readable.** The pin,
 `prismaquant/tessera_runtime/tessera_serving_runtime_pin.json`
-(`prismaquant.tessera_serving_runtime_pin.v1`), read by
+(`prismaquant.tessera_serving_runtime_pin.v2`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v4`, with the consumer also supporting the
-runtime-scoped v5 revision), read through `importlib.resources`.
-PrismaQuant never vendors or imports the serving half. Unlike the Gridbook
-serving pin this one binds no wheel digest: Tessera publishes no wheel and is
-installed from a source checkout, so a digest would be a claim about an
-artifact that does not exist.
+table `tessera.lane-eligibility.v8` as installed, with the consumer also
+reading the v7, v6, v5, v4 and legacy v3 grammars, each at its own member
+set), read through
+`importlib.resources`. PrismaQuant never vendors or imports the serving half.
+Unlike the Gridbook serving pin this one binds no wheel digest — Tessera
+publishes no wheel and is installed from a source checkout — but since
+2026-09-04 it binds the CONTRACT's digest, which is the one artifact that both
+exists and is read by a gate on this side.
 
 **Every cell is plugin-gated, in a field a gate reads.** Each cell publishes
 `requires_plugin: "tessera"` — stock vLLM has no reader for these bytes, so the
@@ -10295,22 +10620,51 @@ through `RegimeRoute` / `UnitRoute` / `EligibilityTable.provenance()`;
 `tessera_lane_attested` RAISES on a cell that claims a native route without it,
 because a contract defect must be loud rather than silently admitted.
 
-**Scope, from the table and not from prose.** `structures: ["dense"]` and no
-`routed_moe` cell — no served measurement covers routed experts, and absence is
-the honest state under a closed-world v4 table, not a refusal. The published
+**Scope, from the table and not from prose.** Contract v17 widened
+`structures` to `["dense", "routed_moe"]` and added two `routed_moe` E4M3 cells
+measured on `eugr/spark-vllm` — so "the contract carries no routed_moe cell",
+true until 2026-09-04, is now false and the scope question moved from absence to
+EVIDENCE, where it stays. `cell_evidence_admits` answers on the
+`evidence.smoke.status` each cell publishes and on nothing else (§5.7), so
+the answer moved twice without an edit here: from v17 through v20 both cells
+published `"repetitive"` and no routed-MoE Tessera unit was admitted, with the
+refusal naming the cell and the receipt rather than the structure; contract
+v21 (Tessera #313) publishes `"recorded"` and the same predicate stops
+refusing. **Neither state was a promotion, and v21's was not checkable**:
+RobTand/tessera#327 (P1) reported that v21's `recorded` rested on a
+repetition rule that lived only in a dated measurements file, was derived and
+checked by nothing, and was satisfiable by an empty completion. Lane schema
+v9 answers it inside the contract — `smoke.record` carries the instrument,
+the rule, the reference and the rows the status was derived over — and this
+reader re-derives the status through Tessera's own `derive_smoke_status`,
+refusing a published status the record does not derive. Whether routed-MoE
+Tessera goes on the menu is Rob's under principle 9
+(RobTand/prismaquant#198). Contract v18 additionally gave those cells a
+`control` (`bf16_source`, `identical_completion`) and the derived attribution
+`shared_with_reference` — the BF16 source degenerating on the same prompt —
+which Tessera's changelog expected a consumer to admit on; this reader read
+it, named it in the refusal and did not decide on it, because an attribution
+that the reference shares the symptom is not a record of the route generating
+correctly. v21 retired that control from the cells. The published
 `tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
 per vLLM module against a shared rate schedule, so a sharded form needs
 per-rank wires rather than a byte range. `expert_parallel.units` is empty.
 Both residency modes are receipted and both must be exercised.
 
-**Admission is False until a release tag exists.** The pin's `commit` and
-`version` are the sentinels `PENDING_TESSERA_RELEASE_COMMIT` /
-`PENDING_TESSERA_RELEASE_VERSION` with `version_is_release: false`;
-`require_exact_tessera_runtime_release` refuses them, and `tessera_lane_attested`
-ANDs that refusal in (§5.7), as does the container arm's preflight. Cutting the
-tag is Rob's decision and resolves the
-pin file *and* the reader's two release constants in one reviewed commit —
-neither half admits anything alone.
+**Admission is pinned to an exact commit and contract digest.** The pin names
+Tessera `8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a` (master's tip at review
+time, the merge of Tessera #332; version `0.1.0`, contract v22, lane schema
+v9 — v21 landed at `b8b1cb38` in Tessera #313 and the release `e78959ed…`
+carried v20; first pinned 2026-09-04 at `5acc2a6f…`, contract v17)
+and the SHA-256 of the `runtime_contract.json` it packages
+(`719daa02…824927`);
+`require_pinned_tessera_runtime` refuses unless the pin equals the reader's
+three constants AND the installed contract hashes to that digest, and
+`tessera_lane_attested` ANDs that in (§5.7), as does the container arm's
+preflight. Moving the pin resolves the pin file *and* the reader's constants in
+one reviewed commit — neither half admits anything alone. `version_is_release`
+is recorded and advisory: Rob retired the tag requirement on 2026-09-04, so a
+gate reading the flag would re-impose it.
 
 **The lane's gates are recorded on a card the publisher refuses on.** Gates are
 ADVISORY to the build run on this lane like every other; the shipcard is what
@@ -10364,9 +10718,10 @@ to, with `repo_env`, `path`, `stability` ∈ {`supported`,
 `tracking_issue`. Both Tessera tools are `unsupported_experiments` today: they
 live under that repository's `experiments/` with no stability promise, so a
 tidy-up there breaks a shipping lane here, and that is stated on the lane's own
-declaration rather than only in an issue tracker. Promotion rides the
-release-tag commit (RobTand/tessera#17, tracked as
-RobTand/prismaquant#119).
+declaration rather than only in an issue tracker. Promotion rides Tessera giving
+them a stability promise (RobTand/tessera#17, tracked as
+RobTand/prismaquant#119); since 2026-09-04 it is no longer coupled to lane
+admission, which pins a commit and a contract digest rather than a tag.
 
 **The pin also carries the serve fingerprint's half of §7.4, and it is DERIVED.**
 Tessera contract v7 publishes `native_extensions` — what the plugin *loads*, beside
@@ -10681,7 +11036,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. Producer eligibility is still False, and the reason has narrowed to one thing: **no Tessera release tag exists**. The packaged contract publishes both families with `device_qualified` native cells; the PENDING pin is what withholds them, and it is now also what the driver's preflight refuses on. No ship gate has been run on the lane, and no runner exists to run one: the lane's six declared gates are now RECORDED — `route.census` names a shipcard slot and the arm opens a lane-gated card (§7.1, §9.4, 2026-09-03) — so an un-run gate is an unfilled slot the publisher refuses on rather than a sentence nothing reads, but nothing spawns the container that would fill it. The `experiments/` boundary is likewise declared rather than fixed: both tools carry `stability: "unsupported_experiments"` and a `tracking_issue` on `lane_specs/tessera.json`, which makes the debt visible to a reader and a gate without promoting anything. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's four gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (PENDING sentinels), `tessera_serving_runtime_pin.py` | Med | Rob cuts a Tessera release tag, then one reviewed commit resolves the pin file and the reader's two release constants together — after which the arm can build. Independently, and both still open under RobTand/prismaquant#119: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path — after which their `stability` becomes `supported` and the `tracking_issue` goes — and build the lane runner that executes a lane's declared gates in a fresh plugin container and fills the slots the card already opens. |
+| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. **Producer eligibility is no longer what is missing**: since 2026-09-04 the pin names an exact Tessera commit plus the SHA-256 of the `runtime_contract.json` it packages (re-pinned 2026-09-05 to Tessera master's tip `8ed1d9a…`, contract v22, lane schema v9; v21 landed at `b8b1cb38…` in Tessera #313 and the release `e78959ed…` carried v20), and the packaged contract's dense `device_qualified` cells are ADMITTED under it — what the pin now withholds is any *other* Tessera, which is also what the driver's preflight refuses on. Two residues are the honest remainder of the eligibility half. **First**, the contract's two `routed_moe` cells are decided by their own published `evidence.smoke.status`, which this repository reads and does not second-guess — a measured serving property, not a structural ban here; v17–v20 published `repetitive` and the status-only predicate refused them; v21 and the pinned v22 publish `recorded`. **What that status rests on became checkable at lane schema v9**: RobTand/tessera#327 (P1) reported that v21's `recorded` rested on a repetition rule that lived only in a dated measurements file, derived and checked by nothing and satisfiable by an empty completion; v9 puts the rule, the instrument, the reference and the rows in `smoke.record`, and this reader re-derives status and attribution through Tessera's own functions and refuses a published value they do not derive (`lane_eligibility._parse_smoke_record`, `tests/test_tessera_lane_v9.py`). **Second**, three dense `decode` cells carry `evidence.grade: "route_only"` — a route with no KL at all — which is admitted today and is a promotion question for Rob rather than a gate this repository may tighten on its own. No ship gate has been run on the lane, and no runner exists to run one: the lane's six declared gates are now RECORDED — `route.census` names a shipcard slot and the arm opens a lane-gated card (§7.1, §9.4, 2026-09-03) — so an un-run gate is an unfilled slot the publisher refuses on rather than a sentence nothing reads, but nothing spawns the container that would fill it. The `experiments/` boundary is likewise declared rather than fixed: both tools carry `stability: "unsupported_experiments"` and a `tracking_issue` on `lane_specs/tessera.json`, which makes the debt visible to a reader and a gate without promoting anything. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's four gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (commit + `contract_sha256`), `tessera_serving_runtime_pin.py` | Med | Moving the pin forward is ONE reviewed commit that edits the pin JSON and the reader's three pinned constants together, verified against a clean Tessera tree; the arm can build today at the pinned commit. Independently, and both still open under RobTand/prismaquant#119: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path — after which their `stability` becomes `supported` and the `tracking_issue` goes — and build the lane runner that executes a lane's declared gates in a fresh plugin container and fills the slots the card already opens. |
 | D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal, deferred at the time, and **both fixed 2026-09-03** (RobTand/tessera#20): `check_serving_shape` failed **open** on an unknown profile id — it caught `FileNotFoundError` and resolved silently to `research`, which permits every shape, while `serving_lane_route`/`serving_lane_catalog`/`check_serving_format` all fail **closed**. It now returns the same `profile_mismatch` refusal `check_serving_format` does; `profile_id=None` still resolves to `research`, which is the declared default and loads, so no legal call changed. And `activation_pricing_branches["unrecorded"]` is re-homed as its own profile-independent test in `tests/test_serving_lane_metadata.py` rather than left riding a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not

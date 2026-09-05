@@ -181,6 +181,37 @@ def _historical_cost_fixture(tmp_path):
     return path
 
 
+def _default_serve_image() -> str:
+    """The serve image the installed contract publishes as its default."""
+    return json.loads(trc.contract_path().read_text(encoding="utf-8"))[
+        "versions"]["default_serve_image"]
+
+
+def _scope_flags() -> list[str]:
+    """The operator's serving scope, as ``run-pipeline.sh`` passes it.
+
+    The pinned table is scoped (lane schema v8): a cell attests a rung only
+    at an exact platform, image, execution mode and residency, so the
+    allocator is told which serve this allocation is for.  Dense, resident,
+    eager, on the contract's own default serve image -- the scope the eight
+    dense cells publish.  Without these flags the token expands to nothing
+    and the allocator refuses (``tests/test_tessera_menu.py`` pins that).
+    """
+    return [
+        "--tessera-platform", "sm_121",
+        "--tessera-runtime-image", _default_serve_image(),
+        "--tessera-execution-mode", "eager",
+        "--tessera-residency", "resident",
+    ]
+
+
+def _dense_context():
+    from prismaquant.lane_eligibility import ServingContext
+    return ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+
+
 def _allocate(tmp_path, monkeypatch, *, target_bits="4.5"):
     """Run the allocator's own entry point; return the parsed layer config.
 
@@ -205,6 +236,7 @@ def _allocate(tmp_path, monkeypatch, *, target_bits="4.5"):
         "--target-profile", "tessera_research_sm121",
         "--layer-config", str(layer_config),
         "--pareto-csv", str(tmp_path / "pareto.csv"),
+        *_scope_flags(),
     ])
     allocator.main()
     return json.loads(layer_config.read_text())
@@ -267,8 +299,11 @@ def test_the_default_path_allocates_over_the_attested_axis(
     }
     assert assigned, "no unit was assigned a Tessera rung"
 
-    # And every rung it chose survives the guard that refused the whole menu.
-    fr.require_producer_formats(sorted(assigned), where="the allocated menu")
+    # And every rung it chose survives the guard that refused the whole menu,
+    # asked at the scope the allocation was made for.
+    fr.require_producer_formats(
+        sorted(assigned), where="the allocated menu",
+        context_by_unit={unit: _dense_context() for unit in assigned})
 
 
 def test_the_expansion_reads_the_guards_own_predicate(installed_contract):
@@ -290,11 +325,17 @@ def test_the_expansion_reads_the_guards_own_predicate(installed_contract):
         ]
     assert len(priced) > 100, f"expected the campaign's dense table, got {priced[:5]}"
 
-    menu, dropped = tm.expand_menu_tokens_report([tm.MENU_TOKEN], priced)
+    # The scoped table answers only at a scope; the token and the guard are
+    # asked the same one, and context-free both refuse everything (the
+    # expansion narrows to nothing, which the allocator reports by name).
+    scope = {"unit": _dense_context()}
+    menu, dropped = tm.expand_menu_tokens_report([tm.MENU_TOKEN], priced, context_by_unit=scope)
     assert menu and dropped, (menu[:3], len(dropped))
     assert len(menu) + len(dropped) == len(priced)
     # The expansion is never wider than what the guard accepts.
-    fr.require_producer_formats(menu, where="the expanded token")
+    fr.require_producer_formats(menu, where="the expanded token", context_by_unit=scope)
+    unscoped, all_dropped = tm.expand_menu_tokens_report([tm.MENU_TOKEN], priced)
+    assert unscoped == [] and len(all_dropped) == len(priced)
 
 
 def test_the_expansion_narrows_with_the_predicate_it_shares(
@@ -313,8 +354,9 @@ def test_the_expansion_narrows_with_the_predicate_it_shares(
             if isinstance(name, str) and name.startswith("TESSERA_")
         ]
 
-    monkeypatch.setattr(fr, "format_is_producer_eligible", lambda name: False)
-    menu, dropped = tm.expand_menu_tokens_report(["NVFP4", tm.MENU_TOKEN], priced)
+    monkeypatch.setattr(fr, "format_is_producer_eligible", lambda name, **scope: False)
+    menu, dropped = tm.expand_menu_tokens_report(
+        ["NVFP4", tm.MENU_TOKEN], priced, context_by_unit={"unit": _dense_context()})
     assert menu == ["NVFP4"], menu
     assert len(dropped) == len(priced)
 
@@ -384,7 +426,8 @@ def test_the_operator_path_allocates_through_the_dev_pin(tmp_path, monkeypatch):
     assigned = _assignment(config)
     assert assigned, "no unit was assigned a Tessera rung"
     fr.require_producer_formats(sorted(set(assigned.values())),
-                                where="the operator-path allocation")
+                                where="the operator-path allocation",
+                                context_by_unit={unit: _dense_context() for unit in assigned})
 
 
 def test_the_pin_and_the_one_read_allocate_identically(tmp_path, monkeypatch):

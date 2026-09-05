@@ -39,7 +39,8 @@ def _contract():
 def _parse(block=None, formats=None):
     if block is None:
         block, formats = _contract()
-    return lane._parse_table(block, formats, "fixture", "fixture", "fixture")
+    return lane._parse_table(block, formats, "fixture", "fixture", "fixture",
+                             native_extensions=[])
 
 
 def _facts(structure="dense"):

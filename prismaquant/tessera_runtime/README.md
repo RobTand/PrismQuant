@@ -7,23 +7,77 @@ imports the serving half of that runtime; compatibility crosses the repository
 boundary through this pin and through the contract Tessera packages
 (`tessera/serving/runtime_contract.json`, read via `importlib.resources`).
 
-**This pin is PENDING on purpose, and admission is fail-closed because of it.**
-There is no Tessera release tag — cutting one is Rob's decision — so `commit`
-and `version` are the conspicuous sentinels
-`PENDING_TESSERA_RELEASE_COMMIT` / `PENDING_TESSERA_RELEASE_VERSION`,
-`version_is_release` is `false`, and
-`require_exact_tessera_runtime_release()` refuses them. That refusal is what
-makes `tessera_render.tessera_lane_attested` answer False today: not an edit,
-not a module constant, and not the absence of a route table — Tessera's
-packaged contract publishes `device_qualified` cells for both families, and the
-pin is what withholds them.
+**This pin is an exact commit plus the contract's digest — not a release
+tag.** Until 2026-09-04 `commit` and `version` were the sentinels
+`PENDING_TESSERA_RELEASE_COMMIT` / `PENDING_TESSERA_RELEASE_VERSION` and
+admission was fail-closed because no Tessera release tag existed. Rob retired
+that: *"can we just pin prismaquant to latest version of tessera? then we won't
+have to keep cutting releases."* "Latest" is read here as **an exact commit
+plus the packaged contract's raw SHA-256**, never as a floating ref — `main`,
+"the installed source tree" and "whatever imports" are precisely the failure
+principle 14 exists to prevent.
 
-**Cutting the release is one reviewed commit** that resolves, together: the
-three fields in this file, and the constants
-`TESSERA_SERVING_RUNTIME_RELEASE_VERSION` /
-`TESSERA_SERVING_RUNTIME_RELEASE_COMMIT` in
+Of the two, the **digest is the enforced half**. PrismaQuant cannot verify a
+sibling checkout's git history from inside its own process, but it can hash the
+contract bytes it is about to read, and those bytes are the only thing about
+the runtime a gate here consumes. So `require_pinned_tessera_runtime()` refuses
+whenever the installed `tessera/serving/runtime_contract.json` does not hash to
+`contract_sha256` — which keeps the stray-checkout property the PENDING
+sentinels used to provide: a Tessera source tree on `PYTHONPATH` that is not
+the pinned one is refused exactly as before. The `commit` is recorded identity:
+it says which reviewed tree those bytes came from, and `git` settles any
+question the digest raises. The two are bound at review time by one pair of
+commands, so they cannot become two independent assertions about one runtime:
+
+```bash
+TS=$(mktemp -d) && git -C "$TS" init -q
+git -C "$TS" fetch -q https://github.com/RobTand/tessera master
+SHA=$(git -C "$TS" rev-parse FETCH_HEAD)
+git -C "$TS" cat-file -p "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
+```
+
+The commands name the canonical remote rather than somebody's checkout,
+because a digest bound from a working tree records what that tree happened to
+contain, which nobody else can re-derive.
+
+The pin below was first bound that way on 2026-09-04, when master was
+`5acc2a6f` (contract v17), and re-bound on 2026-09-05 to Tessera master at
+`8ed1d9a` — the merge of Tessera #332, and master's tip when it was bound
+(contract v22, lane schema v9). The release checkout Rob named, `e78959ed`,
+carried contract v20; the one published move past it is Tessera #313
+(`b8b1cb38`, eleven PR merges back from the pinned tip): the routed-MoE
+cells' smoke, re-measured and now `recorded`; PrismaQuant #198 option C.
+Re-check what is recorded against the COMMIT, never against a later `HEAD`:
+
+```bash
+git -C "$TS" cat-file -p 8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a:src/tessera/serving/runtime_contract.json | sha256sum
+```
+
+The 56 commits (11 PR merges: Tessera #312 and #314–#324) between #313's merge
+and the pinned tip package byte-identical contract bytes, which is why moving
+the pin forward to master's tip did not move the digest. A Tessera commit
+re-stales this pin only when it changes what the runtime publishes. No tag
+names `8ed1d9a`, so `version_is_release` stays `false`.
+
+**`version_is_release` is advisory.** Still required, still parsed, still
+recorded, and still unable to be `true` over a PENDING commit — so it keeps
+saying something true for an actual release. It gates nothing: a gate that
+demanded it would re-impose the tag Rob just removed, and the immutability it
+stood in for is now carried directly by the digest.
+
+**Moving the pin is one reviewed commit** that resolves, together: `commit`,
+`version` and `contract_sha256` in this file, and
+`TESSERA_SERVING_RUNTIME_PINNED_VERSION` /
+`TESSERA_SERVING_RUNTIME_PINNED_COMMIT` /
+`TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256` in
 `prismaquant/tessera_serving_runtime_pin.py`. The reader requires the file to
 equal the constants, so neither half admits anything alone.
+
+**A consequence, by design.** A developer checkout of Tessera that has moved
+past the pin makes PrismaQuant's Tessera tests red: the installed contract is
+not the pinned contract, and fail-closed is the whole point. The fix is
+environmental — install Tessera at the pinned commit — never a check that reads
+whatever is installed.
 
 **`serving_native_extensions` names what the plugin LOADS, not what it
 executes — and it is DERIVED, not asserted.** Tessera's serving plugin
@@ -71,15 +125,106 @@ path, which answers yes for
 runtime's predicate. RobTand/tessera#28 published the table; PrismaQuant #133
 consumed it.
 
-**The repository is local-only today.** `repository` is the reviewed identity
-the release will be cut from; the tree lives at `/home/rob/tessera` and has not
-been pushed. The field is not a reachability claim, and nothing in this
-repository fetches it.
+**`repository` is the reviewed identity of the runtime**, not a reachability
+claim: nothing in this repository fetches it, and the pin is satisfied by the
+contract bytes an installed Tessera packages, never by an origin.
 
 **No wheel digest.** Gridbook's serving pin binds an exact reviewed wheel
 SHA-256 because Gridbook is installed into a serving container from a published
 archive. Tessera's plugin is installed from a source checkout
 (`pip install --no-deps --no-build-isolation -e <tessera>`) and publishes no
 wheel; asserting a digest for an archive that does not exist would be exactly
-the hand-asserted claim principle 14 refuses. When Tessera publishes wheels, a
-`wheel_sha256` member is added here and to the reader in one reviewed commit.
+the hand-asserted claim principle 14 refuses. What it DOES bind, since
+2026-09-04, is `contract_sha256` — the digest of the one Tessera artifact that
+both exists and is read by a gate on this side. When Tessera publishes wheels, a
+`wheel_sha256` member joins it here and in the reader in one reviewed commit.
+
+---
+
+## Moving the pin
+
+Verified against `RobTand/tessera` master on 2026-09-05:
+
+```
+commit           8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a
+contract_sha256  719daa02da1564b56a141ca2702ae29d4fda553460978efbb6510ddcd1824927
+versions.tessera 0.1.0
+contract_version 22
+lane schema      tessera.lane-eligibility.v9
+```
+
+Five values, two files, one commit. Resolve the new commit, digest and version
+first — from one `git` object fetched from the canonical remote, so they name
+the same tree and no local checkout is trusted:
+
+```bash
+TS=$(mktemp -d) && git -C "$TS" init -q
+git -C "$TS" fetch -q https://github.com/RobTand/tessera master
+SHA=$(git -C "$TS" rev-parse FETCH_HEAD)
+BLOB="$SHA:src/tessera/serving/runtime_contract.json"
+DIGEST=$(git -C "$TS" cat-file -p "$BLOB" | sha256sum | cut -d' ' -f1)
+VER=$(git -C "$TS" cat-file -p "$BLOB" | python3 -c "import json,sys; print(json.load(sys.stdin)['versions']['tessera'])")
+echo "$SHA $DIGEST $VER"
+```
+
+Then edit both halves in one commit — the JSON:
+
+```bash
+python3 - "$SHA" "$DIGEST" "$VER" <<'EDIT_JSON'
+import json, sys, pathlib
+sha, digest, ver = sys.argv[1:4]
+p = pathlib.Path("prismaquant/tessera_runtime/tessera_serving_runtime_pin.json")
+d = json.loads(p.read_text())
+d["commit"], d["contract_sha256"], d["version"] = sha, digest, ver
+p.write_text(json.dumps(d, indent=2) + "\n")
+EDIT_JSON
+```
+
+...and the three reader constants, which the reader requires to EQUAL the pin:
+
+```bash
+python3 - "$SHA" "$DIGEST" "$VER" <<'EDIT_CONSTS'
+import re, sys, pathlib
+sha, digest, ver = sys.argv[1:4]
+p = pathlib.Path("prismaquant/tessera_serving_runtime_pin.py")
+s = p.read_text()
+s = re.sub(r'TESSERA_SERVING_RUNTIME_PINNED_COMMIT = \(\n    "[^"]*"\n\)',
+           'TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (\n    "%s"\n)' % sha, s, count=1)
+s = re.sub(r'TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = \(\n    "[^"]*"\n\)',
+           'TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (\n    "%s"\n)' % digest, s, count=1)
+s = re.sub(r'TESSERA_SERVING_RUNTIME_PINNED_VERSION = "[^"]*"',
+           'TESSERA_SERVING_RUNTIME_PINNED_VERSION = "%s"' % ver, s, count=1)
+p.write_text(s)
+EDIT_CONSTS
+```
+
+Verify — ONE shell segment, and the empty `CUDA_VISIBLE_DEVICES` prefix is
+required by this repository's pool hook:
+
+```bash
+cd /home/rob/prismaquant && CUDA_VISIBLE_DEVICES="" PYTHONPATH=. \
+  TRITON_CACHE_DIR=/home/rob/tmp/triton-cache nice -n 10 \
+  /home/rob/dq-runs/venvs/prismaquant-cu130/bin/python -m pytest -q -p no:cacheprovider \
+  tests/test_tessera_serving_pin.py tests/test_tessera_lane_v6.py \
+  tests/test_tessera_lane_admission.py tests/test_tessera_export_lane.py
+```
+
+**A moved contract is a re-review, not a bump.** The development pin
+(`TESSERA_DEV_PIN_COMMIT` / `TESSERA_DEV_PIN_CONTRACT_SHA256` /
+`TESSERA_DEV_PIN_ANSWER` in `prismaquant/tessera_runtime_contract.py`) names
+the SAME Tessera object, and `tests/test_tessera_serving_pin.py` refuses a
+drift between the two. So moving the serving pin means regenerating the
+dev-pin answer in the same commit, and the git diff of that literal IS the
+review: it shows every value an admission gate decides on, including each
+cell's `evidence` block. That is the mechanism which keeps promoting a
+`routed_moe` cell a human decision under principle 9, rather than a
+consequence of Tessera merging a PR.
+
+**Tests whose content is "the pin refuses everything" are spent.** The
+2026-09-04 commit deleted `tests/test_tessera_release_pin_flip.py` (its whole
+subject was a tag that no longer gates anything) and inverted the four
+PENDING-asserting tests in `test_tessera_lane_admission.py`,
+`test_tessera_export_lane.py`, `test_tessera_formats.py` and
+`test_tessera_contract_v4.py`. What replaced them asserts the property the tag
+stood in for: an exact commit, the installed contract's digest, and a refusal
+for any other Tessera.

@@ -15,6 +15,13 @@ from prismaquant.lane_eligibility import (
 )
 
 
+#: The lane the streamed cells launch through, declared so the reader can
+#: bind the launch to its extension.  No ``requires``: this file is about the
+#: v4 launch grammar, not the v20 predicate (``test_tessera_lane_requires``).
+_NATIVE_EXTENSIONS = [{"module_name_prefix": "tessera_window_gemv",
+                       "lane": {"decoder": "window_gemv"}}]
+
+
 def _contract():
     family = "TESSERA_E4M3_K1"
     cells = []
@@ -44,7 +51,8 @@ def _contract():
 def _parse(block=None, formats=None):
     if block is None:
         block, formats = _contract()
-    return _parse_table(block, formats, "0.1.0", "test-commit", "test-sha")
+    return _parse_table(block, formats, "0.1.0", "test-commit", "test-sha",
+                        native_extensions=_NATIVE_EXTENSIONS)
 
 
 def _facts(structure="dense"):

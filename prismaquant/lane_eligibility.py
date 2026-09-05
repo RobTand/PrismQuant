@@ -60,6 +60,34 @@ resolution semantics and never acquire fabricated launch claims.
 exact image digest and execution-mode scope. Missing target context is
 unattested, never a request to use the global dense image or another cell.
 
+``tessera.lane-eligibility.v6`` requires every cell to carry ``evidence``
+(a derived grade, KL receipts, a greedy smoke's status) and the vLLM/torch
+versions it was measured under. ``v7`` (Tessera #195) adds the smoke's
+``control`` -- the reference it was compared against -- and an
+``attribution`` derived from it. ``v8`` (Tessera #198) adds
+``evidence.artifact``, the encoder scope of the KL: which commit wrote the
+bytes it was measured on, and whether a later encoder reproduces them.
+Each is parsed closed at its own schema and refused by name where this
+reader does not understand it; see :func:`parse_cell_evidence` and, for
+what the reader DECIDES on, :func:`cell_evidence_admits`.
+
+The lane predicate (contract v20, Tessera #264)
+-----------------------------------------------
+A cell names the LAUNCHES it executes (``executes[].decoder``); since
+contract v20 the contract also publishes, per ``native_extensions[]`` row, a
+``lane`` block naming the decoder that extension serves and -- for the
+window-GEMV kernel -- ``requires``, the predicate a unit's WIRE must satisfy
+for the kernel to read it (column rates, window bits, body, plane, no release
+overrides, no diagonals, no rotation, no start state, a scalar grid).  The
+loader refuses a unit that fails it, so a producer that selected such a unit
+would ship bytes whose serve substitutes or refuses.  This reader parses the
+predicate closed at Tessera's own vocabulary (:func:`parse_lane_claim`) and
+:func:`cell_lane_admits` decides it for a cell -- by handing THIS producer's
+planned wire (``tessera_render.planned_wire_facts``) to Tessera's own
+decision core (``tessera.serving.scheme.decide_lane_requirements``).  The
+rule has one home and it is not in this repository; what lives here is the
+facts and the refusal.
+
 One parser, and why the vocabulary is wider than one publisher
 ---------------------------------------------------------------
 ``gridbook.lane-eligibility.v3`` was the same wire format from the retired
@@ -117,16 +145,75 @@ from typing import Any, Mapping, Sequence
 #: same wire format published by the retired Gridbook codebook lane. That lane
 #: was removed with Rob's decision to put Tessera in PrismaQuant and remove
 #: Gridbook; see ``archive/gridbook_lane_2026-09-02/README.md``.
-LANE_ELIGIBILITY_SCHEMA_TESSERA = "tessera.lane-eligibility.v5"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V9 = "tessera.lane-eligibility.v9"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V8 = "tessera.lane-eligibility.v8"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V7 = "tessera.lane-eligibility.v7"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V6 = "tessera.lane-eligibility.v6"
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V5 = "tessera.lane-eligibility.v5"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_V4 = "tessera.lane-eligibility.v4"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3 = "tessera.lane-eligibility.v3"
+
+#: The CURRENT grammar. Every "is this the newest schema?" test used to spell
+#: itself against this name, which made a version bump silently demote the
+#: previous grammar from "scoped" to "legacy unscoped". Scope is a property a
+#: set answers, not a single constant: see :data:`SCOPED_LANE_SCHEMAS`.
+LANE_ELIGIBILITY_SCHEMA_TESSERA = LANE_ELIGIBILITY_SCHEMA_TESSERA_V9
+
+#: The schemas whose cells carry a per-cell runtime scope, so an explicit
+#: serving context (image + execution mode) can be matched rather than
+#: borrowed from a global field. v5 introduced the block; v6 widened it with
+#: the vLLM and torch versions the cell was measured under; v7, v8 and v9
+#: widened the EVIDENCE block (a smoke's control, an artifact's encoder scope,
+#: a smoke's record) and left the runtime scope as v6 published it.
+SCOPED_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V5,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
+
+#: The schemas whose cells carry a required ``evidence`` block (v6 and every
+#: grammar after it), the ones whose ``smoke`` names its control and derived
+#: attribution (v7, Tessera #195) and the ones whose evidence names the
+#: artifact and encoder its KL was measured on (v8, Tessera #198). Each is a
+#: set and not an ``== V6`` so that the NEXT bump cannot silently demote the
+#: grammar it succeeds to "publishes no evidence".
+EVIDENCE_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
+ATTRIBUTED_SMOKE_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
+ENCODER_SCOPED_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
+
+#: The schemas whose ``smoke`` carries a ``record`` -- the rule a status was
+#: derived by, the instrument that applied it, and the (prompt, form,
+#: interface) rows it was applied to (v9, Tessera #327).  On these tables the
+#: status and the attribution are RE-DERIVED through Tessera's own functions
+#: rather than through a rule restated here; see :func:`_parse_smoke_record`.
+RECORDED_SMOKE_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
 
 #: Every eligibility-table schema this parser accepts. The check is a set
 #: membership, never a prefix match: an unrecognised vendor is a table this
 #: repository was not handed, and an unlisted version is not treated as a
 #: subset of either supported grammar (see ``_parse_table``).
 LANE_ELIGIBILITY_SCHEMAS = frozenset({
-    LANE_ELIGIBILITY_SCHEMA_TESSERA,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V5,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3,
 })
@@ -136,8 +223,8 @@ LANE_ELIGIBILITY_SCHEMAS = frozenset({
 TESSERA_RESIDENCY_MODES = frozenset({"resident", "streamed"})
 TESSERA_EXECUTION_MODES = frozenset({"eager", "compiled"})
 _LAUNCH_SCHEMAS = frozenset({
-    LANE_ELIGIBILITY_SCHEMA_TESSERA_V4, LANE_ELIGIBILITY_SCHEMA_TESSERA,
-})
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
+} | SCOPED_LANE_SCHEMAS)
 _DIGEST_IMAGE = re.compile(
     r"[a-z0-9][a-z0-9._/-]*[a-z0-9]@sha256:[0-9a-f]{64}")
 
@@ -190,6 +277,140 @@ CELL_QUALIFICATIONS = frozenset({
     QUALIFICATION_COMPILE_ONLY,
     QUALIFICATION_DEVICE_QUALIFIED,
 })
+
+# --- Schema v6: what EVIDENCE a cell rests on ------------------------------
+#: Transcribed from the publisher's own validator
+#: (``tessera.serving.contract.EVIDENCE_KL_KINDS`` /
+#: ``EVIDENCE_SMOKE_STATUSES`` / ``EVIDENCE_GRADES``), closed the same way
+#: :data:`CELL_ROUTE_STATUSES` is. A grade or status this reader does not know
+#: is a table it was not handed, and guessing at one is how an unmeasured cell
+#: gets read as a measured one.
+EVIDENCE_KL_KIND_TOPK_LOWER_BOUND = "topk_intersection_lower_bound"
+EVIDENCE_KL_KIND_FULL_VOCAB = "full_vocab"
+EVIDENCE_KL_KINDS = frozenset({
+    EVIDENCE_KL_KIND_TOPK_LOWER_BOUND,
+    EVIDENCE_KL_KIND_FULL_VOCAB,
+})
+
+#: A greedy smoke's outcome, in the receipt's own words. ``repetitive`` is not
+#: a softer ``recorded``: it says a smoke WAS run on this cell's route and the
+#: model degenerated. Principle 9 requires a route to generate correctly, so
+#: that is a measured serving defect published in a field a gate can read.
+EVIDENCE_SMOKE_RECORDED = "recorded"
+EVIDENCE_SMOKE_REPETITIVE = "repetitive"
+EVIDENCE_SMOKE_NOT_RECORDED = "not_recorded"
+EVIDENCE_SMOKE_STATUSES = frozenset({
+    EVIDENCE_SMOKE_RECORDED,
+    EVIDENCE_SMOKE_REPETITIVE,
+    EVIDENCE_SMOKE_NOT_RECORDED,
+})
+
+#: The smoke outcomes that REFUSE a cell. One member today, and a set rather
+#: than an ``== "repetitive"`` so a new failing outcome is a data change here
+#: instead of a new branch at every call site.
+EVIDENCE_SMOKE_REFUSALS = frozenset({EVIDENCE_SMOKE_REPETITIVE})
+
+# --- Schema v7 (Tessera #195): the CONTROL a greedy smoke was compared to ---
+#: Transcribed from ``tessera.serving.contract.EVIDENCE_CONTROL_REFERENCES`` /
+#: ``EVIDENCE_CONTROL_OUTCOMES`` / ``EVIDENCE_SMOKE_ATTRIBUTIONS`` /
+#: ``EVIDENCE_CONTROL_KEYS``. A smoke's ``control`` is either ``null`` (nobody
+#: ran the reference) or ``{reference, outcome, receipt}``: the same prompt,
+#: byte for byte, against the unquantised source the route is a quantisation
+#: of, under the smoke's own runtime and execution mode. ``outcome`` says
+#: whether the reference returned the SAME completion -- and nothing about
+#: whether the reference was healthy, which no string comparison decides.
+EVIDENCE_CONTROL_BF16_SOURCE = "bf16_source"
+EVIDENCE_CONTROL_REFERENCES = frozenset({EVIDENCE_CONTROL_BF16_SOURCE})
+EVIDENCE_OUTCOME_IDENTICAL = "identical_completion"
+EVIDENCE_OUTCOME_DIFFERENT = "different_completion"
+EVIDENCE_CONTROL_OUTCOMES = frozenset({
+    EVIDENCE_OUTCOME_IDENTICAL,
+    EVIDENCE_OUTCOME_DIFFERENT,
+})
+EVIDENCE_CONTROL_KEYS = frozenset({"reference", "outcome", "receipt"})
+
+#: What the control DERIVES about where a symptom lives. Read off the control
+#: and checked, exactly as the grade is read off the KL entries: no control is
+#: ``unattributed`` (the status is an observation, not an attribution); an
+#: identical completion is ``shared_with_reference`` (the model and the prompt
+#: produce it, not this route); a different one is
+#: ``not_shared_with_reference`` -- weaker than "the route is at fault", and
+#: deliberately not spelled that way.
+EVIDENCE_ATTRIBUTION_UNATTRIBUTED = "unattributed"
+EVIDENCE_ATTRIBUTION_SHARED = "shared_with_reference"
+EVIDENCE_ATTRIBUTION_NOT_SHARED = "not_shared_with_reference"
+EVIDENCE_SMOKE_ATTRIBUTIONS = frozenset({
+    EVIDENCE_ATTRIBUTION_UNATTRIBUTED,
+    EVIDENCE_ATTRIBUTION_SHARED,
+    EVIDENCE_ATTRIBUTION_NOT_SHARED,
+})
+
+# --- Schema v8 (Tessera #198): the ENCODER the evidence is scoped to --------
+#: Transcribed from ``tessera.serving.contract.EVIDENCE_PAYLOAD_RELATIONS`` /
+#: ``EVIDENCE_WEIGHT_ERROR_RELATIONS``. ``evidence.artifact`` is ``null`` when
+#: no encoder-reproduction comparison was recorded; otherwise it names the
+#: historical artifact a cell's KL was measured on, the encoder commit that
+#: wrote it, and a SINGLE-UNIT re-encode screen at a later commit: whether the
+#: payload bytes came out identical and how the weight SSE moved. It is a
+#: weight-space screen and never served KL; it never changes the grade.
+EVIDENCE_PAYLOAD_IDENTICAL = "identical"
+EVIDENCE_PAYLOAD_DIFFERENT = "different"
+EVIDENCE_PAYLOAD_RELATIONS = frozenset({
+    EVIDENCE_PAYLOAD_IDENTICAL,
+    EVIDENCE_PAYLOAD_DIFFERENT,
+})
+EVIDENCE_WEIGHT_ERROR_LOWER = "lower"
+EVIDENCE_WEIGHT_ERROR_EQUAL = "equal"
+EVIDENCE_WEIGHT_ERROR_HIGHER = "higher"
+EVIDENCE_WEIGHT_ERROR_RELATIONS = frozenset({
+    EVIDENCE_WEIGHT_ERROR_LOWER,
+    EVIDENCE_WEIGHT_ERROR_EQUAL,
+    EVIDENCE_WEIGHT_ERROR_HIGHER,
+})
+#: The only metric the screen may name. It is a constant and not a set so the
+#: reader cannot be widened to "any metric" by a data edit: a served-KL number
+#: written here would be read as weight-space evidence.
+EVIDENCE_ARTIFACT_METRIC = "weight_sse"
+_FULL_GIT_SHA1 = re.compile(r"\A[0-9a-f]{40}\Z")
+
+EVIDENCE_GRADE_ROUTE_ONLY = "route_only"
+EVIDENCE_GRADE_KL_LOWER_BOUND = "kl_lower_bound"
+EVIDENCE_GRADE_KL_FULL_VOCAB = "kl_full_vocab"
+EVIDENCE_GRADES = frozenset({
+    EVIDENCE_GRADE_ROUTE_ONLY,
+    EVIDENCE_GRADE_KL_LOWER_BOUND,
+    EVIDENCE_GRADE_KL_FULL_VOCAB,
+})
+
+#: Every receipt path is repository-relative under this root. A wheel ships no
+#: docs, so this reader checks the GRAMMAR and never the file.
+EVIDENCE_RECEIPT_ROOT = "docs/measurements/"
+
+#: ``native_extensions[].lane`` (contract v20, Tessera #264): the decoder an
+#: extension serves and, optionally, ``requires`` -- the predicate a unit's
+#: wire must satisfy for that kernel to read it. The vocabulary below is
+#: transcribed from Tessera's own contract validator
+#: (``tessera.serving.contract.LANE_FIELDS`` / ``LANE_REQUIREMENT_FIELDS``)
+#: and CLOSED here: a requirement outside it is refused by name, never
+#: skipped, because a gate that skipped a published condition would call a
+#: unit selectable that the loader refuses. This is vocabulary, not the rule:
+#: the DECISION is Tessera's ``scheme.decide_lane_requirements`` and
+#: :func:`cell_lane_admits` calls it rather than restating it.
+LANE_FIELDS = frozenset({"decoder", "requires"})
+LANE_REQUIREMENT_FIELDS = (
+    "column_rates", "window_bits", "body", "plane", "release_overrides",
+    "diagonals", "rotation", "start_state", "grid_arities",
+)
+#: Non-empty ascending unique positive integer lists.
+LANE_REQUIREMENT_LISTS = frozenset({"column_rates", "window_bits", "grid_arities"})
+#: JSON booleans: whether the lane reads units that CARRY the thing.
+LANE_REQUIREMENT_CARRIES = frozenset({"release_overrides", "diagonals", "start_state"})
+#: Checkpoint-dialect spellings, exactly as ``formats[].attested_wire`` and
+#: the lane predicate publish them; Tessera's ``route_wire_spelling`` maps
+#: them onto its manifest names at decision time.
+LANE_ROTATION_STATES = frozenset({"none", "r_in_only"})
+LANE_BODIES = frozenset({"tcq", "window"})
+LANE_PLANES = frozenset({"s6b", "lut16", "channel"})
 
 #: Structural classes a unit can belong to. The two take different runtime
 #: dispatch paths and therefore different eligibility cells.
@@ -274,7 +495,8 @@ def legacy_runtime_scope_refusal(schema: str) -> str:
     """The one refusal for a scoped query a legacy table cannot attest."""
     return (
         f"lane schema {schema!r} carries no per-cell runtime scope; an explicit "
-        f"serving context (runtime-image/execution query) requires {LANE_ELIGIBILITY_SCHEMA_TESSERA!r}. "
+        f"serving context (runtime-image/execution query) requires one of "
+        f"{sorted(SCOPED_LANE_SCHEMAS)!r}. "
         "Global runtime identity is not a scoped admission."
     )
 
@@ -372,6 +594,1008 @@ _PREDICABLE_FACTS: dict[str, str] = {
 # The packaged table
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
+class CellKlEvidence:
+    """One KL receipt a v6 cell rests on, in the publisher's own vocabulary.
+
+    There is no NUMBER here, and that is the publisher's design: the receipt
+    holds the value with its bounds and caveats, and a bare float beside a
+    grade is exactly the prose-shaped field principle 14 refuses. What this
+    reader keeps is what a gate can decide on -- which KIND of measurement it
+    was, how wide a top-K it covered, which regime it was scored in, and under
+    which execution modes.
+    """
+
+    kind: str
+    #: Positive for a top-K intersection bound; ``None`` for a full-vocab KL.
+    top_k: int | None
+    regime: str
+    execution_modes: tuple[str, ...]
+    receipt: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "top_k": self.top_k,
+            "regime": self.regime,
+            "execution_modes": list(self.execution_modes),
+            "receipt": self.receipt,
+        }
+
+
+@dataclass(frozen=True)
+class SmokeControl:
+    """The reference a v7 greedy smoke was compared against (Tessera #195).
+
+    ``outcome`` establishes exactly one thing: whether the reference returned
+    the SAME completion for the same prompt under the smoke's own runtime and
+    execution mode. It does not establish that the reference was healthy.
+    """
+
+    reference: str
+    outcome: str
+    receipt: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"reference": self.reference, "outcome": self.outcome,
+                "receipt": self.receipt}
+
+
+@dataclass(frozen=True)
+class EvidenceArtifact:
+    """The encoder scope of a v8 cell's evidence (Tessera #198).
+
+    The KL a cell publishes was measured on bytes SOME encoder wrote. This
+    names that artifact and commit, and one later commit's re-encode of a
+    single unit from the same source: did the payload come out identical, and
+    which way did the weight SSE move. It describes the named commit and unit
+    only -- never every unit, never a future encoder -- and it is a
+    weight-space screen, never served KL.
+    """
+
+    id: str
+    encoder_commit: str
+    reencode_encoder_commit: str
+    reencode_unit: str
+    reencode_payload: str
+    reencode_weight_error: str
+    reencode_receipt: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "encoder_commit": self.encoder_commit,
+            "reencode": {
+                "encoder_commit": self.reencode_encoder_commit,
+                "unit": self.reencode_unit,
+                "payload": self.reencode_payload,
+                "metric": EVIDENCE_ARTIFACT_METRIC,
+                "weight_error": self.reencode_weight_error,
+                "receipt": self.reencode_receipt,
+            },
+        }
+
+    def answer(self) -> list[Any]:
+        return [self.id, self.encoder_commit, self.reencode_encoder_commit,
+                self.reencode_unit, self.reencode_payload,
+                self.reencode_weight_error]
+
+
+@dataclass(frozen=True)
+class SmokeRecordRow:
+    """One observation behind a smoke status (v9, Tessera #327).
+
+    ``prompt`` names WHICH prompt was run, never the completion it produced:
+    the contract records the shape of the observation and points at a receipt
+    for the text. ``status``/``reference_status`` are the same vocabulary the
+    cell's own status uses, for the route and for the reference arm.
+    """
+
+    prompt: str
+    form: str
+    interface: str
+    status: str
+    reference_status: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"prompt": self.prompt, "form": self.form,
+                "interface": self.interface, "status": self.status,
+                "reference_status": self.reference_status}
+
+
+@dataclass(frozen=True)
+class SmokeRecord:
+    """v9's ``smoke.record``: the rule a status was derived by, and its rows.
+
+    It exists because of what Tessera #327 found in contract v21: both
+    ``routed_moe`` cells published ``status: "recorded"`` on an aggregation
+    rule that lived only in a dated measurements file, was derived and checked
+    by nothing, and was satisfiable by an empty completion. Putting the rule
+    and its observations in the contract makes the status a DERIVATION a
+    consumer can re-run instead of an assertion it must take on trust.
+
+    ``None`` where no record was published -- on a pre-v9 table, and on a v9
+    cell nobody re-ran (``record: null``), which is not the same thing as a
+    record with no rows and is refused from being spelled that way.
+    """
+
+    instrument: str
+    rule: str
+    reference: str
+    rows: tuple[SmokeRecordRow, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"instrument": self.instrument, "rule": self.rule,
+                "reference": self.reference,
+                "rows": [row.as_dict() for row in self.rows]}
+
+    def answer(self) -> list[Any]:
+        """The projection a re-review must see move (see ``contract_answer``).
+
+        The rule is in it because a status derived by a DIFFERENT rule is a
+        different claim wearing the same word, which is the failure #327
+        reports; the rows are in it because dropping one changes what the
+        status rests on without changing the status.
+        """
+        return [self.instrument, self.rule, self.reference,
+                [list(row.as_dict().values()) for row in self.rows]]
+
+
+@dataclass(frozen=True)
+class CellEvidence:
+    """A cell's ``evidence`` block: what its route claim actually rests on.
+
+    Schema v6 made this required on every cell, and it is the first field in
+    the lane table that says something about QUALITY rather than dispatch. The
+    grade is derived from the KL entries' kinds and re-derived here, never
+    trusted as written: "the grade is read off the entries, never asserted
+    beside them" is the publisher's own rule and a consumer that took the
+    written grade would be trusting an assertion where a derivation exists.
+
+    v7 added the smoke's CONTROL and the attribution derived from it; v8 added
+    the ARTIFACT the evidence is scoped to; v9 added the smoke's RECORD, the
+    rule and rows its status was derived from. A table older than the field
+    leaves it at its "never published" value -- ``""``/``None`` -- which is
+    distinct from v7's ``unattributed`` and v8's/v9's ``null`` on purpose: a v6
+    table did not say "nobody ran the reference", it said nothing.
+    """
+
+    grade: str
+    kl: tuple[CellKlEvidence, ...]
+    smoke_status: str
+    #: The recorded smoke's receipt, or "" when no smoke was recorded.
+    smoke_receipt: str = ""
+    #: v7: one of :data:`EVIDENCE_SMOKE_ATTRIBUTIONS`, or "" on a pre-v7 table.
+    smoke_attribution: str = ""
+    #: v7: the control the attribution was derived from; ``None`` when nobody
+    #: ran one AND on a pre-v7 table (``smoke_attribution`` tells them apart).
+    smoke_control: SmokeControl | None = None
+    #: v8: the encoder scope, or ``None`` when no comparison was recorded AND
+    #: on a pre-v8 table.
+    artifact: EvidenceArtifact | None = None
+    #: v9: the rule and rows the status was derived from; ``None`` when no
+    #: record was published AND on a pre-v9 table.
+    smoke_record: SmokeRecord | None = None
+    #: v9: whether ``smoke_status`` was DERIVED from that record or merely
+    #: asserted -- Tessera's ``smoke_status_is_derived``, asked rather than
+    #: inferred here. False on every pre-v9 table, where nothing could be
+    #: derived because there was no record to derive from.
+    smoke_status_is_derived: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        smoke: dict[str, Any] = {"status": self.smoke_status,
+                                 "receipt": self.smoke_receipt or None}
+        if self.smoke_attribution:
+            smoke["attribution"] = self.smoke_attribution
+            smoke["control"] = (self.smoke_control.as_dict()
+                                if self.smoke_control else None)
+        if self.smoke_record is not None:
+            smoke["record"] = self.smoke_record.as_dict()
+            # Provenance says which cells' words were derived, so a shipcard
+            # can tell an attested status from an asserted one (principle 12).
+            smoke["status_is_derived"] = self.smoke_status_is_derived
+        return {
+            "grade": self.grade,
+            "kl": [entry.as_dict() for entry in self.kl],
+            "smoke": smoke,
+            "artifact": self.artifact.as_dict() if self.artifact else None,
+        }
+
+    def answer(self) -> list[Any]:
+        """The projection a re-review must see move (see ``contract_answer``).
+
+        The attribution and the control's outcome are here because the
+        refusal text names them and Tessera's own consumer rule decides on
+        them; the artifact is here because a shipcard carries it. A control
+        that flips from identical to different, or an encoder scope that
+        appears or vanishes, is a re-review, not a silent bump.
+        """
+        return [self.grade, self.smoke_status,
+                sorted(entry.as_dict()["kind"] + f"@{entry.top_k}"
+                       for entry in self.kl),
+                self.smoke_attribution,
+                self.smoke_control.outcome if self.smoke_control else None,
+                self.artifact.answer() if self.artifact else None,
+                self.smoke_record.answer() if self.smoke_record else None]
+
+
+def derive_evidence_grade(entries: Sequence[CellKlEvidence]) -> str:
+    """The grade a cell's KL entries derive, from their kinds alone.
+
+    Mirrors ``tessera.serving.contract.derive_evidence_grade``. No entry means
+    ``route_only``: the census attests DISPATCH and nothing attests quality.
+    """
+    kinds = {entry.kind for entry in entries}
+    if EVIDENCE_KL_KIND_FULL_VOCAB in kinds:
+        return EVIDENCE_GRADE_KL_FULL_VOCAB
+    if EVIDENCE_KL_KIND_TOPK_LOWER_BOUND in kinds:
+        return EVIDENCE_GRADE_KL_LOWER_BOUND
+    return EVIDENCE_GRADE_ROUTE_ONLY
+
+
+def derive_smoke_attribution(control: SmokeControl | None) -> str:
+    """What a smoke's control DERIVES about where the symptom lives.
+
+    Mirrors ``tessera.serving.contract.derive_smoke_attribution``: no control
+    is ``unattributed``; an identical completion is ``shared_with_reference``;
+    anything else the control could say is ``not_shared_with_reference``.
+    """
+    if control is None:
+        return EVIDENCE_ATTRIBUTION_UNATTRIBUTED
+    if control.outcome == EVIDENCE_OUTCOME_IDENTICAL:
+        return EVIDENCE_ATTRIBUTION_SHARED
+    return EVIDENCE_ATTRIBUTION_NOT_SHARED
+
+
+def _tessera_contract_module():
+    """Tessera's own contract module -- the home of the v9 smoke vocabulary.
+
+    A v9 lane table is, by construction, the packaged contract of an installed
+    Tessera, so this import cannot be the thing that fails on a box that has a
+    v9 table to read. It is a hard import for the same reason
+    ``decide_lane_requirements`` is: a fallback that answers when Tessera
+    cannot is a second home for Tessera's rule.
+    """
+    from tessera.serving import contract as _contract
+
+    return _contract
+
+
+def _tessera_published(name: str, where: str) -> Any:
+    """One of Tessera's v9 names, or a refusal that says which one is missing.
+
+    A v9 table beside a runtime too old to publish the rule it is written
+    against is a mis-pin, and it has to say so by name rather than surface as
+    an ``AttributeError`` from inside a parser.
+    """
+    module = _tessera_contract_module()
+    try:
+        return getattr(module, name)
+    except AttributeError as exc:
+        raise LaneEligibilityError(
+            f"{where} needs Tessera's {name} to decide, and the installed "
+            "tessera.serving.contract does not publish it: this table calls "
+            f"itself {LANE_ELIGIBILITY_SCHEMA_TESSERA_V9} but the runtime "
+            "beside it is older. Re-pin, never restate the rule here -- a "
+            "second copy is how the two halves of one contract drift."
+        ) from exc
+
+
+def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
+    return frozenset(_tessera_published(name, where))
+
+
+def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
+    """v9's ``smoke.record``: ``null``, or the closed rule-plus-rows block.
+
+    Parsed closed at every level, with the KEY SETS and the two vocabularies
+    READ from ``tessera.serving.contract`` rather than transcribed beside this
+    parser: a member or an interface Tessera adds must widen this reader on
+    the re-pin that installs it, not on the day somebody notices.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be null or a JSON object")
+    _require_keys(payload, where,
+                  required=set(_tessera_smoke_vocabulary(
+                      "EVIDENCE_SMOKE_RECORD_KEYS", where)),
+                  optional=set())
+    head: dict[str, str] = {}
+    for key in ("instrument", "rule", "reference"):
+        value = payload[key]
+        if not isinstance(value, str) or not value.strip():
+            raise LaneEligibilityError(
+                f"{where}.{key} must be a non-empty string; a record that does "
+                f"not say what its {key} was attests nothing a reader can check")
+        head[key] = value
+    raw = payload["rows"]
+    if not isinstance(raw, list) or not raw:
+        raise LaneEligibilityError(
+            f"{where}.rows must be a non-empty JSON array of "
+            "{prompt, form, interface, status, reference_status} objects; a "
+            "status derived over zero observations is the empty completion "
+            "RobTand/tessera#327 reports, wearing a schema")
+    interfaces = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_INTERFACES", where)
+    forms = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_FORMS", where)
+    rows: list[SmokeRecordRow] = []
+    for i, row in enumerate(raw):
+        spot = f"{where}.rows[{i}]"
+        if not isinstance(row, Mapping):
+            raise LaneEligibilityError(f"{spot} must be a JSON object")
+        _require_keys(row, spot,
+                      required=set(_tessera_smoke_vocabulary(
+                          "EVIDENCE_SMOKE_ROW_KEYS", spot)),
+                      optional=set())
+        prompt = row["prompt"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise LaneEligibilityError(
+                f"{spot}.prompt must be a non-empty string naming which prompt "
+                f"was run, got {prompt!r}")
+        for key, vocabulary, source in (
+                ("form", forms, "EVIDENCE_SMOKE_FORMS"),
+                ("interface", interfaces, "EVIDENCE_SMOKE_INTERFACES")):
+            if row[key] not in vocabulary:
+                raise LaneEligibilityError(
+                    f"{spot}.{key} must be one of {sorted(vocabulary)} "
+                    f"(Tessera's {source}), got {row[key]!r}")
+        for key in ("status", "reference_status"):
+            if row[key] not in EVIDENCE_SMOKE_STATUSES:
+                raise LaneEligibilityError(
+                    f"{spot}.{key} must be one of "
+                    f"{sorted(EVIDENCE_SMOKE_STATUSES)}, got {row[key]!r}")
+        rows.append(SmokeRecordRow(
+            prompt=prompt, form=str(row["form"]), interface=str(row["interface"]),
+            status=str(row["status"]),
+            reference_status=str(row["reference_status"])))
+    keys = [tuple(row.as_dict().values()) for row in rows]
+    if len(set(keys)) != len(keys):
+        raise LaneEligibilityError(
+            f"{where}.rows repeats an observation; the field is a set of them")
+    return SmokeRecord(instrument=head["instrument"], rule=head["rule"],
+                       reference=head["reference"], rows=tuple(rows))
+
+
+def _require_receipt(value: Any, where: str) -> str:
+    if (not isinstance(value, str) or not value.startswith(EVIDENCE_RECEIPT_ROOT)
+            or len(value) <= len(EVIDENCE_RECEIPT_ROOT)):
+        raise LaneEligibilityError(
+            f"{where}.receipt must be a repository path under "
+            f"{EVIDENCE_RECEIPT_ROOT!r} (the receipt that holds the number and "
+            f"its caveats), got {value!r}")
+    return value
+
+
+def _parse_smoke_control(payload: Any, where: str) -> SmokeControl | None:
+    """v7's ``smoke.control``: ``null`` or the closed ``{reference, outcome, receipt}``."""
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be null or a JSON object")
+    _require_keys(payload, where, required=set(EVIDENCE_CONTROL_KEYS), optional=set())
+    reference = payload["reference"]
+    if reference not in EVIDENCE_CONTROL_REFERENCES:
+        raise LaneEligibilityError(
+            f"{where}.reference must be one of {sorted(EVIDENCE_CONTROL_REFERENCES)}, "
+            f"got {reference!r}; a reference this reader cannot name is prose, "
+            "and the whole point of the control is that a gate reads it")
+    outcome = payload["outcome"]
+    if outcome not in EVIDENCE_CONTROL_OUTCOMES:
+        raise LaneEligibilityError(
+            f"{where}.outcome must be one of {sorted(EVIDENCE_CONTROL_OUTCOMES)}, "
+            f"got {outcome!r}")
+    return SmokeControl(reference=str(reference), outcome=str(outcome),
+                        receipt=_require_receipt(payload["receipt"], where))
+
+
+def _require_full_sha1(value: Any, where: str) -> str:
+    if not isinstance(value, str) or _FULL_GIT_SHA1.match(value) is None:
+        raise LaneEligibilityError(
+            f"{where}.encoder_commit must be a full lowercase Git SHA-1; a short "
+            f"or floating ref does not name the encoder that wrote the bytes, "
+            f"got {value!r}")
+    return value
+
+
+def _parse_evidence_artifact(payload: Any, where: str) -> EvidenceArtifact | None:
+    """v8's ``evidence.artifact``: ``null`` or the closed encoder-scope record.
+
+    Mirrors ``tessera.serving.contract._evidence_artifact`` rule for rule. An
+    ``identical`` payload with a weight error other than ``equal`` is refused
+    because the two cannot both be true of the same bytes; a metric other than
+    ``weight_sse`` is refused because this screen is not served KL and a
+    reader must not be widened into taking one for the other.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be null or a JSON object")
+    _require_keys(payload, where, required={"id", "encoder_commit", "reencode"},
+                  optional=set())
+    artifact_id = payload["id"]
+    if (not isinstance(artifact_id, str) or not artifact_id
+            or "\\" in artifact_id or any(c.isspace() for c in artifact_id)
+            or any(part in ("", ".", "..") for part in artifact_id.split("/"))):
+        raise LaneEligibilityError(
+            f"{where}.id must be a portable relative artifact identifier, "
+            f"got {artifact_id!r}")
+    encoder_commit = _require_full_sha1(payload["encoder_commit"], where)
+    reencode = payload["reencode"]
+    spot = f"{where}.reencode"
+    if not isinstance(reencode, Mapping):
+        raise LaneEligibilityError(f"{spot} must be a JSON object")
+    _require_keys(reencode, spot,
+                  required={"encoder_commit", "unit", "payload", "metric",
+                            "weight_error", "receipt"},
+                  optional=set())
+    reencode_commit = _require_full_sha1(reencode["encoder_commit"], spot)
+    unit = reencode["unit"]
+    if not isinstance(unit, str) or not unit.strip():
+        raise LaneEligibilityError(
+            f"{spot}.unit must name the single unit compared, got {unit!r}")
+    relation = reencode["payload"]
+    if relation not in EVIDENCE_PAYLOAD_RELATIONS:
+        raise LaneEligibilityError(
+            f"{spot}.payload must be one of {sorted(EVIDENCE_PAYLOAD_RELATIONS)}, "
+            f"got {relation!r}")
+    if reencode["metric"] != EVIDENCE_ARTIFACT_METRIC:
+        raise LaneEligibilityError(
+            f"{spot}.metric must be {EVIDENCE_ARTIFACT_METRIC!r}; this screen is "
+            f"not served KL, got {reencode['metric']!r}")
+    weight_error = reencode["weight_error"]
+    if weight_error not in EVIDENCE_WEIGHT_ERROR_RELATIONS:
+        raise LaneEligibilityError(
+            f"{spot}.weight_error must be one of "
+            f"{sorted(EVIDENCE_WEIGHT_ERROR_RELATIONS)}, got {weight_error!r}")
+    if (relation == EVIDENCE_PAYLOAD_IDENTICAL
+            and weight_error != EVIDENCE_WEIGHT_ERROR_EQUAL):
+        raise LaneEligibilityError(
+            f"{spot}.weight_error must be 'equal' for an identical payload; the "
+            f"same bytes cannot carry a {weight_error!r} weight error")
+    return EvidenceArtifact(
+        id=artifact_id, encoder_commit=encoder_commit,
+        reencode_encoder_commit=reencode_commit, reencode_unit=unit,
+        reencode_payload=str(relation), reencode_weight_error=str(weight_error),
+        reencode_receipt=_require_receipt(reencode["receipt"], spot))
+
+
+def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
+                        execution_modes: Sequence[str] = (),
+                        schema: str = LANE_ELIGIBILITY_SCHEMA_TESSERA) -> CellEvidence:
+    """The ``evidence`` grammar, closed at every level, at the table's schema.
+
+    Every structural rule the publisher's validator enforces is re-checked
+    here rather than assumed, because the two that matter most are exactly the
+    ones a stale or hand-edited table would break: an entry's regime must be
+    the CELL's regime (a prefill bound written into a decode cell is the
+    confusion this field exists to refuse), and the written grade must equal
+    the derived one.
+
+    ``schema`` selects the member set: v6 is ``{grade, kl, smoke{status,
+    receipt}}``; v7 adds ``smoke.attribution`` and ``smoke.control``; v8 adds
+    ``artifact``; v9 adds ``smoke.record``. A field from a later grammar on an
+    older table is refused as unknown, exactly as an unknown field on the
+    current one is -- a v6 table that carries an attribution is not a v6
+    table, and a v8 table that carries a record is not a v8 table.
+    """
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be a JSON object")
+    attributed = schema in ATTRIBUTED_SMOKE_LANE_SCHEMAS
+    encoder_scoped = schema in ENCODER_SCOPED_LANE_SCHEMAS
+    recorded_smoke = schema in RECORDED_SMOKE_LANE_SCHEMAS
+    required = {"grade", "kl", "smoke"}
+    if encoder_scoped:
+        required.add("artifact")
+    _require_keys(payload, where, required=required, optional=set())
+    grade = payload["grade"]
+    if grade not in EVIDENCE_GRADES:
+        raise LaneEligibilityError(
+            f"{where}.grade must be one of {sorted(EVIDENCE_GRADES)}, got {grade!r}")
+    raw = payload["kl"]
+    if not isinstance(raw, list) or any(not isinstance(e, Mapping) for e in raw):
+        raise LaneEligibilityError(
+            f"{where}.kl must be a JSON array of "
+            "{kind, top_k, regime, execution_modes, receipt} objects")
+    entries: list[CellKlEvidence] = []
+    for i, entry in enumerate(raw):
+        spot = f"{where}.kl[{i}]"
+        _require_keys(entry, spot,
+                      required={"kind", "top_k", "regime", "execution_modes",
+                                "receipt"},
+                      optional=set())
+        kind = entry["kind"]
+        if kind not in EVIDENCE_KL_KINDS:
+            raise LaneEligibilityError(
+                f"{spot}.kind must be one of {sorted(EVIDENCE_KL_KINDS)}, got {kind!r}")
+        top_k = entry["top_k"]
+        if kind == EVIDENCE_KL_KIND_TOPK_LOWER_BOUND:
+            if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+                raise LaneEligibilityError(
+                    f"{spot}.top_k must be a positive integer for a top-K "
+                    f"intersection bound, got {top_k!r}")
+        elif top_k is not None:
+            raise LaneEligibilityError(
+                f"{spot}.top_k must be null for a full-vocabulary KL, got {top_k!r}")
+        regime = entry["regime"]
+        if cell_regime and regime != cell_regime:
+            raise LaneEligibilityError(
+                f"{spot}.regime {regime!r} is not the cell's regime "
+                f"{cell_regime!r}: a bound scored in another regime is another "
+                "cell's evidence, and reading it here is how a prefill number "
+                "came to stand in for decode quality")
+        modes = entry["execution_modes"]
+        if (not isinstance(modes, list) or not modes
+                or any(not isinstance(m, str) or m not in TESSERA_EXECUTION_MODES
+                       for m in modes)
+                or len(set(modes)) != len(modes)):
+            raise LaneEligibilityError(
+                f"{spot}.execution_modes must be a non-empty list of distinct "
+                f"values from {sorted(TESSERA_EXECUTION_MODES)}, got {modes!r}")
+        outside = sorted(set(modes) - set(execution_modes)) if execution_modes else []
+        if outside:
+            raise LaneEligibilityError(
+                f"{spot} claims execution_modes {outside} the cell does not "
+                f"cover ({sorted(execution_modes)}); a KL under a mode the "
+                "census never joined attests a runtime this cell does not scope")
+        entries.append(CellKlEvidence(
+            kind=kind, top_k=top_k, regime=str(regime),
+            execution_modes=tuple(modes),
+            receipt=_require_receipt(entry["receipt"], spot)))
+    keys = [(e.kind, e.top_k, e.regime, e.execution_modes, e.receipt) for e in entries]
+    if len(set(keys)) != len(keys):
+        raise LaneEligibilityError(
+            f"{where}.kl repeats an entry; the field is a set of receipts")
+
+    smoke = payload["smoke"]
+    if not isinstance(smoke, Mapping):
+        raise LaneEligibilityError(f"{where}.smoke must be a JSON object")
+    smoke_keys = {"status", "receipt"}
+    if attributed:
+        smoke_keys |= {"attribution", "control"}
+    if recorded_smoke:
+        smoke_keys.add("record")
+    _require_keys(smoke, f"{where}.smoke", required=smoke_keys, optional=set())
+    status = smoke["status"]
+    if status not in EVIDENCE_SMOKE_STATUSES:
+        raise LaneEligibilityError(
+            f"{where}.smoke.status must be one of "
+            f"{sorted(EVIDENCE_SMOKE_STATUSES)}, got {status!r}")
+    control: SmokeControl | None = None
+    attribution = ""
+    record: SmokeRecord | None = None
+    status_is_derived = False
+    if attributed:
+        control = _parse_smoke_control(smoke["control"], f"{where}.smoke.control")
+    if recorded_smoke:
+        record = _parse_smoke_record(smoke["record"], f"{where}.smoke.record")
+        if record is not None and control is not None:
+            raise LaneEligibilityError(
+                f"{where}.smoke carries BOTH a record and a control "
+                f"({control.as_dict()!r}); Tessera's validator refuses that "
+                "pair, because two homes for one derivation is exactly how "
+                "they drift. A v9 cell that was re-measured records its rows "
+                "and retires the v7 control.")
+        # "Is this cell's word derived, or asserted?" is a state Tessera
+        # NAMES, so it is asked rather than inferred from the key: a reader
+        # that spelled it `record is not None` would be restating the rule
+        # one level up from the one it already refuses to restate.
+        status_is_derived = bool(_tessera_published(
+            "smoke_status_is_derived", f"{where}.smoke")(dict(smoke)))
+        if status_is_derived:
+            derived_status = _tessera_published(
+                "derive_smoke_status", f"{where}.smoke")(dict(smoke))
+            if status != derived_status:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.status is {status!r} but Tessera's own "
+                    f"derive_smoke_status derives {derived_status!r} from the "
+                    "record beside it; the status is read off the record, "
+                    "never asserted beside it. This repository does not "
+                    "re-implement the rule -- restating it here is the second "
+                    "home RobTand/tessera#327 was filed about -- so a "
+                    "disagreement is a contract defect and is refused rather "
+                    "than resolved.")
+    if status == EVIDENCE_SMOKE_NOT_RECORDED:
+        if smoke["receipt"] is not None:
+            raise LaneEligibilityError(
+                f"{where}.smoke: status not_recorded names a receipt "
+                f"{smoke['receipt']!r}; a receipt is where a recorded smoke "
+                "lives, so one here says the status is wrong")
+        if control is not None:
+            raise LaneEligibilityError(
+                f"{where}.smoke: status not_recorded names a control "
+                f"{control.as_dict()!r}; no completion came back, so there is "
+                "nothing for a reference to have matched")
+        receipt = ""
+    else:
+        if smoke["receipt"] is None:
+            raise LaneEligibilityError(
+                f"{where}.smoke: status {status!r} names no receipt; a smoke "
+                "nobody recorded is not_recorded")
+        receipt = _require_receipt(smoke["receipt"], f"{where}.smoke")
+    if attributed:
+        attribution = smoke["attribution"]
+        if attribution not in EVIDENCE_SMOKE_ATTRIBUTIONS:
+            raise LaneEligibilityError(
+                f"{where}.smoke.attribution must be one of "
+                f"{sorted(EVIDENCE_SMOKE_ATTRIBUTIONS)}, got {attribution!r}")
+        if recorded_smoke:
+            # v9 derives the attribution from the RECORD, which is a
+            # projection of rows this repository does not restate.
+            derived_attribution = _tessera_published(
+                "derive_smoke_attribution", f"{where}.smoke")(dict(smoke))
+            if attribution != derived_attribution:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.attribution is {attribution!r} but "
+                    "Tessera's own derive_smoke_attribution derives "
+                    f"{derived_attribution!r} from the record beside it; the "
+                    "attribution is read off the record, never asserted "
+                    "beside it")
+        else:
+            derived_attribution = derive_smoke_attribution(control)
+            if attribution != derived_attribution:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.attribution is {attribution!r} but its "
+                    f"control derives {derived_attribution!r}; the attribution "
+                    "is read off the control, never asserted beside it")
+    artifact: EvidenceArtifact | None = None
+    if encoder_scoped:
+        artifact = _parse_evidence_artifact(payload["artifact"], f"{where}.artifact")
+
+    derived = derive_evidence_grade(entries)
+    if grade != derived:
+        raise LaneEligibilityError(
+            f"{where}.grade is {grade!r} but its kl entries derive {derived!r}; "
+            "the grade is read off the entries, never asserted beside them")
+    return CellEvidence(grade=grade, kl=tuple(entries), smoke_status=str(status),
+                        smoke_receipt=receipt, smoke_attribution=str(attribution),
+                        smoke_control=control, artifact=artifact,
+                        smoke_record=record,
+                        smoke_status_is_derived=status_is_derived)
+
+
+def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
+    """Whether a cell's own published evidence lets this producer use it.
+
+    ONE predicate, read by both admission legs -- the development menu
+    (``tessera_render.tessera_attesting_cells``) and the per-artifact export
+    gate (``resolve_unit_route``) -- because a rung the menu offers and the
+    export refuses, or the reverse, is the split-brain principle 8 exists to
+    stop.
+
+    What it refuses is a MEASURED serving defect, not a structure: a cell
+    whose greedy smoke the runtime recorded as degenerate
+    (:data:`EVIDENCE_SMOKE_REFUSALS`) fails principle 9's "generates correctly"
+    leg, and it fails it in a structured field rather than in prose. Nothing
+    here mentions ``routed_moe``: a hardcoded structure ban would be principle
+    1's vetoed band-aid, and a cell this refuses is refused for what was
+    measured on it, not for what it is. The answer therefore tracks whatever
+    status the PINNED table publishes and nothing else -- the two routed-MoE
+    cells were refused from contract v17 through v20 on ``repetitive`` and are
+    not refused at v21, which publishes ``recorded``, with no edit here either
+    time. Whether that ``recorded`` is CHECKABLE is a different question and
+    not this predicate's: RobTand/tessera#327 found that v21's rule lived only
+    in a dated measurements file and was satisfiable by an empty completion,
+    which lane schema v9 answers by putting the rule and its rows in
+    ``smoke.record`` -- re-derived at parse through Tessera's own
+    ``derive_smoke_status`` (:func:`_parse_smoke_record`), so a status this
+    predicate reads is one a reader could check. Whether routed-MoE Tessera is
+    PROMOTED past the menu remains a human's call (prismaquant #198).
+
+    What it deliberately does NOT refuse is a low GRADE. Every cell in the
+    installed table is ``route_only`` or ``kl_lower_bound`` -- the publisher's
+    changelog records that every served KL in that repository is a top-K
+    intersection lower bound -- so a grade gate would refuse the whole lane,
+    including rungs this producer already ships. Raising the grade bar is a
+    promotion-ladder move and belongs to a human; the grade travels into
+    provenance so a shipcard says which grade attested each unit.
+
+    What it deliberately does NOT decide on is the v7 ATTRIBUTION.
+    Tessera's contract v18 changelog states the consumer rule it expects --
+    "a gate that refused on status alone now refuses on status 'repetitive'
+    AND attribution other than 'shared_with_reference'" -- and on the v20
+    table that rule admitted both routed-MoE cells, whose control showed the
+    BF16 source returning the same degenerate completion. This reader refuses
+    on the status: ``shared_with_reference`` removes the evidence AGAINST the
+    route without adding any FOR it, and admitting a structure this producer
+    has never shipped on that basis is a promotion, which is a human's call.
+    The refusal names the control so the reviewer sees what was read and not
+    decided on; prismaquant #198 holds the decision. v21 retired the control
+    from those cells, so the branch is exercised on the v20 shape in
+    ``tests/test_tessera_lane_v8.py`` rather than on an installed cell.
+
+    A pre-v6 cell carries no evidence block and is admitted unchanged: the
+    grammar that never published the field cannot be read as publishing a
+    failure.
+    """
+    evidence = getattr(cell, "evidence", None)
+    if evidence is None:
+        return True, ""
+    if evidence.smoke_status in EVIDENCE_SMOKE_REFUSALS:
+        control = evidence.smoke_control
+        if control is not None:
+            attributed = (
+                f" Its control (reference {control.reference!r}, outcome "
+                f"{control.outcome!r}, receipt {control.receipt!r}) derives "
+                f"attribution {evidence.smoke_attribution!r}; this producer "
+                "reads that and still refuses on the status alone -- an "
+                "attribution that the reference shares the symptom is not a "
+                "record of this route generating correctly. Admitting on it is "
+                "a promotion held for a human in prismaquant #198.")
+        elif evidence.smoke_attribution:
+            attributed = (
+                f" Its attribution is {evidence.smoke_attribution!r}: nobody "
+                "ran the reference, so the status is an observation and not "
+                "an attribution.")
+        else:
+            attributed = ""
+        return False, (
+            f"cell {getattr(cell, 'id', '?')!r} publishes "
+            f"evidence.smoke.status={evidence.smoke_status!r} "
+            f"(receipt {evidence.smoke_receipt!r}): the runtime recorded a "
+            "greedy smoke on this route and the generation degenerated. "
+            "Principle 9 requires a route to generate correctly, so this cell "
+            "attests a measured serving defect and is not admitted."
+            + attributed
+        )
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# The lane predicate (contract v20)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class LaneClaim:
+    """One ``native_extensions[].lane`` block: what a kernel reads.
+
+    ``requires`` is ``None`` when the lane publishes no predicate of its own
+    -- its eligibility is then the route's, already published in ``formats``
+    -- and otherwise a closed mapping in the contract's own vocabulary
+    (:data:`LANE_REQUIREMENT_FIELDS`), lists kept as tuples. The distinction
+    between ``None`` and an empty block is the publisher's: an empty
+    ``requires`` is refused at parse, exactly as Tessera's validator refuses
+    it.
+    """
+
+    #: The ``module_name_prefix`` of the row this lane belongs to.
+    extension: str
+    #: The decoder name the cell's ``executes[].decoder`` spells when it
+    #: launches through this extension.
+    decoder: str
+    requires: Mapping[str, Any] | None = None
+
+    def answer(self) -> dict[str, Any]:
+        """The gate-read projection, JSON-shaped, for the reviewed answer."""
+        requires = None
+        if self.requires is not None:
+            requires = {
+                name: list(value) if isinstance(value, tuple) else value
+                for name, value in self.requires.items()
+            }
+        return {"decoder": self.decoder, "requires": requires}
+
+
+def parse_lane_claim(payload: Any, where: str, *, extension: str) -> LaneClaim:
+    """Read one ``lane`` block closed at Tessera's vocabulary, or refuse by name.
+
+    Mirrors the publisher's own validator (``tessera.serving.contract``,
+    ``_validate_lane``): required ``decoder``, optional non-empty
+    ``requires`` whose every key is a requirement this reader has learned;
+    the three list requirements non-empty, ascending, unique, positive; the
+    three carry requirements JSON booleans; ``rotation`` a non-empty unique
+    list of known states; ``body`` and ``plane`` known spellings. A block this
+    reader cannot read is a refusal of the whole table -- a lane whose
+    predicate is unreadable is a lane no gate can decide, and absent evidence
+    is not a pass.
+    """
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(
+            f"{where} ({extension}): lane must be a JSON object naming the "
+            "decoder the extension serves")
+    _require_keys(payload, f"{where} ({extension})", required={"decoder"},
+                  optional=LANE_FIELDS - {"decoder"})
+    decoder = payload["decoder"]
+    if not isinstance(decoder, str) or not decoder:
+        raise LaneEligibilityError(
+            f"{where}.decoder ({extension}) must be a non-empty string")
+    if "requires" not in payload:
+        return LaneClaim(extension=extension, decoder=decoder)
+    requires = payload["requires"]
+    if not isinstance(requires, Mapping):
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) must be a JSON object keyed by "
+            f"requirement name; the known names are {list(LANE_REQUIREMENT_FIELDS)}")
+    if not requires:
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) is empty. A lane with no predicate "
+            "omits the block; an empty one is a claim this reader cannot tell "
+            "from 'reads everything' and is refused")
+    unknown = sorted(set(requires) - set(LANE_REQUIREMENT_FIELDS))
+    if unknown:
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) publishes requirement(s) {unknown} "
+            f"this reader cannot decide (it reads {list(LANE_REQUIREMENT_FIELDS)}). "
+            "A checker that skipped a published condition would select a unit "
+            "the loader refuses, so the table is refused instead: teach "
+            "lane_eligibility.LANE_REQUIREMENT_FIELDS the name once Tessera's "
+            "scheme.decide_lane_requirements decides it.")
+    parsed: dict[str, Any] = {}
+    for name in LANE_REQUIREMENT_FIELDS:
+        if name not in requires:
+            continue
+        at = f"{where}.requires.{name} ({extension})"
+        value = requires[name]
+        if name in LANE_REQUIREMENT_LISTS:
+            parsed[name] = _parse_lane_int_list(value, at)
+        elif name in LANE_REQUIREMENT_CARRIES:
+            if not isinstance(value, bool):
+                raise LaneEligibilityError(
+                    f"{at} must be a JSON boolean (does the lane read units that "
+                    f"carry this?), got {value!r}")
+            parsed[name] = value
+        elif name == "rotation":
+            if (not isinstance(value, list) or not value
+                    or len(set(value)) != len(value)):
+                raise LaneEligibilityError(
+                    f"{at} must be a non-empty list of distinct rotation states "
+                    f"{sorted(LANE_ROTATION_STATES)}, got {value!r}")
+            bad = sorted(str(v) for v in value if v not in LANE_ROTATION_STATES)
+            if bad:
+                raise LaneEligibilityError(
+                    f"{at} names rotation state(s) {bad} this reader does not "
+                    f"know; the known states are {sorted(LANE_ROTATION_STATES)}")
+            parsed[name] = tuple(str(v) for v in value)
+        elif name == "body":
+            if value not in LANE_BODIES:
+                raise LaneEligibilityError(
+                    f"{at} must be one of {sorted(LANE_BODIES)}, got {value!r}")
+            parsed[name] = str(value)
+        else:  # plane
+            if value not in LANE_PLANES:
+                raise LaneEligibilityError(
+                    f"{at} must be one of {sorted(LANE_PLANES)}, got {value!r}")
+            parsed[name] = str(value)
+    return LaneClaim(extension=extension, decoder=decoder, requires=parsed)
+
+
+def _parse_lane_int_list(value: Any, where: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise LaneEligibilityError(
+            f"{where} must be a non-empty list of positive integers, got {value!r}")
+    if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in value):
+        raise LaneEligibilityError(
+            f"{where} must name positive integers only, got {value!r}")
+    if list(value) != sorted(set(value)):
+        raise LaneEligibilityError(
+            f"{where} must be ascending and unique, got {value!r}")
+    return tuple(int(v) for v in value)
+
+
+def parse_lane_claims(native_extensions: Any, where: str) -> tuple[LaneClaim, ...]:
+    """Every ``native_extensions[].lane`` block, in table order.
+
+    Only the two fields a lane gate reads are taken from each row -- the
+    prefix that names the row and its ``lane`` -- so the rest of the row's
+    grammar stays with ``tessera_runtime_contract._parse_native_extensions``,
+    which refuses the table on the fingerprint's behalf. A row without a
+    ``lane`` is refused here: since contract v20 every row publishes one,
+    and a launch whose lane is unstated cannot be decided.
+    """
+    if (not isinstance(native_extensions, Sequence)
+            or isinstance(native_extensions, (str, bytes))):
+        raise LaneEligibilityError(f"{where} must be a JSON array")
+    claims: list[LaneClaim] = []
+    seen: set[str] = set()
+    for i, row in enumerate(native_extensions):
+        at = f"{where}[{i}]"
+        if not isinstance(row, Mapping):
+            raise LaneEligibilityError(f"{at} must be a JSON object")
+        prefix = row.get("module_name_prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise LaneEligibilityError(
+                f"{at}.module_name_prefix must be a non-empty string")
+        if prefix in seen:
+            raise LaneEligibilityError(f"{at}.module_name_prefix {prefix!r} is declared twice")
+        seen.add(prefix)
+        if "lane" not in row:
+            raise LaneEligibilityError(
+                f"{at} ({prefix}) publishes no 'lane': which decoder this "
+                "extension serves, and what a unit's wire must be for it to "
+                "read it, is unstated, so no launch through it can be decided")
+        claims.append(parse_lane_claim(row["lane"], f"{at}.lane", extension=prefix))
+    return tuple(claims)
+
+
+def lane_claim_for_cell(cell: Any, lanes: Sequence[LaneClaim]) -> LaneClaim | None:
+    """The lane whose predicate governs this cell, or ``None``.
+
+    A cell is lane-gated exactly when one of the decoders it EXECUTES is the
+    decoder a lane serves and that lane publishes a predicate. A decoder no
+    lane names (``torch_window``, ``torch_materialize_stock``) is the route's
+    own path, gated by the cell's route status and evidence alone -- the
+    contract publishes no wire predicate for it, and inventing one here would
+    be the second copy this module exists to refuse.
+    """
+    decoders = {decoder for _symbol, decoder in getattr(cell, "executes", ())}
+    for claim in lanes:
+        if claim.requires is not None and claim.decoder in decoders:
+            return claim
+    return None
+
+
+def cell_lane_admits(cell: Any, rate_q256: int | None, lanes: Sequence[LaneClaim]
+                     ) -> tuple[bool, str]:
+    """Whether the lane a cell launches through can read THIS producer's plan.
+
+    ONE predicate for every admission leg (the menu's
+    ``tessera_render.tessera_attesting_cells``, the development contract's
+    ``TesseraContract.native_cells``, the export gate's
+    :func:`resolve_unit_route`), beside :func:`cell_evidence_admits` and for
+    the same reason: a rung the menu offers and the export refuses is the
+    split-brain principle 8 exists to stop.
+
+    The rule is not here. Tessera publishes the predicate
+    (``native_extensions[].lane.requires``) and owns the decision
+    (``tessera.serving.scheme.decide_lane_requirements``, the one home its
+    loader, its byte-side report and its plan-time gate all call); this
+    function supplies the FACTS -- ``tessera_render.planned_wire_facts``, the
+    wire this producer will encode for the cell's family at this rung, read
+    off the same recipe and decoration the render encodes with -- and turns
+    the refusals into a reason that names the cell, the lane and the launch.
+    Both imports are lazy: ``planned_wire_facts`` needs the encoder, and
+    ``scheme`` pulls in ``tessera.serving.contract`` for its wire spellings
+    (the module, not its validator's dispatch tables; neither imports torch or
+    vLLM). A contract is LOADED without either -- this runs at admission.
+
+    Fail-closed at every edge: a requirement the decision core has not
+    learned RAISES (its own rule, re-raised with the lane named) rather than
+    being skipped; a family this producer cannot plan, or a cell asked
+    without a rung, is refused with the reason, never passed.
+    """
+    claim = lane_claim_for_cell(cell, lanes)
+    if claim is None:
+        return True, ""
+    cell_id = getattr(cell, "id", getattr(cell, "cell_id", "?"))
+    family = str(getattr(cell, "family", ""))
+    launches = sorted(symbol for symbol, decoder in cell.executes
+                      if decoder == claim.decoder)
+    head = (
+        f"cell {cell_id!r} launches {launches} through the "
+        f"{claim.extension!r} lane (decoder {claim.decoder!r}), whose published "
+        "predicate this producer's planned wire")
+    if rate_q256 is None:
+        return False, (
+            f"{head} cannot be decided against: the unit's rung was not read, "
+            "and the lane reads a rate set that depends on it")
+    from . import tessera_render
+    from .tessera_formats import TesseraFormatError
+
+    try:
+        facts = tessera_render.planned_wire_facts(family, int(rate_q256))
+    except TesseraFormatError as exc:
+        return False, (
+            f"{head} cannot be decided against: this producer cannot plan "
+            f"family {family!r} at rung {rate_q256} ({exc}), and a plan that "
+            "does not exist is not a plan the lane reads")
+    from tessera.serving.scheme import decide_lane_requirements
+
+    try:
+        refusals = decide_lane_requirements(claim.extension, dict(claim.requires), facts)
+    except ValueError as exc:
+        raise LaneEligibilityError(
+            f"{head} cannot be decided against: the lane publishes a "
+            f"requirement Tessera's own decision core does not decide -- {exc}"
+        ) from exc
+    if not refusals:
+        return True, ""
+    return False, (
+        f"{head} for {family} R{rate_q256} fails: "
+        + "; ".join(refusals)
+        + ". The kernel would refuse these bytes at load, so the route is not "
+        "admitted; the predicate is Tessera's, read from the contract, and "
+        "the plan is this producer's -- change the plan or re-pin, never this gate."
+    )
+
+
+@dataclass(frozen=True)
 class EligibilityCell:
     """One packaged cell: bytes, platform, regime, residency, runtime and launch.
 
@@ -417,6 +1641,15 @@ class EligibilityCell:
     residency_modes: tuple[str, ...] = ()
     runtime_image: str = ""
     execution_modes: tuple[str, ...] = ()
+    #: v6's per-cell runtime versions. The image alone stopped identifying the
+    #: build the day a cell was measured on a dev wheel inside a pinned image,
+    #: which is why ``versions.attested_on`` -- one global claim for every
+    #: cell -- was withdrawn from the contract. Empty for pre-v6 grammars.
+    runtime_vllm: str = ""
+    runtime_torch: str = ""
+    #: v6's required ``evidence`` block. ``None`` for pre-v6 grammars, which
+    #: published no such field; see :func:`cell_evidence_admits`.
+    evidence: CellEvidence | None = None
 
     @classmethod
     def from_dict(
@@ -448,11 +1681,14 @@ class EligibilityCell:
         if is_trellis:
             required.add("activation_contract")
         is_v4 = schema in _LAUNCH_SCHEMAS
-        is_v5 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+        is_scoped = schema in SCOPED_LANE_SCHEMAS
+        has_evidence = schema in EVIDENCE_LANE_SCHEMAS
         if is_v4:
             required.update({"requires_plugin", "executes"})
-        if is_v5:
+        if is_scoped:
             required.add("runtime")
+        if has_evidence:
+            required.add("evidence")
         _require_keys(payload, where, required=required,
                       optional=set() if is_v4 else {"requires_plugin"})
 
@@ -507,8 +1743,18 @@ class EligibilityCell:
                 payload, where, residency_modes=residency_modes)
         runtime_image = ""
         execution_modes: tuple[str, ...] = ()
-        if is_v5:
-            runtime_image, execution_modes = parse_v5_runtime(payload["runtime"], where + ".runtime")
+        runtime_vllm = ""
+        runtime_torch = ""
+        if is_scoped:
+            runtime_image, execution_modes, runtime_vllm, runtime_torch = (
+                parse_runtime_scope(payload["runtime"], where + ".runtime",
+                                    require_versions=has_evidence))
+        evidence: CellEvidence | None = None
+        if has_evidence:
+            evidence = parse_cell_evidence(
+                payload["evidence"], where + ".evidence",
+                cell_regime=str(payload["regime"]),
+                execution_modes=execution_modes, schema=schema)
         flags = tuple(str(v) for v in payload["requires_serve_flags"])
         if flags and status != ROUTE_STATUS_BACKED_WITH_SERVE_FLAG:
             raise LaneEligibilityError(
@@ -540,6 +1786,9 @@ class EligibilityCell:
             residency_modes=cell_modes,
             runtime_image=runtime_image,
             execution_modes=execution_modes,
+            runtime_vllm=runtime_vllm,
+            runtime_torch=runtime_torch,
+            evidence=evidence,
         )
 
     def covers_rung(self, facts: UnitStructuralFacts) -> bool:
@@ -618,6 +1867,11 @@ class EligibilityTable:
     families: frozenset[str] = frozenset()
     trellis_families: frozenset[str] = frozenset()
     absent_reason: str = ""
+    #: The ``native_extensions[].lane`` claims of the same contract, in table
+    #: order: which decoder each extension serves and the predicate (if any)
+    #: its bytes must satisfy. Read by :func:`cell_lane_admits` at every
+    #: admission leg; ``()`` for a v3 table, whose only launches are torch's.
+    lanes: tuple[LaneClaim, ...] = ()
 
     def governs(self, family: str) -> bool:
         """Whether the pinned contract publishes a codec for this family."""
@@ -648,6 +1902,13 @@ class EligibilityTable:
                 # Only when non-empty: a table without the key keeps a payload
                 # is unchanged by this widening.
                 payload["required_plugins"] = required_plugins
+            if self.lanes:
+                # The predicate the gate decided against, verbatim from the
+                # contract: a receipt that names the rule it was read under.
+                payload["lanes"] = [
+                    claim.answer() | {"extension": claim.extension}
+                    for claim in self.lanes
+                ]
         return payload
 
 
@@ -672,6 +1933,18 @@ class RegimeRoute:
     residency: str = ""
     runtime_image: str = ""
     execution_mode: str = ""
+    #: v6 evidence, carried so a shipcard says WHICH grade attested this
+    #: regime (principle 12). Recorded, never gated on: see
+    #: :func:`cell_evidence_admits`.
+    evidence_grade: str = ""
+    evidence_smoke: str = ""
+    #: v7's derived attribution ("" on an older table) and v8's encoder scope
+    #: (``None`` when none was recorded, or on an older table), carried for
+    #: the same reason: a shipcard has to say which encoder wrote the bytes
+    #: this unit's KL was measured on, because the current one may not
+    #: reproduce them.
+    evidence_attribution: str = ""
+    evidence_artifact: EvidenceArtifact | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -695,6 +1968,12 @@ class RegimeRoute:
         if self.runtime_image:
             payload["runtime_image"] = self.runtime_image
             payload["execution_mode"] = self.execution_mode
+        if self.evidence_grade:
+            payload["evidence_grade"] = self.evidence_grade
+            payload["evidence_smoke"] = self.evidence_smoke
+            payload["evidence_attribution"] = self.evidence_attribution
+            payload["evidence_artifact"] = (
+                self.evidence_artifact.as_dict() if self.evidence_artifact else None)
         return payload
 
 
@@ -849,8 +2128,8 @@ def resolve_unit_route(
         )
 
     is_v4 = table.schema in _LAUNCH_SCHEMAS
-    is_v5 = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
-    if not is_v5 and (runtime_image is not None or execution_mode is not None):
+    is_scoped = table.schema in SCOPED_LANE_SCHEMAS
+    if not is_scoped and (runtime_image is not None or execution_mode is not None):
         return UnitRoute(
             facts=facts, route_status=ROUTE_STATUS_UNATTESTED, in_scope=True,
             unattested_reason=legacy_runtime_scope_refusal(table.schema))
@@ -867,7 +2146,7 @@ def resolve_unit_route(
         )
 
     serving_context = None
-    if is_v5:
+    if is_scoped:
         try:
             serving_context = ServingContext(
                 platform=platform, structure=facts.structure, residency=residency,
@@ -876,16 +2155,33 @@ def resolve_unit_route(
             return UnitRoute(facts=facts, route_status=ROUTE_STATUS_UNATTESTED,
                              in_scope=True, unattested_reason=str(exc))
 
-    candidates = [
+    matched = [
         cell for cell in table.cells
         if cell.platform == platform
         and cell.family == facts.payload_family
         and cell.structure == facts.structure
         and (not is_v4 or residency in cell.residency_modes)
-        and (not is_v5 or cell_matches_serving_context(cell, serving_context))
+        and (not is_scoped or cell_matches_serving_context(cell, serving_context))
         and cell.covers_rung(facts)
         and cell.matches(facts)
     ]
+    # A cell whose own published evidence refuses it is NOT dropped silently
+    # into "no cell names this unit": the two are different facts and the
+    # shipcard has to be able to tell them apart. Keep the refusal beside its
+    # regime so the regime route can name the cell and the reason. The lane
+    # predicate is the same kind of fact -- a cell names this unit, and the
+    # kernel it launches through would refuse the bytes -- and lands in the
+    # same slot.
+    candidates: list[EligibilityCell] = []
+    refusals: dict[str, tuple[str, str]] = {}
+    for cell in matched:
+        admits, why = cell_evidence_admits(cell)
+        if admits:
+            admits, why = cell_lane_admits(cell, facts.rate_q256, table.lanes)
+        if admits:
+            candidates.append(cell)
+        elif cell.regime not in refusals:
+            refusals[cell.regime] = (cell.id, why)
 
     regimes: list[RegimeRoute] = []
     for regime in table.regimes:
@@ -897,6 +2193,20 @@ def resolve_unit_route(
                     best.route_status]:
                 best = cell
         if best is None:
+            refused = refusals.get(regime)
+            if refused is not None:
+                # A cell DOES name this unit here; its own evidence, or the
+                # predicate of the lane it launches through, refuses it.
+                # Recording the cell id and the published reason is what
+                # makes this reviewable -- "no cell" and "a cell that failed
+                # its smoke" are opposite facts about the runtime.
+                regimes.append(RegimeRoute(
+                    regime=regime,
+                    route_status=ROUTE_STATUS_UNATTESTED,
+                    cell_id=refused[0],
+                    detail=refused[1],
+                ))
+                continue
             # No packaged cell names this unit in this regime. Under a
             # closed-world table that is the ONLY negative signal there is,
             # and it must not be laundered into a verdict: the honest state is
@@ -924,8 +2234,13 @@ def resolve_unit_route(
             activation_contract=best.activation_contract,
             executes=best.executes,
             residency=str(residency) if is_v4 else "",
-            runtime_image=str(runtime_image) if is_v5 else "",
-            execution_mode=str(execution_mode) if is_v5 else "",
+            runtime_image=str(runtime_image) if is_scoped else "",
+            execution_mode=str(execution_mode) if is_scoped else "",
+            evidence_grade=best.evidence.grade if best.evidence else "",
+            evidence_smoke=best.evidence.smoke_status if best.evidence else "",
+            evidence_attribution=(
+                best.evidence.smoke_attribution if best.evidence else ""),
+            evidence_artifact=best.evidence.artifact if best.evidence else None,
         ))
 
     unclaimed = [
@@ -954,7 +2269,7 @@ def resolve_unit_route(
             f"{platform}"
             + (f" at residency {residency!r}" if is_v4 else "")
             + (f", runtime_image {runtime_image!r}, execution_mode {execution_mode!r}"
-               if is_v5 else "")
+               if is_scoped else "")
         )
         return UnitRoute(
             facts=facts,
@@ -1061,7 +2376,8 @@ def load_eligibility_table(
         )
 
     return _parse_table(
-        block, contract.get("formats", ()), version or "", commit, sha)
+        block, contract.get("formats", ()), version or "", commit, sha,
+        native_extensions=contract.get("native_extensions"))
 
 
 def load_published_formats(
@@ -1228,8 +2544,18 @@ def _published_families(formats: Any) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(families), frozenset(trellis)
 
 
-def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
-                 ) -> EligibilityTable:
+def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str,
+                 *, native_extensions: Any) -> EligibilityTable:
+    """Read a ``lane_eligibility`` block beside the ``native_extensions`` it launches through.
+
+    ``native_extensions`` is the contract's own table, or ``None`` when the
+    contract publishes none. It is a REQUIRED argument rather than a default
+    because every cell since v4 names the launches it executes, and a launch
+    through an extension is subject to that extension's published predicate:
+    a caller that forgets the table would build a table whose lane gate
+    passes everything, and this reader would rather not compile than do that.
+    A v3 table publishes no launches and reads ``()`` lanes.
+    """
     where = "runtime_contract.lane_eligibility"
     if not isinstance(block, Mapping):
         raise LaneEligibilityError(f"{where} must be a JSON object")
@@ -1278,7 +2604,7 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     families, trellis_families = _published_families(formats)
     schema = str(block["schema"])
     is_v4 = schema in _LAUNCH_SCHEMAS
-    is_v5 = schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    is_scoped = schema in SCOPED_LANE_SCHEMAS
     family_modes: dict[str, tuple[str, ...]] = {}
     if is_v4:
         for i, entry in enumerate(formats):
@@ -1329,13 +2655,60 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     ids = [cell.id for cell in cells]
     if len(set(ids)) != len(ids):
         raise LaneEligibilityError(f"{where}.cells ids must be unique")
+
+    lanes: tuple[LaneClaim, ...] = ()
     if is_v4:
+        extension_launches = sorted({
+            symbol for cell in cells for symbol, _decoder in cell.executes
+            if "::" in symbol})
+        if native_extensions is None and extension_launches:
+            # Refused only when a cell actually launches THROUGH an extension:
+            # that launch is subject to the extension's published predicate,
+            # and with no table the predicate cannot be read. A table whose
+            # cells launch only through torch/vLLM paths has no lane to
+            # decide and reads () lanes, exactly as a v3 table does.
+            raise LaneEligibilityError(
+                f"runtime_contract publishes a {schema} lane table whose cells "
+                f"launch through an extension ({extension_launches}), but no "
+                "'native_extensions' table: the lane predicates those "
+                "launches are subject to cannot be read, so no launch through "
+                "an extension can be decided. Re-materialize the contract "
+                "from a release that publishes both, never one of them.")
+        if native_extensions is not None:
+            lanes = parse_lane_claims(
+                native_extensions, "runtime_contract.native_extensions")
+        # Bind every extension launch a cell names to the lane that serves
+        # it. The lane gate keys on the DECODER (the name Tessera's census
+        # stamps and its launch table derives cells from), so a cell that
+        # launched through an extension's symbol under another decoder name
+        # would slip past the gate; that is a contract inconsistency and it
+        # is refused here, once, where the two tables meet.
+        lane_decoders = {claim.extension: claim.decoder for claim in lanes}
+        for cell in cells:
+            for symbol, decoder in cell.executes:
+                prefix, sep, _rest = symbol.partition("::")
+                if not sep:
+                    continue        # a torch/vLLM launch: the route's own path
+                if prefix not in lane_decoders:
+                    raise LaneEligibilityError(
+                        f"{where}.cells[{cell.id!r}].executes launches {symbol!r} "
+                        f"through an extension no native_extensions row "
+                        f"declares ({sorted(lane_decoders)}); what that kernel "
+                        "reads is unstated, so the launch cannot be decided")
+                if decoder != lane_decoders[prefix]:
+                    raise LaneEligibilityError(
+                        f"{where}.cells[{cell.id!r}].executes launches {symbol!r} "
+                        f"under decoder {decoder!r}, but native_extensions "
+                        f"[{prefix}].lane.decoder is {lane_decoders[prefix]!r}; a "
+                        "launch through an extension is read by that "
+                        "extension's lane, and a cell that names another "
+                        "decoder for it would escape the lane's predicate")
         scopes: dict[tuple[str, ...], str] = {}
         for cell in cells:
             for mode in cell.residency_modes:
-                for execution in cell.execution_modes if is_v5 else ("",):
+                for execution in cell.execution_modes if is_scoped else ("",):
                     scope = (cell.platform, cell.family, cell.structure, cell.regime, mode)
-                    if is_v5:
+                    if is_scoped:
                         scope += (cell.runtime_image, execution)
                     previous = scopes.get(scope)
                     if previous is not None:
@@ -1357,14 +2730,29 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         cells=cells,
         families=families,
         trellis_families=trellis_families,
+        lanes=lanes,
     )
 
 
-def parse_v5_runtime(payload: Any, where: str) -> tuple[str, tuple[str, ...]]:
-    """The v5 runtime grammar, shared by both contract readers."""
+def parse_runtime_scope(payload: Any, where: str, *, require_versions: bool = False
+                        ) -> tuple[str, tuple[str, ...], str, str]:
+    """The per-cell ``runtime`` grammar, shared by both contract readers.
+
+    v5 published ``{image, execution_modes}``; v6 requires ``{image,
+    execution_modes, vllm, torch}`` and withdrew the global
+    ``versions.attested_on``. The two are parsed by ONE function with a flag
+    rather than by two, because the only difference is which keys are required
+    and a second copy is how the image check and the mode check drift apart.
+
+    Returned as ``(image, execution_modes, vllm, torch)``; the two version
+    strings are ``""`` under the v5 grammar, which published neither.
+    """
     if not isinstance(payload, Mapping):
         raise LaneEligibilityError(f"{where} must be a JSON object")
-    _require_keys(payload, where, required={"image", "execution_modes"}, optional=set())
+    required = {"image", "execution_modes"}
+    if require_versions:
+        required |= {"vllm", "torch"}
+    _require_keys(payload, where, required=required, optional=set())
     image = payload["image"]
     if not isinstance(image, str) or not _DIGEST_IMAGE.fullmatch(image):
         raise LaneEligibilityError(
@@ -1376,7 +2764,22 @@ def parse_v5_runtime(payload: Any, where: str) -> tuple[str, tuple[str, ...]]:
         raise LaneEligibilityError(
             f"{where}.execution_modes must be a non-empty list of distinct values from "
             f"{sorted(TESSERA_EXECUTION_MODES)}")
-    return image, tuple(modes)
+    vllm = torch_version = ""
+    if require_versions:
+        vllm = payload["vllm"]
+        torch_version = payload["torch"]
+        for name, value in (("vllm", vllm), ("torch", torch_version)):
+            if not isinstance(value, str) or not value.strip():
+                raise LaneEligibilityError(
+                    f"{where}.{name} must be the non-empty version string this "
+                    f"cell was measured under, got {value!r}")
+    return image, tuple(modes), str(vllm), str(torch_version)
+
+
+def parse_v5_runtime(payload: Any, where: str) -> tuple[str, tuple[str, ...]]:
+    """The v5 spelling, kept for callers that want only the two v5 fields."""
+    image, modes, _, _ = parse_runtime_scope(payload, where)
+    return image, modes
 
 
 def parse_v4_cell_contract(
@@ -1525,9 +2928,52 @@ def _sha256(path: Path) -> str:
 
 
 __all__ = [
+    "ATTRIBUTED_SMOKE_LANE_SCHEMAS",
+    "CellEvidence",
+    "CellKlEvidence",
+    "ENCODER_SCOPED_LANE_SCHEMAS",
+    "RECORDED_SMOKE_LANE_SCHEMAS",
+    "EVIDENCE_ARTIFACT_METRIC",
+    "EVIDENCE_CONTROL_OUTCOMES",
+    "EVIDENCE_CONTROL_REFERENCES",
+    "EVIDENCE_GRADES",
+    "EVIDENCE_KL_KINDS",
+    "EVIDENCE_LANE_SCHEMAS",
+    "EVIDENCE_PAYLOAD_RELATIONS",
+    "EVIDENCE_SMOKE_ATTRIBUTIONS",
+    "EVIDENCE_SMOKE_REFUSALS",
+    "EVIDENCE_SMOKE_STATUSES",
+    "EVIDENCE_WEIGHT_ERROR_RELATIONS",
+    "EvidenceArtifact",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V5",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V6",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V7",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V8",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V9",
     "LANE_ELIGIBILITY_SCHEMAS",
+    "LANE_BODIES",
+    "LANE_FIELDS",
+    "LANE_PLANES",
+    "LANE_REQUIREMENT_CARRIES",
+    "LANE_REQUIREMENT_FIELDS",
+    "LANE_REQUIREMENT_LISTS",
+    "LANE_ROTATION_STATES",
+    "LaneClaim",
+    "SCOPED_LANE_SCHEMAS",
+    "SmokeControl",
+    "SmokeRecord",
+    "SmokeRecordRow",
+    "cell_evidence_admits",
+    "cell_lane_admits",
+    "lane_claim_for_cell",
+    "parse_lane_claim",
+    "parse_lane_claims",
+    "derive_evidence_grade",
+    "derive_smoke_attribution",
+    "parse_cell_evidence",
+    "parse_runtime_scope",
     "parse_v4_cell_contract",
     "ROUTE_ATTESTATION_SCHEMA",
     "ROUTE_STATUS_BACKED",

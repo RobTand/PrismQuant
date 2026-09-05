@@ -416,11 +416,13 @@ fi
 #     (a checkpoint class does not determine the structure of each unit);
 #   * lane_specs/tessera.json's `served_activation_quantization.executes` must
 #     EQUAL what the contract's formats[] rows imply;
-#   * the pinned Tessera serving runtime must be an exact reviewed release.
+#   * the INSTALLED Tessera must be the pinned commit AND its packaged
+#     runtime_contract.json must hash to the pinned SHA-256.
 #
-# V5 additionally requires an explicit runtime target. The selected-unit
-# check runs again immediately before translation, when the allocation exists.
-# A development pin does not bypass the release export gate (tessera#17).
+# A scoped contract (lane schema v5/v6) additionally requires an explicit
+# runtime target. The selected-unit check runs again immediately before
+# translation, when the allocation exists. A development pin does not bypass
+# the release export gate.
 if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
       --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}"; then

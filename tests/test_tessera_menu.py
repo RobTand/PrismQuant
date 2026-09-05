@@ -29,6 +29,33 @@ from prismaquant.tessera_formats import (
 SHAPE = (2048, 1024)
 
 
+def _default_serve_image() -> str:
+    """The serve image the pinned contract publishes as its default."""
+    import json
+    return json.loads(trc.contract_path().read_text(encoding="utf-8"))[
+        "versions"]["default_serve_image"]
+
+
+def _dense_context():
+    """The scope the eight dense cells of the pinned (v8) table publish.
+
+    The table is scoped: a cell attests a rung only at an exact platform,
+    image, execution mode and residency, so every admission below is asked
+    at one -- the operator's ``--tessera-*`` flags, in production.  Asked
+    context-free, the scoped table refuses by SCOPE, which
+    ``test_the_scoped_table_answers_nothing_without_a_scope`` pins.
+    """
+    from prismaquant.lane_eligibility import ServingContext
+    return ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+
+
+def _scope():
+    """``context_by_unit`` for the token expansion: one dense unit."""
+    return {"unit": _dense_context()}
+
+
 @pytest.fixture
 def dev_pin(monkeypatch):
     """Turn on the Tessera development pin for one test.
@@ -379,13 +406,14 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
     carries the cell's status rather than a status this file typed.
     """
     contract = trc.load_tessera_contract()
+    context = _dense_context()
     expected = {
         f"{family}_R{rung}"
         for family in contract.reader_rate_range
         for rung in sorted(contract.attested_rungs.get(family, ()))
-        if contract.native_cells(family, rung)
+        if contract.native_cells(family, rung, serving_context=context)
     }
-    rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED)
+    rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED, serving_context=context)
     names = [r.format_name for r in rungs]
     assert set(names) == expected, (names, sorted(expected))
     assert len(names) == len(set(names)), names
@@ -400,7 +428,7 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
         # Read off the cell, not typed: these cells are backed_with_serve_flag.
         assert rung.admission.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
         cells = contract.native_cells(
-            rung.admission.payload_family, rung.body_rate_q256)
+            rung.admission.payload_family, rung.body_rate_q256, serving_context=context)
         assert rung.admission.requires_serve_flags == tuple(sorted({
             flag for cell in cells for flag in cell.requires_serve_flags
         }))
@@ -412,10 +440,30 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
     assert expected, "the pinned contract attests no rung at all"
 
 
+def test_the_scoped_table_answers_nothing_without_a_scope(dev_pin):
+    """The pinned table is scoped, so a context-free ask is refused by SCOPE.
+
+    Not by the pin and not by absence of a cell: the same rungs the test
+    above admits at the dense scope are unattested here, and the detail says
+    the contract requires an explicit serving context.  This is the honest
+    shape of the default path without the operator's ``--tessera-*`` flags
+    (``run-pipeline.sh`` derives them from ``TESSERA_PLATFORM``,
+    ``TESSERA_RUNTIME_IMAGE``, ``TESSERA_EXECUTION_MODE``,
+    ``TESSERA_SERVE_MODE``).
+    """
+    assert tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED) == []
+    bare = tm.route_admission("TESSERA_E4M3_K1_R1024")
+    assert bare.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert bare.requires_serving_context is True
+    assert "explicit serving context" in bare.detail
+    assert "no cell covering" not in bare.detail
+
+
 def test_a_rate_the_contract_does_not_publish_is_unattested_not_backed(dev_pin):
     """One q256 step off the published rung is absence of a claim."""
-    on = tm.route_admission("TESSERA_E4M3_K1_R1024")
-    off = tm.route_admission("TESSERA_E4M3_K1_R1023")
+    context = _dense_context()
+    on = tm.route_admission("TESSERA_E4M3_K1_R1024", serving_context=context)
+    off = tm.route_admission("TESSERA_E4M3_K1_R1023", serving_context=context)
     assert on.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
     assert off.route_status == tm.ROUTE_STATUS_UNATTESTED
     assert "R1023" in off.detail and "[1024]" in off.detail
@@ -645,9 +693,12 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     MUST be, or the gate is decorative.
     """
     answer = trc.contract_answer(trc.load_tessera_contract())
+    # ``required_regimes`` joins the answer for a SCOPED lane table (v5 and
+    # later): under one serving context every declared regime must resolve, so
+    # the regime roster is a value the admission decision is made of.
     assert set(answer) == {"schema", "lane_schema", "quant_method",
                            "native_extensions", "fused_module",
-                           "families", "cells"}
+                           "families", "cells", "required_regimes"}
     flat = repr(answer)
     # ``native_extensions`` is answer because the §7.4 fingerprint gate reads
     # it; the two fields of it that name files in the RUNTIME's own tree move
@@ -656,7 +707,11 @@ def test_the_answer_excludes_every_field_a_gate_does_not_read(dev_pin):
     # fields; the block's ``*_note`` keys are prose and stay out for the same
     # reason ``rationale`` does, and ``container`` names a sidecar no writer
     # here produces.
+    # ``default_serve_image`` replaced ``versions.attested_on`` at contract
+    # v17 and is identity for the same reason: it is a DEFAULT for harnesses,
+    # while what a gate decides on is each cell's own ``runtime.image``.
     for identity_field in ("contract_version", "plugin_version", "attested_on",
+                           "default_serve_image",
                            "rationale", "detail", "changelog",
                            "csrc/", "loaded_by",
                            "fields_note", "sidecar_q256_note",
@@ -770,15 +825,42 @@ def test_the_licence_and_the_route_admission_come_from_one_read(monkeypatch):
         "fused_module_licence bypassed the module's one read")
 
 
-def test_reading_the_contract_needs_no_serving_code():
-    """Package data via ``importlib.resources``, never the serving validator.
+def test_reading_the_contract_needs_no_serving_runtime_and_no_gpu():
+    """Package data via ``importlib.resources``, and no runtime behind it.
 
     Locating the packaged contract imports the ``tessera.serving`` package
     itself -- ``resources.files`` imports it -- but that import is lazy by
     design (it defines ``register()`` and calls nothing at module scope), so
-    it registers nothing and needs no GPU.  What the read must not pull in is
-    the serving-side *code* -- ``tessera.serving.contract``, whose validator
-    imports the plugin's dispatch tables -- nor vLLM.
+    it registers nothing and needs no GPU.
+
+    Until lane schema v9 this also asserted that ``tessera.serving.contract``
+    stayed out of ``sys.modules``, on the stated grounds that "its validator
+    imports the plugin's dispatch tables".  Two things changed.  Reading a v9
+    table REQUIRES that module -- the smoke record's status and attribution
+    are derived by Tessera's own ``derive_smoke_status`` /
+    ``derive_smoke_attribution``, and restating those rules here is the
+    two-homes defect RobTand/tessera#327 was filed about.  And the stated
+    grounds stopped being true: at the pinned commit that module imports only
+    the standard library at module scope and defers every dispatch-table
+    import into a function body (Tessera's own ``test_contract_is_portable``
+    holds it there).
+
+    So the module name was a PROXY for the property, and the proxy no longer
+    tracks it.  This asserts the property in two halves instead.
+
+    First: the read pulls in no vLLM, and its ``tessera.serving`` surface is
+    confined to the portable contract module -- none of the dispatch modules
+    (``ops``, ``native_ops``, ``moe_route``, ``sharding``, ``ext``, ``lane``,
+    ``scheme``) is loaded, which is what "no serving runtime" actually means.
+    Second, checked separately because it is Tessera's claim and not this
+    repository's: importing ``tessera.serving.contract`` on its own pulls in
+    no torch, no Triton and no vLLM.
+
+    The second half is measured in a bare interpreter deliberately.  Torch is
+    already in ``sys.modules`` by the time the first half runs -- ``prismaquant``
+    itself imports it, on this branch and on main alike -- so asserting
+    "no torch" around the read would assert something about this package's
+    own import weight and prove nothing about Tessera.
     """
     import subprocess
     import sys
@@ -790,12 +872,26 @@ def test_reading_the_contract_needs_no_serving_code():
         f"os.environ['{trc.TESSERA_DEV_PIN_ENV}'] = '{trc.TESSERA_DEV_PIN_COMMIT}'\n"
         "c = trc.load_tessera_contract()\n"
         "assert c is not None\n"
-        "assert 'tessera.serving.contract' not in sys.modules, sorted(\n"
-        "    m for m in sys.modules if m.startswith('tessera.'))\n"
         "assert 'vllm' not in sys.modules, sorted(\n"
         "    m for m in sys.modules if m.startswith('vllm'))\n"
+        "serving = sorted(m for m in sys.modules if m.startswith('tessera.serving'))\n"
+        "assert serving == ['tessera.serving', 'tessera.serving.contract'], serving\n"
         "print('OK')\n"
     )
+    portable = subprocess.run(
+        [sys.executable, "-c",
+         "import sys\n"
+         "import tessera.serving.contract\n"
+         "heavy = sorted(m for m in sys.modules\n"
+         "               if m.split('.')[0] in ('vllm', 'torch', 'triton'))\n"
+         "assert not heavy, heavy\n"
+         "print('PORTABLE')\n"],
+        capture_output=True, text=True)
+    assert portable.returncode == 0, (
+        "tessera.serving.contract stopped being importable without a GPU "
+        "stack, and the v9 reader derives through it: "
+        + portable.stderr[-2000:])
+    assert "PORTABLE" in portable.stdout
     out = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -1158,7 +1254,7 @@ PRICED = [
 def test_the_menu_token_expands_to_the_attested_subset_and_reports_the_rest(dev_pin):
     """The default path allocates over the backed axis, not over nothing."""
     menu, dropped = tm.expand_menu_tokens_report(
-        ["NVFP4", tm.MENU_TOKEN, "BF16"], PRICED)
+        ["NVFP4", tm.MENU_TOKEN, "BF16"], PRICED, context_by_unit=_scope())
     assert menu == [
         "NVFP4", "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024", "BF16",
     ], menu
@@ -1169,7 +1265,7 @@ def test_the_menu_token_expands_to_the_attested_subset_and_reports_the_rest(dev_
     ]), dropped
     # and the filter is the same predicate the guard refuses on, so the token
     # can never expand to something ``require_producer_formats`` then rejects.
-    fr.require_producer_formats(menu, where="test")
+    fr.require_producer_formats(menu, where="test", context_by_unit=_scope())
 
 
 def test_an_explicitly_named_unattested_rung_still_refuses(dev_pin):

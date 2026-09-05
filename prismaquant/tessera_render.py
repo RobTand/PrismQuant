@@ -33,10 +33,13 @@ from functools import lru_cache
 
 import torch
 from tessera import export as _tessera_export
+from tessera.manifest import RotationState
 
 from .tessera_formats import (
     TesseraFamily,
     family_cache_bound,
+    family_rate_cap,
+    get_tessera_family,
     grid_space_rung_keys,
     lazily_sized_cache,
     parse_tessera_format_name,
@@ -52,7 +55,11 @@ __all__ = [
     "TESSERA_CONV_MEMORY",
     "TESSERA_GROUP",
     "TESSERA_HALF",
+    "TESSERA_PLANNED_DIAGONALS",
+    "TESSERA_PLANNED_RELEASE_OVERRIDES",
+    "TESSERA_PLANNED_ROTATION",
     "is_tessera_format",
+    "planned_wire_facts",
     "render_tessera_weight",
     "tessera_attesting_cells",
     "tessera_lane_admission",
@@ -76,6 +83,21 @@ TESSERA_CONV_MEMORY = _tessera_export.DEFAULT_CODE.memory
 #: the exporter's (``tessera.export.DEFAULT_GROUP``/``DEFAULT_HALF``).
 TESSERA_GROUP = _tessera_export.DEFAULT_GROUP
 TESSERA_HALF = _tessera_export.DEFAULT_HALF
+
+#: The DECORATION this producer's plan commits to -- the three encode
+#: settings a wire recipe does not carry and a lane predicate reads
+#: (``native_extensions[].lane.requires``: ``rotation``, ``diagonals``,
+#: ``release_overrides``).  Stated ONCE here, read by both
+#: :func:`_encode_planned_unit` (what the render encodes) and
+#: :func:`planned_wire_facts` (what the lane gate is told the render will
+#: encode), so the plan the gate admits is the plan the encoder writes.
+#: Changing one of these changes which lanes read the bytes; the gate reads
+#: the change on the same commit and nothing here has to be re-taught.
+TESSERA_PLANNED_ROTATION = RotationState.NONE
+TESSERA_PLANNED_DIAGONALS = False
+#: A count, as the loader reads it (``release_index.numel()``): a plan with no
+#: RELEASE plane carries zero overrides.
+TESSERA_PLANNED_RELEASE_OVERRIDES = 0
 
 #: The shape at which a per-unit recipe's ``weight_bits`` label is quoted.
 #: A label, not a price: the exact size of such a rung is
@@ -147,19 +169,20 @@ def _pinned_serving_table():
 
 
 def _release_pin_satisfied() -> bool:
-    """Is the tracked Tessera serving pin an exact reviewed release?
+    """Is the INSTALLED Tessera the exact pinned one?
 
-    False today, and by the pin: there is no Tessera release tag, so the
-    tracked pin carries PENDING sentinels and
-    ``require_exact_tessera_runtime_release`` refuses them.  The module
-    attribute is looked up at call time so a test can substitute a
-    released-pin fixture without reaching inside this function.
+    Since 2026-09-04 the pin is a commit plus the packaged contract's
+    SHA-256, not a release tag, so this answers True whenever the installed
+    ``runtime_contract.json`` hashes to the pinned digest and the pin file
+    agrees with the module constants -- and False for any other Tessera on
+    ``PYTHONPATH``, which is the property the tag was standing in for.  The
+    module attribute is looked up at call time so a test can substitute a
+    pinned-runtime fixture without reaching inside this function.
     """
     from . import tessera_serving_runtime_pin as pin_module
 
     try:
-        pin_module.require_exact_tessera_runtime_release(
-            pin_module.load_tessera_serving_runtime_pin())
+        pin_module.require_pinned_tessera_runtime()
     except pin_module.TesseraServingRuntimePinError:
         return False
     return True
@@ -167,7 +190,8 @@ def _release_pin_satisfied() -> bool:
 
 def tessera_attesting_cells(
         name: str, *, table=None, formats=None,
-        serving_context: ServingContext | None = None) -> tuple:
+        serving_context: ServingContext | None = None,
+        ignore_evidence: bool = False) -> tuple:
     """The native device-qualified cells covering this rung, or ``()``.
 
     The match predicate of :func:`tessera_lane_admission`'s first conjunct,
@@ -177,12 +201,22 @@ def tessera_attesting_cells(
     verdict -- the caller reports *why* (no table, unpublished family, rate
     no cell names), exactly as the admission does.  The plugin-requirement
     check stays in the admission: it is a defect verdict, not a match rule.
-    A v5 table must cover every published regime within the same explicit
-    serving context; neither missing scope nor another image's cell attests it.
+    A scoped (v5 or later) table must cover every published regime within the
+    same explicit serving context; neither missing scope nor another image's
+    cell attests it.
+
+    Since schema v6 a matched cell must also pass its own published evidence
+    (``lane_eligibility.cell_evidence_admits``), and since contract v20 the
+    lane it launches through must be able to read THIS producer's plan at the
+    rung (``lane_eligibility.cell_lane_admits`` over
+    :func:`planned_wire_facts`).  ``ignore_evidence=True`` matches WITHOUT
+    either filter and exists for exactly one caller: the admission, which
+    asks a second time so its refusal can name the cell and the reason
+    rather than reporting the absence the filter produced.
     """
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, cell_matches_serving_context,
-        resolve_payload_rung,
+        SCOPED_LANE_SCHEMAS, cell_evidence_admits, cell_lane_admits,
+        cell_matches_serving_context, resolve_payload_rung,
     )
 
     if table is None or formats is None:
@@ -194,7 +228,7 @@ def tessera_attesting_cells(
     family, _k, rate = resolve_payload_rung(name, published_formats=formats)
     if rate is None or not table.governs(family):
         return ()
-    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    scoped = table.schema in SCOPED_LANE_SCHEMAS
     if scoped and serving_context is None:
         return ()
     if not scoped and serving_context is not None:
@@ -206,6 +240,8 @@ def tessera_attesting_cells(
         and rate in cell.rungs_q256
         and cell.qualification == "device_qualified"
         and cell.route_status in _NATIVE_ROUTE_STATUSES
+        and (ignore_evidence or cell_evidence_admits(cell)[0])
+        and (ignore_evidence or cell_lane_admits(cell, rate, table.lanes)[0])
         and (not scoped or cell_matches_serving_context(cell, serving_context))
     )
     if scoped and {cell.regime for cell in matched} != set(table.regimes):
@@ -229,7 +265,7 @@ def tessera_lane_admission(
     runtime is Tessera's own vLLM plugin (``tessera.serving``, entry point
     ``tessera``, selected by a checkpoint's ``quant_method: "tessera"``, one
     operator knob ``TESSERA_SERVE_MODE``), and the table is the
-    ``runtime_contract.json`` that plugin packages.  Three conjuncts, each of
+    ``runtime_contract.json`` that plugin packages.  Five conjuncts, each of
     which fails closed on its own:
 
     1. **The table admits the rung.**  The contract publishes the name's
@@ -252,14 +288,37 @@ def tessera_lane_admission(
        onto every ``UnitRoute`` / ``RegimeRoute`` (``requires_plugins``) and
        into ``EligibilityTable.provenance()`` (``required_plugins``) -- the
        payload the export gate stamps.
-    3. **The pinned runtime is an exact reviewed release.**  Without this
+    3. **The installed runtime is the exact pinned one.**  Without this
        conjunct the answer would flip to True the moment the ``tessera``
        package became importable -- which it already is, as a producer-side
-       render dependency -- and a producer-side import is not a serving
-       release.  There is no Tessera release tag today, so
-       ``require_exact_tessera_runtime_release`` refuses the tracked pin's
-       PENDING sentinels and **every Tessera rung is producer-ineligible by
-       the pin, not by an edit here**.
+       render dependency -- and a producer-side import is not an attested
+       serving runtime.  Since 2026-09-04 the pin is a commit plus the
+       packaged contract's SHA-256 rather than a release tag, so
+       ``require_pinned_tessera_runtime`` admits exactly the Tessera whose
+       ``runtime_contract.json`` hashes to
+       ``TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256`` and refuses every
+       other tree on ``PYTHONPATH`` -- **eligibility is decided by the pin,
+       not by an edit here**.
+    4. **The cell's own evidence admits it.**  A cell whose packaged
+       ``evidence.smoke.status`` records a degenerate greedy smoke is refused
+       by ``lane_eligibility.cell_evidence_admits``: the runtime measured this
+       route generating incorrectly, and principle 9 requires a route to
+       generate correctly.  That is a refusal the runtime attested, not a
+       structural ban this file typed; when the runtime records a clean smoke
+       the refusal lifts on its own and the re-pin is the review event.
+    5. **The lane the cell launches through can read this producer's plan.**
+       Since contract v20 every ``native_extensions`` row publishes the
+       predicate its kernel gates on (``lane.requires``: the column rates,
+       window width, body, plane and decoration it reads), and a cell's
+       ``executes`` names the lane launch only for the rungs the ATTESTED
+       wire reaches.  This producer's plan at the rung is not that stamp --
+       it is :func:`planned_wire_facts`, read off the recipe and decoration
+       the render encodes with -- so ``lane_eligibility.cell_lane_admits``
+       hands those facts to Tessera's own decision core
+       (``tessera.serving.scheme.decide_lane_requirements``, the one home of
+       the rule) and refuses the cell by name when the kernel would refuse
+       the bytes.  Nothing here restates the predicate: a lane that widens
+       or narrows what it reads is a re-pin, not an edit.
 
     This is the scoped menu-level admission, one lookup. Per-unit structural
     predicates stay with ``lane_eligibility.resolve_unit_route`` at export.
@@ -270,8 +329,8 @@ def tessera_lane_admission(
     Gridbook pin no longer governs Tessera admission.
     """
     from .lane_eligibility import (
-        LANE_ELIGIBILITY_SCHEMA_TESSERA, LaneEligibilityError,
-        legacy_runtime_scope_refusal, resolve_payload_rung,
+        SCOPED_LANE_SCHEMAS, LaneEligibilityError, cell_evidence_admits,
+        cell_lane_admits, legacy_runtime_scope_refusal, resolve_payload_rung,
     )
     if table is None or formats is None:
         pinned_table, pinned_formats = _pinned_serving_table()
@@ -289,17 +348,45 @@ def tessera_lane_admission(
     if not table.governs(family):
         return False, (
             f"the packaged Tessera contract does not publish {family}")
-    scoped = table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    scoped = table.schema in SCOPED_LANE_SCHEMAS
     if not scoped and serving_context is not None:
         return False, legacy_runtime_scope_refusal(table.schema)
     if scoped and serving_context is None:
         return False, (
-            f"{name}: the packaged Tessera v5 contract requires an explicit "
+            f"{name}: the packaged Tessera {table.schema} contract requires an "
+            "explicit "
             "serving context (platform, structure, residency, runtime image "
             "and execution mode)")
     scope = {"serving_context": serving_context} if serving_context is not None else {}
     matched = list(tessera_attesting_cells(name, table=table, formats=formats, **scope))
     if not matched:
+        # Ask again without the evidence filter, so a cell that exists and was
+        # refused on what the runtime MEASURED on it does not read as a cell
+        # that does not exist. The two are opposite facts about the runtime,
+        # and a shipcard that could not tell them apart would report a missing
+        # route where the runtime published a failing one. The lane predicate
+        # is the second such fact: a cell exists, its evidence admits it, and
+        # the kernel it launches through cannot read what this producer plans.
+        evidence_refused: list[str] = []
+        lane_refused: list[str] = []
+        for cell in tessera_attesting_cells(
+                name, table=table, formats=formats, ignore_evidence=True, **scope):
+            admits, why = cell_evidence_admits(cell)
+            if not admits:
+                evidence_refused.append(why)
+                continue
+            admits, why = cell_lane_admits(cell, rate, table.lanes)
+            if not admits:
+                lane_refused.append(why)
+        if evidence_refused:
+            return False, (
+                f"{name}: the packaged Tessera contract's own evidence refuses "
+                f"this route. " + " ".join(sorted(set(evidence_refused))))
+        if lane_refused:
+            return False, (
+                f"{name}: the packaged Tessera contract's lane predicate refuses "
+                f"this producer's plan on this route. "
+                + " ".join(sorted(set(lane_refused))))
         if scoped:
             return False, (
                 f"the packaged Tessera contract has no complete device-qualified "
@@ -325,11 +412,13 @@ def tessera_lane_admission(
     if not _release_pin_satisfied():
         # The table HAS the row.  Saying anything else here would point a
         # reader at re-pinning a contract that already publishes the cell,
-        # when what is missing is a reviewed Tessera release tag.
+        # when what is missing is that the INSTALLED Tessera is not the
+        # pinned one.
         return False, (
             f"the packaged Tessera contract attests {len(matched)} native "
-            f"cell(s) for {family} R{rate}, but the tracked serving pin is "
-            f"not an exact reviewed release, so no rung is producer-eligible")
+            f"cell(s) for {family} R{rate}, but the installed Tessera is not "
+            "the pinned commit/contract digest, so no rung is "
+            "producer-eligible")
     return True, ""
 
 
@@ -543,6 +632,48 @@ def _plan(family: TesseraFamily, body_rate_q256: int, n_columns: int, recipe):
     return grid, rates, forests, channel_sigma
 
 
+def planned_wire_facts(family, rung: int, *, recipe=None) -> dict:
+    """The wire this producer WILL encode for ``family`` at ``rung``, as lane facts.
+
+    The byte-side vocabulary of ``tessera.serving.scheme.wire_facts_of_parsed``
+    -- ``rates``, ``window_bits``, ``body``, ``plane``, ``release_overrides``,
+    ``diagonals``, ``rotation``, ``start_state``, ``grid_arity`` -- read at
+    PLAN time, before any tensor exists, from the same three sources the
+    render encodes from: the family's grid, the wire recipe
+    (``tessera_wire_recipe``, the exporter's own) and the decoration
+    constants above.  ``lane_eligibility.cell_lane_admits`` hands this dict
+    to ``tessera.serving.scheme.decide_lane_requirements``, so a lane's
+    published predicate is decided over what this producer plans rather than
+    over the attested stamp the contract's cells were derived from; the test
+    that pins this function against ``wire_facts_of_parsed`` on a real
+    encode is what keeps "planned" and "encoded" one set of facts.
+
+    The rate axis is the plan-time fact the kernel's column-width table
+    cares about and the column count is not (``tessera.grammar.rate_set``):
+    a root that is not an integer schedules the two rates bracketing it at
+    every width, so the SET is known before the shape is.  ``start_state`` is
+    ``False`` unconditionally: a plain ``EncodedUnit`` carries none, and this
+    producer never writes the sliced-shard form that does.
+    """
+    from tessera.grammar import rate_set
+    from tessera.manifest import BodyKind, ScalePlaneKind
+
+    spec = get_tessera_family(family)
+    wire = tessera_wire_recipe(spec, rung) if recipe is None else recipe
+    root = spec.root_rate(int(rung), recipe=wire)
+    return {
+        "rates": rate_set(root, cap=family_rate_cap(spec, wire)),
+        "window_bits": int(wire.window_bits),
+        "body": BodyKind(wire.body).name,
+        "plane": ScalePlaneKind(wire.scale_plane).name,
+        "release_overrides": TESSERA_PLANNED_RELEASE_OVERRIDES,
+        "diagonals": TESSERA_PLANNED_DIAGONALS,
+        "rotation": TESSERA_PLANNED_ROTATION.name,
+        "start_state": False,
+        "grid_arity": int(spec.arity),
+    }
+
+
 def render_tessera_weight(
     weight: torch.Tensor,
     name: str,
@@ -581,8 +712,32 @@ def render_tessera_weight(
     NVFP4's group-16 scales run along.
     """
     from tessera.decode import reconstruct_unit
+
+    unit, forests = _encode_planned_unit(
+        weight, name, col_weights=col_weights, recipe=recipe)
+    out = reconstruct_unit(unit, forests, _tessera_export.DEFAULT_CODE)
+    return out.to(dtype=weight.dtype, device=weight.device)
+
+
+def _encode_planned_unit(
+    weight: torch.Tensor,
+    name: str,
+    *,
+    col_weights: "torch.Tensor | None" = None,
+    recipe=None,
+):
+    """The encoded unit ``render_tessera_weight`` reconstructs, and its forests.
+
+    Factored out of the render so the encode can be examined as a unit -- in
+    particular so ``wire_facts_of_parsed`` can be read off it and compared
+    with :func:`planned_wire_facts`, which is how the plan-time facts the
+    lane gate decides on are pinned to the bytes the render encodes.  The
+    decoration (rotation, diagonals, release overrides) is the module's
+    ``TESSERA_PLANNED_*`` constants, read here and by the facts, never
+    restated.
+    """
     from tessera.encode import encode_unit
-    from tessera.manifest import BodyKind, RotationState
+    from tessera.manifest import BodyKind
 
     parsed = parse_tessera_format_name(name)
     if parsed is None:
@@ -624,8 +779,9 @@ def render_tessera_weight(
         forests,
         rates,
         _tessera_export.DEFAULT_CODE,
-        rotation=RotationState.NONE,
-        with_diagonals=False,
+        rotation=TESSERA_PLANNED_ROTATION,
+        with_diagonals=TESSERA_PLANNED_DIAGONALS,
+        released_positions=TESSERA_PLANNED_RELEASE_OVERRIDES,
         completion=0,
         group=TESSERA_GROUP,
         half=TESSERA_HALF,
@@ -644,8 +800,7 @@ def render_tessera_weight(
         window_sigma=wire.window_sigma,
         channel_sigma=channel_sigma,
     )
-    out = reconstruct_unit(unit, forests, _tessera_export.DEFAULT_CODE)
-    return out.to(dtype=weight.dtype, device=weight.device)
+    return unit, forests
 
 
 def tessera_quantize_dequantize(name: str, recipe=None):
