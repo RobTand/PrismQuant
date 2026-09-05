@@ -194,6 +194,86 @@ different refusals, and the shipcard has to be able to tell them apart.
 `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16` and no default, stage or exporter
 moves.
 
+Re-stamped (2026-09-05, `claude/pq-gates`) for **a campaign test that cannot
+leak the child it orphans on purpose** (§3.0; RobTand/prismaquant#219, P3).
+`test_resume_after_coordinator_death_recovers_owned_helper_receipt` kills the
+coordinator while a stage child polls a release file, and after #206 replaced
+that child's self-limiting `time.sleep(1.0)` with an unbounded wait, writing
+the release file became the only thing that could ever end it — the worker's
+`timeout_seconds` enforcement (`cluster_campaign.py:1164-1178`,
+`start_new_session=True` then `_terminate_child_process_group`) is dead by
+construction. The write sat outside the guard: anything raising between
+`coordinator.terminate()` and it — most concretely the 120 s wedge backstop, or
+the session being killed, which happened to agents on this box today — left a
+`python -c` polling at 50 Hz forever, on a release file that `tmp_path` cleanup
+then made unreachable. Its sibling
+`test_abrupt_worker_death_leaves_stage_lock_owned_by_child` already had the
+`finally` and the comment explaining why. Now both share one home for it:
+`_orphaned_helper(release_path)` releases and, if the child did not take the
+release, kills its session on every path out, and the child announces its PID
+so `helper.assert_exited()` can make "this test leaves nothing running" an
+assertion rather than an arrangement. Test-only; no production code, no
+pipeline behaviour and no contract changes.
+
+Re-stamped (2026-09-05, `claude/pq-gates`) for **the dead-override census
+seeing every handler shape that catches its exception** (§8.1;
+RobTand/prismaquant#217, P3). `tests/test_vendored_override_gate.py`'s
+tree-wide pin that "a dead vendored override must never be *answered*"
+recognised only `except:`, `except Exception:` and `except BaseException:` —
+but `DeadVendoredOverrideError` subclasses `RuntimeError` deliberately, so
+`except RuntimeError:` swallowed the refusal and the census reported the site
+as refusing. Three shapes were invisible: bare `RuntimeError`, a tuple naming
+it, and a dotted `builtins.Exception`; a fourth, a handler that substitutes an
+answer on one branch and re-raises on the fall-through, passed
+`_handler_always_reraises`, which tested only the last statement. The census's
+whole justification is the four call sites with no behavioural test
+(`aqua_activation_cost.py:661`, `build_rtn_cache.py:500`,
+`sensitivity_probe.py:3592`, `streaming_production_cache.py:1776`). Now
+`CATCHES_DEAD_OVERRIDE` is derived from `DeadVendoredOverrideError.__mro__`
+rather than a second typed list, so the census follows the class if it is
+re-parented; `_handler_catches_dead_override` matches bare, dotted and
+tuple clauses against it; and `_handler_always_reraises` additionally requires
+no `return`, and no `break`/`continue` that would carry control past the
+trailing `raise`, ignoring nested scopes and loops written inside the handler.
+No production code changed: the widened census reports **zero** newly
+swallowing sites over `prismaquant/` (31 `try` blocks wrap a detection call —
+25 `except DeadVendoredOverrideError: raise` then broad, 4 `try/finally`, 1
+`SampleParallelProbeError`+broad-that-re-raises, 1 narrow non-catching), so
+the tree was and stays clean; what changed is that the pin now holds the shape
+it claims to hold. The census's own docstring names what it does not cover
+(aliased or dispatched calls, a swallow one frame up, computed exception
+classes, callers outside `prismaquant/`), since it is cited as future-proofing.
+
+Re-stamped (2026-09-05, `claude/pq-gates`) for **the export seal's
+capture-context roster read from Tessera rather than typed** (§5.7;
+RobTand/prismaquant#216, P2). `tessera_export_lane.CAPTURE_CONTEXT_FIELDS` was
+the literal `("model", "seqlen", "source")` and nothing in the tree read
+`tessera.export.CAPTURE_CONTEXT`, so half of the roster
+`ActivationSource.capture_sha256` seals had no owner — while its sibling
+`tessera_hessian.HESSIAN_IDENTITY_FIELDS` derives the identity triple from
+`tessera.export.HESSIAN_IDENTITY` and a test pins the two together. The two
+rules agree today; a field added to Tessera's constant would have split them,
+and at a pin with no `capture_sha256` (the dev pin 1221d2a) the split is
+silent: two captures differing only in the new field digest identically and an
+allocation binds to a capture that did not price it, which is #204's failure
+reintroduced with no signal. Now: `CAPTURE_CONTEXT_FIELDS,
+CAPTURE_CONTEXT_FIELDS_SOURCE = _capture_context_fields()` reads
+`tessera.export.CAPTURE_CONTEXT` where the running Tessera publishes it and
+otherwise falls back to `_CAPTURE_CONTEXT_FALLBACK` — the ONE place the roster
+is typed, commented with the Tessera it was copied from (0.1.0, release
+`3efd690`, `src/tessera/export.py:244`) — and names which was used.
+`_require_capture_context_roster`, called from `hessian_capture_sha256` before
+a byte is digested, re-reads the constant live and refuses by name when it is
+not the roster the digest covers, listing the fields each side names; this is
+the half of the drift guard that needs no `capture_sha256`, so it holds at the
+dev pin where `_crosscheck_capture_seal` compares nothing. No wire bytes, no
+digest values and no report keys change while the rosters agree. Tests:
+`test_tessera_priced_export_inputs.py` — `test_the_capture_context_roster_is_
+tesseras` (roster equality, runs at BOTH pins, unlike the skipped runtime-seal
+comparison), the drift refusal at the digest and at the gate, and the
+documented fallback (pre-fix at the release tip: `DID NOT RAISE
+TesseraExportLaneError`, the bind reaching the seal cross-check instead).
+
 Re-stamped (2026-09-05, `claude/pq-218`) for **format-name resolution: case is
 the registry's question, and a predicate over a format menu must be total**
 (§5.1; RobTand/prismaquant#218, P1 — a regression in #213/#205). `#213`
@@ -7191,7 +7271,10 @@ plan translation when the allocation's `tessera_hessian` stamp or its
 selected W4A4 routes declare a requirement the supplied files do not satisfy
 (#193): the artifact built must be the artifact priced. The binding is to
 content, not to names (#204): the allocation carries the campaign capture's
-`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`) and the
+`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`, whose
+capture-context roster is read from `tessera.export.CAPTURE_CONTEXT` rather
+than typed, with one documented fallback for pins that predate the constant
+and a by-name refusal when the two rosters disagree — #216) and the
 `input_global_scale` each selected W4A4 unit was priced under
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a

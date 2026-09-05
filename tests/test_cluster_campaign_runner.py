@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import contextlib
 import copy
 import hashlib
 import json
@@ -112,6 +113,92 @@ def _nonempty(path: Path) -> Callable[[], bool]:
             return False
 
     return _ready
+
+
+# ---------------------------------------------------------------------------
+# Children this file deliberately orphans.
+#
+# Two tests here kill the process that would otherwise enforce the stage's
+# `timeout_seconds` -- the coordinator in one, the worker in the other -- and
+# then rely on the stage child polling a release file at 50 Hz.  Once its
+# enforcer is dead, writing that file is the ONLY thing left that can ever end
+# the child (`cluster_campaign.py:1164` gives it its own session; the worker's
+# `TimeoutExpired` -> `_terminate_child_process_group` is what kills it in a
+# healthy run, and that worker is gone by construction).
+#
+# So "the release always happens" is not part of either test's arrangement: it
+# is the difference between a test that failed and a `python -c` that spins on
+# a release file which, once `tmp_path` is cleaned up, can never appear
+# (RobTand/prismaquant#219).  One home for it, below, rather than a copy per
+# test -- and the exit is asserted, not merely arranged, because "this test
+# leaves nothing running" is a property of the test that a shared box pays for.
+# ---------------------------------------------------------------------------
+
+
+class _OrphanedHelper:
+    """The deliberately orphaned stage child, and its release file."""
+
+    def __init__(self, release_path: Path) -> None:
+        self.release_path = release_path
+        self.pid: int | None = None
+        self._ticks: int | None = None
+
+    def adopt(self, pid: int) -> None:
+        """Take the handle the child announced, with its start time, so a
+        recycled pid can never be mistaken for it."""
+        snapshot = campaign._proc_snapshot(pid)
+        assert snapshot is not None, (
+            f"the orphaned helper announced pid {pid}, which is not running"
+        )
+        self.pid, self._ticks = pid, snapshot[0]
+
+    def release(self) -> None:
+        """Let the child finish.  Idempotent, so a test can release in line
+        where the ordering is load-bearing and still be released on the way
+        out of any path that never reached that line."""
+        self.release_path.write_bytes(b"go")
+
+    def running(self) -> bool:
+        if self.pid is None or self._ticks is None:
+            return False
+        snapshot = campaign._proc_snapshot(self.pid)
+        return (snapshot is not None and snapshot[0] == self._ticks
+                and snapshot[1] != "Z")
+
+    def assert_exited(self) -> None:
+        """The property under test, not a side effect: nothing this test
+        started is still running when it ends."""
+        _wait_until(
+            lambda: not self.running(),
+            unmet=(
+                f"the deliberately orphaned helper (pid {self.pid}) is still "
+                "running after its release file landed, so this test would "
+                "have leaked a spinning process onto the box"
+            ),
+        )
+
+
+@contextlib.contextmanager
+def _orphaned_helper(release_path: Path):
+    """Own the release file for a child a test orphans on purpose.
+
+    On EVERY path out -- a passing test, a failing assertion, a wedged wait, a
+    `KeyboardInterrupt`, an interpreter dying between two lines -- the child is
+    released, and killed outright if it did not take the release.
+    """
+    helper = _OrphanedHelper(release_path)
+    try:
+        yield helper
+    finally:
+        helper.release()
+        if helper.running():
+            try:
+                if os.getpgid(helper.pid) == helper.pid:
+                    os.killpg(helper.pid, 9)  # its own session: take the group
+                else:
+                    os.kill(helper.pid, 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 def _digest(text: str) -> str:
@@ -678,10 +765,14 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
     #    sleep to kill the coordinator.  Lose that and the coordinator finishes
     #    the campaign normally, so the resume has nothing to adopt and the
     #    "exact receipts recovered" assertion fails instead.
+    #
+    # It announces its PID rather than a marker word, so this test can hold a
+    # handle on the child it is about to orphan and assert it is gone at the
+    # end instead of hoping (#219).
     script = (
-        "from pathlib import Path; import sys, time; "
+        "from pathlib import Path; import os, sys, time; "
         "release=Path(sys.argv[2]); "
-        "Path(sys.argv[3]).write_bytes(b'started'); "
+        "Path(sys.argv[3]).write_text(str(os.getpid())); "
         "exec(\"while not release.exists():\\n time.sleep(0.02)\"); "
         "Path(sys.argv[1]).write_bytes(b'slow-done')"
     )
@@ -733,7 +824,12 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
             and attempt["pid"] is not None
         )
 
-    try:
+    # Everything from here on runs with the helper's release owned by the
+    # context manager, because from the moment the coordinator dies nothing
+    # else can end that child: an assertion that fails, a wedged wait, or the
+    # session being killed between `terminate()` and the release used to leave
+    # it polling a file that `tmp_path` cleanup then made unreachable (#219).
+    with _orphaned_helper(release_path) as helper:
         # Nearly all of this latency is the coordinator's cold start rather
         # than its campaign work, so the wait is on the coordinator, not on a
         # clock.
@@ -757,46 +853,57 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
             unmet="the coordinator never got a stage child running",
             alive=lambda: coordinator.poll() is None,
         )
-    except BaseException:
-        release_path.write_bytes(b"go")
-        raise
+        helper.adopt(int(started_path.read_text(encoding="utf-8").strip()))
 
-    coordinator.terminate()
-    _wait_until(
-        lambda: coordinator.poll() is not None,
-        unmet="coordinator did not exit after terminate()",
-    )
+        try:
+            coordinator.terminate()
+            _wait_until(
+                lambda: coordinator.poll() is not None,
+                unmet="coordinator did not exit after terminate()",
+            )
 
-    # Now let the orphaned helper finish, and wait on its receipt rather than
-    # on the clock. What this test asserts is that a resume ADOPTS a completed
-    # helper's work instead of redoing it -- so the helper has to have
-    # completed. Probing the instant the coordinator dies asserts something
-    # else: that the helper wins a race against the resume. It usually did,
-    # and lost under load, which is how this arrived in CI as a flake.
-    # The helper was deliberately orphaned, so this test holds no handle on it:
-    # the backstop is the only bound available here.
-    release_path.write_bytes(b"go")
-    _wait_until(
-        _nonempty(receipt_path),
-        unmet=(
-            "the orphaned helper never wrote its receipt, so there is nothing "
-            "for the resume to adopt -- the coordinator's termination most "
-            "likely took the helper with it"
-        ),
-    )
+            # Now let the orphaned helper finish, and wait on its receipt
+            # rather than on the clock. What this test asserts is that a resume
+            # ADOPTS a completed helper's work instead of redoing it -- so the
+            # helper has to have completed. Probing the instant the coordinator
+            # dies asserts something else: that the helper wins a race against
+            # the resume. It usually did, and lost under load, which is how
+            # this arrived in CI as a flake.  The release is written here, and
+            # again by `_orphaned_helper` on the way out, because the ordering
+            # matters on the passing path and the guarantee matters on all of
+            # them.
+            helper.release()
+            _wait_until(
+                _nonempty(receipt_path),
+                unmet=(
+                    "the orphaned helper never wrote its receipt, so there is "
+                    "nothing for the resume to adopt -- the coordinator's "
+                    "termination most likely took the helper with it"
+                ),
+            )
 
-    state = campaign.run_campaign_v2(
-        manifest, state_path, poll_interval=0.02
-    )
+            state = campaign.run_campaign_v2(
+                manifest, state_path, poll_interval=0.02
+            )
 
-    attempts = state["stages"]["slow-stage"]["attempts"]
-    assert len(attempts) == 1, (
-        "the resume started a second attempt instead of adopting the "
-        f"completed helper's work: {attempts}"
-    )
-    assert attempts[0]["status"] == "succeeded"
-    assert "exact receipts recovered" in attempts[0]["detail"]
-    assert receipt_path.read_bytes() == b"slow-done"
+            attempts = state["stages"]["slow-stage"]["attempts"]
+            assert len(attempts) == 1, (
+                "the resume started a second attempt instead of adopting the "
+                f"completed helper's work: {attempts}"
+            )
+            assert attempts[0]["status"] == "succeeded"
+            assert "exact receipts recovered" in attempts[0]["detail"]
+            assert receipt_path.read_bytes() == b"slow-done"
+            # The child this test orphaned on purpose has to be gone before
+            # the test is allowed to pass.
+            helper.assert_exited()
+        finally:
+            if coordinator.poll() is None:
+                coordinator.kill()
+                _wait_until(
+                    lambda: coordinator.poll() is not None,
+                    unmet="coordinator did not exit after kill() during cleanup",
+                )
 
 
 def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
@@ -849,75 +956,65 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    child_pid = None
-    child_ticks = None
-    try:
-        assert worker.stdin is not None
-        worker.stdin.write(json.dumps(request).encode("utf-8"))
-        worker.stdin.close()
-        _wait_until(
-            _nonempty(child_pid_path),
-            unmet="the worker never launched the stage child",
-            alive=lambda: worker.poll() is None,
-        )
-        child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
-        snapshot = campaign._proc_snapshot(child_pid)
-        assert snapshot is not None
-        child_ticks = snapshot[0]
-
-        worker.kill()
-        _wait_until(
-            lambda: worker.poll() is not None,
-            unmet="worker did not exit after kill()",
-        )
-        # The child is still holding the lock by construction -- it is blocked
-        # on the release file -- so a short timeout here is the assertion, not
-        # a budget: the lock must refuse to open promptly.
-        with pytest.raises(TimeoutError, match="worker lock"):
-            campaign._worker_lock(
-                Path(request["lock_path"]),
-                Path(request["work_root"]),
-                timeout_seconds=1,
+    # `_orphaned_helper` owns "the child is unblocked, and gone, on every path
+    # out"; this test owns only its own worker (#219).
+    with _orphaned_helper(release_path) as helper:
+        try:
+            assert worker.stdin is not None
+            worker.stdin.write(json.dumps(request).encode("utf-8"))
+            worker.stdin.close()
+            _wait_until(
+                _nonempty(child_pid_path),
+                unmet="the worker never launched the stage child",
+                alive=lambda: worker.poll() is None,
             )
+            child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+            helper.adopt(child_pid)
 
-        release_path.write_bytes(b"go")
-        # The stage child outlived its worker in its own process group, so its
-        # liveness is a pid probe rather than a Popen handle.  Waiting on the
-        # receipt to exist also keeps a slow box from turning this into a
-        # FileNotFoundError instead of a named failure.
-        _wait_until(
-            _nonempty(receipt_path),
-            unmet="the orphaned stage child never wrote its receipt",
-            alive=lambda: campaign._proc_snapshot(child_pid) is not None,
-        )
-        assert receipt_path.read_bytes() == b"orphan-complete"
-        # The child releases the lock by exiting, which it has not necessarily
-        # done at the instant the receipt lands.  Bound that on the backstop
-        # rather than on a guess at how long an interpreter takes to shut down.
-        lock_fd = campaign._worker_lock(
-            Path(request["lock_path"]),
-            Path(request["work_root"]),
-            timeout_seconds=_WEDGE_BACKSTOP_SECONDS,
-        )
-        os.close(lock_fd)
-    finally:
-        # Unblock the child on every path out of this test: a failure above
-        # must not leave an orphan spinning on a release file that never lands.
-        # Its worker is dead by then, so nothing else would enforce a bound.
-        release_path.write_bytes(b"go")
-        if worker.poll() is None:
             worker.kill()
             _wait_until(
                 lambda: worker.poll() is not None,
-                unmet="worker did not exit after kill() during cleanup",
+                unmet="worker did not exit after kill()",
             )
-        if child_pid is not None and child_ticks is not None:
-            snapshot = campaign._proc_snapshot(child_pid)
-            if snapshot is not None and snapshot[0] == child_ticks:
-                try:
-                    os.killpg(child_pid, 9)
-                except ProcessLookupError:
-                    pass
+            # The child is still holding the lock by construction -- it is
+            # blocked on the release file -- so a short timeout here is the
+            # assertion, not a budget: the lock must refuse to open promptly.
+            with pytest.raises(TimeoutError, match="worker lock"):
+                campaign._worker_lock(
+                    Path(request["lock_path"]),
+                    Path(request["work_root"]),
+                    timeout_seconds=1,
+                )
+
+            helper.release()
+            # The stage child outlived its worker in its own process group, so
+            # its liveness is a pid probe rather than a Popen handle.  Waiting
+            # on the receipt to exist also keeps a slow box from turning this
+            # into a FileNotFoundError instead of a named failure.
+            _wait_until(
+                _nonempty(receipt_path),
+                unmet="the orphaned stage child never wrote its receipt",
+                alive=lambda: campaign._proc_snapshot(child_pid) is not None,
+            )
+            assert receipt_path.read_bytes() == b"orphan-complete"
+            # The child releases the lock by exiting, which it has not
+            # necessarily done at the instant the receipt lands.  Bound that on
+            # the backstop rather than on a guess at how long an interpreter
+            # takes to shut down.
+            lock_fd = campaign._worker_lock(
+                Path(request["lock_path"]),
+                Path(request["work_root"]),
+                timeout_seconds=_WEDGE_BACKSTOP_SECONDS,
+            )
+            os.close(lock_fd)
+            helper.assert_exited()
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                _wait_until(
+                    lambda: worker.poll() is not None,
+                    unmet="worker did not exit after kill() during cleanup",
+                )
 
 
 def test_ambiguous_recorded_pid_fails_closed_without_killing_it(tmp_path):
