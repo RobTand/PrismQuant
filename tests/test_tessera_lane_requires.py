@@ -148,6 +148,26 @@ def test_a_table_is_not_readable_without_the_extension_table(payload):
         lane._parse_table(block, formats, "", "", "x", native_extensions=None)
 
 
+def test_a_table_whose_cells_launch_only_through_torch_needs_no_extension_table(payload):
+    """The refusal above is about launches the reader cannot DECIDE. A table
+    whose cells never launch through an extension -- every ``executes`` symbol
+    a torch/vLLM path -- has no lane to decide and reads ``()`` lanes, as a
+    v3 table does; the minimal contracts this repository's export-scope and
+    route-receipt tests build are exactly that shape. Only a cell that names
+    ``extension::symbol`` makes the missing table a refusal, and the refusal
+    names the launch."""
+    moved = copy.deepcopy(payload)
+    for cell in moved["lane_eligibility"]["cells"]:
+        cell["executes"] = [{"symbol": "torch.mm", "decoder": "torch_window"}]
+    block, formats = moved["lane_eligibility"], moved["formats"]
+    table = lane._parse_table(block, formats, "", "", "x", native_extensions=None)
+    assert table.present and table.lanes == ()
+    # ... and the refusal, when it fires, says WHICH launch it cannot decide.
+    block, formats = payload["lane_eligibility"], payload["formats"]
+    with pytest.raises(lane.LaneEligibilityError, match="tessera_window_gemv::gemv"):
+        lane._parse_table(block, formats, "", "", "x", native_extensions=None)
+
+
 def _mutate(payload, **changes):
     moved = copy.deepcopy(payload)
     block = _row(moved, WINDOW_LANE)["lane"]

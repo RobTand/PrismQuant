@@ -2398,15 +2398,25 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str,
 
     lanes: tuple[LaneClaim, ...] = ()
     if is_v4:
-        if native_extensions is None:
+        extension_launches = sorted({
+            symbol for cell in cells for symbol, _decoder in cell.executes
+            if "::" in symbol})
+        if native_extensions is None and extension_launches:
+            # Refused only when a cell actually launches THROUGH an extension:
+            # that launch is subject to the extension's published predicate,
+            # and with no table the predicate cannot be read. A table whose
+            # cells launch only through torch/vLLM paths has no lane to
+            # decide and reads () lanes, exactly as a v3 table does.
             raise LaneEligibilityError(
                 f"runtime_contract publishes a {schema} lane table whose cells "
-                "name the launches they execute, but no 'native_extensions' "
-                "table: the lane predicates those launches are subject to "
-                "cannot be read, so no launch through an extension can be "
-                "decided. Re-materialize the contract from a release that "
-                "publishes both, never one of them.")
-        lanes = parse_lane_claims(native_extensions, "runtime_contract.native_extensions")
+                f"launch through an extension ({extension_launches}), but no "
+                "'native_extensions' table: the lane predicates those "
+                "launches are subject to cannot be read, so no launch through "
+                "an extension can be decided. Re-materialize the contract "
+                "from a release that publishes both, never one of them.")
+        if native_extensions is not None:
+            lanes = parse_lane_claims(
+                native_extensions, "runtime_contract.native_extensions")
         # Bind every extension launch a cell names to the lane that serves
         # it. The lane gate keys on the DECODER (the name Tessera's census
         # stamps and its launch table derives cells from), so a cell that
