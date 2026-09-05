@@ -1,7 +1,28 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq184-prepriced-cost-override`. Stamps
+As of: 2026-09-05 · `codex/pq-census-v5-integration`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq-census-v5-integration`) for **naming the
+scoped census leg dormant at the current pin** (§7.1; Tessera #126). No code
+moved. The scoped replay requires the packaged lane table to carry the schema
+`LANE_ELIGIBILITY_SCHEMA_TESSERA` names and the census to be
+`tessera.serving.route_census/2`; at `TESSERA_DEV_PIN_COMMIT = 1221d2a` the
+packaged table is `tessera.lane-eligibility.v4` and the pinned producer emits
+`route_census/1`, so the leg refuses everything by the pin. The doc said which
+gates the leg applies but not that none of them can be reached yet, which reads
+as a live comparison. Re-pinning, not an edit here, is what makes it reachable.
+
+Re-stamped (2026-09-04, `codex/pq-census-v5-binding`) for **runtime-bound
+route census replay** (§7.1; Tessera #126). The complete producer
+`tessera.serving.route_census/2` record retains exact runtime, execution mode,
+residency, both driven phases, owner maps, backend-qualified launches and
+checkpoint-sidecar seals. Exact allocation text is rehashed against the
+independent card build anchor, and artifact sidecars are independently
+rehash-checked at fill and verification. Current v5 cells, not an embedded
+agreement or a global decoder blacklist, decide launch eligibility. Legacy
+unscoped rows remain compatible only without a scoped build/current v5 table.
+No default, bytes, promotion threshold or reviewed runtime pin moves.
 
 Re-stamped (2026-09-05, `codex/pq184-prepriced-cost-override`) for **the
 prepriced override's handoff to the priced-input export gate** (§4.10; #184
@@ -7099,14 +7120,64 @@ that the routes the serve actually emitted -- each stamped by the plugin with
 the decoder that ran -- are the routes the artifact priced
 (`prismaquant/tessera_route_receipt.py`, `make_route_census_record`; CLI
 `fill-route-census`; the lane spec's `route.census` gate names this slot).
+For a scoped artifact, `fill-route-census --census <raw-v2.json>
+--layer-config <allocation.json> --model-dir <artifact>` retains the complete
+producer census as `route_census`, exact UTF-8 allocation/config/manifest
+texts as `census_binding`, and the derived `scoped_verdict`. The allocation's
+SHA256 and `__prismaquant__.tessera_serving_scope` must independently match
+`card.build.layer_config_sha` and `card.build.tessera_serving_scope`; audit
+paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
+match the retained texts and the actual artifact files, so host/container
+checkpoint path aliases are valid but an artifact-free replay is not.
+
+**Dormant at the current pin, by the pin rather than by a flag.** The scoped
+path takes the packaged contract's lane table through
+`lane_eligibility.load_eligibility_table` and refuses anything that is not the
+schema `LANE_ELIGIBILITY_SCHEMA_TESSERA` names, and it refuses any census whose
+schema is not `tessera.serving.route_census/2`. Under
+`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table is
+`tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
+emits `route_census/1`, so **no** scoped receipt can be filled or replayed
+today: `route.census` on a scoped card stays `UNFILLED` until the pin moves to a
+release publishing both. That is the intended fail-closed direction -- this leg
+is the consumer half of Tessera #126, whose producer/pin half is still open --
+but it means the scoped comparison has never run against a real packaged
+contract, only against tables constructed in
+`tests/test_tessera_scoped_route_receipt.py`. Re-pinning is the measurement
+that would change that claim.
+
+Coverage is the exact set of Tessera-selected allocation units (not BF16
+passthrough context keys). Their source tensors join explicit manifest
+projections and config-group owners, with exact shape/grid/rung/context
+checks. Each owner must appear exactly once in both driven phases, with
+recorded owner maps matching the replay. Every unit needs a current
+device-qualified backed cell for the same platform, image, mode and residency
+in every declared regime. Actual state, activation contract, launch pair and
+serve flags must agree. Backend suffixes stay in the retained record; a
+routed launch may compare its declared base plus a nonempty backend suffix.
+Thus a named dense fallback is permitted for MoE only when that exact scoped
+cell declares the pair. Dense compiled aggregate traces, packed/aggregate
+source projections, and nonidentity checkpoint/runtime owner mappings remain
+explicit unsupported refusals, not guessed equivalences.
+Nonempty predicates in relevant scoped/family/rung cells also refuse: a
+manifest member's dimensions are not an attestation of the executed fused
+unit's dimensions or role-split facts. This matches the export endpoint's
+bounded support rather than manufacturing a serving-shape projection.
+Eager phases retain
+canonical shape evidence and must actually name their one-row decode versus
+multi-row prefill regime. No new runtime is attested by this adapter.
+
 The requirement travels with the lane declaration (`required_slots` UNIONS
 the lane's slots), not with a rate-axis special case. `verify` replays the
 priced-vs-served comparison from the carried records
-rather than trusting the carried boolean, and refuses a census run on a known
+rather than trusting the carried boolean. Historical unscoped flat rows retain
+the v4 comparison and refuse a census run on a known
 substitute decoder (derived from the pinned contract's `when_unavailable`,
 never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
-with the replay. "No census was ever compared" reads as `UNFILLED`. Known
+with the replay; explicit scope fields cannot be flattened into those rows.
+A scoped card or current v5 table refuses a flat legacy receipt instead of
+inventing the missing runtime. "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.
