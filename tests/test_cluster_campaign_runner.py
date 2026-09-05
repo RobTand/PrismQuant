@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import copy
 import hashlib
 import json
@@ -22,6 +23,75 @@ _WRITE_BYTES = (
     "Path(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True); "
     "Path(sys.argv[1]).write_bytes(sys.argv[2].encode('utf-8'))"
 )
+
+
+# ---------------------------------------------------------------------------
+# Cross-process waits.
+#
+# Every wait in this file is "a child process will make an observable thing
+# appear" -- a state file, a pid file, a receipt.  What that costs is dominated
+# by interpreter start plus this package's import graph, not by the work the
+# child was asked to do.  Measured on sparklina (2026-09-05, CPU only): a cold
+# `python -m prismaquant.cluster_campaign` reached its first state file in
+# 2.7s on an idle box and in 10.9 / 17.3 / 19.3s at 1-minute load 41 / 76 / 90.
+#
+# A wall-clock constant sized against the first number is a coin flip under the
+# second, which is what issue #199 measured and what turned three tests in this
+# file red under `-n 2` on a loaded box.  So no wait here is sized in seconds.
+# Each waits while the producer can still satisfy it and gives up the moment it
+# cannot.  A slow box makes this file slower; it cannot make it red.  A
+# producer that dies without doing the work, which is the failure these tests
+# are actually about, still fails at once and by name.
+# ---------------------------------------------------------------------------
+
+_WEDGE_BACKSTOP_SECONDS = 120
+"""Last-resort bound on every cross-process wait and stage in this file.
+
+Not a budget for the work.  It answers only "the producer is wedged and nothing
+will ever satisfy this", so it sits far above anything a healthy run reaches --
+the slowest wait measured under load was 19.3s.  A healthy run never observes
+it; a run that does has found a real defect, and reports it as one.
+"""
+
+
+def _wait_until(
+    condition: Callable[[], bool],
+    *,
+    unmet: str,
+    alive: Callable[[], bool] | None = None,
+    diagnose: Callable[[], str] | None = None,
+    poll_interval: float = 0.02,
+) -> None:
+    """Wait for ``condition`` for as long as its producer can still satisfy it.
+
+    ``alive`` reports whether the process expected to satisfy ``condition`` is
+    still running.  When it stops being true the condition gets one last look --
+    the producer may have done the work in the window before it exited -- and
+    then the wait fails, because nothing can satisfy it any more.  Omit
+    ``alive`` only where the test holds no handle on the producer, such as a
+    deliberately orphaned helper; the backstop is then the sole bound.
+
+    ``unmet`` is the failure sentence and ``diagnose`` appends state to it.
+    """
+    backstop = time.monotonic() + _WEDGE_BACKSTOP_SECONDS
+
+    def _fail(why: str) -> None:
+        detail = f"; {diagnose()}" if diagnose is not None else ""
+        raise AssertionError(f"{unmet} -- {why}{detail}")
+
+    while True:
+        if condition():
+            return
+        if alive is not None and not alive():
+            if condition():
+                return
+            _fail("its producer exited first")
+        if time.monotonic() >= backstop:
+            _fail(
+                f"nothing happened in {_WEDGE_BACKSTOP_SECONDS}s, so the "
+                "producer is wedged"
+            )
+        time.sleep(poll_interval)
 
 
 def _digest(text: str) -> str:
@@ -596,28 +666,37 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    deadline = time.monotonic() + 8.0
-    observed_running = False
-    while time.monotonic() < deadline:
-        if state_path.is_file():
-            try:
-                raw = json.loads(state_path.read_text(encoding="utf-8"))
-                attempt = raw["stages"]["slow-stage"]["attempts"][-1]
-                observed_running = (
-                    raw["stages"]["slow-stage"]["status"] == "running"
-                    and attempt["pid"] is not None
-                )
-            except (json.JSONDecodeError, KeyError, IndexError):
-                observed_running = False
-            if observed_running:
-                break
-        time.sleep(0.02)
-    assert observed_running, (
-        "coordinator never recorded slow-stage as running with a pid; "
-        f"state={state_path.read_text(encoding='utf-8') if state_path.is_file() else '(absent)'}"
+    def _recorded_running_with_pid() -> bool:
+        if not state_path.is_file():
+            return False
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            attempt = raw["stages"]["slow-stage"]["attempts"][-1]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return False
+        return (
+            raw["stages"]["slow-stage"]["status"] == "running"
+            and attempt["pid"] is not None
+        )
+
+    # Nearly all of this latency is the coordinator's cold start rather than
+    # its campaign work, so the wait is on the coordinator, not on a clock.
+    _wait_until(
+        _recorded_running_with_pid,
+        unmet="coordinator never recorded slow-stage as running with a pid",
+        alive=lambda: coordinator.poll() is None,
+        diagnose=lambda: "state="
+        + (
+            state_path.read_text(encoding="utf-8")
+            if state_path.is_file()
+            else "(absent)"
+        ),
     )
     coordinator.terminate()
-    coordinator.wait(timeout=5)
+    _wait_until(
+        lambda: coordinator.poll() is not None,
+        unmet="coordinator did not exit after terminate()",
+    )
 
     # Wait for the orphaned helper to finish, on its receipt rather than on
     # the clock. What this test asserts is that a resume ADOPTS a completed
@@ -625,13 +704,15 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
     # completed. Probing the instant the coordinator dies asserts something
     # else: that the helper wins a race against the resume. It usually did,
     # and lost under load, which is how this arrived in CI as a flake.
-    helper_deadline = time.monotonic() + 30.0
-    while time.monotonic() < helper_deadline and not receipt_path.is_file():
-        time.sleep(0.02)
-    assert receipt_path.is_file(), (
-        "the orphaned helper never wrote its receipt, so there is nothing "
-        "for the resume to adopt -- the coordinator's termination most "
-        "likely took the helper with it"
+    # The helper was deliberately orphaned, so this test holds no handle on it:
+    # the backstop is the only bound available here.
+    _wait_until(
+        receipt_path.is_file,
+        unmet=(
+            "the orphaned helper never wrote its receipt, so there is nothing "
+            "for the resume to adopt -- the coordinator's termination most "
+            "likely took the helper with it"
+        ),
     )
 
     state = campaign.run_campaign_v2(
@@ -696,17 +777,21 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
         assert worker.stdin is not None
         worker.stdin.write(json.dumps(request).encode("utf-8"))
         worker.stdin.close()
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline and not child_pid_path.is_file():
-            time.sleep(0.02)
-        assert child_pid_path.is_file()
+        _wait_until(
+            child_pid_path.is_file,
+            unmet="the worker never launched the stage child",
+            alive=lambda: worker.poll() is None,
+        )
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
         snapshot = campaign._proc_snapshot(child_pid)
         assert snapshot is not None
         child_ticks = snapshot[0]
 
         worker.kill()
-        worker.wait(timeout=5)
+        _wait_until(
+            lambda: worker.poll() is not None,
+            unmet="worker did not exit after kill()",
+        )
         with pytest.raises(TimeoutError, match="worker lock"):
             campaign._worker_lock(
                 Path(request["lock_path"]),
@@ -714,9 +799,15 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
                 timeout_seconds=1,
             )
 
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not receipt_path.is_file():
-            time.sleep(0.02)
+        # The stage child outlived its worker in its own process group, so its
+        # liveness is a pid probe rather than a Popen handle.  Waiting on the
+        # receipt to exist also keeps a slow box from turning this into a
+        # FileNotFoundError instead of a named failure.
+        _wait_until(
+            receipt_path.is_file,
+            unmet="the orphaned stage child never wrote its receipt",
+            alive=lambda: campaign._proc_snapshot(child_pid) is not None,
+        )
         assert receipt_path.read_bytes() == b"orphan-complete"
         lock_fd = campaign._worker_lock(
             Path(request["lock_path"]),
@@ -727,7 +818,10 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
     finally:
         if worker.poll() is None:
             worker.kill()
-            worker.wait(timeout=5)
+            _wait_until(
+                lambda: worker.poll() is not None,
+                unmet="worker did not exit after kill() during cleanup",
+            )
         if child_pid is not None and child_ticks is not None:
             snapshot = campaign._proc_snapshot(child_pid)
             if snapshot is not None and snapshot[0] == child_ticks:
