@@ -80,8 +80,8 @@ from .lane_eligibility import (
     CellEvidence,
     SCOPED_LANE_SCHEMAS,
     cell_evidence_admits,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
-    LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
     LaneEligibilityError,
     ServingContext,
     QUALIFICATION_DEVICE_QUALIFIED,
@@ -122,8 +122,11 @@ class TesseraContractError(RuntimeError):
 #: The schema ids this reader accepts.  Both are checked before any key is
 #: read: an older table is not a subset of this one, and "missing field" is the
 #: wrong error to hand someone whose contract predates the field.
+#: ``TESSERA_LANE_SCHEMA`` is the CURRENT lane grammar and follows
+#: ``lane_eligibility.LANE_ELIGIBILITY_SCHEMA_TESSERA`` (v8 since 2026-09-05)
+#: so that the two readers cannot disagree about which schema is newest.
 TESSERA_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
-TESSERA_LANE_SCHEMA = LANE_ELIGIBILITY_SCHEMA_TESSERA_V6
+TESSERA_LANE_SCHEMA = LANE_ELIGIBILITY_SCHEMA_TESSERA
 TESSERA_LANE_SCHEMAS = frozenset(
     {LANE_ELIGIBILITY_SCHEMA_TESSERA_V4} | SCOPED_LANE_SCHEMAS)
 #: The ``fused_module`` block's own schema id, checked the same way.

@@ -35,6 +35,7 @@ from importlib.resources import as_file
 from prismaquant import lane_eligibility as lane
 from prismaquant import tessera_render as render
 from prismaquant import tessera_runtime_contract as contract
+from conftest import down_convert_lane_table
 
 
 FAMILY = "TESSERA_E4M3_K1"
@@ -90,13 +91,23 @@ def _facts(structure):
 # The grammar
 # ---------------------------------------------------------------------------
 def test_the_installed_contract_is_read_at_its_own_schema(table, payload):
-    assert table.schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6
+    """The installed table is SCOPED and reads at the schema it publishes.
+
+    Until 2026-09-05 this asserted the installed schema was v6. Tessera moved
+    to v7 and v8 (``test_tessera_lane_v8.py``); a test about v6 owns a v6
+    fixture now, exactly as the v4/v5 tests do.
+    """
+    assert table.schema in lane.SCOPED_LANE_SCHEMAS
+    assert table.schema == payload["lane_eligibility"]["schema"]
     assert lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6 in lane.SCOPED_LANE_SCHEMAS
     assert lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V5 in lane.SCOPED_LANE_SCHEMAS, (
         "v5 must stay SCOPED when v6 becomes current; a version bump that "
         "demotes the previous grammar to 'legacy unscoped' silently widens "
         "what a legacy table is allowed to attest")
-    assert _parse(payload).lane_schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6
+    assert _parse(payload).lane_schema == table.schema
+    v6 = down_convert_lane_table(payload, lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6)
+    assert lane._parse_table(v6["lane_eligibility"], v6["formats"], "", "", "x"
+                             ).schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6
 
 
 def test_every_cell_names_the_build_it_was_measured_under(table):

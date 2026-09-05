@@ -3,6 +3,36 @@
 As of: 2026-09-05 · `claude/tessera-pin-v0.1.0`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/tessera-pin-v0.1.0`) for **reading the lane
+table Tessera's release publishes** (§5.7, §9.4). Tessera released at
+`e78959ed83b3ebb2f9ea838888bd725fef47b3f2` (contract v20) while this branch was
+open, and the lane-eligibility schema moved twice under it: `v7` (Tessera
+#195) gives a greedy smoke a `control` — the same prompt against the BF16
+SOURCE — and an `attribution` DERIVED from it; `v8` (Tessera #198) gives
+`evidence` an `artifact`, the encoder commit that wrote the bytes a cell's KL
+was measured on and a single-unit re-encode screen at a later commit. The
+reader (`lane_eligibility.parse_cell_evidence`) parses both closed at the
+table's own schema — vocabularies transcribed from Tessera's validator,
+attribution re-derived from the control exactly as the grade is re-derived
+from the KL entries, an `identical` payload with a non-`equal` weight error
+refused, a v7 field on a v6 table refused as unknown — and carries them into
+the refusal text, into `RegimeRoute` provenance (`evidence_attribution`,
+`evidence_artifact`) and into the reviewed dev-pin answer. **What the reader
+does NOT do:** Tessera's v18 changelog states the consumer rule it expects
+("refuses on status `repetitive` AND attribution other than
+`shared_with_reference`"), and on the pinned table that rule ADMITS both
+`routed_moe` cells, whose control shows the BF16 source returning the same
+degenerate completion. `cell_evidence_admits` still refuses on the status
+alone: the control removes the evidence against the route without adding any
+for it, and admitting a structure this producer has never shipped on that
+basis is a promotion. The refusal names the control it read; the decision is
+held for Rob in RobTand/prismaquant#198. Consequence on the pinned table: the
+eight dense cells admit exactly as before, and the four dense E4M3 cells now
+carry an encoder scope into provenance — their KL was measured on a checkpoint
+built at `8070ec6…`, and a same-source `down_proj` re-encode at `3317036…`
+produced a DIFFERENT payload (lower weight SSE), which a shipcard now says
+rather than a receipt.
+
 Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for **pinning Tessera by
 commit and contract digest instead of by release tag, lane-eligibility v6, and
 the evidence gate** (§5.7, §9.4). Rob retired the tag — *"can we just pin
@@ -6132,15 +6162,21 @@ alone:
    is, as the render adapter's own dependency — and a producer-side import is
    not a reviewed runtime.
 4. **Every matching cell's own evidence admits it.**
-   `lane_eligibility.cell_evidence_admits` (schema v6). It refuses a cell whose
-   `evidence.smoke.status` is one the runtime records as a generation failure
-   (`repetitive`), which is principle 9's "generates correctly" leg read off a
-   structured field. It deliberately does NOT gate on `evidence.grade`: every
-   cell in the installed table is `route_only` or `kl_lower_bound` — the
-   publisher's changelog records that every served KL in that repository is a
-   top-K intersection lower bound — so a grade bar would refuse the whole lane,
-   which is a promotion-ladder move and belongs to a human. The grade travels
-   into `RegimeRoute.evidence_grade` and into provenance instead (principle 12).
+   `lane_eligibility.cell_evidence_admits` (schemas v6–v8). It refuses a cell
+   whose `evidence.smoke.status` is one the runtime records as a generation
+   failure (`repetitive`), which is principle 9's "generates correctly" leg
+   read off a structured field. It deliberately does NOT gate on
+   `evidence.grade`: every cell in the installed table is `route_only` or
+   `kl_lower_bound` — the publisher's changelog records that every served KL
+   in that repository is a top-K intersection lower bound — so a grade bar
+   would refuse the whole lane, which is a promotion-ladder move and belongs
+   to a human. Nor, yet, does it decide on v7's `smoke.attribution`: Tessera's
+   stated consumer rule (admit `repetitive` when the attribution is
+   `shared_with_reference`) would admit both routed-MoE cells, and that is the
+   same promotion in a different field (RobTand/prismaquant#198). The grade,
+   the attribution and v8's encoder scope travel into `RegimeRoute`
+   (`evidence_grade`, `evidence_attribution`, `evidence_artifact`) and into
+   provenance instead (principle 12).
 
 **It answers by the PIN, not by an edit and not by an absent table.** Until
 2026-09-04 the answer was False for every rung, because the pin carried PENDING
@@ -9281,8 +9317,9 @@ are NAMED by the lane spec, never vendored.
 (`prismaquant.tessera_serving_runtime_pin.v2`), read by
 `tessera_serving_runtime_pin.py`; and the contract the plugin packages,
 `tessera/serving/runtime_contract.json` (`tessera.runtime-contract.v1`, lane
-table `tessera.lane-eligibility.v6` as installed, with the consumer also
-reading the v5, v4 and legacy v3 grammars), read through
+table `tessera.lane-eligibility.v8` as installed, with the consumer also
+reading the v7, v6, v5, v4 and legacy v3 grammars, each at its own member
+set), read through
 `importlib.resources`. PrismaQuant never vendors or imports the serving half.
 Unlike the Gridbook serving pin this one binds no wheel digest — Tessera
 publishes no wheel and is installed from a source checkout — but since
@@ -9306,7 +9343,14 @@ true until 2026-09-04, is now false and the scope question moved from absence to
 EVIDENCE. Both cells publish `evidence.smoke.status: "repetitive"`, and
 `cell_evidence_admits` refuses them on it (§5.7): PrismaQuant admits no
 routed-MoE Tessera unit, and the refusal names the cell and the receipt rather
-than the structure. Promotion is Rob's under principle 9. The published
+than the structure. Since contract v18 both cells also publish a `control`
+(`bf16_source`, `identical_completion`) and the derived attribution
+`shared_with_reference` — the BF16 source degenerates on the same prompt — and
+Tessera's changelog expects a consumer to admit on that pair. This reader
+reads it, names it in the refusal, and does not decide on it: the attribution
+is not a record of the route generating correctly, and the admission it would
+unlock is a promotion. Promotion is Rob's under principle 9
+(RobTand/prismaquant#198). The published
 `tensor_parallel` units declare `max_world_size: 1`: a Tessera unit is one blob
 per vLLM module against a shared rate schedule, so a sharded form needs
 per-rank wires rather than a byte range. `expert_parallel.units` is empty.

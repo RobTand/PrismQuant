@@ -43,18 +43,29 @@ def down_convert_lane_table(payload: dict, schema: str) -> dict:
     launches -- so the test still exercises real cells. It is a FIXTURE and
     never an attestation: nothing derived from it is recorded anywhere.
 
-    ``schema`` is ``tessera.lane-eligibility.v5`` (drop the v6 ``evidence``
-    block and the ``runtime`` version fields) or ``...v4`` (drop the whole
-    per-cell ``runtime`` scope as well).
+    ``schema`` is ``tessera.lane-eligibility.v7`` (drop the v8
+    ``evidence.artifact``), ``...v6`` (drop v7's ``smoke.attribution`` and
+    ``smoke.control`` as well), ``...v5`` (drop the whole ``evidence`` block
+    and the ``runtime`` version fields) or ``...v4`` (drop the per-cell
+    ``runtime`` scope as well).
     """
     payload = copy.deepcopy(payload)
     lane = payload["lane_eligibility"]
     lane["schema"] = schema
+    version = int(schema.rsplit(".v", 1)[1])
     for cell in lane["cells"]:
-        cell.pop("evidence", None)
-        if schema.endswith(".v4"):
-            cell.pop("runtime", None)
+        if version <= 5:
+            cell.pop("evidence", None)
         else:
+            evidence = cell["evidence"]
+            if version <= 7:
+                evidence.pop("artifact", None)
+            if version <= 6:
+                evidence["smoke"].pop("attribution", None)
+                evidence["smoke"].pop("control", None)
+        if version <= 4:
+            cell.pop("runtime", None)
+        elif version <= 5:
             runtime = cell.get("runtime", {})
             cell["runtime"] = {"image": runtime["image"],
                                "execution_modes": runtime["execution_modes"]}
