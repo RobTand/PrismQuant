@@ -81,6 +81,7 @@ __all__ = [
     "campaign_cost_payload",
     "main",
     "next_anchor_rate",
+    "write_export_inputs",
 ]
 
 SCHEMA = "prismaquant.tessera_campaign_cost.v1"
@@ -724,6 +725,69 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
     return menus
 
 
+def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
+                        hessian_identity, static_scales, static_scale_policy):
+    """Write the exporter's ``--hessian`` and ``--input-scales`` inputs.
+
+    ``(hessian_capture_path | None, input_scales_path | None)``.  The
+    allocation an allocator builds on this campaign's table is priced under
+    exactly these Hessians and these static activation scales, so the export
+    leg must be handed them back or the artifact built is not the artifact
+    priced (RobTand/prismaquant#193).  Both files are in the shapes Tessera's
+    exporter consumes:
+
+    * ``hessian_capture.pt`` -- ``{"H": {unit: XᵀX}, "counts", "provenance"}``,
+      what ``ActivationSource.from_capture`` loads; the H tensors are the
+      campaign's own un-normalised accumulators, the identity is the same
+      triple stamped on every cost row, and ``hessian_role: "fit"`` marks it
+      as bytes-shaping (Tessera refuses a held-out capture there).  A JSON
+      sidecar ``<capture>.provenance.json`` repeats the identity so the export
+      gate can bind capture to allocation without loading the tensors.
+    * ``input_scales.safetensors`` -- one ``<unit>.input_global_scale`` F32
+      scalar per unit, the exporter's stock-NVFP4 spelling, valued exactly as
+      the W4A4 costs were scored.
+
+    ``hessians=None`` is the deliberate weights-only campaign: no capture is
+    written, matching the ``supplied=false`` stamp the rows carry.
+    """
+    import torch
+
+    hessian_capture_path = None
+    if hessians is not None:
+        hessian_capture_path = cache_dir / "hessian_capture.pt"
+        capture_provenance = {**dict(hessian_identity), "hessian_role": "fit"}
+        tmp_capture = hessian_capture_path.with_suffix(".pt.tmp")
+        torch.save({
+            "H": {name: h for name, h in hessians.items() if h is not None},
+            "counts": dict(hessian_rows),
+            "provenance": capture_provenance,
+        }, tmp_capture)
+        os.replace(tmp_capture, hessian_capture_path)
+        sidecar = hessian_capture_path.with_name(
+            hessian_capture_path.name + ".provenance.json")
+        sidecar.write_text(json.dumps(capture_provenance, indent=2,
+                                      sort_keys=True) + "\n")
+        print(f"[campaign] wrote {hessian_capture_path} "
+              f"({sum(1 for h in hessians.values() if h is not None)} "
+              "Hessians)", flush=True)
+    input_scales_path = None
+    if static_scales:
+        from safetensors.torch import save_file
+
+        from .nvfp4_activation_contract import input_global_scale_tensor
+
+        input_scales_path = cache_dir / "input_scales.safetensors"
+        save_file(
+            {f"{name}.input_global_scale": input_global_scale_tensor(value)
+             for name, value in static_scales.items()},
+            str(input_scales_path),
+            metadata={"input_global_scale_policy": str(static_scale_policy)},
+        )
+        print(f"[campaign] wrote {input_scales_path} "
+              f"({len(static_scales)} static input scales)", flush=True)
+    return hessian_capture_path, input_scales_path
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
@@ -897,6 +961,17 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                for name in targets}
     del model
     torch.cuda.empty_cache()
+
+    # The export leg's inputs, written BEFORE the anchor loop so even a
+    # deadline-stopped campaign leaves them (RobTand/prismaquant#193).
+    hessian_capture_path, input_scales_path = write_export_inputs(
+        cache_dir,
+        hessians=hessians if want_h else None,
+        hessian_rows=hessian_rows,
+        hessian_identity=hessian_identity,
+        static_scales=static_scales,
+        static_scale_policy=static_scale_policy,
+    )
 
     # ONE ActivationSource for the whole campaign, and ONE set of encoder
     # keywords per unit PER SCALE PLANE. The block-LDL is a function of the
@@ -1230,6 +1305,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "activation_static_scales": {
                 "policy": str(static_scale_policy),
                 "source": "campaign_calibration_amax_fused_unified",
+                "path": (None if input_scales_path is None
+                         else str(input_scales_path)),
                 "units": {name: float(value)
                           for name, value in sorted(static_scales.items())},
             },
@@ -1245,6 +1322,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                        + ")" if want_h else "")),
                 "kwargs": list(hessian_status["kwargs"]),
                 "recipe": dict(hessian_status["recipe"]),
+                # The exporter-shaped capture of the exact Hessians above,
+                # for the export leg's --hessian input; None on --hessian off.
+                "capture_path": (None if hessian_capture_path is None
+                                 else str(hessian_capture_path)),
                 "token_count": int(hessian_token_count),
                 "token_count_min": int(hessian_token_min),
                 # The identity triple Tessera requires, plus its context. The

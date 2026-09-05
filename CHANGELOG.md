@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **The Tessera export arm fails closed on missing priced inputs, and the
+  campaign supplies them** (#193; `run-pipeline.sh`,
+  `tessera_export_lane.require_priced_export_inputs`,
+  `tessera_campaign.write_export_inputs`). The arm forwarded only
+  `--plan-json`/`--device` to Tessera's exporter: an H-aware allocation (the
+  campaign's default) was re-encoded weights-only — the exporter builds an
+  `ActivationSource` only when `--hessian` is present and raises nothing
+  without one — and any E2M1 selection died inside the exporter, which
+  hard-requires `--input-scales` for NVFP4 routes. The campaign now writes
+  `hessian_capture.pt` (the exact un-normalised per-unit XᵀX plus the
+  identity triple, with a JSON provenance sidecar) and
+  `input_scales.safetensors` beside its cache; the driver threads
+  `TESSERA_HESSIAN`/`TESSERA_INPUT_SCALES` to both the lane preflight and the
+  exporter; and a fifth lane gate refuses, before the plan translation, an
+  H-aware allocation without its identity-matched capture, a weights-only
+  allocation handed a stray one, an undeclared allocation, and a W4A4
+  selection whose scales file does not cover every selected unit.
 - **Tessera W4A4 anchors are priced under the served static UE4M3 activation
   contract** (#194; `tessera_campaign._measure_anchor`). The campaign scored
   every E2M1 anchor with NVFP4's registry callback — a dynamic per-group
