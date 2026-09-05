@@ -93,6 +93,31 @@ different refusals, and the shipcard has to be able to tell them apart.
 `FORMATS` stays `NVFP4,FP8_DYNAMIC,BF16` and no default, stage or exporter
 moves.
 
+Re-stamped (2026-09-05, `claude/pq-201-dead-override`) for **a
+dead-vendored-override refusal that actually refuses** (§8.1; PrismaQuant
+#201). The gate added by #19 was calling `_refuse_dead_vendored_override`
+*inside* `_resolve`'s per-candidate `except Exception: continue`, so its raise
+never left detection: it demoted the profile that matched and `detect_profile`
+answered `DefaultProfile` — the silent substitution the gate's own docstring
+says it refuses. The gate now runs after that `except`, on the candidate that
+won, and raises `DeadVendoredOverrideError` (a `RuntimeError` subclass, so the
+gate's original contract is unchanged) so a caller can tell "nothing matched
+this checkpoint" — a legitimate `DefaultProfile`, guarded downstream by
+`allocator.validate_default_profile_format_menu` — from "a profile matched and
+its vendored modelling path is dead", which has no legitimate answer.
+`detect_profile_with_warning` re-raises it rather than logging a fallback: its
+tolerance is for an unknown architecture, and its warning would otherwise have
+claimed "architecture unregistered or config unreadable", which is false. The
+candidate walk keeps its tolerance for a profile that cannot be asked or built,
+and the `register_vendored_modeling()` swallow is unchanged. No default, format
+menu, serving lane or exported byte moves; what changes is that a checkpoint on
+a dead vendored path now refuses by name instead of being probed under
+`DefaultProfile`. Three call sites that were the same swallow one level up —
+the completeness gate, the incremental probe's shard detection and the native
+export validator — re-raise it too; the other 22 broad-`except` swallows around
+detection, across 11 modules, are censused with `file:line` in #202 rather than
+swept here. Gate: `tests/test_vendored_override_gate.py`.
+
 Re-stamped (2026-09-05, `codex/pq186-campaign-identity`) for **one resume
 identity, including the served A-side contract** (§4.10; merge of the
 identity-bound resume below with the priced-inputs contract stamped beneath
@@ -8823,6 +8848,38 @@ way. The fix registers a PrismaQuant-owned subclass of the native config through
 `AutoConfig.register` (public API, no internals patched), engages only when the direct route is
 verified dead, and verifies every registration by a config-only resolution before setting the
 "done" flag. Boundary measured, not assumed: healthy through 5.12.1, broken from 5.13.0.
+
+**Where that refusal is allowed to stop** (#201, 2026-09-05). For its first year the gate had no
+teeth: `_resolve` called it from *inside* the per-candidate `try: ... except Exception: continue`,
+so the raise was caught by the walk's own tolerance, the matched profile was demoted, and
+detection fell through to `DefaultProfile(architectures=archs)` with no exception anywhere — the
+same silent-wrong-answer shape #19 was filed about, one level up. The two things that loop does
+are now separated. *Choosing* a candidate stays tolerant: a profile whose `matches()` raises, or
+that cannot be instantiated, is not a match and the walk continues. *The refusal is a statement
+about the candidate that won*, so `_refuse_dead_vendored_override(model_type)` runs after the
+`except`, not inside it, and raises `DeadVendoredOverrideError(RuntimeError)`. Its own class
+because the two failures a caller can see are not interchangeable: "nothing matched" is a
+legitimate `DefaultProfile` for a not-yet-registered architecture, while "a profile matched and
+its vendored path is dead" means the load would run upstream modelling code under a profile that
+promises the vendored copy. `detect_profile_with_warning` — the entrypoint that exists to tolerate
+anything — re-raises this one class and logs the rest, because a printed warning is not a refusal
+and the warning it printed ("architecture unregistered or config unreadable") was not even true.
+This is also why #197's leaked `OVERRIDE_ERRORS["qwen3"]` was invisible: a stray entry silently
+re-routed every later qwen3 detection in the process instead of failing. Gate:
+`tests/test_vendored_override_gate.py`. Three call sites were the same swallow one level up and
+re-raise the class for the same reason: `artifact_completeness._detect_profile_quietly` (a
+completeness *gate* that answered `None`), `incremental_probe._detect_profile_for_shards` (which
+answered `DefaultProfile`) and `validate_native_export._resolve_validation_target_profile` (a
+*validator* that answered `None`). Each documents tolerance for an architecture this build does
+not know, which is a different statement from a known architecture on a dead path.
+**Not fixed here:** 22 further broad-`except` swallows around
+`detect_profile`/`profile_from_config`/`profile_from_model`, across 11 modules, can still convert
+this refusal into `None`, `DefaultProfile`, `False` or a skipped branch at their own call sites.
+Several of those are genuinely optional hints where `None` is the right answer for an *absent*
+profile and the wrong one for a *dead* one, so they need reading one at a time against their own
+contract; censused with `file:line` in #202 rather than swept inside this diff. One site already
+has the right shape and is excluded: `sample_parallel_probe.py:568` re-raises as
+`SampleParallelProbeError(...) from exc`.
 
 The `DefaultProfile` fallback is *guarded, not silent*: `allocator.py:1550-1554` calls
 `validate_default_profile_format_menu(...)` (`:961-988`), which refuses a multi-format menu
