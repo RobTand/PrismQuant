@@ -1,7 +1,25 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq186-campaign-identity`. Stamps
+As of: 2026-09-05 · `codex/pq186-campaign-identity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq186-campaign-identity`) for **one resume
+identity, including the served A-side contract** (§4.10; merge of the
+identity-bound resume below with the priced-inputs contract stamped beneath
+it). The static NVFP4 `input_global_scale` per unit and the resolved
+`input_global_scale_policy` are scoring inputs, so the campaign checkpoint's
+journal identity binds them beside the score rows and Hessians: a checkpoint
+priced under another calibration or policy refuses at the manifest, by field,
+before a row of it is read. The per-row half of the same rule — a resumed
+W4A4 row must carry exactly this run's scale for its unit, a dynamic-route
+row must carry none — is asked inside the per-anchor identity check, beside
+the Hessian-applicability check and before the producer's wire receipt is
+verified; the separate resume-time scale gate is gone. One rule, one home,
+one refusal grammar (`checkpoint identity mismatch at
+units.<unit>.input_global_scale` / `ActivationScaleContractError` on the row).
+Gate: `tests/test_tessera_campaign_resume.py` (`input_scale`, `scale_policy`
+and pre-contract-row cases) and
+`tests/test_tessera_campaign.py::test_resume_refuses_w4a4_anchors_priced_under_another_contract`.
 
 Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for **identity-bound
 Tessera campaign resume** (§4.10; PrismaQuant #186). The existing cost journal
@@ -29,6 +47,19 @@ adapter enables the campaign's identity-bound resume without changing its
 `--checkpoint` filename/default or introducing another checkpoint grammar.
 The campaign's intake/wire verification is a separate change, not supplied
 merely by this optional argument.
+
+Re-stamped (2026-09-05, `codex/pq183-packed-capture`) for **one campaign
+capture, dense or packed** (§4.10; merge of the packed source-unit capture
+below with the priced-inputs contract stamped beneath it). The campaign has
+one Hessian-capture accumulator: a dense Linear's pre-hook and a packed
+projection's derived routed rows land in the same three per-unit outputs
+(bounded scoring rows, the exact XᵀX, and the max|x| behind the static
+`input_global_scale`), so a packed unit feeds `hessian_capture.pt` and
+`input_scales.safetensors` by the dense path rather than by a second capture.
+Nothing packed reaches those artifacts yet: the main-entry population refusal
+below still turns a live packed population away before calibration, by name,
+until the exact cached-wire/stack-plan bridge (PrismaQuant #183) lands. Gate:
+`tests/test_tessera_campaign_packed.py` (max|x| asserted per packed unit).
 
 Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
 campaign exclusions** (§4.10). The dense target walk now consults the existing
@@ -63,6 +94,30 @@ not implement packed activation capture or the exact cached-wire/stack-plan
 producer bridge, and it makes no packed-MoE qualification claim. Gate:
 `tests/test_tessera_campaign_packed.py` (real main-entry synthetic mixed
 dense/packed regressions, both shown failing before the refusal).
+
+Re-stamped (2026-09-05, `claude/pq-tessera-audit`) for **the Tessera
+priced-inputs contract** (§5, §9.4; RobTand/prismaquant#193/#194/#195, one
+story). The campaign now writes the export leg's inputs beside its cache —
+`hessian_capture.pt` (the exact un-normalised per-unit XᵀX plus the identity
+triple, the shape `ActivationSource.from_capture` loads, with a JSON
+provenance sidecar) and `input_scales.safetensors` (one static
+`input_global_scale` per unit, fused-sibling unified) — and the driver's
+Tessera arm threads `TESSERA_HESSIAN` / `TESSERA_INPUT_SCALES` through one
+array to both the lane preflight and Tessera's exporter, which previously
+received only `--plan-json`/`--device` and so re-encoded H-aware allocations
+weights-only and could not export an E2M1 selection at all. A fifth lane gate
+(`tessera_export_lane.require_priced_export_inputs`) fails closed before the
+plan translation: an H-aware allocation without its identity-matched capture,
+a weights-only allocation handed a stray one, an undeclared allocation, and a
+W4A4 selection whose scales file does not cover every selected unit all
+refuse by name. Feeding it, the campaign prices every W4A4 anchor under the
+**served** static UE4M3 contract (`nvfp4_activation_qdq_served` at the unit's
+calibrated scale; a missing scale refuses rather than falling back to the
+dynamic FP32-scale RTN — existing E2M1 cost rows are stale and need
+re-measuring), and `assert_uniform_hessian_identity` compares the full
+required identity triple, so two draws can no longer collapse to one legacy
+key. Tests: `test_tessera_priced_export_inputs.py` plus the campaign-file
+additions.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
 census handoff instructions** (§9.4). The driver prints the producer's actual
@@ -5317,8 +5372,15 @@ the same format name, and the seam refuses rather than downgrade silently:
   `fit_ids_sha256`, source, split role, seed) beside it.
 * **The provenance has a consumer.** `tessera_menu.assert_uniform_hessian_
   identity` refuses a cost table whose Tessera rows carry two different Hessian
-  identities, and the allocator calls it at load and stamps the result into
-  `__prismaquant__.tessera_hessian`. Unstamped rows are counted as
+  identities — compared on the **full required triple** (`text_sha256` /
+  `fit_tokens` / `fit_ids_sha256`, read from
+  `tessera_hessian.HESSIAN_IDENTITY_FIELDS`) beside the legacy aliases, so
+  agreeing aliases cannot launder disagreeing triples (#195); pre-triple rows
+  are their own `legacy` class that never merges with a modern row, and a
+  partial triple refuses by name — and the allocator calls it at load and
+  stamps the result, canonical triple included, into
+  `__prismaquant__.tessera_hessian`, which is the identity the export gate
+  binds a `--hessian` capture against. Unstamped rows are counted as
   *unstamped*, not assumed to match. Provenance that nothing consumes is a
   confession log; this one is a gate.
 
@@ -5499,11 +5561,17 @@ predicts worst — and gated on a measured LOO error, not a taste constant.
 Two properties make the numbers comparable with the rest of the menu:
 
 * **Priced as served.** The render is scored under the route's own activation
-  contract — NVFP4's W4A4 quantiser on E2M1 rungs, per-token FP8 on E4M3 — taken
-  *by reference* from the serving format's registry row, so the A leg is not a
-  second implementation of it. The same weight rate therefore costs differently on
+  contract — the **served static UE4M3** W4A4 quantiser on E2M1 rungs
+  (`nvfp4_activation_qdq_served` at the unit's calibrated, fused-unified
+  `input_global_scale`, the same operation `scaled_fp4_quant` executes against
+  `trellis_input_global_scale`; a missing scale refuses,
+  `ActivationScaleContractError`, rather than falling back to the registry's
+  dynamic FP32-scale RTN — #194), per-token dynamic FP8 on E4M3, taken *by
+  reference* from the owned oracles, so the A leg is not a second
+  implementation of either. The same weight rate therefore costs differently on
   the two routes, which is asserted directly by
-  `test_the_same_weight_rate_costs_differently_on_the_two_routes`.
+  `test_the_same_weight_rate_costs_differently_on_the_two_routes`, and each
+  W4A4 row carries the `input_global_scale` it was scored under.
 * **Rendering identity (§P8).** The tensor that is priced *is* the decoded wire:
   `_encode_and_render` returns `read_unit_artifact(unit.blob)`, and the blob is
   stored beside the render in the cache. Not two code paths that agree — one
@@ -6166,7 +6234,14 @@ Export's `resolve_unit_route` has those facts and evaluates the predicates.
 **The boundary has an export arm, not a second codec.**
 `prismaquant/run-pipeline.sh` selects `EXPORT_CONTAINER=tessera`, preflights
 the lane and calls Tessera's own plan and encoding tools under `TESSERA_REPO`.
-`export_native_compressed.py` deliberately has no Tessera codec. The arm opens
+`export_native_compressed.py` deliberately has no Tessera codec. The arm
+threads the allocation's **priced inputs** to both the preflight and the
+exporter — `TESSERA_HESSIAN` (the campaign's `hessian_capture.pt`) and
+`TESSERA_INPUT_SCALES` (its `input_scales.safetensors`) — and
+`tessera_export_lane.require_priced_export_inputs` fails closed before the
+plan translation when the allocation's `tessera_hessian` stamp or its
+selected W4A4 routes declare a requirement the supplied files do not satisfy
+(#193): the artifact built must be the artifact priced. The arm opens
 a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
 serve, endpoint, gates, KL evaluator and executed activation contracts.
 Allocation uses `tessera_menu` and its reviewed development contract; that
@@ -6175,7 +6250,8 @@ The pending release and supported producer-tool boundary remain D33, rather
 than an absence of pipeline integration. Tests include
 `test_tessera_formats.py`, `test_tessera_footprint.py`,
 `test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
-`test_tessera_menu.py` and `test_tessera_export_lane.py`.
+`test_tessera_menu.py`, `test_tessera_export_lane.py` and
+`test_tessera_priced_export_inputs.py`.
 
 ## 6. Export & serving invariants
 

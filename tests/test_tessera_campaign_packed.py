@@ -84,7 +84,7 @@ def test_capture_packed_projections_uses_every_actual_routed_row(dtype):
                for expert in range(2) for projection in ("w1", "w3", "w2")]
     dense = "model.layers.0.attention"
     tokens = [batch.to(dtype=dtype) for batch in _routed_tokens()]
-    rows, hessians, counts = _collect_activations(
+    rows, hessians, counts, max_abs = _collect_activations(
         model, [dense, *targets], tokens, 1, "cpu", want_hessian=True)
     from prismaquant.routed_experts import profile_declared_packed_expert_projections
 
@@ -100,6 +100,10 @@ def test_capture_packed_projections_uses_every_actual_routed_row(dtype):
             assert counts[name] == actual.shape[0]
             torch.testing.assert_close(rows[name], actual[:1])
             torch.testing.assert_close(hessians[name], actual.T @ actual)
+            # The static-scale calibration input is the SAME accumulator a
+            # dense Linear feeds: max|x| over every routed row, never over
+            # the capped scoring prefix.
+            assert max_abs[name] == pytest.approx(float(actual.abs().amax()))
             unit = units[name]
             packed = getattr(unit.module, unit.param_name)
             expected = (packed[expert] if projection == "w2" else
@@ -109,6 +113,7 @@ def test_capture_packed_projections_uses_every_actual_routed_row(dtype):
     flat = torch.cat(tokens).reshape(-1, 4).float()
     assert counts[dense] == 8
     torch.testing.assert_close(hessians[dense], flat.T @ flat)
+    assert max_abs[dense] == pytest.approx(float(flat.abs().amax()))
     assert not model.model.layers[2].feed_forward.experts._forward_pre_hooks
     assert not model.model.layers[0].attention._forward_pre_hooks
 
@@ -126,6 +131,7 @@ def test_packed_capture_subset_keeps_the_same_routed_rows_and_hessian():
     for index in (0, 1):
         torch.testing.assert_close(subset[index][selected], whole[index][selected])
     assert subset[2][selected] == whole[2][selected] == 4
+    assert subset[3][selected] == whole[3][selected] > 0.0
 
 
 @pytest.mark.parametrize("want_hessian", [False, True])

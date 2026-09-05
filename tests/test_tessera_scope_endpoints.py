@@ -123,11 +123,19 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
     import transformers
 
     modules = {name: torch.nn.Linear(32, 32, bias=False) for name in (DENSE, EXPERT)}
-    model = SimpleNamespace(named_modules=lambda: modules.items(), eval=lambda: None)
+    # The campaign reads the nn.Module API: named_modules for its dense walk
+    # and named_parameters for the packed-population refusal (#183), so the
+    # stand-in presents both, and the parameters are those of its modules.
+    model = SimpleNamespace(
+        named_modules=lambda: modules.items(), eval=lambda: None,
+        named_parameters=lambda: (
+            (f"{name}.{attr}", parameter)
+            for name, module in modules.items()
+            for attr, parameter in module.named_parameters()))
     monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", lambda *a, **k: model)
     monkeypatch.setattr(render, "tessera_encoder_hessian_status", lambda: {"accepted": True})
     monkeypatch.setattr(campaign, "_calibration_tokens", lambda *a: ([torch.ones(1, 1, dtype=torch.int64)], "fixture"))
-    monkeypatch.setattr(campaign, "_collect_activations", lambda *a, **k: ({}, {}, {}))
+    monkeypatch.setattr(campaign, "_collect_activations", lambda *a, **k: ({}, {}, {}, {}))
     monkeypatch.setattr(sensitivity_probe, "discover_moe_structure", lambda *a, **k: {
         EXPERT: ("model.layers.0.mlp.gate", "0")})
     seen = {}

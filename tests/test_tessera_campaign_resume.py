@@ -27,6 +27,9 @@ def _main_fixture(monkeypatch, tmp_path, *, priced=False):
         "text": "one draw",
         "rows": torch.randn(4, 256, generator=torch.Generator().manual_seed(183)),
         "hessian": torch.eye(256),
+        # The calibration maximum behind the unit's static input_global_scale;
+        # a scoring input of every W4A4 row, bound like the rows themselves.
+        "max_abs": 3.0,
         "menu": ([SimpleNamespace(
             format_name="TESSERA_E4M3_K1_R1024", family="TESSERA_E4M3_K1",
             body_rate_q256=1024, bpp=4.0)] if priced else []),
@@ -35,6 +38,9 @@ def _main_fixture(monkeypatch, tmp_path, *, priced=False):
     transformers.AutoModelForCausalLM = SimpleNamespace(
         from_pretrained=lambda *_args, **_kwargs: model)
     monkeypatch.setitem(sys.modules, "transformers", transformers)
+    # The fresh run prices under the default static-scale policy so a test
+    # can change the policy afterwards and see the identity refuse it.
+    monkeypatch.delenv("PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE", raising=False)
     monkeypatch.setattr(model_profiles, "detect_profile", lambda _path: DefaultProfile())
     monkeypatch.setattr(tessera_render, "tessera_encoder_hessian_status", lambda: {
         "accepted": True, "reason": "CPU test fixture", "kwargs": [], "recipe": {},
@@ -45,6 +51,7 @@ def _main_fixture(monkeypatch, tmp_path, *, priced=False):
         {UNIT: inputs["rows"]},
         {UNIT: inputs["hessian"]} if kwargs["want_hessian"] else {},
         {UNIT: len(inputs["rows"]) if kwargs["want_hessian"] else 0},
+        {UNIT: float(inputs["max_abs"])},
     ))
     monkeypatch.setattr(tessera_campaign, "expand_menus_for_targets",
                         lambda _weights, targets, **_kwargs: {
@@ -132,8 +139,8 @@ def test_main_refuses_changed_hessian_values_under_same_draw(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("changed", [
-    "weight", "scoring_rows", "corpus", "tokens", "hessian_mode", "menu",
-    "recipe", "encoder_source", "prismaquant_source", "scope",
+    "weight", "scoring_rows", "input_scale", "scale_policy", "corpus", "tokens",
+    "hessian_mode", "menu", "recipe", "encoder_source", "prismaquant_source", "scope",
 ])
 def test_main_refuses_changed_encoding_or_scoring_inputs(monkeypatch, tmp_path, changed):
     (campaign, checkpoint, argv, model, inputs), _payload = _fresh_priced_campaign(
@@ -145,6 +152,13 @@ def test_main_refuses_changed_encoding_or_scoring_inputs(monkeypatch, tmp_path, 
             model.model.layers[0].proj.weight[0, 0] += 1
     elif changed == "scoring_rows":
         inputs["rows"][0, 0] += 1
+    elif changed == "input_scale":
+        # The served A-side contract is a scoring input: another calibration
+        # maximum is another static input_global_scale for the unit.
+        inputs["max_abs"] *= 2
+    elif changed == "scale_policy":
+        # ...and so is the env-resolved policy that turns the maximum into it.
+        monkeypatch.setenv("PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE", "1")
     elif changed == "corpus":
         inputs["text"] = "different corpus, same selected tokens"
     elif changed == "tokens":
