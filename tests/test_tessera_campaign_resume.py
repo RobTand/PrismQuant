@@ -100,6 +100,43 @@ def _fresh_priced_campaign(monkeypatch, tmp_path, *, hessian=False):
     return fixture, payload
 
 
+@pytest.mark.parametrize("initial,rounds,budget,rates,expected", [
+    (1, 2, 3, [1024, 1280, 1536], [1024, 1280, 1536]),
+    (2, 2, 3, [1024, 1280, 1536], [1024, 1280, 1536]),
+    (2, 1, 3, [1024, 1280, 1536], [1024, 1536]),
+    (2, 2, 2, [1024, 1280, 1536], [1024, 1536]),
+    (2, 2, 3, [1024, 1536], [1024, 1536]),
+    (2, 2, 3, [1024], [1024]),
+])
+def test_main_bootstraps_loo_from_two_endpoints(
+    monkeypatch, tmp_path, initial, rounds, budget, rates, expected,
+):
+    """One/two requested initial anchors still refine when there is room."""
+    campaign, _checkpoint, argv, _model, inputs = _main_fixture(
+        monkeypatch, tmp_path, priced=True)
+    family = "TESSERA_E4M3_K1"
+    inputs["menu"] = [SimpleNamespace(
+        format_name=f"{family}_R{rate}", family=family,
+        body_rate_q256=rate, bpp=rate / 256,
+        admission=SimpleNamespace(activation_contract="a8"),
+    ) for rate in rates]
+    argv[argv.index("--max-rounds") + 1] = str(rounds)
+    assert campaign.main([
+        *argv, "--anchors", str(initial), "--anchor-budget", str(budget),
+        "--max-artifact-bpp", "0",
+    ]) == 0
+    with (tmp_path / "cost.pkl").open("rb") as handle:
+        payload = pickle.load(handle)
+    surface = payload["provenance"]["surfaces"][UNIT][family]
+    assert surface["rungs"] == expected
+    assert surface["anchors"] == len(expected)
+    for rate in expected:
+        assert payload["costs"][UNIT][f"{family}_R{rate}"]["output_mse_measured"]
+    if len(expected) < 3:
+        assert surface["loo_max_abs_log2_error"] is None
+        assert surface["gate_closed"] is False
+
+
 def _forbid_reencode(monkeypatch, campaign):
     def forbidden(**_kwargs):
         pytest.fail("resume attempted another encode instead of validating the priced bytes")

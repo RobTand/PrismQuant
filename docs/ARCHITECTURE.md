@@ -1,7 +1,14 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/audit4-integration`. Stamps
+As of: 2026-09-05 · `codex/two-anchor-bootstrap`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/two-anchor-bootstrap`) for campaign
+bootstrapping from two endpoints (§4.10). A requested initial count of one
+or two retains both endpoints; subsequent rounds use the existing widest-gap
+fallback until leave-one-out can be evaluated, subject to the existing budget,
+round limit and available rungs. This repairs scheduling without qualifying
+interpolation quality or changing production defaults.
 
 Re-stamped (2026-09-05, `codex/audit4-integration`) for the coordinated
 producer API pin following Tessera #356: `ba582d476a3b6db9057ebd1385dc52926f171451`.
@@ -6464,6 +6471,12 @@ because a round adds ONE anchor per failing surface, so capping rounds capped
 how far the worst surface could be improved -- the opposite of the loop's
 purpose. Each surface records its anchors, encode seconds and which of the two
 stopped it.
+
+`--anchors 1` and `--anchors 2` both start with the two endpoints when the
+legal range has more than one rung. Before three anchors are available, the
+next round splits the widest gap using the shared legal grid. Budget, round
+and available-rung limits still apply; fewer than three measurements cannot
+close the leave-one-out gate and report its error as null.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
