@@ -1,7 +1,32 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-201-dead-override`. Stamps
+As of: 2026-09-05 · `claude/pq-decisions`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
+decision in the paired validation driver** (§7.2; #87). The opt-in
+`experiments/pq87_paired_validation.py` counted a candidate arm as observed
+when the receipt's stored `decision.verdict` agreed with the client's exit
+status — a stored bit, which `replay_no_new_failures` exists to refuse and
+which had no caller outside the tests (pq-190 review, side-finding 3). The
+driver now replays the stored decision against the control receipt of the
+same run before the verdict counts; a decision that does not replay refuses
+by name (`boundary decision differs from replayed paired policy`) and the
+run stays inconclusive. Nothing else moves: no shipcard slot, threshold or
+default. Gate: `tests/test_pq87_paired_validation.py`
+(`test_stored_candidate_verdict_is_replayed_against_the_control_not_trusted`,
+pre-fix: the forged `accepted` on a refused pair counted as observed).
+
+Re-stamped (2026-09-05, `claude/pq-decisions`) for the **pinned Tessera CI
+dependency's receipt** (§8.6; RobTand/prismaquant#175). RobTand/tessera went
+public on 2026-09-05; the unchanged workflow then installed the pin with
+ordinary checkout credentials in both jobs and ran green end-to-end (run
+33950707718, `main` at `8a77b0ad`, 06:45Z: `Check out pinned Tessera` and
+`Install pinned Tessera` green, 4698 passed). That is the issue's own
+completion receipt. The `codex/pq-175`
+stamp below recorded "checkout failure is expected until Rob publishes it" as
+the then-current state; this stamp closes that sentence. No token bridge was
+added: the workflow needs no secret now, and one would not reach fork PRs.
 
 Re-stamped (2026-09-05, `claude/pq-201-dead-override`) for **a
 dead-vendored-override refusal that actually refuses** (§8.1; PrismaQuant
@@ -9031,9 +9056,13 @@ every push and PR, on Python 3.12 with CPU torch. Before PrismaQuant is
 installed, both jobs use the stdlib-only `tools/resolve_tessera_dev_pin.py` to
 derive the exact Tessera checkout from `TESSERA_DEV_PIN_COMMIT`, stop
 without publishing a ref if that resolution fails, and install that checkout
-before exercising the package. Ordinary checkout access is sufficient once
-Tessera is public; while it remains private pending fixes and audit, checkout
-failure is expected. §12 D11.
+before exercising the package. Ordinary checkout access is sufficient:
+RobTand/tessera has been public since 2026-09-05, and the first receipt is run
+33950707718 (`main` at `8a77b0ad`, 2026-09-05 06:45Z), where `Check out
+pinned Tessera` fetched `1221d2a4…` and `Install pinned Tessera` reported
+`Successfully installed tessera-quant-0.1.0` in both jobs, and the suite ran
+green (4698 passed, 136 skipped, 3 xfailed, 21m20s). No repository secret
+exists or is wanted for this step (#175). §12 D11.
 
 ### 8.7 A fourth plug-in point: `FormatCostPlugin` (formats, not models)
 
