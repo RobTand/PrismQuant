@@ -488,10 +488,57 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
 #: together.
 PRICED_HESSIAN_IDENTITY_FIELDS = ("text_sha256", "fit_tokens", "fit_ids_sha256")
 
+#: The capture-context roster used only where the running Tessera does not
+#: publish ``CAPTURE_CONTEXT``: the pinned development Tessera (1221d2a)
+#: predates the constant, and this gate must refuse on a machine that can read
+#: the payload without importing ``tessera`` at all.  **Copied from tessera
+#: 0.1.0 at release 3efd690** (``src/tessera/export.py:244``), and this is the
+#: ONE place the roster is typed -- a second spelling of a seal's key set is
+#: how the seal goes vacuous (RobTand/prismaquant#216).
+_CAPTURE_CONTEXT_FALLBACK = ("model", "seqlen", "source")
+
+#: Names for where :data:`CAPTURE_CONTEXT_FIELDS` was read, so a refusal can
+#: say whether the digest covered Tessera's own roster or the copied one.
+_CAPTURE_CONTEXT_FROM_TESSERA = "tessera.export.CAPTURE_CONTEXT"
+_CAPTURE_CONTEXT_FROM_FALLBACK = (
+    "prismaquant.tessera_export_lane._CAPTURE_CONTEXT_FALLBACK "
+    "(copied from tessera 0.1.0 release 3efd690)")
+
+
+def _tessera_capture_context() -> "tuple[str, ...] | None":
+    """``tessera.export.CAPTURE_CONTEXT``, or None where the running Tessera
+    predates the constant (the pinned 1221d2a does) or is not importable."""
+    try:
+        from tessera.export import CAPTURE_CONTEXT
+    except ImportError:
+        return None
+    return tuple(CAPTURE_CONTEXT)
+
+
+def _capture_context_fields() -> "tuple[tuple[str, ...], str]":
+    """The capture-context roster this digest covers, and where it was read.
+
+    Read from the installed Tessera where it publishes the constant, exactly
+    as ``tessera_hessian.HESSIAN_IDENTITY_FIELDS`` reads the identity triple
+    from ``tessera.export.HESSIAN_IDENTITY`` -- the roster belongs to the code
+    that owns the seal, and typing a second copy of it is how the two rules
+    drift apart unnoticed.  Where the constant is absent the one documented
+    fallback above is used and named, because such a pin also has no
+    ``ActivationSource.capture_sha256`` and the runtime cross-check cannot see
+    the difference (RobTand/prismaquant#216).
+    """
+    published = _tessera_capture_context()
+    if published is None:
+        return _CAPTURE_CONTEXT_FALLBACK, _CAPTURE_CONTEXT_FROM_FALLBACK
+    return published, _CAPTURE_CONTEXT_FROM_TESSERA
+
+
 #: The capture-context fields Tessera's seal covers beside the triple
 #: (``tessera.export.CAPTURE_CONTEXT``): two captures of one token prefix
-#: differ only here when the sequence layout differs (tessera#214).
-CAPTURE_CONTEXT_FIELDS = ("model", "seqlen", "source")
+#: differ only here when the sequence layout differs (tessera#214).  Read from
+#: Tessera rather than typed, and :func:`_require_capture_context_roster`
+#: refuses when what was read has since drifted from what Tessera publishes.
+CAPTURE_CONTEXT_FIELDS, CAPTURE_CONTEXT_FIELDS_SOURCE = _capture_context_fields()
 
 #: The schema string sealed into the digest, Tessera's own spelling.
 HESSIAN_CAPTURE_SHA256_SCHEMA = "tessera.hessian_capture.v1"
@@ -501,6 +548,41 @@ HESSIAN_CAPTURE_SHA256_SCHEMA = "tessera.hessian_capture.v1"
 #: the static A-side scale VALUE each selected unit's cost row was priced
 #: under (RobTand/prismaquant#204).
 PRICED_STATIC_SCALES_SCHEMA = "prismaquant.tessera_activation_static_scales.v1"
+
+
+def _require_capture_context_roster() -> None:
+    """Refuse a digest whose capture-context roster is not the running
+    Tessera's.
+
+    :data:`CAPTURE_CONTEXT_FIELDS` is resolved once at import; this reads the
+    constant live and compares, so a roster that has since moved -- a Tessera
+    swapped under a long-lived process, an edited fallback, a pin whose
+    ``CAPTURE_CONTEXT`` grew a field this copy lacks -- refuses by name here
+    instead of digesting under the wrong rule.  It is the half of the drift
+    guard that does **not** need ``ActivationSource.capture_sha256``: at a pin
+    that predates the seal (1221d2a) :func:`_crosscheck_capture_seal` returns
+    None and compares nothing, and two captures differing only in a field this
+    roster lacks would digest identically -- binding an allocation to a
+    capture that did not price it, which is exactly the silent state
+    RobTand/prismaquant#204 was opened to close (#216).
+    """
+    published = _tessera_capture_context()
+    if published is None or published == tuple(CAPTURE_CONTEXT_FIELDS):
+        return
+    ours = tuple(CAPTURE_CONTEXT_FIELDS)
+    missing = tuple(f for f in published if f not in ours)
+    extra = tuple(f for f in ours if f not in published)
+    raise TesseraExportLaneError(
+        f"PrismaQuant digests the capture context under {ours} "
+        f"({CAPTURE_CONTEXT_FIELDS_SOURCE}) but tessera.export."
+        f"CAPTURE_CONTEXT names {published} "
+        f"(missing here: {missing or '()'}; not in Tessera: {extra or '()'}). "
+        "The two seal rules cover different provenance, so two captures that "
+        "differ only in a field this roster lacks digest identically and an "
+        "allocation binds to a capture that did not price it. No allocation "
+        "can be bound against this Tessera until the rosters agree: upgrade "
+        "PrismaQuant to a Tessera-derived roster, or pin the Tessera whose "
+        "CAPTURE_CONTEXT this digest was written against.")
 
 
 def hessian_capture_sha256(hessians: "Mapping[str, Any]",
@@ -527,12 +609,16 @@ def hessian_capture_sha256(hessians: "Mapping[str, Any]",
     Where the running Tessera publishes ``capture_sha256`` the gate computes
     both and refuses on disagreement, so a drift in either rule is a refusal
     here rather than a silent divergence
-    (``test_the_digest_rule_is_tesseras_capture_seal``).
+    (``test_the_digest_rule_is_tesseras_capture_seal``).  Where it does not,
+    the roster half of that drift is still caught:
+    :func:`_require_capture_context_roster` refuses before a byte is digested
+    if ``tessera.export.CAPTURE_CONTEXT`` is not the roster covered below.
     """
     import hashlib
 
     import torch
 
+    _require_capture_context_roster()
     identity = {field: provenance.get(field)
                 for field in PRICED_HESSIAN_IDENTITY_FIELDS}
     identity.update({field: provenance.get(field)

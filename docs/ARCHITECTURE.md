@@ -1,7 +1,37 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-204`. Stamps
+As of: 2026-09-05 · `claude/pq-gates`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-gates`) for **the export seal's
+capture-context roster read from Tessera rather than typed** (§5;
+RobTand/prismaquant#216, P2). `tessera_export_lane.CAPTURE_CONTEXT_FIELDS` was
+the literal `("model", "seqlen", "source")` and nothing in the tree read
+`tessera.export.CAPTURE_CONTEXT`, so half of the roster
+`ActivationSource.capture_sha256` seals had no owner — while its sibling
+`tessera_hessian.HESSIAN_IDENTITY_FIELDS` derives the identity triple from
+`tessera.export.HESSIAN_IDENTITY` and a test pins the two together. The two
+rules agree today; a field added to Tessera's constant would have split them,
+and at a pin with no `capture_sha256` (the dev pin 1221d2a) the split is
+silent: two captures differing only in the new field digest identically and an
+allocation binds to a capture that did not price it, which is #204's failure
+reintroduced with no signal. Now: `CAPTURE_CONTEXT_FIELDS,
+CAPTURE_CONTEXT_FIELDS_SOURCE = _capture_context_fields()` reads
+`tessera.export.CAPTURE_CONTEXT` where the running Tessera publishes it and
+otherwise falls back to `_CAPTURE_CONTEXT_FALLBACK` — the ONE place the roster
+is typed, commented with the Tessera it was copied from (0.1.0, release
+`3efd690`, `src/tessera/export.py:244`) — and names which was used.
+`_require_capture_context_roster`, called from `hessian_capture_sha256` before
+a byte is digested, re-reads the constant live and refuses by name when it is
+not the roster the digest covers, listing the fields each side names; this is
+the half of the drift guard that needs no `capture_sha256`, so it holds at the
+dev pin where `_crosscheck_capture_seal` compares nothing. No wire bytes, no
+digest values and no report keys change while the rosters agree. Tests:
+`test_tessera_priced_export_inputs.py` — `test_the_capture_context_roster_is_
+tesseras` (roster equality, runs at BOTH pins, unlike the skipped runtime-seal
+comparison), the drift refusal at the digest and at the gate, and the
+documented fallback (pre-fix at the release tip: `DID NOT RAISE
+TesseraExportLaneError`, the bind reaching the seal cross-check instead).
 
 Re-stamped (2026-09-05, `claude/pq-204`) for **binding the Tessera export
 inputs to the payload and the values that priced the allocation** (§5;
