@@ -3,6 +3,22 @@
 As of: 2026-09-05 · `codex/audit4-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/audit4-input-handoff`) for **retaining the
+priced-input binding across producer intake** (§5.7; PrismaQuant #231).
+The build anchor carries `priced_inputs` with schema
+`tessera.priced_export_inputs.v1`, the expected capture SHA-256 (null for a
+weights-only allocation), and the exact selected F32 `input_global_scales`.
+`--print-build-sha256` returns the digest of the preflight's serialized build
+bytes directly to the driver; diagnostics go to stderr. The exporter receives
+`--priced-inputs` and `--priced-inputs-sha256`, reads and verifies that build
+snapshot once, and checks the actual loaded `ActivationSource` seal and
+owned scalar values before creating output. The existing per-unit H seal
+continues to guard consumption. Same-path campaign republishing remains
+supported: replacement before intake refuses; replacement afterwards leaves
+the owned inputs unchanged. No Hessian copy/cache, wire recipe or serving gate
+changes. CPU regressions exercise H, scale and build replacement, successful
+unchanged inputs and the existing no-H/no-scale/all-BF16 controls.
+
 Re-stamped (2026-09-05, `codex/audit4-admission`) for production route
 conditions (PrismaQuant #234). After the production pin and admission gates
 succeed, `route_admission` derives status and required serving flags from the
@@ -7441,6 +7457,18 @@ and a by-name refusal when the two rosters disagree — #216) and the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation
 that carries no binding at all as unbound. The campaign writes those two
+files at replaceable paths, so the successful check also travels in the
+build's `priced_inputs` block: `hessian_capture_sha256` and
+`input_global_scales` keyed by `<unit>.input_global_scale`, under
+`tessera.priced_export_inputs.v1`. The driver captures the build digest
+directly from `--print-build-sha256` and hands both the build path and that
+digest to Tessera's `--priced-inputs` / `--priced-inputs-sha256` intake. Tessera
+compares the digest to the exact build bytes it reads once, then compares the
+expectations to its loaded capture seal and copied float scales before any
+output creation. A second campaign may republish the paths; an export either
+retains the already loaded priced inputs or refuses the replacement. The
+capture's existing per-unit consumption seal still protects cached expert
+source/H checks and dense encoding. The campaign writes those two
 files at one point in `main()`: **after** the resume identity has accepted
 this run's inputs and **before** the anchor loop (#211). Before the loop, so a
 deadline-stopped campaign still leaves them (#193); after the gate, because
