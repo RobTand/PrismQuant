@@ -966,18 +966,20 @@ def require_priced_export_inputs(
       unbound and refused by name, never read as "any capture of this draw".
 
     * **The static activation scales.**  Every selected rung whose route
-      executes the static NVFP4 contract was priced under a calibrated
-      ``input_global_scale``, and the exporter refuses NVFP4 routes without
+      executes a static activation contract was priced under a calibrated
+      ``input_global_scale``, and the exporter refuses such routes without
       ``--input-scales`` -- but only after encoding everything else.  This
-      gate requires the file, every selected W4A4 unit's key in it, and (#204)
+      gate requires the file, every selected such unit's key in it, and (#204)
       that the VALUE under each key is the value the allocation's
       ``tessera_activation_static_scales`` block says priced that unit,
-      before a single unit is encoded.
+      before a single unit is encoded.  Which rungs those are is the registry
+      row's answer, not its name's (#221).
     """
     from .footprint import _read_safetensors_header
     from .layer_config import load_assignment, read_layer_config_metadata
     from .tessera_formats import (
-        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+        parse_tessera_format_name, route_static_activation_contract,
+        tessera_serving_route, tessera_wire_recipe,
     )
 
     selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
@@ -986,7 +988,8 @@ def require_priced_export_inputs(
         "hessian_required": False, "hessian": None,
         "hessian_capture_sha256": None, "hessian_capture_seal_crosscheck": None,
         "input_scales_required": False, "input_scales": None,
-        "w4a4_units": 0, "input_scales_bound_units": 0,
+        "static_activation_contract_units": 0,
+        "input_scales_bound_units": 0,
     }
     if not selected:
         return report
@@ -1085,7 +1088,15 @@ def require_priced_export_inputs(
             "the flag, or re-price with --hessian require."
         )
 
-    w4a4 = []
+    # Which selected units need a calibrated static A-side scale is the answer
+    # of the registry row the rung's route names, read through the one
+    # derivation that owns it (``route_static_activation_contract``) -- never a
+    # compare of that row's NAME against "NVFP4" (#205's rule, #221's fix).
+    # The ROUTE accessor and not ``format_registry.get_format(fmt)``: resolving
+    # a Tessera rung by name reaches ``synthesize_tessera_spec``, which imports
+    # the ``tessera`` package, and this preflight gates without it (see this
+    # module's docstring).  The accessor reads a plain registry row instead.
+    static_contract_units = []
     for name, fmt in sorted(selected.items()):
         parsed = parse_tessera_format_name(fmt)
         if parsed is None:
@@ -1093,18 +1104,19 @@ def require_priced_export_inputs(
                 f"{name}: {fmt!r} is not a Tessera format name")
         family, rung = parsed
         wire = tessera_wire_recipe(family, rung)
-        if tessera_serving_route(
-                family, wire, rung).activation_source_format == "NVFP4":
-            w4a4.append(name)
-    report["w4a4_units"] = len(w4a4)
-    if w4a4:
+        route = tessera_serving_route(family, wire, rung)
+        if route_static_activation_contract(route) is not None:
+            static_contract_units.append(name)
+    report["static_activation_contract_units"] = len(static_contract_units)
+    if static_contract_units:
         report["input_scales_required"] = True
         if input_scales_path is None:
             raise TesseraExportLaneError(
-                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
-                "activation contract (first: " + w4a4[0] + ") and no "
+                f"{len(static_contract_units)} selected unit(s) execute a "
+                "static activation contract (first: "
+                + static_contract_units[0] + ") and no "
                 "--input-scales file was supplied. The exporter requires one "
-                "input_global_scale per W4A4 module and would refuse -- after "
+                "input_global_scale per such module and would refuse -- after "
                 "encoding everything else. Pass TESSERA_INPUT_SCALES= the "
                 "campaign's input_scales.safetensors (written beside its "
                 "--cache-dir), whose values are the scales the costs were "
@@ -1119,37 +1131,38 @@ def require_priced_export_inputs(
             priced_block, Mapping) else None
         if not isinstance(priced_units, Mapping):
             raise TesseraExportLaneError(
-                f"{len(w4a4)} selected unit(s) execute the static NVFP4 "
-                "activation contract but the allocation's metadata carries "
-                "no tessera_activation_static_scales block, so the "
+                f"{len(static_contract_units)} selected unit(s) execute a "
+                "static activation contract but the allocation's metadata "
+                "carries no tessera_activation_static_scales block, so the "
                 "input_global_scale each was priced under is unbound and "
                 "the file's values cannot be checked. This allocation came "
                 "from a pre-#204 allocator; re-allocate from the campaign's "
                 "cost table, whose rows carry the priced scale."
             )
-        unpriced = [name for name in w4a4
+        unpriced = [name for name in static_contract_units
                     if not isinstance(priced_units.get(name), (int, float))
                     or isinstance(priced_units.get(name), bool)]
         if unpriced:
             raise TesseraExportLaneError(
                 "the allocation priced no input_global_scale for selected "
-                f"W4A4 unit(s) {unpriced[:5]}{'...' if len(unpriced) > 5 else ''}"
+                f"unit(s) {unpriced[:5]}{'...' if len(unpriced) > 5 else ''}"
                 " (tessera_activation_static_scales.units has no numeric "
                 "value for them); a static-contract unit whose priced scale "
                 "is unknown cannot be bound to any file. Re-run the campaign "
-                "so every W4A4 row carries its scale, and re-allocate."
+                "so every static-contract row carries its scale, and "
+                "re-allocate."
             )
         input_scales_path = Path(input_scales_path)
         if not input_scales_path.is_file():
             raise TesseraExportLaneError(
                 f"--input-scales {input_scales_path} does not exist")
         header = _read_safetensors_header(str(input_scales_path))
-        missing = [name for name in w4a4
+        missing = [name for name in static_contract_units
                    if f"{name}.input_global_scale" not in header]
         if missing:
             raise TesseraExportLaneError(
                 f"--input-scales {input_scales_path} carries no "
-                "input_global_scale for selected W4A4 unit(s) "
+                "input_global_scale for selected static-contract unit(s) "
                 f"{missing[:5]}{'...' if len(missing) > 5 else ''}; the "
                 "exporter's fused join cannot invent a member's scale, and a "
                 "partial file exports a module the costs did not price."
@@ -1158,13 +1171,13 @@ def require_priced_export_inputs(
 
         with safe_open(str(input_scales_path), framework="pt",
                        device="cpu") as handle:
-            for name in w4a4:
+            for name in static_contract_units:
                 tensor = handle.get_tensor(f"{name}.input_global_scale")
                 if tensor.numel() != 1:
                     raise TesseraExportLaneError(
                         f"--input-scales {input_scales_path}: "
                         f"{name}.input_global_scale has shape "
-                        f"{list(tensor.shape)}; the static NVFP4 contract "
+                        f"{list(tensor.shape)}; a static activation contract "
                         "reads one scalar per unit and nothing else can be "
                         "compared with the priced scale."
                     )
@@ -1194,7 +1207,7 @@ def require_priced_export_inputs(
                         "this file."
                     )
         report["input_scales"] = str(input_scales_path)
-        report["input_scales_bound_units"] = len(w4a4)
+        report["input_scales_bound_units"] = len(static_contract_units)
     return report
 
 
@@ -1331,7 +1344,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input-scales", default=None,
                         help="safetensors of <unit>.input_global_scale (the "
                              "campaign's input_scales.safetensors); required "
-                             "to cover every selected W4A4 unit")
+                             "to cover every selected unit whose route "
+                             "executes a static activation contract")
     parser.add_argument("--target-profile", default=None,
                         help="serving profile supplying or cross-checking the exact platform")
     parser.add_argument("--write-build-json", default=None,
