@@ -342,8 +342,14 @@ def require_serving_target(target=None, *, table=None):
     return validated
 
 
-def _source_unit_shapes(model_path: str | Path, profile) -> dict[str, list[tuple[str, tuple]]]:
-    """Read source headers and the shared name projection; never load weights."""
+def _source_unit_shapes(model_path: str | Path, profile,
+                        shards: dict[str, str] | None = None) -> dict[str, list[tuple[str, tuple]]]:
+    """Read source headers and the shared name projection; never load weights.
+
+    ``shards``, when given, is filled with ``{tensor: shard basename}`` for
+    every mapped tensor, so a carried producer roster can be checked against
+    the shard each source tensor actually lives in.
+    """
     from .footprint import _read_safetensors_header
     from .name_projection import MAPPED, NameProjection
     from .source_prefetch import _unique_safetensor_shards
@@ -375,7 +381,130 @@ def _source_unit_shapes(model_path: str | Path, profile) -> dict[str, list[tuple
                 # checkpoint unexportable; a selected one has no valid shape.
                 shape = ()
             by_unit.setdefault(unit, []).append((name, tuple(shape)))
+            if shards is not None:
+                shards[name] = Path(path).name
     return by_unit
+
+
+def _carried_expert_projection(meta: Mapping[str, Any], selected_routed: Mapping[str, str],
+                               shards: Mapping[str, str]) -> dict | None:
+    """Re-bind the selected routed units to the projection the allocation carries.
+
+    A carried projection is an UNLOCK, not a new requirement: an allocation
+    that carries none keeps the pre-#183 lane exactly -- routed units resolve
+    on their source-member shapes and a predicated cell is still refused for
+    lacking the producer's executed-unit attestation -- so this returns
+    ``None``.  What it will not do is read priced-wire receipts that are bound
+    to nothing: an allocation carrying wires, stack formats or a wire
+    directory with the projection stripped out is refused by name.
+
+    When a projection IS carried, the producer's record is the only
+    attestation of the executed unit: every selected routed unit must be a
+    projected unit whose source tensor the producer hashed in the shard it
+    actually lives in, each executed stack must be selected whole at one rung
+    (the stamp the allocator wrote must agree), and every selected rung's
+    priced bytes must sit in the campaign's wire directory under their
+    receipt.  What comes back is the bundle the exporter's
+    ``--cached-expert-units`` intake consumes.
+    """
+    from .tessera_expert_projection import (
+        EXPERT_WIRES_KEY, PROJECTION_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY,
+        ExpertProjectionError, carried_units, require_stack_uniform_assignment,
+        verify_expert_wire_record,
+    )
+    from .tessera_formats import parse_tessera_format_name
+
+    carried = meta.get(PROJECTION_KEY)
+    if carried is None:
+        orphaned = sorted(key for key in (EXPERT_WIRES_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY)
+                          if meta.get(key) is not None)
+        if orphaned:
+            raise TesseraExportLaneError(
+                f"the allocation carries {orphaned} but no producer expert projection "
+                f"({PROJECTION_KEY}); priced expert wires that are bound to no executed "
+                "unit cannot be handed to the exporter (PrismaQuant #183)")
+        return None
+    try:
+        source, units, stack_of = carried_units(carried)
+        for name in sorted(selected_routed):
+            unit = units.get(name)
+            if unit is None:
+                raise ExpertProjectionError(
+                    f"{name}: selected routed expert unit is not in the carried producer "
+                    "projection; the producer did not project it")
+            tensor = unit["source_tensor"]
+            hashed = source["tensors"].get(tensor)
+            if hashed != shards.get(tensor):
+                raise ExpertProjectionError(
+                    f"{name}: the producer hashed {tensor} in shard {hashed!r}, the source "
+                    f"checkpoint holds it in {shards.get(tensor)!r}")
+        stack_formats = require_stack_uniform_assignment(selected_routed, stack_of, units)
+        stamped = meta.get(STACK_FORMATS_KEY)
+        if stamped is not None and {k: v for k, v in stamped.items()
+                                    if k in stack_formats} != stack_formats:
+            raise ExpertProjectionError(
+                f"the allocation's {STACK_FORMATS_KEY} stamp {stamped} disagrees with the "
+                f"selected stack formats {stack_formats}")
+        wire_dir = meta.get(WIRE_DIR_KEY)
+        if not isinstance(wire_dir, str) or not wire_dir:
+            raise ExpertProjectionError(
+                f"the allocation names no {WIRE_DIR_KEY} for its priced expert wires")
+        wires = meta.get(EXPERT_WIRES_KEY)
+        if not isinstance(wires, Mapping):
+            raise ExpertProjectionError(
+                f"the allocation carries a producer projection but no {EXPERT_WIRES_KEY}")
+        records = {}
+        for name, fmt in sorted(selected_routed.items()):
+            family, q256 = parse_tessera_format_name(fmt)
+            record = wires.get(name)
+            if record is None:
+                raise ExpertProjectionError(
+                    f"{name}: selected {fmt} has no priced wire receipt in the allocation")
+            records[name] = verify_expert_wire_record(
+                record, name=name, unit=units[name], q256=int(q256),
+                grid=family.payload_grid().name, wire_dir=Path(wire_dir))
+    except ExpertProjectionError as exc:
+        raise TesseraExportLaneError(f"expert projection: {exc}") from exc
+    return {"source": source, "units": records, "stacks": stack_formats,
+            "wire_dir": wire_dir,
+            "geometry": {name: (units[name]["rows"], units[name]["cols"])
+                         for name in selected_routed}}
+
+
+#: The bundle's name inside the campaign's wire directory.  One name: the
+#: driver reads the path back from the build anchor rather than guessing it.
+CACHED_EXPERT_UNITS_FILENAME = "cached_expert_units.json"
+
+
+def write_cached_expert_units(projection: Mapping[str, Any]) -> Path:
+    """Write the producer's cached-unit bundle beside the priced wires.
+
+    The exporter reads the bundle's files from the manifest's own directory,
+    so the manifest lives in the campaign's wire directory and nowhere else;
+    the schema is the producer's constant, imported rather than restated, and
+    a checkout whose producer has no such API cannot bundle (refused by name).
+    """
+    from .tessera_expert_projection import ExpertProjectionError, cached_units_manifest
+
+    try:
+        from tessera.cached_unit import CACHE_SCHEMA
+    except ImportError as exc:
+        raise TesseraExportLaneError(
+            "cannot bundle the priced expert wires: this checkout's tessera has no "
+            "cached_unit bundle API (tessera.cached_unit.CACHE_SCHEMA); the exporter's "
+            "--cached-expert-units intake needs the release producer (PrismaQuant #192)"
+        ) from exc
+    try:
+        manifest = cached_units_manifest(projection["source"], projection["units"],
+                                         schema=CACHE_SCHEMA)
+    except ExpertProjectionError as exc:
+        raise TesseraExportLaneError(f"expert projection: {exc}") from exc
+    destination = Path(projection["wire_dir"]) / CACHED_EXPERT_UNITS_FILENAME
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                         encoding="utf-8")
+    temporary.replace(destination)
+    return destination
 
 
 def require_assignment_scope(model_path: str | Path, assignment_path: str | Path,
@@ -384,9 +513,15 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
 
     The existing translator still owns serialization and expert aggregation.
     This gate accepts exact two-dimensional source units, not a guessed slice
-    of a packed source tensor. These are source-member shapes, not a claim
-    about the producer's eventual fused execution unit; predicated cells
-    require that producer projection and are refused here.
+    of a packed source tensor.  For a dense unit these are source-member
+    shapes, not a claim about a fused execution unit, so a predicated cell is
+    refused.  A routed expert unit resolves the same way UNLESS the allocation
+    carries the producer's own projection (PrismaQuant #183), which unlocks
+    the stronger reading: the producer's record attests the executed unit's
+    geometry, so a predicated cell resolves on it, and the priced bytes are
+    checked against their receipts here, where they are about to be handed to
+    the exporter.  See :func:`_carried_expert_projection` for what that
+    binding refuses by name.
     """
     from .lane_eligibility import (
         LANE_ELIGIBILITY_SCHEMA_TESSERA, QUALIFICATION_DEVICE_QUALIFIED, ROUTE_STATUS_BACKED,
@@ -409,7 +544,8 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     try:
         selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
                     if fmt.startswith("TESSERA_")}
-        scope = read_layer_config_metadata(assignment_path).get("tessera_serving_scope")
+        meta = read_layer_config_metadata(assignment_path)
+        scope = meta.get("tessera_serving_scope")
         if not isinstance(scope, Mapping):
             raise TesseraExportLaneError(
                 "allocation carries no tessera_serving_scope; re-allocate with an explicit target")
@@ -426,17 +562,29 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
         if not isinstance(by_unit, Mapping):
             raise TesseraExportLaneError("allocation scope.by_unit must be an object")
         profile = detect_profile(str(model_path))
-        shapes = _source_unit_shapes(model_path, profile)
+        shards: dict[str, str] = {}
+        shapes = _source_unit_shapes(model_path, profile, shards)
+        structures = {name: unit_structure_from_profile(name, profile) for name in selected}
+        # The producer's projection first: it is the structural refusal, it is
+        # cheaper than a route resolution, and it is what attests the executed
+        # geometry the rest of this loop resolves a routed unit on.
+        projection = _carried_expert_projection(
+            meta, {name: fmt for name, fmt in selected.items()
+                   if structures[name] == STRUCTURE_ROUTED_MOE}, shards)
+        attested = projection["geometry"] if projection is not None else {}
         formats = load_published_formats(contract_path=path)
         routes = {}
         for name, fmt in sorted(selected.items()):
-            matches = shapes.get(name, ())
-            if len(matches) != 1 or len(matches[0][1]) != 2:
-                raise TesseraExportLaneError(
-                    f"{name}: scoped export needs one exact 2-D source checkpoint shape; "
-                    f"found {list(matches)}. Packed or aggregate source units require "
-                    "the producer's explicit projection, not a guessed slice.")
-            structure = unit_structure_from_profile(name, profile)
+            geometry = attested.get(name)
+            if geometry is None:
+                matches = shapes.get(name, ())
+                if len(matches) != 1 or len(matches[0][1]) != 2:
+                    raise TesseraExportLaneError(
+                        f"{name}: scoped export needs one exact 2-D source checkpoint shape; "
+                        f"found {list(matches)}. Packed or aggregate source units require "
+                        "the producer's explicit projection, not a guessed slice.")
+                geometry = matches[0][1]
+            structure = structures[name]
             expected = target.context(structure)
             context_payload = by_unit.get(name)
             if not isinstance(context_payload, Mapping):
@@ -446,21 +594,23 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
                 raise TesseraExportLaneError(
                     f"{name}: allocation context disagrees with the export target or source "
                     f"structure: recorded={recorded.as_dict()}, expected={expected.as_dict()}")
-            rows, columns = matches[0][1]
+            rows, columns = geometry
             facts = unit_structural_facts(
                 name, fmt, is_routed_moe=structure == STRUCTURE_ROUTED_MOE,
                 # Tessera's per-Linear wire has no split codebooks. Expert
                 # aggregation remains the producer's job, not a local guess.
                 role_split=False, in_features=columns, out_features=rows,
                 published_formats=formats)
-            predicated = [cell.id for cell in table.cells
-                          if cell.family == facts.payload_family and cell.covers_rung(facts)
-                          and cell_matches_serving_context(cell, expected) and cell.predicates]
-            if predicated:
-                raise TesseraExportLaneError(
-                    f"{name}: selected route is unattested at this boundary: cells {predicated} "
-                    "carry predicates requiring the producer's executed-unit projection; "
-                    "source-member dimensions do not attest a fused execution shape")
+            if name not in attested:
+                predicated = [cell.id for cell in table.cells
+                              if cell.family == facts.payload_family and cell.covers_rung(facts)
+                              and cell_matches_serving_context(cell, expected) and cell.predicates]
+                if predicated:
+                    raise TesseraExportLaneError(
+                        f"{name}: selected route is unattested at this boundary: cells "
+                        f"{predicated} carry predicates requiring the producer's "
+                        "executed-unit projection; source-member dimensions do not attest "
+                        "a fused execution shape")
             route = resolve_unit_route(facts, table, **target.as_dict())
             if (route.route_status not in (ROUTE_STATUS_BACKED, ROUTE_STATUS_BACKED_WITH_SERVE_FLAG)
                     or any(row.qualification != QUALIFICATION_DEVICE_QUALIFIED for row in route.regimes)):
@@ -468,8 +618,11 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
                     f"{name}: selected Tessera route is {route.route_status}: "
                     f"{route.unattested_reason or 'every regime must be device_qualified and native'}")
             routes[name] = route.as_dict()
-        return {"target": target.as_dict(), "by_unit": routes,
-                "contract": table.provenance()}
+        report = {"target": target.as_dict(), "by_unit": routes,
+                  "contract": table.provenance()}
+        if projection is not None:
+            report["expert_projection"] = projection
+        return report
     except TesseraExportLaneError:
         raise
     except (OSError, ValueError, TypeError, KeyError, struct.error) as exc:
@@ -900,8 +1053,16 @@ def require_priced_export_inputs(
 def preflight(model_path: str | Path, *, target=None,
               assignment_path: str | Path | None = None,
               hessian_path: str | Path | None = None,
-              input_scales_path: str | Path | None = None) -> dict:
-    """Every gate, in the order that puts the cheapest refusal first."""
+              input_scales_path: str | Path | None = None,
+              cached_expert_units: bool = False) -> dict:
+    """Every gate, in the order that puts the cheapest refusal first.
+
+    ``cached_expert_units`` additionally writes the producer's cached-unit
+    bundle for the priced expert wires this allocation selected, into the
+    campaign's own wire directory, and names it in the build anchor so the
+    driver hands the exporter the path rather than reconstructing it.  An
+    allocation that selects no routed expert unit bundles nothing.
+    """
     structure = require_declared_structure(model_path)
     target = require_serving_target(target)
     executes = require_executes_derived_from_contract()
@@ -928,6 +1089,12 @@ def preflight(model_path: str | Path, *, target=None,
         if scope is not None:
             build["tessera_serving_scope"] = read_layer_config_metadata(
                 assignment_path)["tessera_serving_scope"]
+            projection = scope.get("expert_projection")
+            if projection is not None:
+                build["tessera_expert_stack_formats"] = dict(projection["stacks"])
+                if cached_expert_units:
+                    build["cached_expert_units"] = str(
+                        write_cached_expert_units(projection))
         if file_sha256(assignment_path) != assignment_sha:
             raise TesseraExportLaneError(
                 "allocation changed during scoped preflight; no build anchor was produced")
@@ -992,6 +1159,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="serving profile supplying or cross-checking the exact platform")
     parser.add_argument("--write-build-json", default=None,
                         help="write validated allocation facts for lane_shipcard open --build-json")
+    parser.add_argument("--write-cached-expert-units", action="store_true",
+                        help="bundle the priced expert wires this allocation "
+                             "selected into the campaign's wire directory "
+                             "(tessera.cached_units.v1) and name the manifest "
+                             "in the build anchor, for the exporter's "
+                             "--cached-expert-units intake")
     from .tessera_serving_scope import add_serving_scope_arguments, serving_target_from_args
 
     add_serving_scope_arguments(parser)
@@ -999,6 +1172,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.write_build_json is not None and args.assignment is None:
             raise TesseraExportLaneError("--write-build-json requires --assignment")
+        if args.write_cached_expert_units and args.assignment is None:
+            raise TesseraExportLaneError(
+                "--write-cached-expert-units bundles the wires an ALLOCATION "
+                "selected; pass --assignment")
         platform = None
         if args.target_profile is not None:
             from .serving_profiles import load_serving_profile
@@ -1015,7 +1192,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = preflight(args.model)
         else:
             report = preflight(args.model, target=target,
-                               assignment_path=args.assignment, **priced)
+                               assignment_path=args.assignment,
+                               cached_expert_units=args.write_cached_expert_units,
+                               **priced)
         if args.write_build_json is not None:
             destination = Path(args.write_build_json)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,6 +1217,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if "selected_serving_scope" in report:
         print("[preflight] scoped selected units: "
               + str(len(report["selected_serving_scope"]["by_unit"])))
+    if "cached_expert_units" in report.get("build", {}):
+        print("[preflight] priced expert wires handed to the exporter: "
+              + report["build"]["cached_expert_units"])
     for gate in report["unrecorded_gates"]:
         print(f"[preflight] gate {gate['gate']} is ADVISORY BY DECLARATION "
               f"(closes no shipcard slot): {gate['reason']}")
