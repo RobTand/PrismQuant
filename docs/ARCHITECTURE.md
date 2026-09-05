@@ -3,6 +3,13 @@
 As of: 2026-09-05 · `codex/tessera-anchored-surface`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for the shared
+`anchored_shape` numerical core. The existing AURA receipt/currency wrappers
+delegate centered log-shape fitting without changing their numerical result
+or admission. The neutral core additionally supports a per-unit level and
+slope correction from sparse anchors, with exact measured values and frozen
+independent audit predictions. This adds no production interpolation policy.
+
 Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for correlated
 group uncertainty (PrismaQuant #236). Uniform fused/packed groups retain the
 sum of scaled standard errors as a conservative bound; shared AURA probes
