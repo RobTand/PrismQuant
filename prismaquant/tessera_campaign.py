@@ -75,6 +75,9 @@ if TYPE_CHECKING:
     from .lane_eligibility import ServingContext
 
 from . import tessera_hessian as th
+from .nvfp4_activation_contract import (
+    ActivationScaleContractError as _OwnedActivationScaleContractError,
+)
 
 __all__ = [
     "SCHEMA",
@@ -195,7 +198,7 @@ def next_anchor_rate(
 # Measurement
 # ---------------------------------------------------------------------------
 
-class ActivationScaleContractError(RuntimeError):
+class ActivationScaleContractError(_OwnedActivationScaleContractError):
     """A static-activation-contract rung has no calibrated input scale.
 
     Its own class for the same reason ``HessianContractError`` has one: the
@@ -205,6 +208,12 @@ class ActivationScaleContractError(RuntimeError):
     FP32-scale quantiser instead would price an activation regime the serve
     does not execute -- exactly the defect this refusal exists to make loud
     (RobTand/prismaquant#194).
+
+    The same refusal, raised by the assignment-KL hooks and the production
+    cache scorer, is the owner's
+    ``nvfp4_activation_contract.ActivationScaleContractError``; this is that
+    class under the campaign's historical name (#205), so a caller catching
+    either sees one contract error.
     """
 
 
