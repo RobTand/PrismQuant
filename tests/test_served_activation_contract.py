@@ -241,3 +241,59 @@ def test_kl_preflight_is_quiet_for_stock_nvfp4_and_a16(tmp_path, monkeypatch):
             measure_assignment_kl(
                 model, {"proj": fmt}, calib_ids, refs,
                 work_root=tmp_path, kl_scope="full_sequence")
+
+
+# ------------------------------------- the fill gate must be total (#218)
+#
+# #213 replaced a string membership test with a registry lookup, and a lookup
+# can raise where a membership test could only answer.  Two inputs reach this
+# gate that the lookup cannot survive, and both kill a production cache fill
+# at `fill_production_weight_cache` before one tensor is rendered.
+
+def test_the_fill_gate_answers_for_the_mixed_case_registry_row():
+    """``INT4_W4A16_g128`` is the ONE registry row whose name is mixed case,
+    and it is reachable: ``validation_harness._entry_format_name`` maps the
+    4-bit entry of a precision plan to it, so an assignment carries it into
+    ``render_formats_by_qname`` and hence into ``render_base_fmt_set``.
+
+    The fill hands this gate ``_render_base_format``'s output, which
+    upper-cases.  The gate must still ANSWER -- that row is W4A16, it has no
+    static activation contract, so no calibrated maximum is needed -- rather
+    than raise ``KeyError`` naming the registry (#218).
+    """
+    from prismaquant.production_weight_cache import (
+        _format_uses_static_activation_clip,
+        _formats_need_static_activation_max,
+        _render_base_format,
+    )
+
+    # What the fill actually builds at production_weight_cache.py:6790.
+    render_base_fmt_set = {
+        _render_base_format(f) for f in ("INT4_W4A16_g128", "BF16")
+    }
+    assert "INT4_W4A16_G128" in render_base_fmt_set
+
+    assert _format_uses_static_activation_clip("INT4_W4A16_g128") is False
+    assert _format_uses_static_activation_clip("INT4_W4A16_G128") is False
+    assert _formats_need_static_activation_max(render_base_fmt_set) is False
+
+
+def test_the_fill_gate_is_total_over_names_the_registry_does_not_own():
+    """A predicate over a requested format MENU has to be total.  A menu may
+    carry a name this registry does not own, and "not a format we know" is an
+    answer -- False, there is no static activation contract to calibrate for
+    -- not a bare ``KeyError`` raised from inside an activation-scale gate.
+    A refusal, if the project wants one, belongs where the menu is validated.
+    """
+    from prismaquant.production_weight_cache import (
+        _format_uses_static_activation_clip,
+        _formats_need_static_activation_max,
+        _is_cb_format_name,
+    )
+
+    junk = "NOT_A_REGISTERED_FORMAT_pq218"
+    assert _format_uses_static_activation_clip(junk) is False
+    assert _formats_need_static_activation_max({junk, "BF16"}) is False
+    # The sibling predicate over the same values already answered False here;
+    # they now share one resolver, so they cannot drift apart again.
+    assert _is_cb_format_name(junk) is False
