@@ -135,10 +135,36 @@
   1024 resident/streamed, E2M1 896, BF16 1792, decode and batch) are admitted
   on their own evidence exactly as at v17; the two `routed_moe` cells, refused
   from v17 through v20 on `smoke.status: repetitive` (v20's
-  `shared_with_reference` control was read and not admitted on), are now
-  ADMITTED by the unchanged status-only rule (`cell_evidence_admits`) on
-  `recorded` — #198 option C, the review event being this pin move; whether
-  routed-MoE Tessera is promoted past the menu is still #198's open decision.
+  `shared_with_reference` control was read and not admitted on), are no longer
+  refused by the unchanged status-only rule (`cell_evidence_admits`), because
+  v21 publishes `recorded` — #198 option C, the review event being this pin
+  move. That is not a promotion: whether routed-MoE Tessera goes on the menu
+  is Rob's under principle 9. The tests assert the mechanism — the predicate's
+  answer tracks the status the pinned table publishes — rather than typing a
+  verdict, so the same tests hold whichever status a re-pin installs.
+
+- **Lane-eligibility schema v9: a smoke's RECORD, re-derived through Tessera's
+  own functions** (RobTand/tessera#327; `lane_eligibility.py`,
+  `tests/test_tessera_lane_v9.py`). #327 (P1) found that contract v21's
+  `smoke.status: recorded` rested on a repetition rule that lived only in a
+  dated measurements file — derived and checked by nothing in the contract,
+  and satisfiable by an empty completion. Tessera's v22 puts it in the table:
+  `smoke` gains one nullable `record` (`{instrument, rule, reference,
+  rows[{prompt, form, interface, status, reference_status}]}`; `null` on a
+  cell nobody re-ran), and the lane schema moves `v8` → `v9`. This reader
+  parses it closed and **delegates the derivation**: on a v9 table the status
+  and the attribution are re-derived by calling
+  `tessera.serving.contract.derive_smoke_status` /
+  `derive_smoke_attribution`, and a published value they do not derive is
+  refused as a contract defect — a repetition rule over completion text is
+  not a projection this repository can restate, and a second copy of it is
+  the same two-homes defect #327 reports one level down. `EVIDENCE_SMOKE_
+  INTERFACES` and `EVIDENCE_SMOKE_FORMS` are read from Tessera for the same
+  reason. Two shape rules this reader adds, both #327's finding in the
+  grammar: a record must name a non-empty `instrument`, `rule` and
+  `reference`, and its `rows` must be non-empty — a status derived over zero
+  observations is the empty completion wearing a schema. A `record` on a v8
+  table is refused as an unknown field, and v5–v8 stay SCOPED.
   The lane predicate refuses nothing on the pinned table (only the two
   streamed E4M3 cells launch through the lane and their plan is what it reads);
   a BF16 cell that ever claimed the window-GEMV launch at 1792 (column rate 7)

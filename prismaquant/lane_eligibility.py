@@ -145,6 +145,7 @@ from typing import Any, Mapping, Sequence
 #: same wire format published by the retired Gridbook codebook lane. That lane
 #: was removed with Rob's decision to put Tessera in PrismaQuant and remove
 #: Gridbook; see ``archive/gridbook_lane_2026-09-02/README.md``.
+LANE_ELIGIBILITY_SCHEMA_TESSERA_V9 = "tessera.lane-eligibility.v9"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_V8 = "tessera.lane-eligibility.v8"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_V7 = "tessera.lane-eligibility.v7"
 LANE_ELIGIBILITY_SCHEMA_TESSERA_V6 = "tessera.lane-eligibility.v6"
@@ -161,14 +162,15 @@ LANE_ELIGIBILITY_SCHEMA_TESSERA = LANE_ELIGIBILITY_SCHEMA_TESSERA_V8
 #: The schemas whose cells carry a per-cell runtime scope, so an explicit
 #: serving context (image + execution mode) can be matched rather than
 #: borrowed from a global field. v5 introduced the block; v6 widened it with
-#: the vLLM and torch versions the cell was measured under; v7 and v8 widened
-#: the EVIDENCE block (a smoke's control, an artifact's encoder scope) and
-#: left the runtime scope as v6 published it.
+#: the vLLM and torch versions the cell was measured under; v7, v8 and v9
+#: widened the EVIDENCE block (a smoke's control, an artifact's encoder scope,
+#: a smoke's record) and left the runtime scope as v6 published it.
 SCOPED_LANE_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V5,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
 })
 
 #: The schemas whose cells carry a required ``evidence`` block (v6 and every
@@ -181,13 +183,25 @@ EVIDENCE_LANE_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
 })
 ATTRIBUTED_SMOKE_LANE_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
 })
 ENCODER_SCOPED_LANE_SCHEMAS = frozenset({
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
+})
+
+#: The schemas whose ``smoke`` carries a ``record`` -- the rule a status was
+#: derived by, the instrument that applied it, and the (prompt, form,
+#: interface) rows it was applied to (v9, Tessera #327).  On these tables the
+#: status and the attribution are RE-DERIVED through Tessera's own functions
+#: rather than through a rule restated here; see :func:`_parse_smoke_record`.
+RECORDED_SMOKE_LANE_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
 })
 
 #: Every eligibility-table schema this parser accepts. The check is a set
@@ -195,6 +209,7 @@ ENCODER_SCOPED_LANE_SCHEMAS = frozenset({
 #: repository was not handed, and an unlisted version is not treated as a
 #: subset of either supported grammar (see ``_parse_table``).
 LANE_ELIGIBILITY_SCHEMAS = frozenset({
+    LANE_ELIGIBILITY_SCHEMA_TESSERA_V9,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V8,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
@@ -666,6 +681,66 @@ class EvidenceArtifact:
 
 
 @dataclass(frozen=True)
+class SmokeRecordRow:
+    """One observation behind a smoke status (v9, Tessera #327).
+
+    ``prompt`` names WHICH prompt was run, never the completion it produced:
+    the contract records the shape of the observation and points at a receipt
+    for the text. ``status``/``reference_status`` are the same vocabulary the
+    cell's own status uses, for the route and for the reference arm.
+    """
+
+    prompt: str
+    form: str
+    interface: str
+    status: str
+    reference_status: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"prompt": self.prompt, "form": self.form,
+                "interface": self.interface, "status": self.status,
+                "reference_status": self.reference_status}
+
+
+@dataclass(frozen=True)
+class SmokeRecord:
+    """v9's ``smoke.record``: the rule a status was derived by, and its rows.
+
+    It exists because of what Tessera #327 found in contract v21: both
+    ``routed_moe`` cells published ``status: "recorded"`` on an aggregation
+    rule that lived only in a dated measurements file, was derived and checked
+    by nothing, and was satisfiable by an empty completion. Putting the rule
+    and its observations in the contract makes the status a DERIVATION a
+    consumer can re-run instead of an assertion it must take on trust.
+
+    ``None`` where no record was published -- on a pre-v9 table, and on a v9
+    cell nobody re-ran (``record: null``), which is not the same thing as a
+    record with no rows and is refused from being spelled that way.
+    """
+
+    instrument: str
+    rule: str
+    reference: str
+    rows: tuple[SmokeRecordRow, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"instrument": self.instrument, "rule": self.rule,
+                "reference": self.reference,
+                "rows": [row.as_dict() for row in self.rows]}
+
+    def answer(self) -> list[Any]:
+        """The projection a re-review must see move (see ``contract_answer``).
+
+        The rule is in it because a status derived by a DIFFERENT rule is a
+        different claim wearing the same word, which is the failure #327
+        reports; the rows are in it because dropping one changes what the
+        status rests on without changing the status.
+        """
+        return [self.instrument, self.rule, self.reference,
+                [list(row.as_dict().values()) for row in self.rows]]
+
+
+@dataclass(frozen=True)
 class CellEvidence:
     """A cell's ``evidence`` block: what its route claim actually rests on.
 
@@ -677,9 +752,10 @@ class CellEvidence:
     written grade would be trusting an assertion where a derivation exists.
 
     v7 added the smoke's CONTROL and the attribution derived from it; v8 added
-    the ARTIFACT the evidence is scoped to. A table older than the field
+    the ARTIFACT the evidence is scoped to; v9 added the smoke's RECORD, the
+    rule and rows its status was derived from. A table older than the field
     leaves it at its "never published" value -- ``""``/``None`` -- which is
-    distinct from v7's ``unattributed`` and v8's ``null`` on purpose: a v6
+    distinct from v7's ``unattributed`` and v8's/v9's ``null`` on purpose: a v6
     table did not say "nobody ran the reference", it said nothing.
     """
 
@@ -696,6 +772,9 @@ class CellEvidence:
     #: v8: the encoder scope, or ``None`` when no comparison was recorded AND
     #: on a pre-v8 table.
     artifact: EvidenceArtifact | None = None
+    #: v9: the rule and rows the status was derived from; ``None`` when no
+    #: record was published AND on a pre-v9 table.
+    smoke_record: SmokeRecord | None = None
 
     def as_dict(self) -> dict[str, Any]:
         smoke: dict[str, Any] = {"status": self.smoke_status,
@@ -704,6 +783,8 @@ class CellEvidence:
             smoke["attribution"] = self.smoke_attribution
             smoke["control"] = (self.smoke_control.as_dict()
                                 if self.smoke_control else None)
+        if self.smoke_record is not None:
+            smoke["record"] = self.smoke_record.as_dict()
         return {
             "grade": self.grade,
             "kl": [entry.as_dict() for entry in self.kl],
@@ -725,7 +806,8 @@ class CellEvidence:
                        for entry in self.kl),
                 self.smoke_attribution,
                 self.smoke_control.outcome if self.smoke_control else None,
-                self.artifact.answer() if self.artifact else None]
+                self.artifact.answer() if self.artifact else None,
+                self.smoke_record.answer() if self.smoke_record else None]
 
 
 def derive_evidence_grade(entries: Sequence[CellKlEvidence]) -> str:
@@ -754,6 +836,105 @@ def derive_smoke_attribution(control: SmokeControl | None) -> str:
     if control.outcome == EVIDENCE_OUTCOME_IDENTICAL:
         return EVIDENCE_ATTRIBUTION_SHARED
     return EVIDENCE_ATTRIBUTION_NOT_SHARED
+
+
+def _tessera_contract_module():
+    """Tessera's own contract module -- the home of the v9 smoke vocabulary.
+
+    A v9 lane table is, by construction, the packaged contract of an installed
+    Tessera, so this import cannot be the thing that fails on a box that has a
+    v9 table to read. It is a hard import for the same reason
+    ``decide_lane_requirements`` is: a fallback that answers when Tessera
+    cannot is a second home for Tessera's rule.
+    """
+    from tessera.serving import contract as _contract
+
+    return _contract
+
+
+def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
+    module = _tessera_contract_module()
+    try:
+        published = getattr(module, name)
+    except AttributeError as exc:
+        raise LaneEligibilityError(
+            f"{where} needs Tessera's {name} to decide, and the installed "
+            "tessera.serving.contract does not publish it: this table calls "
+            f"itself {LANE_ELIGIBILITY_SCHEMA_TESSERA_V9} but the runtime "
+            "beside it is older. Re-pin, never transcribe the vocabulary here "
+            "-- a second copy is how the two halves of one contract drift."
+        ) from exc
+    return frozenset(published)
+
+
+def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
+    """v9's ``smoke.record``: ``null``, or the closed rule-plus-rows block.
+
+    Parsed closed at every level, with the two vocabularies READ from
+    ``tessera.serving.contract`` rather than transcribed beside this parser:
+    an interface or request form Tessera adds must widen this reader on the
+    re-pin that installs it, not on the day somebody notices.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(f"{where} must be null or a JSON object")
+    _require_keys(payload, where,
+                  required={"instrument", "rule", "reference", "rows"},
+                  optional=set())
+    head: dict[str, str] = {}
+    for key in ("instrument", "rule", "reference"):
+        value = payload[key]
+        if not isinstance(value, str) or not value.strip():
+            raise LaneEligibilityError(
+                f"{where}.{key} must be a non-empty string; a record that does "
+                f"not say what its {key} was attests nothing a reader can check")
+        head[key] = value
+    raw = payload["rows"]
+    if not isinstance(raw, list) or not raw:
+        raise LaneEligibilityError(
+            f"{where}.rows must be a non-empty JSON array of "
+            "{prompt, form, interface, status, reference_status} objects; a "
+            "status derived over zero observations is the empty completion "
+            "RobTand/tessera#327 reports, wearing a schema")
+    interfaces = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_INTERFACES", where)
+    forms = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_FORMS", where)
+    rows: list[SmokeRecordRow] = []
+    for i, row in enumerate(raw):
+        spot = f"{where}.rows[{i}]"
+        if not isinstance(row, Mapping):
+            raise LaneEligibilityError(f"{spot} must be a JSON object")
+        _require_keys(row, spot,
+                      required={"prompt", "form", "interface", "status",
+                                "reference_status"},
+                      optional=set())
+        prompt = row["prompt"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise LaneEligibilityError(
+                f"{spot}.prompt must be a non-empty string naming which prompt "
+                f"was run, got {prompt!r}")
+        for key, vocabulary, source in (
+                ("form", forms, "EVIDENCE_SMOKE_FORMS"),
+                ("interface", interfaces, "EVIDENCE_SMOKE_INTERFACES")):
+            if row[key] not in vocabulary:
+                raise LaneEligibilityError(
+                    f"{spot}.{key} must be one of {sorted(vocabulary)} "
+                    f"(Tessera's {source}), got {row[key]!r}")
+        for key in ("status", "reference_status"):
+            if row[key] not in EVIDENCE_SMOKE_STATUSES:
+                raise LaneEligibilityError(
+                    f"{spot}.{key} must be one of "
+                    f"{sorted(EVIDENCE_SMOKE_STATUSES)}, got {row[key]!r}")
+        rows.append(SmokeRecordRow(
+            prompt=prompt, form=str(row["form"]), interface=str(row["interface"]),
+            status=str(row["status"]),
+            reference_status=str(row["reference_status"])))
+    keys = [tuple(row.as_dict().values()) for row in rows]
+    if len(set(keys)) != len(keys):
+        raise LaneEligibilityError(
+            f"{where}.rows repeats an observation; the field is a set of them")
+    return SmokeRecord(instrument=head["instrument"], rule=head["rule"],
+                       reference=head["reference"], rows=tuple(rows))
 
 
 def _require_receipt(value: Any, where: str) -> str:
@@ -873,14 +1054,16 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
 
     ``schema`` selects the member set: v6 is ``{grade, kl, smoke{status,
     receipt}}``; v7 adds ``smoke.attribution`` and ``smoke.control``; v8 adds
-    ``artifact``. A field from a later grammar on an older table is refused
-    as unknown, exactly as an unknown field on the current one is -- a v6
-    table that carries an attribution is not a v6 table.
+    ``artifact``; v9 adds ``smoke.record``. A field from a later grammar on an
+    older table is refused as unknown, exactly as an unknown field on the
+    current one is -- a v6 table that carries an attribution is not a v6
+    table, and a v8 table that carries a record is not a v8 table.
     """
     if not isinstance(payload, Mapping):
         raise LaneEligibilityError(f"{where} must be a JSON object")
     attributed = schema in ATTRIBUTED_SMOKE_LANE_SCHEMAS
     encoder_scoped = schema in ENCODER_SCOPED_LANE_SCHEMAS
+    recorded_smoke = schema in RECORDED_SMOKE_LANE_SCHEMAS
     required = {"grade", "kl", "smoke"}
     if encoder_scoped:
         required.add("artifact")
@@ -950,6 +1133,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
     smoke_keys = {"status", "receipt"}
     if attributed:
         smoke_keys |= {"attribution", "control"}
+    if recorded_smoke:
+        smoke_keys.add("record")
     _require_keys(smoke, f"{where}.smoke", required=smoke_keys, optional=set())
     status = smoke["status"]
     if status not in EVIDENCE_SMOKE_STATUSES:
@@ -958,8 +1143,21 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
             f"{sorted(EVIDENCE_SMOKE_STATUSES)}, got {status!r}")
     control: SmokeControl | None = None
     attribution = ""
+    record: SmokeRecord | None = None
     if attributed:
         control = _parse_smoke_control(smoke["control"], f"{where}.smoke.control")
+    if recorded_smoke:
+        record = _parse_smoke_record(smoke["record"], f"{where}.smoke.record")
+        derived_status = _tessera_contract_module().derive_smoke_status(dict(smoke))
+        if status != derived_status:
+            raise LaneEligibilityError(
+                f"{where}.smoke.status is {status!r} but Tessera's own "
+                f"derive_smoke_status derives {derived_status!r} from the "
+                "record beside it; the status is read off the record, never "
+                "asserted beside it. This repository does not re-implement "
+                "the rule -- restating it here is the second home "
+                "RobTand/tessera#327 was filed about -- so a disagreement is "
+                "a contract defect and is refused rather than resolved.")
     if status == EVIDENCE_SMOKE_NOT_RECORDED:
         if smoke["receipt"] is not None:
             raise LaneEligibilityError(
@@ -984,12 +1182,25 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
             raise LaneEligibilityError(
                 f"{where}.smoke.attribution must be one of "
                 f"{sorted(EVIDENCE_SMOKE_ATTRIBUTIONS)}, got {attribution!r}")
-        derived_attribution = derive_smoke_attribution(control)
-        if attribution != derived_attribution:
-            raise LaneEligibilityError(
-                f"{where}.smoke.attribution is {attribution!r} but its control "
-                f"derives {derived_attribution!r}; the attribution is read off "
-                "the control, never asserted beside it")
+        if recorded_smoke:
+            # v9 derives the attribution from the RECORD, which is a
+            # projection of rows this repository does not restate.
+            derived_attribution = _tessera_contract_module(
+                ).derive_smoke_attribution(dict(smoke))
+            if attribution != derived_attribution:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.attribution is {attribution!r} but "
+                    "Tessera's own derive_smoke_attribution derives "
+                    f"{derived_attribution!r} from the record beside it; the "
+                    "attribution is read off the record, never asserted "
+                    "beside it")
+        else:
+            derived_attribution = derive_smoke_attribution(control)
+            if attribution != derived_attribution:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.attribution is {attribution!r} but its "
+                    f"control derives {derived_attribution!r}; the attribution "
+                    "is read off the control, never asserted beside it")
     artifact: EvidenceArtifact | None = None
     if encoder_scoped:
         artifact = _parse_evidence_artifact(payload["artifact"], f"{where}.artifact")
@@ -1001,7 +1212,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
             "the grade is read off the entries, never asserted beside them")
     return CellEvidence(grade=grade, kl=tuple(entries), smoke_status=str(status),
                         smoke_receipt=receipt, smoke_attribution=str(attribution),
-                        smoke_control=control, artifact=artifact)
+                        smoke_control=control, artifact=artifact,
+                        smoke_record=record)
 
 
 def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
@@ -1018,8 +1230,19 @@ def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
     (:data:`EVIDENCE_SMOKE_REFUSALS`) fails principle 9's "generates correctly"
     leg, and it fails it in a structured field rather than in prose. Nothing
     here mentions ``routed_moe``: a hardcoded structure ban would be principle
-    1's vetoed band-aid, and the two cells this refuses today are refused for
-    what was measured on them, not for what they are.
+    1's vetoed band-aid, and a cell this refuses is refused for what was
+    measured on it, not for what it is. The answer therefore tracks whatever
+    status the PINNED table publishes and nothing else -- the two routed-MoE
+    cells were refused from contract v17 through v20 on ``repetitive`` and are
+    not refused at v21, which publishes ``recorded``, with no edit here either
+    time. Whether that ``recorded`` is CHECKABLE is a different question and
+    not this predicate's: RobTand/tessera#327 found that v21's rule lived only
+    in a dated measurements file and was satisfiable by an empty completion,
+    which lane schema v9 answers by putting the rule and its rows in
+    ``smoke.record`` -- re-derived at parse through Tessera's own
+    ``derive_smoke_status`` (:func:`_parse_smoke_record`), so a status this
+    predicate reads is one a reader could check. Whether routed-MoE Tessera is
+    PROMOTED past the menu remains a human's call (prismaquant #198).
 
     What it deliberately does NOT refuse is a low GRADE. Every cell in the
     installed table is ``route_only`` or ``kl_lower_bound`` -- the publisher's
@@ -1029,18 +1252,19 @@ def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
     promotion-ladder move and belongs to a human; the grade travels into
     provenance so a shipcard says which grade attested each unit.
 
-    What it deliberately does NOT decide on, yet, is the v7 ATTRIBUTION.
+    What it deliberately does NOT decide on is the v7 ATTRIBUTION.
     Tessera's contract v18 changelog states the consumer rule it expects --
     "a gate that refused on status alone now refuses on status 'repetitive'
-    AND attribution other than 'shared_with_reference'" -- and on the pinned
-    table that rule admits both routed-MoE cells, whose control shows the
-    BF16 source returning the same degenerate completion. This reader still
-    refuses on the status: ``shared_with_reference`` removes the evidence
-    AGAINST the route without adding any FOR it (no smoke on that route has
-    ever come back clean), and admitting a structure this producer has never
-    shipped on that basis is a promotion, which is a human's call. The
-    refusal names the control so the reviewer sees what was read and not
-    decided on; prismaquant #198 holds the decision.
+    AND attribution other than 'shared_with_reference'" -- and on the v20
+    table that rule admitted both routed-MoE cells, whose control showed the
+    BF16 source returning the same degenerate completion. This reader refuses
+    on the status: ``shared_with_reference`` removes the evidence AGAINST the
+    route without adding any FOR it, and admitting a structure this producer
+    has never shipped on that basis is a promotion, which is a human's call.
+    The refusal names the control so the reviewer sees what was read and not
+    decided on; prismaquant #198 holds the decision. v21 retired the control
+    from those cells, so the branch is exercised on the v20 shape in
+    ``tests/test_tessera_lane_v8.py`` rather than on an installed cell.
 
     A pre-v6 cell carries no evidence block and is admitted unchanged: the
     grammar that never published the field cannot be read as publishing a
@@ -2672,6 +2896,7 @@ __all__ = [
     "CellEvidence",
     "CellKlEvidence",
     "ENCODER_SCOPED_LANE_SCHEMAS",
+    "RECORDED_SMOKE_LANE_SCHEMAS",
     "EVIDENCE_ARTIFACT_METRIC",
     "EVIDENCE_CONTROL_OUTCOMES",
     "EVIDENCE_CONTROL_REFERENCES",
@@ -2690,6 +2915,7 @@ __all__ = [
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_V6",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_V7",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_V8",
+    "LANE_ELIGIBILITY_SCHEMA_TESSERA_V9",
     "LANE_ELIGIBILITY_SCHEMAS",
     "LANE_BODIES",
     "LANE_FIELDS",
@@ -2701,6 +2927,8 @@ __all__ = [
     "LaneClaim",
     "SCOPED_LANE_SCHEMAS",
     "SmokeControl",
+    "SmokeRecord",
+    "SmokeRecordRow",
     "cell_evidence_admits",
     "cell_lane_admits",
     "lane_claim_for_cell",

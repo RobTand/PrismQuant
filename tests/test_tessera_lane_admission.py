@@ -29,6 +29,7 @@ import pytest
 
 from prismaquant import tessera_render as tr
 from prismaquant.lane_eligibility import (
+    EVIDENCE_SMOKE_REFUSALS,
     FORMAT_KIND_TESSERA_WIRE,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LaneEligibilityError,
@@ -239,15 +240,19 @@ def test_the_packaged_tessera_contract_parses_and_every_cell_names_the_plugin():
     # Since contract v17 the table DECLARES routed_moe. Declaring a structure
     # is not admitting it: v17 through v20 published, on those cells, a greedy
     # smoke that degenerated and the evidence gate refused them; v21 (Tessera
-    # #313) re-measured the smoke through the checkpoint's own chat template
-    # and records it clean, so the SAME gate admits them. The honest assertion
-    # is that admission follows the cells' own evidence, read from the table.
+    # #313) re-measured it through the checkpoint's own chat template and
+    # records "recorded", so the SAME gate stops refusing them. The honest
+    # assertion is neither verdict -- what v21's "recorded" is worth is open
+    # (RobTand/tessera#327, prismaquant #198) -- but that admission FOLLOWS the
+    # cells' own published evidence, read from the table and from nothing else.
     assert table.structures == ("dense", "routed_moe")
     routed = [cell for cell in table.cells if cell.structure == "routed_moe"]
     assert routed
     for cell in routed:
-        assert cell.evidence.smoke_status == "recorded", cell.id
-        assert cell_evidence_admits(cell) == (True, ""), cell.id
+        admitted, why = cell_evidence_admits(cell)
+        assert admitted is (
+            cell.evidence.smoke_status not in EVIDENCE_SMOKE_REFUSALS), (
+                cell.id, cell.evidence.smoke_status, why)
 
 
 def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path):

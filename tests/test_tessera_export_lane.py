@@ -21,6 +21,7 @@ import json
 import pytest
 
 from prismaquant import tessera_export_lane as tel
+from prismaquant.lane_eligibility import EVIDENCE_SMOKE_REFUSALS
 from prismaquant.model_profiles.structure import (
     DEFAULT_EXPORT_LANE,
     EXPORT_LANES,
@@ -321,11 +322,14 @@ def test_a_routed_moe_checkpoint_is_decided_by_the_contracts_own_evidence(
     v20 this gate refused a MoE checkpoint on the cells' own evidence rather
     than admitting it because the vocabulary grew a word.  v21 (Tessera #313)
     re-measured that smoke through the checkpoint's own chat template and both
-    cells now publish ``"recorded"``; the same gate admits the checkpoint with
-    no change here.  Promoting routed-MoE past the menu is still a decision on
-    evidence and it is Rob's (principle 9, prismaquant #198); what this test
-    pins is that PrismaQuant makes neither move by widening or narrowing a
-    gate -- both halves are read off the cells.
+    cells now publish ``"recorded"``, so the same gate stops refusing -- and
+    what that ``"recorded"`` is worth is open (RobTand/tessera#327 says the
+    rule behind it is checked by nothing).  Promoting routed-MoE past the menu
+    is a decision on evidence and it is Rob's (principle 9, prismaquant #198);
+    what this test pins is that PrismaQuant makes NEITHER move by widening or
+    narrowing a gate -- so the expected answer on the installed contract is
+    DERIVED from the status those cells publish, not typed here, and the
+    refusal leg is exercised on the historical shape below.
     """
     directory = _model_dir(tmp_path, num_experts=128,
                            architectures=["Qwen3MoeForCausalLM"])
@@ -335,9 +339,14 @@ def test_a_routed_moe_checkpoint_is_decided_by_the_contracts_own_evidence(
              if c["structure"] == "routed_moe"]
     assert cells, "the packaged contract no longer covers routed_moe at all"
 
-    # The installed contract (v21): the smoke is recorded, the gate admits.
-    assert all(c["evidence"]["smoke"]["status"] == "recorded" for c in cells)
-    assert tel.require_declared_structure(directory) == "routed_moe"
+    # The installed contract, whatever it publishes: the gate's answer is the
+    # cells' answer.
+    if any(c["evidence"]["smoke"]["status"] not in EVIDENCE_SMOKE_REFUSALS
+           for c in cells):
+        assert tel.require_declared_structure(directory) == "routed_moe"
+    else:
+        with pytest.raises(tel.TesseraExportLaneError, match="routed_moe"):
+            tel.require_declared_structure(directory)
 
     # The contract v17 through v20 published: the same cells with the
     # degenerate smoke transplanted back, and the same gate refuses -- naming

@@ -26,7 +26,18 @@ it to Rob and Tessera answered with a measurement: contract v21 (its #313)
 re-ran the smoke through the checkpoint's own chat template, both cells read
 ``status: recorded`` with the control retired (``control: null``,
 ``attribution: unattributed`` -- the shape the dense cells already used), and
-the unchanged status-only rule admits them.
+the unchanged status-only rule stops refusing them.
+
+**What these tests therefore do NOT assert is that routed MoE is admitted.**
+That verdict is not settled: RobTand/tessera#327 (P1) reports v21's
+``recorded`` rests on a repetition rule that lives only in a dated
+measurements file, is derived and checked by nothing, and is satisfiable by an
+empty completion, so the published status may move again; prismaquant #198
+stays open for the promotion either way. The gate tests below assert the
+MECHANISM instead -- that the predicate's answer is a function of the status
+the pinned table publishes, and that the export gate reads that same answer
+rather than forming its own -- which holds under either verdict and fails if
+this reader ever starts deciding routed MoE for itself.
 
 Since v21 no installed cell carries a control, so the control GRAMMAR is
 exercised here on the installed routed-MoE cells with the v20 control
@@ -147,7 +158,12 @@ def test_every_cell_publishes_a_derived_attribution(table):
 
 
 def test_the_routed_moe_cells_read_recorded_with_the_v20_control_retired(table):
-    """v21 (Tessera #313): the smoke was re-measured, not re-attributed."""
+    """v21 (Tessera #313): the smoke was re-measured, not re-attributed.
+
+    This records what the PINNED bytes publish -- which is what a pin is for,
+    and it moves only in a reviewed re-pin -- not what those bytes are worth.
+    RobTand/tessera#327 questions the second thing; see the module docstring.
+    """
     for cell_id in (MOE_DECODE, MOE_BATCH):
         evidence = _parsed_cell(table, cell_id).evidence
         assert evidence.smoke_status == lane.EVIDENCE_SMOKE_RECORDED
@@ -326,10 +342,37 @@ def test_a_v7_field_on_a_v6_table_is_refused(payload):
 # ---------------------------------------------------------------------------
 # The gate: what the reader does with what it now reads
 # ---------------------------------------------------------------------------
-def test_the_routed_moe_cells_admit_on_the_recorded_smoke(table):
-    """The status-only rule, applied to what v21 publishes: nothing refuses."""
+def test_the_routed_moe_cells_are_decided_by_the_status_the_table_publishes(table):
+    """The predicate is a function of the PUBLISHED status, and of nothing else.
+
+    Deliberately NOT "routed MoE is admitted". What the pinned table says about
+    those two cells is Tessera's to move -- v17 through v20 published
+    ``repetitive`` and this predicate refused them, v21 publishes ``recorded``
+    and it does not -- and what v21's ``recorded`` is worth is itself open
+    (RobTand/tessera#327: the repetition rule behind it lives only in a dated
+    measurements file, is derived and checked by nothing, and is satisfiable by
+    an empty completion; prismaquant #198 holds the promotion). Asserting the
+    outcome here would pin a verdict this repository does not own and would
+    have to be rewritten whichever way #327 lands.
+
+    What this repository DOES owe is that the answer track the published status
+    and nothing else, so that is what is asserted: read the status off the
+    installed cell, and require the predicate to agree with it. It holds under
+    either verdict, and it fails the moment the reader starts deciding routed
+    MoE on the structure, the grade, the attribution or an edit.
+    """
     for cell_id in (MOE_DECODE, MOE_BATCH):
-        assert lane.cell_evidence_admits(_parsed_cell(table, cell_id)) == (True, "")
+        cell = _parsed_cell(table, cell_id)
+        published = cell.evidence.smoke_status
+        admitted, why = lane.cell_evidence_admits(cell)
+        assert admitted is (published not in lane.EVIDENCE_SMOKE_REFUSALS), (
+            cell_id, published, why)
+        # and the answer is spelled the same way a dense cell's is: no
+        # structure-specific text on either leg.
+        assert (why == "") is admitted
+        if not admitted:
+            assert published in why and cell_id in why
+            assert "routed_moe" not in why
 
 
 def test_the_routed_moe_refusal_names_the_control_and_the_rule_it_did_not_apply(payload):
@@ -361,8 +404,12 @@ def test_the_status_alone_decides_whatever_the_attribution_says(payload):
     the attribution is ``shared_with_reference``. This reader does not: that
     would admit a structure this producer has never shipped on the strength of
     a smoke whose only recorded outcome degenerated (prismaquant #198). The
-    status alone decides -- ``repetitive`` refuses under either attribution,
-    and ``recorded`` (what v21 publishes) admits with no attribution at all.
+    status alone decides -- ``repetitive`` refuses under EITHER attribution.
+
+    The positive leg is asserted the same way, on a status transplanted onto
+    the same cell rather than on whatever the pin happens to publish, so this
+    test states the rule and not a verdict about routed MoE (RobTand/tessera#327
+    may move the published status either way).
     """
     shared = _with_v20_control(payload)
     not_shared = _with_v20_control(payload)
@@ -372,7 +419,13 @@ def test_the_status_alone_decides_whatever_the_attribution_says(payload):
     for fixture in (shared, not_shared):
         cell = _parsed_cell(_table(fixture), MOE_DECODE)
         assert not lane.cell_evidence_admits(cell)[0]
-    assert lane.cell_evidence_admits(_parsed_cell(_table(payload), MOE_DECODE))[0]
+    # ...and the same cell with a non-refused status admits, whatever the
+    # attribution says, because the status is the whole rule.
+    recorded = _with_v20_control(payload)
+    _cell(recorded, MOE_DECODE)["evidence"]["smoke"] = {
+        "status": lane.EVIDENCE_SMOKE_RECORDED, "receipt": RECORDED_RECEIPT,
+        "attribution": lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED, "control": None}
+    assert lane.cell_evidence_admits(_parsed_cell(_table(recorded), MOE_DECODE))[0]
 
 
 def test_the_export_gate_records_the_attribution_beside_the_refusal(payload):
@@ -387,18 +440,33 @@ def test_the_export_gate_records_the_attribution_beside_the_refusal(payload):
         assert "shared_with_reference" in regime.detail
 
 
-def test_the_routed_moe_route_resolves_backed_and_carries_its_attribution(table, payload):
-    """v21 on the export gate: the unit resolves, and provenance still says
-    what the smoke was (not) attributed to."""
+def test_the_export_gate_answers_the_routed_moe_unit_from_the_same_predicate(
+        table, payload):
+    """The export gate reads ``cell_evidence_admits``, it does not re-decide.
+
+    Principle 8: a rung the menu offers and the export refuses (or the reverse)
+    is the split brain the one-predicate design exists to stop. So the expected
+    route status is COMPUTED from the predicate's answer on the two cells the
+    scope selects, never typed -- which keeps this test honest whichever way
+    the pinned table's routed-MoE smoke status lands (RobTand/tessera#327,
+    prismaquant #198), and still fails if the gate ever grows a second opinion.
+    Provenance is asserted either way, because a shipcard has to record what
+    attested (or refused) a unit whatever the verdict was.
+    """
     image = _cell(payload, MOE_DECODE)["runtime"]["image"]
+    admits = {cell_id: lane.cell_evidence_admits(_parsed_cell(table, cell_id))[0]
+              for cell_id in (MOE_DECODE, MOE_BATCH)}
     route = lane.resolve_unit_route(
         _facts("routed_moe"), table, platform="sm_121", residency="resident",
         runtime_image=image, execution_mode="eager")
-    assert route.route_status == lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    expected = (lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG if all(admits.values())
+                else lane.ROUTE_STATUS_UNATTESTED)
+    assert route.route_status == expected, (admits, route.route_status)
     assert {r.cell_id for r in route.regimes} == {MOE_DECODE, MOE_BATCH}
     for regime in route.regimes:
         recorded = regime.as_dict()
-        assert recorded["evidence_attribution"] == lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED
+        assert recorded["evidence_attribution"] == (
+            _parsed_cell(table, regime.cell_id).evidence.smoke_attribution)
         assert recorded["evidence_artifact"] is None
 
 
