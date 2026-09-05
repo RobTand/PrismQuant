@@ -23,6 +23,19 @@ against a per-token FP8 input.  The same *weight* rate therefore costs
 differently on the two routes, which is the whole reason the allocator may not
 rank them on weight error alone.
 
+The W4A4 leg is the **served static contract**, not the registry's dynamic
+RTN.  ``tessera.serving.nvfp4_route`` reads the artifact's
+``trellis_input_global_scale`` and calls vLLM's compiled ``scaled_fp4_quant``
+-- a static-global-scale operation whose per-16 block scales are stored as
+UE4M3 -- so an E2M1 rung here is scored through
+``format_registry.nvfp4_activation_qdq_served`` at the unit's own calibrated
+``input_global_scale`` (fused-sibling unified, the same joint the exporter's
+scale file carries).  NVFP4's registry callback is a dynamic FP32-scale RTN
+that never snaps through UE4M3 and rounds midpoints differently; pricing with
+it prices an activation tensor the runtime does not execute
+(RobTand/prismaquant#194).  A missing scale refuses rather than falling back
+to the dynamic quantiser.
+
 Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
@@ -68,6 +81,7 @@ __all__ = [
     "campaign_cost_payload",
     "main",
     "next_anchor_rate",
+    "write_export_inputs",
 ]
 
 SCHEMA = "prismaquant.tessera_campaign_cost.v1"
@@ -107,6 +121,11 @@ class CampaignAnchor:
     #: is legitimately half H-aware and a table-level flag would have to lie in
     #: one direction or the other.
     hessian_applied: bool = False
+    #: The static NVFP4 ``input_global_scale`` this anchor's A side was scored
+    #: under, when the rung's route executes the static UE4M3 contract; None
+    #: on every other route.  Carried per row so the price's activation
+    #: identity survives into the cost table beside the Hessian identity.
+    input_global_scale: "float | None" = None
 
 
 def anchor_schedule(lo: int, hi: int, count: int) -> list[int]:
@@ -176,6 +195,19 @@ def next_anchor_rate(
 # Measurement
 # ---------------------------------------------------------------------------
 
+class ActivationScaleContractError(RuntimeError):
+    """A static-activation-contract rung has no calibrated input scale.
+
+    Its own class for the same reason ``HessianContractError`` has one: the
+    anchor loop absorbs per-anchor failures with ``except Exception:
+    continue``, and a scale-contract refusal is about every W4A4 row this run
+    would write, not about one anchor.  Falling back to the registry's dynamic
+    FP32-scale quantiser instead would price an activation regime the serve
+    does not execute -- exactly the defect this refusal exists to make loud
+    (RobTand/prismaquant#194).
+    """
+
+
 def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
                        hessian_required: bool = True, recipe=None):
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
@@ -202,8 +234,16 @@ def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
 def _measure_anchor(
     *, qname: str, weight, activations, format_name: str, cache, wire_dir: Path,
     activation_kwargs_for=None, hessian_required: bool = True,
+    static_input_scale: "float | None" = None,
 ):
     """Render one rung, price it as served, and store the wire beside it.
+
+    ``static_input_scale`` is the unit's calibrated NVFP4
+    ``input_global_scale`` (fused-sibling unified), required whenever the
+    rung's route executes the static UE4M3 activation contract and ignored on
+    every other route.  The refusal for a missing one runs BEFORE the encode,
+    because the encode is the expensive half and the refusal is about the
+    whole run.
 
     ``activation_kwargs_for`` is a callable ``(qname, scale_plane) -> encoder
     kwargs`` -- the block-LDL of that unit's regularised ``XᵀX`` and the
@@ -228,7 +268,9 @@ def _measure_anchor(
     from .production_weight_cache import (
         _local_forward_render_score, _store_rendered_weight_entry,
     )
-    from .tessera_formats import parse_tessera_format_name, tessera_wire_recipe
+    from .tessera_formats import (
+        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+    )
     from .tessera_render import HessianContractError
 
     from .tessera_render import rung_accepts_hessian
@@ -239,6 +281,27 @@ def _measure_anchor(
     # the predicate reads and the plane the encode writes are this object --
     # not three lookups that agree only while nothing clears the recipe memo.
     wire = tessera_wire_recipe(family, rung)
+    # The A side, as served.  An NVFP4-materialising route executes vLLM's
+    # static-global-scale ``scaled_fp4_quant`` (UE4M3 block scales) against the
+    # artifact's ``trellis_input_global_scale``; every other route keeps the
+    # serving format's own dynamic quantiser, taken by reference from the spec.
+    route = tessera_serving_route(family, wire, rung)
+    if route.activation_source_format == "NVFP4":
+        if static_input_scale is None or not float(static_input_scale) > 0:
+            raise ActivationScaleContractError(
+                f"{qname} {format_name}: this rung's route executes the "
+                f"static NVFP4 activation contract ({route.contract}) and no "
+                "calibrated input_global_scale was supplied. Scoring it with "
+                "the registry's dynamic FP32-scale quantiser would price an "
+                "activation regime the serve does not execute; a lookup that "
+                "misses must refuse, not fall back."
+            )
+        input_scale = float(static_input_scale)
+        activation_qdq = (
+            lambda x: fr.nvfp4_activation_qdq_served(x, input_scale))
+    else:
+        input_scale = None
+        activation_qdq = spec.activation_quantize_dequantize
     activation_kwargs = None
     # Whether an H can be applied is a property of the RUNG'S WIRE, not of the
     # run, and it is DERIVED from what the pinned ActivationSource emits for
@@ -267,11 +330,10 @@ def _measure_anchor(
         reference_weight=weight,
         rendered_weight=render,
         activations=activations,
-        activation_quantize=spec.activation_quantize_dequantize,
-        # Tessera's A side is the serving format's own dynamic quantiser, taken
-        # by reference; no calibrated static clip applies (that is NVFP4's
-        # tensor-level scale, and ``_format_uses_static_activation_clip``
-        # names only NVFP4 for it).
+        activation_quantize=activation_qdq,
+        # No pre-clip on top: the static route's clamp lives inside the served
+        # oracle (``nvfp4_activation_qdq_served`` clamps at the stored UE4M3
+        # scale), and the dynamic routes have no calibrated clip at all.
         activation_max_abs=None,
     )
     if metric != "output_mse":
@@ -312,6 +374,7 @@ def _measure_anchor(
         wire_bytes=len(blob),
         seconds=elapsed,
         hessian_applied=hessian_applied,
+        input_global_scale=input_scale,
     )
 
 
@@ -389,6 +452,11 @@ def campaign_cost_payload(
                     "activation_contract": anchor.activation_contract,
                     "wire_bytes": anchor.wire_bytes,
                     "encode_seconds": anchor.seconds,
+                    # The static A-side scale this row was scored under, when
+                    # its route executes the static NVFP4 contract; the value
+                    # identity the export's scale file must reproduce.
+                    **({"input_global_scale": float(anchor.input_global_scale)}
+                       if anchor.input_global_scale is not None else {}),
                     "hessian_identity": {
                         **hessian_identity, "applied": bool(anchor.hessian_applied),
                     },
@@ -438,7 +506,10 @@ def campaign_cost_payload(
                     "activation_contract": rung.admission.activation_contract,
                     # An interpolated row inherits the applicability of the
                     # anchors it was interpolated between; they share a family,
-                    # so they share a scale plane and therefore an answer.
+                    # so they share a scale plane and therefore an answer --
+                    # and, on a static-contract route, a unit-level A scale.
+                    **({"input_global_scale": float(ordered[0].input_global_scale)}
+                       if ordered[0].input_global_scale is not None else {}),
                     "hessian_identity": {
                         **hessian_identity,
                         "applied": bool(ordered[0].hessian_applied),
@@ -482,9 +553,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None):
     """One model forward per batch, for dense and declared packed projections.
 
-    Returns ``(rows, hessians, token_counts)``.
+    Returns ``(rows, hessians, token_counts, max_abs)``.
 
-    Two different things come out of the same hook, and they have different
+    Three different things come out of the same hook, and they have different
     row budgets on purpose:
 
     * ``rows`` is capped at ``max_rows`` because it feeds
@@ -496,12 +567,24 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
       ``down_proj`` a rank-256 Hessian -- rank-deficient by a factor of
       twelve, and wrong in a way no downstream check would catch.  So the
       accumulation runs before the keep's early return, not after it.
+    * ``max_abs`` is ``max|x|`` over **every** calibration row, unconditional
+      and for the same reason the Hessian is uncapped: it calibrates the
+      static NVFP4 ``input_global_scale`` the W4A4 routes are priced and
+      served under, and a maximum over a prefix of the rows is a different
+      calibration than the one an exporter would take.
 
     Accumulated in fp32 on the model's device and moved to CPU once at the
     end, matching how the kept rows are handled. Packed units use the existing
-    module-input collector and routing/SwiGLU derivation. The score-row cap
-    never caps routed rows before the Hessian. This capture API does not open
-    the main-entry packed-population/export gate.
+    module-input collector and routing/SwiGLU derivation, and land in the SAME
+    three accumulators as a dense Linear -- rows, Hessian and ``max_abs`` --
+    so there is one notion of "what the campaign captured" for either
+    population, and ``write_export_inputs`` has one input to write.  The
+    score-row cap never caps routed rows before the Hessian or the maximum.
+    This capture API does not open the main-entry packed-population/export
+    gate: :func:`_require_campaign_population` still refuses a live packed
+    population before calibration, so nothing here reaches a cost payload or
+    the export inputs until the producer's projection bridge exists
+    (PrismaQuant #183).
     """
     import torch
 
@@ -509,16 +592,26 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     kept: dict[str, int] = {name: 0 for name in targets}
     hess: dict[str, object] = {name: None for name in targets}
     seen: dict[str, int] = {name: 0 for name in targets}
+    amax: dict[str, float] = {name: 0.0 for name in targets}
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
 
     def accumulate(name, x):
+        # ONE accumulator for both populations: a dense Linear's pre-hook and
+        # a packed projection's routed rows land here, so the three outputs
+        # (score rows, Hessian, max|x|) are the same three for either, and a
+        # packed unit can feed ``_static_input_scales``/``write_export_inputs``
+        # by the same path a dense one does once the main-entry packed gate
+        # opens.  A zero-row call (an expert no token was routed to on this
+        # batch) contributes nothing to any of them.
         flat = x.detach().reshape(-1, x.shape[-1])
-        if name in routed_seen and not flat.shape[0]:
+        if not flat.shape[0]:
             return
         if name in routed_seen:
             routed_seen[name] += int(flat.shape[0])
+        amax[name] = max(
+            amax[name], float(flat.abs().amax().float().item()))
         if want_hessian:
             # Every row, before any cap: see the docstring.
             f32 = flat.to(dtype=torch.float32)
@@ -623,7 +716,39 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         name: (None if h is None else h.to(device="cpu"))
         for name, h in hess.items()
     } if want_hessian else {}
-    return rows, hessians, dict(seen)
+    return rows, hessians, dict(seen), dict(amax)
+
+
+def _static_input_scales(max_abs: "Mapping[str, float]", *, profile=None):
+    """Per-unit static NVFP4 ``input_global_scale``, fused-sibling unified.
+
+    ``(scales, policy)``.  Everything here is the owned NVFP4 activation
+    contract, reused rather than restated: the resolved default policy names
+    the formula (``resolve_input_global_scale_policy``), the scalar is the
+    F32-rounded value an exported tensor would carry
+    (``input_global_scale_from_max_abs``), and fused siblings share one
+    conservative calibration maximum (``unify_fused_sibling_max_abs``) --
+    vLLM concatenates q/k/v and gate/up and applies ONE activation scale, and
+    Tessera's exporter joins its members' scales for the same module, so a
+    per-member scale would price an A side no fused module executes.
+
+    A unit whose calibration never saw a row keeps no scale; a W4A4 anchor on
+    it then refuses in :func:`_measure_anchor` rather than pricing dynamically.
+    """
+    from .nvfp4_activation_contract import (
+        input_global_scale_from_max_abs, resolve_input_global_scale_policy,
+        unify_fused_sibling_max_abs,
+    )
+
+    policy = resolve_input_global_scale_policy()
+    positive = {name: float(value) for name, value in max_abs.items()
+                if float(value) > 0.0}
+    unified = unify_fused_sibling_max_abs(
+        positive, profile=profile, tolerate_profile_errors=True)
+    return {
+        name: input_global_scale_from_max_abs(value, policy=policy)
+        for name, value in unified.items()
+    }, policy
 
 
 def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
@@ -722,6 +847,113 @@ def _require_campaign_population(model, profile, layer_stride: int) -> None:
             + ". Refusing an incomplete dense-only cost payload; per-expert "
             "activation/Hessian capture and the producer's explicit projection "
             "are required (PrismaQuant #183).")
+
+
+def _format_executes_static_nvfp4(format_name: str) -> bool:
+    """Does this rung's route execute the static NVFP4 activation contract?"""
+    from .tessera_formats import (
+        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+    )
+
+    family, rung = parse_tessera_format_name(format_name)
+    wire = tessera_wire_recipe(family, rung)
+    return tessera_serving_route(
+        family, wire, rung).activation_source_format == "NVFP4"
+
+
+def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
+    """Refuse a resumed anchor priced under a different activation contract.
+
+    Resume merges checkpoint rows into this run's table, and the table's rows
+    must be one currency.  A W4A4 anchor with no ``input_global_scale`` was
+    measured under the pre-#194 dynamic FP32-scale quantiser; one with a
+    *different* scale was measured on a different calibration.  Either way it
+    is not a price of this run's served A side, and merging it silently is the
+    exact mixed-table failure the Hessian identity guard exists to catch on
+    its own axis.
+    """
+    if not _format_executes_static_nvfp4(anchor.format_name):
+        return
+    if anchor.input_global_scale is None:
+        raise ActivationScaleContractError(
+            f"checkpoint anchor {anchor.qname} {anchor.format_name} carries "
+            "no input_global_scale: it was priced under the pre-served-"
+            "contract dynamic activation quantiser and cannot be merged into "
+            "a served-contract table. Delete the checkpoint (or pass a fresh "
+            "--checkpoint) to re-measure these anchors."
+        )
+    expected = static_scales.get(anchor.qname)
+    if expected is None or float(anchor.input_global_scale) != float(expected):
+        raise ActivationScaleContractError(
+            f"checkpoint anchor {anchor.qname} {anchor.format_name} was "
+            f"priced at input_global_scale={anchor.input_global_scale!r} but "
+            f"this run's calibration yields {expected!r}. A resumed anchor "
+            "must have been scored under this run's own static scales, or "
+            "the table mixes two activation calibrations under one identity."
+        )
+
+
+def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
+                        hessian_identity, static_scales, static_scale_policy):
+    """Write the exporter's ``--hessian`` and ``--input-scales`` inputs.
+
+    ``(hessian_capture_path | None, input_scales_path | None)``.  The
+    allocation an allocator builds on this campaign's table is priced under
+    exactly these Hessians and these static activation scales, so the export
+    leg must be handed them back or the artifact built is not the artifact
+    priced (RobTand/prismaquant#193).  Both files are in the shapes Tessera's
+    exporter consumes:
+
+    * ``hessian_capture.pt`` -- ``{"H": {unit: XᵀX}, "counts", "provenance"}``,
+      what ``ActivationSource.from_capture`` loads; the H tensors are the
+      campaign's own un-normalised accumulators, the identity is the same
+      triple stamped on every cost row, and ``hessian_role: "fit"`` marks it
+      as bytes-shaping (Tessera refuses a held-out capture there).  A JSON
+      sidecar ``<capture>.provenance.json`` repeats the identity so the export
+      gate can bind capture to allocation without loading the tensors.
+    * ``input_scales.safetensors`` -- one ``<unit>.input_global_scale`` F32
+      scalar per unit, the exporter's stock-NVFP4 spelling, valued exactly as
+      the W4A4 costs were scored.
+
+    ``hessians=None`` is the deliberate weights-only campaign: no capture is
+    written, matching the ``supplied=false`` stamp the rows carry.
+    """
+    import torch
+
+    hessian_capture_path = None
+    if hessians is not None:
+        hessian_capture_path = cache_dir / "hessian_capture.pt"
+        capture_provenance = {**dict(hessian_identity), "hessian_role": "fit"}
+        tmp_capture = hessian_capture_path.with_suffix(".pt.tmp")
+        torch.save({
+            "H": {name: h for name, h in hessians.items() if h is not None},
+            "counts": dict(hessian_rows),
+            "provenance": capture_provenance,
+        }, tmp_capture)
+        os.replace(tmp_capture, hessian_capture_path)
+        sidecar = hessian_capture_path.with_name(
+            hessian_capture_path.name + ".provenance.json")
+        sidecar.write_text(json.dumps(capture_provenance, indent=2,
+                                      sort_keys=True) + "\n")
+        print(f"[campaign] wrote {hessian_capture_path} "
+              f"({sum(1 for h in hessians.values() if h is not None)} "
+              "Hessians)", flush=True)
+    input_scales_path = None
+    if static_scales:
+        from safetensors.torch import save_file
+
+        from .nvfp4_activation_contract import input_global_scale_tensor
+
+        input_scales_path = cache_dir / "input_scales.safetensors"
+        save_file(
+            {f"{name}.input_global_scale": input_global_scale_tensor(value)
+             for name, value in static_scales.items()},
+            str(input_scales_path),
+            metadata={"input_global_scale_policy": str(static_scale_policy)},
+        )
+        print(f"[campaign] wrote {input_scales_path} "
+              f"({len(static_scales)} static input scales)", flush=True)
+    return hessian_capture_path, input_scales_path
 
 
 def main(argv: "Sequence[str] | None" = None) -> int:
@@ -851,7 +1083,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     tokens, corpus_text = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
     want_h = args.hessian == "require"
-    acts, hessians, hessian_rows = _collect_activations(
+    acts, hessians, hessian_rows, act_max_abs = _collect_activations(
         model, targets, tokens, args.max_act_rows, device,
         want_hessian=want_h)
     # For the log line and the run-level provenance only; every encode is
@@ -881,10 +1113,29 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         fit_tokens_min=int(hessian_token_min),
     )
 
+    # The static A-side calibration, from the same forward passes: one
+    # input_global_scale per unit under the resolved contract policy, fused
+    # siblings sharing one value.  Priced by every W4A4 anchor below and
+    # written beside the payload for the export leg, so the scale that priced
+    # the table is the scale the artifact serves (priced == served).
+    static_scales, static_scale_policy = _static_input_scales(
+        act_max_abs, profile=profile)
+
     weights = {name: dict(model.named_modules())[name].weight.detach()
                for name in targets}
     del model
     torch.cuda.empty_cache()
+
+    # The export leg's inputs, written BEFORE the anchor loop so even a
+    # deadline-stopped campaign leaves them (RobTand/prismaquant#193).
+    hessian_capture_path, input_scales_path = write_export_inputs(
+        cache_dir,
+        hessians=hessians if want_h else None,
+        hessian_rows=hessian_rows,
+        hessian_identity=hessian_identity,
+        static_scales=static_scales,
+        static_scale_policy=static_scale_policy,
+    )
 
     # ONE ActivationSource for the whole campaign, and ONE set of encoder
     # keywords per unit PER SCALE PLANE. The block-LDL is a function of the
@@ -925,6 +1176,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         raw = json.loads(checkpoint.read_text())
         for row in raw.get("anchors", []):
             anchor = CampaignAnchor(**row)
+            _require_resumable_anchor(anchor, static_scales)
             measured.setdefault(anchor.qname, {}).setdefault(
                 anchor.family, []).append(anchor)
         print(f"[campaign] resumed {sum(len(v) for f in measured.values() for v in f.values())} "
@@ -1119,8 +1371,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     activation_kwargs_for=(
                         _activation_kwargs_for if want_h else None),
                     hessian_required=want_h,
+                    static_input_scale=static_scales.get(name),
                 )
-            except HessianContractError:
+            except (HessianContractError, ActivationScaleContractError):
                 # Never absorbed into "one anchor failed": a contract refusal
                 # is about every row this run would write, not this one.
                 raise
@@ -1208,6 +1461,20 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                if serving_target is not None else {}),
             "wire_dir": str(wire_dir),
             "tessera_commit": os.environ.get("TESSERA_COMMIT", ""),
+            # The static A-side identity every W4A4 row was priced under: the
+            # policy names the formula, the values are the F32-rounded scalars
+            # an exported input_global_scale tensor carries, fused siblings
+            # unified. The served contract reads exactly one such scalar per
+            # module (trellis_input_global_scale), so this block is what makes
+            # "the priced A side is the served A side" checkable downstream.
+            "activation_static_scales": {
+                "policy": str(static_scale_policy),
+                "source": "campaign_calibration_amax_fused_unified",
+                "path": (None if input_scales_path is None
+                         else str(input_scales_path)),
+                "units": {name: float(value)
+                          for name, value in sorted(static_scales.items())},
+            },
             "hessian": {
                 "supplied": bool(want_h),
                 "mode": str(args.hessian),
@@ -1220,6 +1487,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                        + ")" if want_h else "")),
                 "kwargs": list(hessian_status["kwargs"]),
                 "recipe": dict(hessian_status["recipe"]),
+                # The exporter-shaped capture of the exact Hessians above,
+                # for the export leg's --hessian input; None on --hessian off.
+                "capture_path": (None if hessian_capture_path is None
+                                 else str(hessian_capture_path)),
                 "token_count": int(hessian_token_count),
                 "token_count_min": int(hessian_token_min),
                 # The identity triple Tessera requires, plus its context. The
