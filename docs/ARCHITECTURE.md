@@ -8997,10 +8997,11 @@ diagram; the Tessera container (§9.4) is drawn **gated on the exact pinned runt
 since 2026-09-03 `run-pipeline.sh` has a real `EXPORT_CONTAINER=tessera` arm that
 plans and encodes through Tessera's own tools under `TESSERA_REPO` — which the lane
 declares as `producer_tool`s rather than vendoring — and since 2026-09-04 the
-refusal is a digest rather than a tag (`tessera_lane_attested` answers True for
-the dense rungs only while the installed `runtime_contract.json` hashes to the
-pinned SHA-256). No served measurement covers the lane yet, so its runtime edge
-stays dashed.
+refusal is a digest rather than a tag: the arm is **fail-closed** on the pin
+(`tessera_lane_attested` answers True for the dense rungs only while the
+installed `runtime_contract.json` hashes to the pinned SHA-256), and fail-closed
+again on the contract's own evidence, which refuses both routed_moe cells.
+No served measurement covers the lane yet, so its runtime edge stays dashed.
 
 ```mermaid
 flowchart LR
@@ -9329,9 +9330,10 @@ to, with `repo_env`, `path`, `stability` ∈ {`supported`,
 `tracking_issue`. Both Tessera tools are `unsupported_experiments` today: they
 live under that repository's `experiments/` with no stability promise, so a
 tidy-up there breaks a shipping lane here, and that is stated on the lane's own
-declaration rather than only in an issue tracker. Promotion rides the
-release-tag commit (RobTand/tessera#17, tracked as
-RobTand/prismaquant#119).
+declaration rather than only in an issue tracker. Promotion rides Tessera giving
+them a stability promise (RobTand/tessera#17, tracked as
+RobTand/prismaquant#119); since 2026-09-04 it is no longer coupled to lane
+admission, which pins a commit and a contract digest rather than a tag.
 
 **The pin also carries the serve fingerprint's half of §7.4, and it is DERIVED.**
 Tessera contract v7 publishes `native_extensions` — what the plugin *loads*, beside

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+from conftest import down_convert_lane_table
 
 from prismaquant import lane_eligibility as lane
 from prismaquant import tessera_runtime_contract as contract
@@ -15,8 +16,24 @@ MOE_IMAGE = "example/moe@sha256:" + "b" * 64
 
 
 def _payload():
-    payload = json.loads(contract.contract_path().read_text(encoding="utf-8"))
-    payload["lane_eligibility"]["schema"] = "tessera.lane-eligibility.v5"
+    """A v5 lane table this file OWNS rather than borrows.
+
+    This file is about the v5 grammar. Relabelling whatever Tessera happens to
+    publish made it assert, silently, that the installed contract still IS v5 --
+    and since Tessera's PR #176 it is v6, whose cells carry an ``evidence``
+    block v5 has no field for. Down-converting keeps every part the grammar did
+    not change (families, rungs, route statuses) honest and real, and drops
+    exactly the newer fields, so the test exercises v5 and nothing else.
+    """
+    payload = down_convert_lane_table(
+        json.loads(contract.contract_path().read_text(encoding="utf-8")),
+        "tessera.lane-eligibility.v5")
+    # Dense-only, decided here rather than inherited: v6 publishes routed_moe
+    # cells too, and this file's scope tests ask what a routed_moe CONTEXT gets
+    # from a table that covers only dense.
+    block = payload["lane_eligibility"]
+    block["cells"] = [c for c in block["cells"] if c["structure"] == "dense"]
+    block["structures"] = [s for s in block["structures"] if s == "dense"]
     for cell in payload["lane_eligibility"]["cells"]:
         cell["runtime"] = {"image": DENSE_IMAGE, "execution_modes": ["eager"]}
     return payload

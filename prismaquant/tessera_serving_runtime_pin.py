@@ -127,7 +127,8 @@ TESSERA_SERVING_RUNTIME_REPOSITORY = (
 #: Gridbook pins carry.
 TESSERA_SERVING_RUNTIME_CONTRACT_SCHEMA = "tessera.runtime-contract.v1"
 
-#: The conspicuous sentinels a pin carries while no release tag exists.  They
+#: The conspicuous sentinels a pin carries while no Tessera commit has been
+#: reviewed (they outlived the release-tag requirement Rob retired).  They
 #: are structurally ACCEPTED by the parser -- so the pin file is reviewable,
 #: and so this module has something honest to say -- and REFUSED by every live
 #: admission gate through :func:`require_exact_tessera_runtime_pin`.
@@ -141,10 +142,20 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA2
 #: Bound at review time by one command, so the commit and the digest cannot be
 #: two independent assertions about one runtime::
 #:
-#:     git -C /home/rob/tessera show HEAD:src/tessera/serving/runtime_contract.json | sha256sum
+#:     SHA=$(git -C /home/rob/tessera rev-parse HEAD)
+#:     git -C /home/rob/tessera show "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
 #:
-#: Recorded 2026-09-04T21:29-04:00 against Tessera master (contract v17, lane
-#: schema ``tessera.lane-eligibility.v6``, its PR #176).
+#: Recorded 2026-09-04T21:29-04:00 against Tessera master, which was
+#: 5acc2a6f then (contract v17, lane schema
+#: ``tessera.lane-eligibility.v6``, its PR #176).  Re-check it against the
+#: COMMIT rather than a past HEAD, which nobody can re-run::
+#:
+#:     git -C /home/rob/tessera show 5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68:src/tessera/serving/runtime_contract.json | sha256sum
+#:
+#: Re-verified 2026-09-05T02:35Z: Tessera master had moved 17 commits past this
+#: commit and still packages byte-identical contract bytes, so the pin still
+#: admits.  That is the property this design is for -- a Tessera commit only
+#: re-stales the pin when it changes what the runtime PUBLISHES.
 TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
     "5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68"
 )

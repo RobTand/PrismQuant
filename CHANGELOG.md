@@ -54,6 +54,40 @@
 
 ### Added
 
+- **Tessera admission is pinned to an exact commit plus the packaged contract's
+  digest, and the lane reader speaks schema v6** (RobTand/tessera#176;
+  `tessera_serving_runtime_pin.py`, `lane_eligibility.py`,
+  `tessera_runtime_contract.py`, `tessera_export_lane.py`,
+  `tessera_runtime/tessera_serving_runtime_pin.json`). Rob retired the
+  release-tag requirement ("we won't have to keep cutting releases"), so
+  immutability now rests on the pair a producer can actually check: the pin
+  schema is `prismaquant.tessera_serving_runtime_pin.v2`, carrying `commit`,
+  `version` and `contract_sha256`, and `require_pinned_tessera_runtime` refuses
+  unless the pin equals the reader's constants AND the INSTALLED
+  `tessera/serving/runtime_contract.json` hashes to the pinned digest. The
+  digest is the enforced half because it is the only half that can be attested
+  (principle 14): the packaged contract publishes `versions.tessera`,
+  `plugin_entry_point` and `default_serve_image` and no commit field at all, so
+  a commit is recorded identity and the digest is the gate.
+  `version_is_release` is still parsed, still recorded, and still cannot be
+  `true` over a PENDING commit — it is advisory, and no gate reads it. A stray
+  Tessera checkout on `PYTHONPATH` is refused exactly as the PENDING sentinels
+  refused it, and a new gate (`require_producer_repo_is_pinned`) closes the
+  hole the change itself opens by hashing the contract inside `$TESSERA_REPO`,
+  the checkout that encodes. The reader now parses `tessera.lane-eligibility.v6`
+  (v3/v4/v5 still parse): per-cell `runtime.vllm`/`runtime.torch`,
+  `versions.default_serve_image` in place of the removed `versions.attested_on`,
+  and a required per-cell `evidence {grade, kl, smoke}` whose `grade` must equal
+  what its own `kl` entries derive.
+  **Refusal, deliberately:** contract v17 declares `routed_moe` for the first
+  time, and publishes on both routed_moe cells `evidence.smoke.status
+  "repetitive"` — the runtime's own record that a greedy smoke on that route
+  degenerated. PrismaQuant does not admit them. The refusal is the runtime's
+  measurement read back (`lane_eligibility.cell_evidence_admits`), not a
+  structure ban this repository typed, and it fires in the menu, the render
+  admission, `native_cells` and the export lane's structure gate. Promoting
+  routed MoE is a decision on the evidence under principle 9 and it is Rob's.
+
 - **A lane's declared gates are recorded on a lane-gated ship record** (#119 in
   part, #162 filed; `lane_spec.py`, `lane_shipcard.py`, `shipcard.py`,
   `lane_specs/*.json`, `run-pipeline.sh`). `route.census` — principle 12's

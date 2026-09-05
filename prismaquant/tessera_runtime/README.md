@@ -30,9 +30,20 @@ question the digest raises. The two are bound at review time by one pair of
 commands, so they cannot become two independent assertions about one runtime:
 
 ```bash
-git -C /home/rob/tessera rev-parse HEAD
-git -C /home/rob/tessera show HEAD:src/tessera/serving/runtime_contract.json | sha256sum
+SHA=$(git -C /home/rob/tessera rev-parse HEAD)
+git -C /home/rob/tessera show "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
 ```
+
+The pin below was bound that way on 2026-09-04, when master was `5acc2a6f`.
+Re-check what is recorded against the COMMIT, never against a later `HEAD`:
+
+```bash
+git -C /home/rob/tessera show 5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68:src/tessera/serving/runtime_contract.json | sha256sum
+```
+
+Re-verified 2026-09-05T02:35Z: master was 17 commits ahead of the pin and still
+packaged byte-identical contract bytes, so the pin still admitted. A Tessera
+commit re-stales this pin only when it changes what the runtime publishes.
 
 **`version_is_release` is advisory.** Still required, still parsed, still
 recorded, and still unable to be `true` over a PENDING commit — so it keeps

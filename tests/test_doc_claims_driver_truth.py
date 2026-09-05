@@ -171,6 +171,8 @@ def test_167_diagram2_names_tessera_container_fail_closed():
         "DIAGRAM-2's mermaid diagram must draw the Tessera container"
     )
     assert "fail-closed" in block or "fail_closed" in block or "PENDING" in block, (
-        "DIAGRAM-2 must say the Tessera container is fail-closed on the "
-        "PENDING release pin"
+        "DIAGRAM-2 must say the Tessera container is fail-closed on the pin. "
+        "Until 2026-09-04 that pin was PENDING sentinels awaiting a release "
+        "tag; it is now an exact commit plus the packaged contract's digest, "
+        "so the word this looks for is the posture, not the sentinel"
     )

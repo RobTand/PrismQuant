@@ -32,6 +32,7 @@ from prismaquant.lane_eligibility import (
     FORMAT_KIND_TESSERA_WIRE,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LaneEligibilityError,
+    cell_evidence_admits,
     load_eligibility_table,
     load_published_formats,
 )
@@ -216,9 +217,14 @@ def test_the_packaged_tessera_contract_parses_and_every_cell_names_the_plugin():
         TESSERA_SERVING_PLUGIN_NAME]
     assert {e["kind"] for e in formats.values()} == {FORMAT_KIND_TESSERA_WIRE}
     assert table.trellis_families == frozenset(formats)
-    # dense-only, and that is the honest state: no served measurement covers
-    # routed experts, so the contract carries no routed_moe cell.
-    assert table.structures == ("dense",)
+    # Since contract v17 the table DECLARES routed_moe -- and publishes, on
+    # those cells, the measurement that refuses them: a greedy smoke that
+    # degenerated. Declaring a structure is not admitting it, so the honest
+    # assertion is both halves at once.
+    assert table.structures == ("dense", "routed_moe")
+    routed = [cell for cell in table.cells if cell.structure == "routed_moe"]
+    assert routed and all(not cell_evidence_admits(cell)[0]
+                          for cell in routed)
 
 
 def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path):
