@@ -290,6 +290,159 @@ def test_the_same_weight_rate_costs_differently_on_the_two_routes():
     assert e2m1 / e4m3 > 1.5, ratios    # and the two routes are not the same
 
 
+def _anchor_harness(monkeypatch, tmp_path):
+    """Run ``_measure_anchor`` with the encode stubbed to the identity.
+
+    The activation-quantiser choice is the thing under test, not the trellis
+    encode, and a CPU E2M1 encode is ~a minute; the stub returns the weight
+    itself as the render so the score isolates the A leg exactly.
+    """
+    from types import SimpleNamespace
+
+    from prismaquant import tessera_campaign as campaign
+
+    monkeypatch.setattr(
+        campaign, "_encode_and_render", lambda w, name, **kw: (w, b""))
+    cache = SimpleNamespace(weights={}, cache_dir=None)
+    return lambda **kw: campaign._measure_anchor(
+        cache=cache, wire_dir=tmp_path, hessian_required=False, **kw)
+
+
+def test_e2m1_costs_price_the_served_static_ue4m3_contract(monkeypatch, tmp_path):
+    """A W4A4 anchor is scored through the served static-scale oracle.
+
+    Tessera's plugin reads the artifact's ``trellis_input_global_scale`` and
+    calls vLLM's ``scaled_fp4_quant`` -- static global scale, UE4M3 block
+    scales -- while NVFP4's registry callback is a dynamic FP32-scale RTN.
+    On a small-magnitude input the two disagree hard: at G=1 the stored UE4M3
+    scale for a 1e-3 block underflows to byte zero and the served activation
+    is exactly 0, where the dynamic quantiser keeps ~1e-3.  Pricing with the
+    dynamic callback prices an activation tensor the runtime never executes
+    (RobTand/prismaquant#194).
+    """
+    from prismaquant.format_registry import nvfp4_activation_qdq_served
+    from prismaquant.production_weight_cache import _local_forward_render_score
+
+    torch.manual_seed(0)
+    W = torch.randn(32, 256, dtype=torch.bfloat16)
+    X = torch.full((8, 256), 1e-3, dtype=torch.float32)
+    scale = 1.0
+    measure = _anchor_harness(monkeypatch, tmp_path)
+    anchor = measure(
+        qname="m.q_proj", weight=W, activations=X,
+        format_name="TESSERA_E2M1_K2_R896", static_input_scale=scale)
+    served = _local_forward_render_score(
+        reference_weight=W.float(), rendered_weight=W.float(), activations=X,
+        activation_quantize=lambda t: nvfp4_activation_qdq_served(t, scale),
+        activation_max_abs=None)[0]
+    assert anchor.dloss == pytest.approx(served, rel=1e-9)
+    assert anchor.input_global_scale == scale
+    from prismaquant import format_registry as fr
+
+    dynamic = _local_forward_render_score(
+        reference_weight=W.float(), rendered_weight=W.float(), activations=X,
+        activation_quantize=fr.get_format(
+            "TESSERA_E2M1_K2_R896").activation_quantize_dequantize,
+        activation_max_abs=None)[0]
+    assert anchor.dloss > 10 * dynamic, (
+        "the underflow case must separate the two quantisers; if it does not, "
+        "the anchor was scored under the dynamic FP32-scale RTN")
+
+
+def test_a_w4a4_anchor_with_no_static_scale_refuses_before_encoding(
+        monkeypatch, tmp_path):
+    """Missing scale -> refuse, not the dynamic quantiser -- and refuse FIRST.
+
+    The refusal is about every W4A4 row the run would write, so it must not
+    cost an encode, and the campaign loop must not absorb it as one failed
+    anchor.
+    """
+    from prismaquant import tessera_campaign as campaign
+
+    def _must_not_encode(*a, **k):
+        raise AssertionError("the refusal must precede the encode")
+
+    monkeypatch.setattr(campaign, "_encode_and_render", _must_not_encode)
+    from types import SimpleNamespace
+
+    with pytest.raises(campaign.ActivationScaleContractError,
+                       match="static NVFP4 activation contract"):
+        campaign._measure_anchor(
+            qname="m.q_proj",
+            weight=torch.randn(32, 256, dtype=torch.bfloat16),
+            activations=torch.randn(8, 256),
+            format_name="TESSERA_E2M1_K2_R896",
+            cache=SimpleNamespace(weights={}, cache_dir=None),
+            wire_dir=tmp_path, hessian_required=False,
+            static_input_scale=None)
+
+
+def test_dynamic_route_anchors_need_no_static_scale(monkeypatch, tmp_path):
+    """E4M3's route is per-token dynamic at serve; no static scale applies."""
+    measure = _anchor_harness(monkeypatch, tmp_path)
+    torch.manual_seed(0)
+    anchor = measure(
+        qname="m.up", weight=torch.randn(32, 256, dtype=torch.bfloat16),
+        activations=torch.randn(8, 256),
+        format_name="TESSERA_E4M3_K1_R1024", static_input_scale=None)
+    assert anchor.input_global_scale is None
+    assert anchor.dloss >= 0.0
+
+
+def test_the_priced_scale_travels_into_the_cost_rows(monkeypatch, tmp_path):
+    """Measured AND interpolated W4A4 rows carry the value identity.
+
+    The export leg writes one ``input_global_scale`` per module; a cost row
+    that does not say which scale priced it cannot be checked against the
+    artifact, which is how priced and served drift apart silently.
+    """
+    import dataclasses
+
+    from prismaquant.tessera_campaign import campaign_cost_payload
+
+    q, fam = "m.0.q_proj", "TESSERA_E2M1_K2"
+    scale = 448.0 * 6.0 / 37.5
+    anchors = {q: {fam: [
+        dataclasses.replace(_anchor(q, fam, r, d), input_global_scale=scale)
+        for r, d in ((128, 1e-2), (512, 1e-3), (896, 1e-4))]}}
+    payload = campaign_cost_payload(
+        anchors, _menu(q, fam, {128, 384, 512, 896}), loo={}, provenance={})
+    rows = payload["costs"][q]
+    assert rows[f"{fam}_R512"]["input_global_scale"] == pytest.approx(scale)
+    assert rows[f"{fam}_R384"]["input_global_scale"] == pytest.approx(scale)
+
+
+def test_fused_siblings_share_one_static_scale():
+    """q/k/v see one module input and the serve applies ONE scale.
+
+    ``unify_fused_sibling_max_abs`` is the owned join (largest calibration
+    maximum wins); a per-member scale would price an A side no fused module
+    executes.
+    """
+    from prismaquant.nvfp4_activation_contract import (
+        input_global_scale_from_max_abs, resolve_input_global_scale_policy,
+    )
+    from prismaquant.tessera_campaign import _static_input_scales
+
+    amax = {
+        "model.layers.0.self_attn.q_proj": 12.0,
+        "model.layers.0.self_attn.k_proj": 37.5,
+        "model.layers.0.self_attn.v_proj": 8.0,
+        "model.layers.0.mlp.down_proj": 5.0,
+    }
+    scales, policy = _static_input_scales(amax)
+    assert policy == resolve_input_global_scale_policy()
+    shared = input_global_scale_from_max_abs(37.5, policy=policy)
+    for member in ("q_proj", "k_proj", "v_proj"):
+        assert scales[f"model.layers.0.self_attn.{member}"] == shared
+    assert scales["model.layers.0.mlp.down_proj"] == \
+        input_global_scale_from_max_abs(5.0, policy=policy)
+    # A unit the calibration never saw keeps NO scale -- a W4A4 anchor on it
+    # then refuses instead of pricing dynamically.
+    scales, _ = _static_input_scales({"m.q_proj": 0.0})
+    assert "m.q_proj" not in scales
+
+
 # ---------------------------------------------------------------------------
 # The Hessian contract
 # ---------------------------------------------------------------------------
@@ -646,7 +799,7 @@ def test_the_hessian_sees_every_row_not_just_the_scored_ones():
 
     net = _Net().eval()
     tokens = [torch.randn(rows_per_batch, cols) for _ in range(batches)]
-    rows, hess, seen = _collect_activations(
+    rows, hess, seen, amax = _collect_activations(
         net, ["lin"], tokens, max_rows=5, device="cpu", want_hessian=True)
 
     every = torch.cat(tokens, dim=0).to(torch.float32)
@@ -654,6 +807,10 @@ def test_the_hessian_sees_every_row_not_just_the_scored_ones():
     assert rows["lin"].shape[0] == 5           # the score's cap still binds
     torch.testing.assert_close(hess["lin"], every.t() @ every,
                                rtol=1e-4, atol=1e-4)
+    # The static-scale calibration maximum is over EVERY row too, for the
+    # same reason: a max over the kept prefix is a different calibration
+    # than the one the exported input_global_scale carries.
+    assert amax["lin"] == pytest.approx(float(every.abs().amax()), rel=1e-3)
 
 
 def test_one_cost_table_carries_one_hessian_identity():

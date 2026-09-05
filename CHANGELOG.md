@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **Tessera W4A4 anchors are priced under the served static UE4M3 activation
+  contract** (#194; `tessera_campaign._measure_anchor`). The campaign scored
+  every E2M1 anchor with NVFP4's registry callback — a dynamic per-group
+  FP32-scale RTN — while Tessera's plugin executes vLLM's static-global-scale
+  `scaled_fp4_quant` against the artifact's `trellis_input_global_scale`,
+  with UE4M3-stored block scales; underflow and midpoint cases diverge (a
+  1e-3 block flushes to exact 0 under the served contract at G=1 and survives
+  under the FP32 scale). W4A4 anchors are now scored through the owned served
+  oracle (`nvfp4_activation_qdq_served`) at the unit's calibrated,
+  fused-sibling-unified static scale — calibrated over every calibration row
+  from the campaign's own forward passes under the resolved NVFP4 policy — a
+  missing scale refuses (`ActivationScaleContractError`) instead of falling
+  back to the dynamic quantiser, and the scale value/policy identity travels
+  on every W4A4 row and in the payload provenance. **Re-pricing:** existing
+  Tessera cost tables' E2M1 rows were priced under the dynamic A side and are
+  stale; re-measure on the same calibration contract (E4M3/BF16 rows are
+  unaffected).
 - **The Tessera cost-table identity guard compares the required Hessian
   identity triple** (#195; `tessera_menu.assert_uniform_hessian_identity`).
   The guard keyed rows only on the legacy `(supplied, text_sha, token_count,
