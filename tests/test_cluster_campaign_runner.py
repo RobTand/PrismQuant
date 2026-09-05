@@ -661,16 +661,43 @@ def test_state_hash_tamper_and_concurrent_coordinator_lock_are_refused(tmp_path)
 def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
     receipt_path = tmp_path / "slow-receipt.json"
     receipt = _receipt(receipt_path, "slow-done")
+    started_path = tmp_path / "helper-started"
+    release_path = tmp_path / "release-the-helper"
+    # The helper announces itself, then waits for this test to release it,
+    # instead of sleeping 1.0s.  Two races die with that sleep, and both are
+    # the load-sensitive kind:
+    #
+    #  * The state records `running` with a pid as soon as the coordinator has
+    #    *spawned* its worker (cluster_campaign.py `bind_process`), which is
+    #    before the worker has been handed its request on stdin.  Terminating
+    #    the coordinator in that window closed the pipe, the worker exited at
+    #    EOF without ever launching a stage child, and no receipt was ever
+    #    written.  Waiting for the helper to announce itself proves the child
+    #    exists before the coordinator is allowed to die.
+    #  * Once the child did exist, the test had whatever was left of its 1.0s
+    #    sleep to kill the coordinator.  Lose that and the coordinator finishes
+    #    the campaign normally, so the resume has nothing to adopt and the
+    #    "exact receipts recovered" assertion fails instead.
     script = (
         "from pathlib import Path; import sys, time; "
-        "time.sleep(1.0); Path(sys.argv[1]).write_bytes(b'slow-done')"
+        "release=Path(sys.argv[2]); "
+        "Path(sys.argv[3]).write_bytes(b'started'); "
+        "exec(\"while not release.exists():\\n time.sleep(0.02)\"); "
+        "Path(sys.argv[1]).write_bytes(b'slow-done')"
     )
     stage = _stage(
         tmp_path,
         stage_id="slow-stage",
         host_id="sparky",
         dependencies=[],
-        argv=[sys.executable, "-c", script, str(receipt_path)],
+        argv=[
+            sys.executable,
+            "-c",
+            script,
+            str(receipt_path),
+            str(release_path),
+            str(started_path),
+        ],
         receipts=[receipt],
         max_attempts=2,
     )
@@ -706,33 +733,49 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
             and attempt["pid"] is not None
         )
 
-    # Nearly all of this latency is the coordinator's cold start rather than
-    # its campaign work, so the wait is on the coordinator, not on a clock.
-    _wait_until(
-        _recorded_running_with_pid,
-        unmet="coordinator never recorded slow-stage as running with a pid",
-        alive=lambda: coordinator.poll() is None,
-        diagnose=lambda: "state="
-        + (
-            state_path.read_text(encoding="utf-8")
-            if state_path.is_file()
-            else "(absent)"
-        ),
-    )
+    try:
+        # Nearly all of this latency is the coordinator's cold start rather
+        # than its campaign work, so the wait is on the coordinator, not on a
+        # clock.
+        _wait_until(
+            _recorded_running_with_pid,
+            unmet="coordinator never recorded slow-stage as running with a pid",
+            alive=lambda: coordinator.poll() is None,
+            diagnose=lambda: "state="
+            + (
+                state_path.read_text(encoding="utf-8")
+                if state_path.is_file()
+                else "(absent)"
+            ),
+        )
+        # ...and the stage child must actually exist before the coordinator is
+        # allowed to die, or the worker exits at EOF with no work to do and
+        # there is never a receipt to adopt.  The coordinator has to stay alive
+        # to get the worker that far, so this wait is bounded by it too.
+        _wait_until(
+            _nonempty(started_path),
+            unmet="the coordinator never got a stage child running",
+            alive=lambda: coordinator.poll() is None,
+        )
+    except BaseException:
+        release_path.write_bytes(b"go")
+        raise
+
     coordinator.terminate()
     _wait_until(
         lambda: coordinator.poll() is not None,
         unmet="coordinator did not exit after terminate()",
     )
 
-    # Wait for the orphaned helper to finish, on its receipt rather than on
-    # the clock. What this test asserts is that a resume ADOPTS a completed
+    # Now let the orphaned helper finish, and wait on its receipt rather than
+    # on the clock. What this test asserts is that a resume ADOPTS a completed
     # helper's work instead of redoing it -- so the helper has to have
     # completed. Probing the instant the coordinator dies asserts something
     # else: that the helper wins a race against the resume. It usually did,
     # and lost under load, which is how this arrived in CI as a flake.
     # The helper was deliberately orphaned, so this test holds no handle on it:
     # the backstop is the only bound available here.
+    release_path.write_bytes(b"go")
     _wait_until(
         _nonempty(receipt_path),
         unmet=(
