@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-04 · `codex/pq-tessera-v5-endpoints`. Stamps
+As of: 2026-09-04 · `claude/tessera-pin-v0.1.0`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for the **Tessera
+release-pin merge guard** (§5.7). `tests/test_tessera_release_pin_flip.py`
+fails while the pin's `commit`/`version`/`version_is_release` are the PENDING
+sentinels, so the branch that prepares the flip cannot merge before Rob cuts
+`RobTand/tessera` `v0.1.0`; it attests the pinned version from the packaged
+contract's `versions.tessera` and runs the production pin-vs-contract
+extension refusal against the installed contract (v16,
+`tessera.lane-eligibility.v5`), which the tracked pin already matches. No
+default, gate, menu or lane behaviour moves: admission is still False by the
+pin, and the flip itself remains Rob's one reviewed commit.
 
 Re-stamped (2026-09-04, `codex/pq-tessera-v5-endpoints`) for **raw scoped
 census handoff instructions** (§9.4). The driver prints the producer's actual
@@ -6047,6 +6058,21 @@ anything alone. `tests/test_tessera_lane_admission.py` proves both directions:
 the tracked pin is refused with "PENDING", and under a released-pin fixture on
 the REAL packaged contract `TESSERA_E2M1_K2_R896` and `TESSERA_E4M3_K1_R1024`
 are admitted while `TESSERA_E2M1_K2_R512` is not.
+
+`tests/test_tessera_release_pin_flip.py` is the **merge guard on the flip
+itself** (added 2026-09-04). A runtime refusal cannot stop a branch that
+*prepares* the flip from being merged before the tag exists, so three of its
+four tests fail while the sentinels stand, naming which of the five values is
+still PENDING; the fourth — the pin-vs-contract native-extension transcription,
+run against the installed contract WITHOUT the development-pin answer check —
+passes today and is the half that is already ready. The version it demands is
+ATTESTED, read from `versions.tessera` in the packaged contract rather than
+typed (principle 14); the commit cannot be attested from inside this
+repository, so only its shape (a full 40-hex sha, equal in both files) is
+checked and its identity travels in the pin's diff. The same file is the
+command that verifies the flip. `prismaquant/tessera_runtime/README.md` carries
+the exact five-value edit and the four existing tests whose content *is* "no
+release tag exists" and which therefore invert in the same reviewed commit.
 
 Until 2026-09-02 this was a module constant (`False`), then briefly a lookup
 against GRIDBOOK's serving pin, whose unreleased contract v13/v14 carried the

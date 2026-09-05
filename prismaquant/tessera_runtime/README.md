@@ -83,3 +83,83 @@ archive. Tessera's plugin is installed from a source checkout
 wheel; asserting a digest for an archive that does not exist would be exactly
 the hand-asserted claim principle 14 refuses. When Tessera publishes wheels, a
 `wheel_sha256` member is added here and to the reader in one reviewed commit.
+
+---
+
+## The flip, once the tag is cut
+
+`RobTand/tessera#17` is the blocker this pin names, and it is the only one:
+Tessera's packaged contract already publishes `device_qualified` native cells
+for every family, the `tessera` package is importable here, and the
+`serving_native_extensions` table below already transcribes both rows the
+runtime publishes (`tessera_nvfp4_`, `tessera_window_gemv`) — verified against
+contract v16 / `tessera.lane-eligibility.v5` on 2026-09-04. What is missing is
+the tag.
+
+**Five values, two files, one commit.** `version` is not a choice: it is
+`versions.tessera` in the contract the plugin packages, which reads `0.1.0`.
+`commit` is what the tag points at.
+
+```bash
+TAG=v0.1.0
+SHA=$(git -C /home/rob/tessera rev-list -n 1 "$TAG")
+VER=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["versions"]["tessera"])' \
+        /home/rob/tessera/src/tessera/serving/runtime_contract.json)
+
+# 1/2 -- the JSON pin
+python3 - "$SHA" "$VER" <<'PY'
+import json, pathlib, sys
+sha, ver = sys.argv[1], sys.argv[2]
+p = pathlib.Path("prismaquant/tessera_runtime/tessera_serving_runtime_pin.json")
+t = p.read_text(encoding="utf-8")
+t = t.replace('"commit": "PENDING_TESSERA_RELEASE_COMMIT"', f'"commit": "{sha}"')
+t = t.replace('"version": "PENDING_TESSERA_RELEASE_VERSION"', f'"version": "{ver}"')
+t = t.replace('"version_is_release": false', '"version_is_release": true')
+p.write_text(t, encoding="utf-8")
+PY
+
+# 2/2 -- the two reader constants, which the reader requires to EQUAL the pin
+python3 - "$SHA" "$VER" <<'PY'
+import pathlib, sys
+sha, ver = sys.argv[1], sys.argv[2]
+p = pathlib.Path("prismaquant/tessera_serving_runtime_pin.py")
+t = p.read_text(encoding="utf-8")
+old = ("TESSERA_SERVING_RUNTIME_RELEASE_VERSION = TESSERA_SERVING_RUNTIME_VERSION_PENDING\n"
+       "TESSERA_SERVING_RUNTIME_RELEASE_COMMIT = TESSERA_SERVING_RUNTIME_COMMIT_PENDING")
+assert old in t, "the constants already moved; review by hand"
+p.write_text(t.replace(old, f'TESSERA_SERVING_RUNTIME_RELEASE_VERSION = "{ver}"\n'
+                            f'TESSERA_SERVING_RUNTIME_RELEASE_COMMIT = "{sha}"'), encoding="utf-8")
+PY
+```
+
+**Verify:**
+
+```bash
+CUDA_VISIBLE_DEVICES="" PYTHONPATH=. TRITON_CACHE_DIR=/home/rob/tmp/triton-cache \
+  python -m pytest -q -p no:cacheprovider tests/test_tessera_release_pin_flip.py
+```
+
+`tests/test_tessera_release_pin_flip.py` is the merge guard: three of its four
+tests FAIL while the sentinels stand, so a branch that prepares the flip cannot
+be merged before the tag exists, and the same file is the flip's verification.
+Its fourth test — the pin-vs-contract extension transcription — passes today
+and is independent of the tag.
+
+**Four existing tests assert the PENDING state and invert in the same commit.**
+They are not collateral damage; their content *is* "no release tag exists", so
+the reviewed release commit rewrites them:
+
+| Test | What it asserts today | What it becomes |
+|---|---|---|
+| `test_tessera_lane_admission.py::test_the_tracked_pin_is_pending_and_the_release_gate_refuses_it` | tracked pin is both sentinels, `version_is_release is False`, `_release_pin_satisfied() is False` | tracked pin is the reviewed release, `_release_pin_satisfied() is True`; keep the "a sentinel pin is refused" half on a fixture |
+| `test_tessera_lane_admission.py::test_a_pending_pin_cannot_be_marked_released` | flipping only `version_is_release` on the tracked payload raises "cannot be marked" | run the same structural rule on a synthetic PENDING payload, not on the tracked one |
+| `test_tessera_export_lane.py::test_the_preflight_refuses_on_the_pending_pin_and_says_so` | `require_release_pin()` raises, message names `RobTand/tessera#17` | the preflight passes; keep the refusal text under the released-pin fixture's inverse |
+| `test_tessera_formats.py::test_no_tessera_rung_is_producer_eligible_on_the_pinned_release` | no Tessera rung is producer-eligible, *because* of the pin | rungs the contract's cells cover become eligible; the "because of the pin" half moves to a sentinel fixture |
+
+**Independent of the tag, and blocking today:** `TESSERA_DEV_PIN_ANSWER` in
+`prismaquant/tessera_runtime_contract.py` was reviewed at Tessera contract v14
+(commit `1221d2a`) and the installed contract is v16 — lane schema v4 → v5, a
+per-cell `attested_on` block, and two NEW `routed_moe` E4M3 cells. Ten tests
+fail on `main` for that reason alone. Re-reviewing that answer means deciding
+whether PrismaQuant admits routed-MoE Tessera cells; it is a promotion
+decision, not a pin flip, and it does not gate the tag.
