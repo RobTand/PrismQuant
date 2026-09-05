@@ -21,9 +21,13 @@ of `detect_profile`, and it must arrive as its own class, so a caller can tell
 """
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch.nn as nn
 
 import prismaquant.vendored as vendored
 from prismaquant.model_profiles.registry import (
@@ -47,6 +51,19 @@ QWEN3_CONFIG = {
     "model_type": "qwen3",
     "architectures": ["Qwen3ForCausalLM"],
 }
+
+
+def _qwen3_model():
+    """A live model the qwen3 profile claims, for `profile_from_model` sites.
+
+    `profile_from_config` reads only `model_type` / `architectures` off
+    `model.config`, and every call site below reaches detection before it
+    touches the module tree, so a bare `nn.Module` carrying a config is
+    enough to exercise the refusal.
+    """
+    model = nn.Module()
+    model.config = SimpleNamespace(**QWEN3_CONFIG)
+    return model
 
 
 @pytest.fixture(autouse=True)
@@ -267,3 +284,417 @@ def test_the_native_export_validator_does_not_swallow_it(tmp_path, monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         _resolve_validation_target_profile(path, None)
+
+
+# --- the remaining 22 call sites, one module at a time (issue #202) ---------
+#
+# Same rule, same home: these pin where the registry's refusal is allowed to
+# stop, so they live beside #201's rather than in each module's own test file.
+# A site whose enclosing function cannot be reached without a GPU, a loaded
+# checkpoint or a built streaming context is pinned by the tree-wide census
+# test at the bottom of this file instead.
+
+
+def test_rtn_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`build_rtn_cache.stage_multimodal` answered `keep_composite = False`.
+
+    Which silently selects the text-only flatten for a family whose own
+    comment says it "cannot survive" that flatten.
+    """
+    from prismaquant.build_rtn_cache import stage_multimodal
+
+    path = _checkpoint(
+        tmp_path, **QWEN3_CONFIG, text_config={"model_type": "qwen3"}
+    )
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_multimodal(path)
+
+
+def test_rtn_quantizable_tensor_walk_does_not_swallow_the_refusal(monkeypatch):
+    """`build_rtn_cache.iter_quantizable_tensors` answered `profile = None`.
+
+    The profile owns which packed-MoE parameter names are quantizable, so a
+    dead override silently changed the set of tensors RTN quantizes.
+    """
+    from prismaquant.build_rtn_cache import iter_quantizable_tensors
+
+    model = _qwen3_model()
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        list(iter_quantizable_tensors(model))
+
+
+def _dummy_shard_kwargs(tmp_path, **overrides):
+    """Filler for a cost-shard runner's arguments.
+
+    Every shard runner below detects the profile before it reads any of
+    these, so the refusal must arrive without a real activation cache or
+    format spec list. `output_path` still goes under `tmp_path`: these
+    runners write an empty shard pickle on several of their early-exit
+    paths, so a bare relative name would litter the repo root whenever one
+    of them is reached (as it is when the fix is reverted to re-check that
+    these tests fail).
+    """
+    kwargs = dict(
+        linear_include=".*", probe_stats={}, act_cache=None, specs=[],
+        device="cpu", dtype=None, mode="unbatched", chunk_size=1,
+        h_detail=None, output_path=str(tmp_path / "shard.pkl"),
+        model_name="m", probe_path="p",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_incremental_body_cost_shard_does_not_swallow_the_refusal(
+    tmp_path, monkeypatch
+):
+    """`_run_body_cost_shard` answered `profile = None` and sharded on."""
+    from prismaquant.incremental_measure_quant_cost import _run_body_cost_shard
+
+    ctx = SimpleNamespace(
+        model=_qwen3_model(), num_layers=1, layers_prefix="model.layers."
+    )
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _run_body_cost_shard(
+            ctx, shard_kind="body", **_dummy_shard_kwargs(tmp_path)
+        )
+
+
+def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(
+    tmp_path, monkeypatch
+):
+    """`_run_visual_cost_shard` answered `profile = None` and priced on."""
+    from prismaquant.incremental_measure_quant_cost import _run_visual_cost_shard
+
+    mm_ctx = SimpleNamespace(model=_qwen3_model(), visual_module=nn.Module())
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _run_visual_cost_shard(
+            model_path=str(tmp_path / "ckpt"),
+            mm_ctx=mm_ctx,
+            # A non-empty stat the include regex matches, or the runner
+            # short-circuits to an empty shard before it ever detects.
+            **_dummy_shard_kwargs(
+                tmp_path, probe_stats={"visual.blocks.0.attn.qkv": {}}
+            ),
+        )
+
+
+def test_concat_merger_build_does_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._build_concat_merger` answered `None`.
+
+    "No merger" leaves the loader unchanged, so a split-source checkpoint
+    would load with its merge target unfilled.
+    """
+    from prismaquant.layer_streaming import _build_concat_merger
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _build_concat_merger(_qwen3_model(), {})
+
+
+def test_expert_packer_build_does_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._build_expert_packer` answered `None`.
+
+    Which leaves a per-expert-on-disk checkpoint unpacked against packed
+    live params, so the experts never load.
+    """
+    from prismaquant.layer_streaming import _build_expert_packer
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _build_expert_packer(_qwen3_model(), {})
+
+
+def test_packed_expert_fill_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`layer_streaming.fill_packed_experts_from_source` answered `0`.
+
+    #202 listed this as a candidate to keep swallowing because it returns a
+    count. It is the opposite case: the function exists so packed params do
+    not stay zero-initialized, so a clean `0` on a dead override reports
+    exactly the silent breakage it was written to prevent.
+    """
+    from prismaquant.layer_streaming import fill_packed_experts_from_source
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        fill_packed_experts_from_source(_qwen3_model(), str(tmp_path))
+
+
+def test_head_resident_prefixes_do_not_swallow_the_refusal(monkeypatch):
+    """`layer_streaming._head_prefixes` fell back to a hardcoded guess.
+
+    The legacy branch only knows `hc_head`, so a dead override silently
+    dropped whatever head-resident prefixes the live profile declares.
+    """
+    from prismaquant.layer_streaming import _head_prefixes
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _head_prefixes(_qwen3_model(), "model")
+
+
+def test_cost_pass_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`measure_quant_cost.run_cost_pass` answered `model_profile = None`.
+
+    And went on to measure per-(Linear, format) cost against upstream
+    modelling code, writing numbers the allocator later spends.
+    """
+    from prismaquant.measure_quant_cost import run_cost_pass
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        run_cost_pass(
+            _qwen3_model(), None, set(), [], [], "m", "p", "cpu", None,
+            "unbatched", 1, str(tmp_path / "cost.pkl"),
+        )
+
+
+def test_perturbed_x_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`perturbed_x_cache.stage_text_only_under_work_root` answered `None`.
+
+    Which stages the checkpoint with the hardcoded default strip-key list
+    instead of the one the profile declares, so every perturbed-activation
+    row is then collected from a differently-staged model.
+    """
+    from prismaquant.perturbed_x_cache import stage_text_only_under_work_root
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_text_only_under_work_root(path, tmp_path / "work")
+
+
+def test_production_cache_fill_does_not_swallow_the_refusal(monkeypatch):
+    """`production_weight_cache.fill_production_weight_cache` answered `None`.
+
+    This is the render that produces the bytes an export later ships, and
+    `None` also drops the profile's pinned names, so components the profile
+    forbids quantizing would be quantized.
+    """
+    import torch
+
+    from prismaquant.production_weight_cache import fill_production_weight_cache
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        fill_production_weight_cache(
+            _qwen3_model(),
+            torch.zeros(1, 4, dtype=torch.long),
+            ["a"],
+            progress=False,
+        )
+
+
+def test_probe_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`sensitivity_probe.stage_text_only` answered `profile = None`.
+
+    The twin of the perturbed-x staging site: the hardcoded strip-key list
+    stages a different config than the profile declares, and every probe
+    statistic gathered afterwards describes that wrong staging.
+    """
+    from prismaquant.sensitivity_probe import stage_text_only
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_text_only(path)
+
+
+def test_moe_structure_discovery_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.discover_moe_structure` answered `profile = None`.
+
+    Which narrows the packed-expert projection candidates, so MoE experts go
+    undiscovered and are simply never probed.
+    """
+    from prismaquant.sensitivity_probe import discover_moe_structure
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        discover_moe_structure(_qwen3_model())
+
+
+def test_moe_router_discovery_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.discover_moe_routers` answered `profile = None`.
+
+    Under-reporting routers also under-reports the coverage accounting built
+    on them.
+    """
+    from prismaquant.sensitivity_probe import discover_moe_routers
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        discover_moe_routers(_qwen3_model())
+
+
+def test_fisher_accumulator_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.FisherAccumulator` answered `model_profile = None`.
+
+    Then declared a `DefaultProfile` name projection, which its own comment
+    calls "an explicit declaration, not a silent degrade" — true for an
+    unmatched architecture, false for a matched one on a dead path.
+    """
+    from prismaquant.sensitivity_probe import FisherAccumulator
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        FisherAccumulator(_qwen3_model(), [], {})
+
+
+def test_fp8_rewrite_bypass_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`streaming_model._bypass_hf_fp8_module_rewrite` answered `False`.
+
+    #202 listed this as a possible legitimate swallow because it returns a
+    bool. It is not one: `False` lets transformers run the FP8 module rewrite
+    on exactly the architecture whose profile would have forbidden it.
+    """
+    from prismaquant.streaming_model import _bypass_hf_fp8_module_rewrite
+
+    # The bypass question is only asked of a native-FP8 block-scaled
+    # checkpoint, so the config must carry that quantization_config.
+    path = _checkpoint(
+        tmp_path,
+        **QWEN3_CONFIG,
+        quantization_config={
+            "quant_method": "fp8", "weight_block_size": [128, 128],
+        },
+    )
+    assert _bypass_hf_fp8_module_rewrite(path) in (True, False)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _bypass_hf_fp8_module_rewrite(path)
+
+
+def test_rotary_init_does_not_swallow_the_refusal(monkeypatch):
+    """`streaming_model._init_rotary_inplace` fell through to single-rope.
+
+    The multi-layer-type architectures that override `init_rotaries` (DSv4,
+    Gemma3) would silently get the single-rope path, so their per-layer-type
+    rotary buffers are never registered.
+    """
+    from prismaquant.streaming_model import _init_rotary_inplace
+
+    base = _qwen3_model()
+    rotary = nn.Module()
+    rotary.config = base.config
+    rotary.compute_default_rope_parameters = lambda cfg, device: (None, None)
+    base.rotary_emb = rotary
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _init_rotary_inplace(base, "cpu", None)
+
+
+def test_weight_session_does_not_swallow_the_refusal(monkeypatch):
+    """`weight_session.WeightSession` answered `profile = None`.
+
+    The profile builds the qname -> live Linear map the session swaps weights
+    through, so a dead override silently builds it over a different set of
+    tensors and the session reverts and re-renders the wrong ones.
+    """
+    from prismaquant.weight_session import WeightSession
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        WeightSession(_qwen3_model())
+
+
+# --- the rule itself, pinned once over the whole tree (issue #202) ----------
+
+
+DETECTION_ENTRYPOINTS = {
+    "detect_profile",
+    "detect_profile_with_warning",
+    "profile_from_config",
+    "profile_from_model",
+}
+
+
+def _handler_is_broad(handler: ast.ExceptHandler) -> bool:
+    """True for `except:`, `except Exception:`, `except BaseException:`."""
+    node = handler.type
+    if node is None:
+        return True
+    parts = node.elts if isinstance(node, ast.Tuple) else [node]
+    return any(
+        isinstance(p, ast.Name) and p.id in ("Exception", "BaseException")
+        for p in parts
+    )
+
+
+def _handler_always_reraises(handler: ast.ExceptHandler) -> bool:
+    """True when the handler cannot fall through to a substituted answer.
+
+    `sample_parallel_probe.prepare_worker_source_cache` is the shape this
+    allows: it catches broadly and re-raises as `SampleParallelProbeError(...)
+    from exc`, which refuses by name and keeps the cause. A handler that always
+    raises never converts the refusal into an answer, so it needs no
+    `DeadVendoredOverrideError` clause of its own.
+    """
+    return bool(handler.body) and isinstance(handler.body[-1], ast.Raise)
+
+
+def _refuses_dead_override(node: ast.Try) -> bool:
+    """True when a dead override escapes this `try` instead of being answered."""
+    for handler in node.handlers:
+        if _handler_is_broad(handler):
+            # Reached the catch-all without having refused first.
+            return _handler_always_reraises(handler)
+        named = handler.type
+        parts = named.elts if isinstance(named, ast.Tuple) else [named]
+        for part in parts:
+            name = getattr(part, "id", None) or getattr(part, "attr", None)
+            if name == "DeadVendoredOverrideError":
+                return True
+    return True  # no broad handler at all: nothing swallows it
+
+
+def _swallowing_detection_sites() -> list[str]:
+    """Every `file:line` where detection sits in a `try` that answers instead."""
+    root = Path(__file__).resolve().parent.parent / "prismaquant"
+    bad: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if "archive" in path.parts:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try) or _refuses_dead_override(node):
+                continue
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if not isinstance(sub, ast.Call):
+                        continue
+                    func = sub.func
+                    name = getattr(func, "id", None) or getattr(func, "attr", None)
+                    if name in DETECTION_ENTRYPOINTS:
+                        rel = path.relative_to(root.parent)
+                        bad.append(f"{rel}:{sub.lineno} ({name})")
+    return sorted(set(bad))
+
+
+def test_no_call_site_swallows_the_dead_override_refusal():
+    """The refusal must reach the operator from every detection call site.
+
+    #201 made `_resolve` raise `DeadVendoredOverrideError` and stopped three
+    gate call sites from re-swallowing it. #202 is the rest of the census: 22
+    further call sites across 11 modules each wrapped detection in a broad
+    `except Exception` and continued with a substituted profile (`None`,
+    `DefaultProfile()`, `keep_composite = False`, a hardcoded prefix guess, a
+    count of 0, a bare `False`), which converts the refusal straight back into
+    the silent wrong answer one level up.
+
+    This is a structural pin as well as 18 behavioural ones above, because the
+    rule is structural: a dead override must never be *answered*. It therefore
+    also covers the four sites whose enclosing function cannot be reached
+    without a GPU, a loaded checkpoint or a built streaming context
+    (`aqua_activation_cost.py:661`, `build_rtn_cache.py:500`,
+    `sensitivity_probe.py:3592`, `streaming_production_cache.py:1776`) — and it
+    fails for a call site added next month, which no per-site test would.
+
+    The allowed shapes are (a) `except DeadVendoredOverrideError: raise` ahead
+    of the broad handler, or (b) a broad handler that always re-raises, which
+    is what `sample_parallel_probe` already did correctly.
+    """
+    assert _swallowing_detection_sites() == []

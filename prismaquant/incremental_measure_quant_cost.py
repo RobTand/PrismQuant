@@ -580,9 +580,15 @@ def _run_body_cost_shard(
     render_path: str = "registry",
 ):
     model = ctx.model
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         profile = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # This shard is about to price quantization for real. A dead override
+        # means the layers it installs and measures came from UPSTREAM
+        # modelling code, so every number it writes is priced against the
+        # wrong model -- refuse rather than shard on (#202).
+        raise
     except Exception:
         profile = None
     num_layers = ctx.num_layers
@@ -1027,9 +1033,13 @@ def _run_visual_cost_shard(
         return mm_ctx
 
     model = mm_ctx.model
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         profile = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # Same as the body shard above (#202): a dead override prices the
+        # visual tower against upstream modelling code.
+        raise
     except Exception:
         profile = None
     live_linears = {n for n, m in model.named_modules()

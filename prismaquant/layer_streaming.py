@@ -1010,9 +1010,15 @@ def _build_concat_merger(model: nn.Module, weight_ckpt: dict[str, str]):
     closure carries no architecture names. Used on every path that reads
     source shards into live-named tensors, so a split-source checkpoint loads
     identically for the probe, the cost stages and the exporter."""
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         prof = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # `None` means "no merge needed" and the loader runs unchanged. That
+        # is right when no profile declares `concat_merges`; on a dead
+        # override it means a split-source checkpoint loads with its merge
+        # target unfilled, which is missing weights, not a missing hint (#202).
+        raise
     except Exception:
         return None
     groups = tuple(getattr(prof, "concat_merge_groups", lambda: ())())
@@ -1053,9 +1059,13 @@ def _build_expert_packer(model: nn.Module, weight_ckpt: dict[str, str]):
     probe/cost context and the compressed-tensors exporter so a raw
     per-expert checkpoint loads identically on every path — no out-of-band
     pre-pack."""
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         prof = profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # As above (#202): `None` leaves a per-expert-on-disk checkpoint
+        # unpacked against packed live params, so the experts never load.
+        raise
     except Exception:
         return None
     packed_names = prof.packed_expert_param_names()
@@ -1135,9 +1145,20 @@ def fill_packed_experts_from_source(
     Returns the number of packed params filled. Call right after
     ``from_pretrained`` on the calibration model.
     """
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         prof = profile or profile_from_model(model)
+    except DeadVendoredOverrideError:
+        # #202 flagged this one as a candidate to keep swallowing, because it
+        # returns a COUNT and every other `return 0` here means "nothing to
+        # do". It is the opposite: this function exists precisely because the
+        # packed params would otherwise stay zero-initialized and "silently
+        # break every activation-scale calibration that depends on the
+        # routed-expert output" (the docstring above). Returning 0 on a dead
+        # override IS that silent break, reported as a clean no-op. The count
+        # is only a legitimate 0 when the profile could be consulted and had
+        # nothing to say.
+        raise
     except Exception:
         return 0
     # Local import: sensitivity_probe imports from this module, so import the
@@ -2504,12 +2525,19 @@ def _head_prefixes(root: nn.Module, base_prefix: str) -> list[str]:
     # Profile-driven extension (refactor #32). Default profile returns
     # an empty list; architecture-specific profiles append their own
     # head-resident prefixes here.
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         extra = profile_from_model(root).head_resident_extra_prefixes(root)
         for pref in extra:
             if pref not in prefixes:
                 prefixes.append(pref)
+    except DeadVendoredOverrideError:
+        # The legacy fallback below only knows `hc_head`. On a dead override
+        # it would silently drop the head-resident prefixes a live profile
+        # declares (LFM2.5's `embedding_norm`/`pos_emb`), leaving those
+        # modules streamed instead of resident -- a wrong residency plan
+        # derived from a hardcoded guess about one architecture (#202).
+        raise
     except Exception:
         # Defensive: fall back to the legacy hardcoded check if the
         # profile import path is unavailable for any reason.

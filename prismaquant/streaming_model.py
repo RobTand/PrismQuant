@@ -106,10 +106,19 @@ def _bypass_hf_fp8_module_rewrite(model_path: str) -> bool:
     qc = cfg.get("quantization_config") or {}
     if qc.get("quant_method") != "fp8" or "weight_block_size" not in qc:
         return False
-    try:
-        from .model_profiles import profile_from_config
+    from .model_profiles import DeadVendoredOverrideError, profile_from_config
 
+    try:
         return bool(profile_from_config(cfg).bypass_hf_fp8_module_rewrite())
+    except DeadVendoredOverrideError:
+        # #202 listed this as a possible legitimate swallow because it returns
+        # a bool. It is not one. Control only reaches here for a native-FP8
+        # block-scaled checkpoint, and the docstring above states the bypass is
+        # "a static architecture property" the profile declares. Answering
+        # False on a dead override lets transformers run the FP8 module
+        # rewrite on exactly the architecture whose profile would have
+        # forbidden it -- the MiniMax-M2 `experts.0.w1` case named above.
+        raise
     except Exception:
         return False
 
@@ -213,11 +222,20 @@ def _init_rotary_inplace(base_model: nn.Module, device: torch.device,
 
     # Profile-driven dispatch first. If the profile fully handled rotary
     # init (DSv4 multi-layer-type pattern), exit. Otherwise fall through.
+    from .model_profiles import DeadVendoredOverrideError, profile_from_model
     try:
-        from .model_profiles import profile_from_model
         if profile_from_model(base_model).init_rotaries(
                 rotary, cfg, device, dtype, base_model=base_model):
             return
+    except DeadVendoredOverrideError:
+        # Falling through is right when profile dispatch breaks -- that is a
+        # profile bug and the single-rope default is a real answer. It is not
+        # right for a dead override: the multi-layer-type architectures that
+        # override `init_rotaries` (DSv4, Gemma3) would silently get the
+        # single-rope path instead, so their per-layer-type rotary buffers are
+        # never registered and every downstream number is computed against the
+        # wrong positions (#202).
+        raise
     except Exception:
         # Defensive: fall through to default if profile dispatch breaks.
         pass
