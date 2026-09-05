@@ -148,6 +148,19 @@ def tessera_v9(monkeypatch):
     if not hasattr(ts, "EVIDENCE_SMOKE_FORMS"):
         monkeypatch.setattr(
             ts, "EVIDENCE_SMOKE_FORMS", ("campaign", "pure_greedy"), raising=False)
+    if not hasattr(ts, "EVIDENCE_SMOKE_RECORD_KEYS"):
+        monkeypatch.setattr(
+            ts, "EVIDENCE_SMOKE_RECORD_KEYS",
+            frozenset({"instrument", "rule", "reference", "rows"}), raising=False)
+    if not hasattr(ts, "EVIDENCE_SMOKE_ROW_KEYS"):
+        monkeypatch.setattr(
+            ts, "EVIDENCE_SMOKE_ROW_KEYS",
+            frozenset({"prompt", "form", "interface", "status",
+                       "reference_status"}), raising=False)
+    if not hasattr(ts, "smoke_status_is_derived"):
+        monkeypatch.setattr(
+            ts, "smoke_status_is_derived",
+            lambda smoke: smoke.get("record") is not None, raising=False)
     if not hasattr(ts, "derive_smoke_status"):
         def derive_smoke_status(smoke):
             record = smoke.get("record")
@@ -441,3 +454,73 @@ def test_the_export_gate_gives_a_routed_moe_unit_a_real_route_under_v9(tessera_v
         facts, table, platform="sm_121", residency="streamed",
         runtime_image=image, execution_mode="eager")
     assert off_scope.route_status == lane.ROUTE_STATUS_UNATTESTED
+
+
+def test_a_record_beside_a_control_is_refused_by_name(tessera_v9):
+    """Tessera's validator refuses the pair; this reader mirrors the refusal.
+
+    A v9 cell that was re-measured records its rows and RETIRES the v7
+    control.  Carrying both would put one derivation in two places, which is
+    the drift #327 is about -- so a consumer that quietly accepted the pair
+    would be storing the defect rather than reporting it.
+    """
+    payload = _up_convert(_installed())
+    smoke = _cell(payload, MOE_DECODE)["evidence"]["smoke"]
+    smoke["control"] = {"reference": "bf16_source",
+                        "outcome": "identical_completion",
+                        "receipt": "docs/measurements/moe-evidence-debt-2026-09-04.md"}
+    with pytest.raises(lane.LaneEligibilityError) as excinfo:
+        _table(_settle_attribution(payload))
+    message = str(excinfo.value)
+    assert "BOTH a record and a control" in message
+    assert "drift" in message
+
+
+def test_whether_a_status_is_derived_is_asked_of_tessera_not_inferred(tessera_v9,
+                                                                      monkeypatch):
+    """``smoke_status_is_derived`` is a state Tessera NAMES, so it is asked.
+
+    Driven by making Tessera answer "not derived" for a cell that does carry
+    a record: this reader must then take the published status as asserted and
+    NOT compare it, which is checkable because a derivation that disagrees is
+    no longer reached.  A reader that had spelled the state
+    ``record is not None`` would refuse here, and would be restating the rule
+    one level up from the one it already refuses to restate.
+    """
+    payload = _up_convert(_installed())
+    monkeypatch.setattr(tessera_v9, "smoke_status_is_derived",
+                        lambda smoke: False, raising=False)
+    monkeypatch.setattr(tessera_v9, "derive_smoke_status",
+                        lambda smoke: "not_recorded", raising=False)
+    table = _table(payload)                      # no refusal
+    for cell_id in (MOE_DECODE, MOE_BATCH):
+        evidence = _parsed_cell(table, cell_id).evidence
+        assert evidence.smoke_record is not None
+        assert evidence.smoke_status_is_derived is False
+        assert evidence.smoke_status == lane.EVIDENCE_SMOKE_RECORDED
+
+
+def test_provenance_says_whether_the_status_was_derived(tessera_v9):
+    """A shipcard has to tell an attested status from an asserted one."""
+    table = _table(_up_convert(_installed()))
+    for cell in table.cells:
+        smoke = cell.evidence.as_dict()["smoke"]
+        if cell.evidence.smoke_record is None:
+            assert "status_is_derived" not in smoke, cell.id
+            assert cell.evidence.smoke_status_is_derived is False
+        else:
+            assert smoke["status_is_derived"] is True, cell.id
+
+
+def test_the_record_key_sets_come_from_tessera_and_are_not_typed_here(tessera_v9,
+                                                                      monkeypatch):
+    """Widen Tessera's member set and this reader widens with it."""
+    payload = _up_convert(_installed())
+    for cell_id in (MOE_DECODE, MOE_BATCH):
+        _cell(payload, cell_id)["evidence"]["smoke"]["record"]["sampler"] = "greedy"
+    with pytest.raises(lane.LaneEligibilityError, match="unknown field"):
+        _table(payload)
+    monkeypatch.setattr(
+        tessera_v9, "EVIDENCE_SMOKE_RECORD_KEYS",
+        frozenset(set(tessera_v9.EVIDENCE_SMOKE_RECORD_KEYS) | {"sampler"}))
+    assert _table(payload).schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V9

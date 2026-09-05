@@ -58,10 +58,21 @@ and the attribution are re-derived by calling Tessera's own
 that disagrees with what they return is refused as a contract defect rather
 than resolved. The `interface` and `form` vocabularies are read from
 `tessera.serving.contract` for the same reason, never transcribed beside the
-parser. Two shape rules this reader does add, both #327's finding in the
-grammar: a record must name a non-empty `instrument`, `rule` and `reference`,
-and its `rows` must be non-empty — a status derived over zero observations is
-the empty completion wearing a schema. Under v9 both routed-MoE cells still
+parser — as are the record's and the row's own member sets
+(`EVIDENCE_SMOKE_RECORD_KEYS`, `EVIDENCE_SMOKE_ROW_KEYS`), so a member Tessera
+adds widens this reader on the re-pin that installs it. Whether a cell's word
+was DERIVED or merely asserted is likewise asked, not inferred: Tessera names
+that state `smoke_status_is_derived`, and a reader that spelled it `record is
+not None` would be restating the rule one level up from the one it refuses to
+restate. It reaches provenance, so a shipcard can tell an attested status from
+an asserted one. One refusal is mirrored rather than re-derived — a `record`
+beside a non-null v7 `control` is refused by name, as Tessera's validator
+refuses it, because two homes for one derivation is how they drift; a v9 cell
+that was re-measured records its rows and retires the control. Two shape rules
+this reader does add, both #327's finding in the grammar: a record must name a
+non-empty `instrument`, `rule` and `reference`, and its `rows` must be
+non-empty — a status derived over zero observations is the empty completion
+wearing a schema. Under v9 both routed-MoE cells still
 publish `recorded`, now with the rows behind it, so the unchanged status-only
 predicate admits them on evidence a reader can check. The four dense E4M3
 cells now

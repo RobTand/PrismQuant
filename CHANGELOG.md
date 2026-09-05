@@ -159,12 +159,18 @@
   refused as a contract defect — a repetition rule over completion text is
   not a projection this repository can restate, and a second copy of it is
   the same two-homes defect #327 reports one level down. `EVIDENCE_SMOKE_
-  INTERFACES` and `EVIDENCE_SMOKE_FORMS` are read from Tessera for the same
-  reason. Two shape rules this reader adds, both #327's finding in the
-  grammar: a record must name a non-empty `instrument`, `rule` and
-  `reference`, and its `rows` must be non-empty — a status derived over zero
-  observations is the empty completion wearing a schema. A `record` on a v8
-  table is refused as an unknown field, and v5–v8 stay SCOPED.
+  INTERFACES`, `EVIDENCE_SMOKE_FORMS`, `EVIDENCE_SMOKE_RECORD_KEYS` and
+  `EVIDENCE_SMOKE_ROW_KEYS` are read from Tessera for the same reason, and
+  whether a status was derived at all is asked through Tessera's
+  `smoke_status_is_derived` rather than inferred from the key — it reaches
+  provenance so a shipcard can tell an attested status from an asserted one.
+  One refusal is mirrored rather than re-derived: a `record` beside a
+  non-null v7 `control` is refused by name, as Tessera's validator refuses
+  it. Two shape rules this reader adds, both #327's finding in the grammar:
+  a record must name a non-empty `instrument`, `rule` and `reference`, and
+  its `rows` must be non-empty — a status derived over zero observations is
+  the empty completion wearing a schema. A `record` on a v8 table is refused
+  as an unknown field, and v5–v8 stay SCOPED.
   The lane predicate refuses nothing on the pinned table (only the two
   streamed E4M3 cells launch through the lane and their plan is what it reads);
   a BF16 cell that ever claimed the window-GEMV launch at 1792 (column rate 7)

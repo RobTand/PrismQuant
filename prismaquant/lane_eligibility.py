@@ -775,6 +775,11 @@ class CellEvidence:
     #: v9: the rule and rows the status was derived from; ``None`` when no
     #: record was published AND on a pre-v9 table.
     smoke_record: SmokeRecord | None = None
+    #: v9: whether ``smoke_status`` was DERIVED from that record or merely
+    #: asserted -- Tessera's ``smoke_status_is_derived``, asked rather than
+    #: inferred here. False on every pre-v9 table, where nothing could be
+    #: derived because there was no record to derive from.
+    smoke_status_is_derived: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         smoke: dict[str, Any] = {"status": self.smoke_status,
@@ -785,6 +790,9 @@ class CellEvidence:
                                 if self.smoke_control else None)
         if self.smoke_record is not None:
             smoke["record"] = self.smoke_record.as_dict()
+            # Provenance says which cells' words were derived, so a shipcard
+            # can tell an attested status from an asserted one (principle 12).
+            smoke["status_is_derived"] = self.smoke_status_is_derived
         return {
             "grade": self.grade,
             "kl": [entry.as_dict() for entry in self.kl],
@@ -879,17 +887,18 @@ def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
 def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
     """v9's ``smoke.record``: ``null``, or the closed rule-plus-rows block.
 
-    Parsed closed at every level, with the two vocabularies READ from
-    ``tessera.serving.contract`` rather than transcribed beside this parser:
-    an interface or request form Tessera adds must widen this reader on the
-    re-pin that installs it, not on the day somebody notices.
+    Parsed closed at every level, with the KEY SETS and the two vocabularies
+    READ from ``tessera.serving.contract`` rather than transcribed beside this
+    parser: a member or an interface Tessera adds must widen this reader on
+    the re-pin that installs it, not on the day somebody notices.
     """
     if payload is None:
         return None
     if not isinstance(payload, Mapping):
         raise LaneEligibilityError(f"{where} must be null or a JSON object")
     _require_keys(payload, where,
-                  required={"instrument", "rule", "reference", "rows"},
+                  required=set(_tessera_smoke_vocabulary(
+                      "EVIDENCE_SMOKE_RECORD_KEYS", where)),
                   optional=set())
     head: dict[str, str] = {}
     for key in ("instrument", "rule", "reference"):
@@ -914,8 +923,8 @@ def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
         if not isinstance(row, Mapping):
             raise LaneEligibilityError(f"{spot} must be a JSON object")
         _require_keys(row, spot,
-                      required={"prompt", "form", "interface", "status",
-                                "reference_status"},
+                      required=set(_tessera_smoke_vocabulary(
+                          "EVIDENCE_SMOKE_ROW_KEYS", spot)),
                       optional=set())
         prompt = row["prompt"]
         if not isinstance(prompt, str) or not prompt.strip():
@@ -1153,21 +1162,37 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
     control: SmokeControl | None = None
     attribution = ""
     record: SmokeRecord | None = None
+    status_is_derived = False
     if attributed:
         control = _parse_smoke_control(smoke["control"], f"{where}.smoke.control")
     if recorded_smoke:
         record = _parse_smoke_record(smoke["record"], f"{where}.smoke.record")
-        derived_status = _tessera_published(
-            "derive_smoke_status", f"{where}.smoke")(dict(smoke))
-        if status != derived_status:
+        if record is not None and control is not None:
             raise LaneEligibilityError(
-                f"{where}.smoke.status is {status!r} but Tessera's own "
-                f"derive_smoke_status derives {derived_status!r} from the "
-                "record beside it; the status is read off the record, never "
-                "asserted beside it. This repository does not re-implement "
-                "the rule -- restating it here is the second home "
-                "RobTand/tessera#327 was filed about -- so a disagreement is "
-                "a contract defect and is refused rather than resolved.")
+                f"{where}.smoke carries BOTH a record and a control "
+                f"({control.as_dict()!r}); Tessera's validator refuses that "
+                "pair, because two homes for one derivation is exactly how "
+                "they drift. A v9 cell that was re-measured records its rows "
+                "and retires the v7 control.")
+        # "Is this cell's word derived, or asserted?" is a state Tessera
+        # NAMES, so it is asked rather than inferred from the key: a reader
+        # that spelled it `record is not None` would be restating the rule
+        # one level up from the one it already refuses to restate.
+        status_is_derived = bool(_tessera_published(
+            "smoke_status_is_derived", f"{where}.smoke")(dict(smoke)))
+        if status_is_derived:
+            derived_status = _tessera_published(
+                "derive_smoke_status", f"{where}.smoke")(dict(smoke))
+            if status != derived_status:
+                raise LaneEligibilityError(
+                    f"{where}.smoke.status is {status!r} but Tessera's own "
+                    f"derive_smoke_status derives {derived_status!r} from the "
+                    "record beside it; the status is read off the record, "
+                    "never asserted beside it. This repository does not "
+                    "re-implement the rule -- restating it here is the second "
+                    "home RobTand/tessera#327 was filed about -- so a "
+                    "disagreement is a contract defect and is refused rather "
+                    "than resolved.")
     if status == EVIDENCE_SMOKE_NOT_RECORDED:
         if smoke["receipt"] is not None:
             raise LaneEligibilityError(
@@ -1223,7 +1248,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
     return CellEvidence(grade=grade, kl=tuple(entries), smoke_status=str(status),
                         smoke_receipt=receipt, smoke_attribution=str(attribution),
                         smoke_control=control, artifact=artifact,
-                        smoke_record=record)
+                        smoke_record=record,
+                        smoke_status_is_derived=status_is_derived)
 
 
 def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
