@@ -472,3 +472,58 @@ def test_production_cache_fill_does_not_swallow_the_refusal(monkeypatch):
             ["a"],
             progress=False,
         )
+
+
+def test_probe_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`sensitivity_probe.stage_text_only` answered `profile = None`.
+
+    The twin of the perturbed-x staging site: the hardcoded strip-key list
+    stages a different config than the profile declares, and every probe
+    statistic gathered afterwards describes that wrong staging.
+    """
+    from prismaquant.sensitivity_probe import stage_text_only
+
+    path = _checkpoint(tmp_path, **QWEN3_CONFIG)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_text_only(path)
+
+
+def test_moe_structure_discovery_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.discover_moe_structure` answered `profile = None`.
+
+    Which narrows the packed-expert projection candidates, so MoE experts go
+    undiscovered and are simply never probed.
+    """
+    from prismaquant.sensitivity_probe import discover_moe_structure
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        discover_moe_structure(_qwen3_model())
+
+
+def test_moe_router_discovery_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.discover_moe_routers` answered `profile = None`.
+
+    Under-reporting routers also under-reports the coverage accounting built
+    on them.
+    """
+    from prismaquant.sensitivity_probe import discover_moe_routers
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        discover_moe_routers(_qwen3_model())
+
+
+def test_fisher_accumulator_does_not_swallow_the_refusal(monkeypatch):
+    """`sensitivity_probe.FisherAccumulator` answered `model_profile = None`.
+
+    Then declared a `DefaultProfile` name projection, which its own comment
+    calls "an explicit declaration, not a silent degrade" — true for an
+    unmatched architecture, false for a matched one on a dead path.
+    """
+    from prismaquant.sensitivity_probe import FisherAccumulator
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        FisherAccumulator(_qwen3_model(), [], {})
