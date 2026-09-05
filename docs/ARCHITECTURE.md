@@ -3,6 +3,14 @@
 As of: 2026-09-05 · `codex/audit4-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/audit4-admission`) for production route
+conditions (PrismaQuant #234). After the production pin and admission gates
+succeed, `route_admission` derives status and required serving flags from the
+matched cells, using the same conflict refusal as the dev-pin path. Resolved
+serving-lane serialization retains those conditions. Admission also reports
+the family's published closed-world TP ceiling; this metadata does not grant
+TP admission or change release, evidence, or export gates.
+
 Re-stamped (2026-09-05, `codex/audit4-census`) for **replaying scoped census
 runtime-image declarations at fill and publication** (PrismaQuant #232,
 §7.1). A v2 image label alone is legacy evidence. Both consumers require the

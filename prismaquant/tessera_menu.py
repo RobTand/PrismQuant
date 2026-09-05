@@ -434,6 +434,21 @@ def check_tessera_activation_agreement(name, route, cell_contracts) -> None:
         )
 
 
+def _attested_cell_conditions(name: str, cells) -> tuple[str, tuple[str, ...]]:
+    """Keep the same cell-derived serving conditions on both pin paths."""
+    statuses = {cell.route_status for cell in cells}
+    if len(statuses) != 1:
+        named = ", ".join(
+            f"{getattr(cell, 'cell_id', getattr(cell, 'id', 'unknown'))}={cell.route_status}"
+            for cell in cells)
+        raise TesseraMenuError(
+            f"{name}: the pinned contract's native cells disagree about "
+            f"route status ({sorted(statuses)}): {named}; "
+            "one rung cannot be two routes and this reader will not pick one")
+    return next(iter(statuses)), tuple(dict.fromkeys(
+        flag for cell in cells for flag in cell.requires_serve_flags))
+
+
 def route_admission(
     name: str, *, serving_context: "ServingContext | None" = None,
 ) -> RouteAdmission:
@@ -520,26 +535,12 @@ def route_admission(
             if not legacy_scope_reason and contract.governs(family.name) else ()
         )
         if cells:
-            # The status is the CELL's, not a constant. A cell that says
-            # ``backed_with_serve_flag`` is not a ``backed`` one, and the flags
-            # it names travel with it -- typing ``backed`` here would drop the
-            # ``TESSERA_SERVE_MODE`` the serve needs and read as a stronger
-            # claim than the runtime made.
-            status = cells[0].route_status
-            flags = tuple(dict.fromkeys(
-                flag for cell in cells for flag in cell.requires_serve_flags))
+            status, flags = _attested_cell_conditions(name, cells)
             detail = (
                 f"the pinned Tessera contract attests {len(cells)} native "
                 f"cell(s) naming this rate: "
                 f"{', '.join(cell.cell_id for cell in cells)}"
             )
-            if len({cell.route_status for cell in cells}) > 1:
-                raise TesseraMenuError(
-                    f"{name}: the pinned contract's native cells disagree about "
-                    f"route status ({sorted({c.route_status for c in cells})}); "
-                    "one rung cannot be two routes and this reader will not "
-                    "pick one"
-                )
             check_tessera_activation_agreement(
                 name, route,
                 [cell.activation_contract for cell in cells],
@@ -569,8 +570,17 @@ def route_admission(
         # gate consults and the one the tests substitute.  The REASON is read
         # separately and only when the verdict is False, so patching the
         # verdict cannot invent a rationale the contract never gave.
+        attesting = tessera_attesting_cells(name, table=table, formats=formats, **scope)
         if bool(tessera_lane_attested(name, table=table, formats=formats, **scope)):
-            status = ROUTE_STATUS_BACKED
+            if not attesting:
+                raise TesseraMenuError(f"{name}: admission has no attesting native cells")
+            status, flags = _attested_cell_conditions(name, attesting)
+            from .tessera_runtime_contract import published_tensor_parallel_limits
+            from .tessera_render import tessera_serving_contract_path
+            from importlib.resources import as_file
+            with as_file(tessera_serving_contract_path()) as path:
+                world = published_tensor_parallel_limits(
+                    str(path), table.contract_sha256).get(family.name)
             detail = (
                 "the packaged Tessera contract attests a device-qualified "
                 "native cell naming this rate, under a reviewed release pin"
@@ -578,7 +588,6 @@ def route_admission(
         else:
             status = ROUTE_STATUS_UNATTESTED
             detail = tessera_lane_admission(name, table=table, formats=formats, **scope)[1]
-        attesting = tessera_attesting_cells(name, table=table, formats=formats, **scope)
         if attesting:
             check_tessera_activation_agreement(
                 name, route,

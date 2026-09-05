@@ -1535,6 +1535,37 @@ def _parse_fused_module(payload: Mapping[str, Any], path: str
     )
 
 
+def _parse_tensor_parallel_limits(payload: Mapping[str, Any], path: str) -> dict[str, int]:
+    """Read the closed-world TP ceiling for both pin paths."""
+    tp = _require(payload, "tensor_parallel", path)
+    if str(tp.get("semantics")) != "closed_world":
+        raise TesseraContractError(
+            f"{path}.tensor_parallel.semantics is "
+            f"{tp.get('semantics')!r}; this reader treats the block as a closed "
+            "world (a family absent from it is not attested at any degree) and "
+            "will not read an open-world table under that assumption"
+        )
+    world: dict[str, int] = {}
+    for i, unit in enumerate(tp.get("units", ())):
+        where = f"{path}.tensor_parallel.units[{i}]"
+        world[str(_require(unit, "unit", where))] = int(
+            _require(unit, "max_world_size", where))
+
+    return world
+
+
+@lru_cache(maxsize=8)
+def published_tensor_parallel_limits(path: str, sha: str) -> Mapping[str, int]:
+    """Read packaged TP metadata, keyed by the attesting table identity.
+
+    This accessor reports ceilings only; it does not grant TP admission.
+    """
+    raw = Path(path).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != sha:
+        raise TesseraContractError(
+            f"{path}: tensor-parallel metadata digest differs from attesting table")
+    return _parse_tensor_parallel_limits(json.loads(raw), path)
+
 
 def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
            ) -> TesseraContract:
@@ -1639,19 +1670,7 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             evidence=cell.evidence,
         ))
 
-    tp = _require(payload, "tensor_parallel", path)
-    if str(tp.get("semantics")) != "closed_world":
-        raise TesseraContractError(
-            f"{path}.tensor_parallel.semantics is "
-            f"{tp.get('semantics')!r}; this reader treats the block as a closed "
-            "world (a family absent from it is not attested at any degree) and "
-            "will not read an open-world table under that assumption"
-        )
-    world: dict[str, int] = {}
-    for i, unit in enumerate(tp.get("units", ())):
-        where = f"{path}.tensor_parallel.units[{i}]"
-        world[str(_require(unit, "unit", where))] = int(
-            _require(unit, "max_world_size", where))
+    world = _parse_tensor_parallel_limits(payload, path)
 
     fused = _parse_fused_module(payload, path)
 
