@@ -3,6 +3,16 @@
 As of: 2026-09-05 · `codex/pq-census-v5-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/pq-census-v5-integration`) for **naming the
+scoped census leg dormant at the current pin** (§7.1; Tessera #126). No code
+moved. The scoped replay requires the packaged lane table to carry the schema
+`LANE_ELIGIBILITY_SCHEMA_TESSERA` names and the census to be
+`tessera.serving.route_census/2`; at `TESSERA_DEV_PIN_COMMIT = 1221d2a` the
+packaged table is `tessera.lane-eligibility.v4` and the pinned producer emits
+`route_census/1`, so the leg refuses everything by the pin. The doc said which
+gates the leg applies but not that none of them can be reached yet, which reads
+as a live comparison. Re-pinning, not an edit here, is what makes it reachable.
+
 Re-stamped (2026-09-04, `codex/pq-census-v5-binding`) for **runtime-bound
 route census replay** (§7.1; Tessera #126). The complete producer
 `tessera.serving.route_census/2` record retains exact runtime, execution mode,
@@ -7010,6 +7020,22 @@ SHA256 and `__prismaquant__.tessera_serving_scope` must independently match
 paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
 match the retained texts and the actual artifact files, so host/container
 checkpoint path aliases are valid but an artifact-free replay is not.
+
+**Dormant at the current pin, by the pin rather than by a flag.** The scoped
+path takes the packaged contract's lane table through
+`lane_eligibility.load_eligibility_table` and refuses anything that is not the
+schema `LANE_ELIGIBILITY_SCHEMA_TESSERA` names, and it refuses any census whose
+schema is not `tessera.serving.route_census/2`. Under
+`TESSERA_DEV_PIN_COMMIT = 1221d2a` the packaged table is
+`tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
+emits `route_census/1`, so **no** scoped receipt can be filled or replayed
+today: `route.census` on a scoped card stays `UNFILLED` until the pin moves to a
+release publishing both. That is the intended fail-closed direction -- this leg
+is the consumer half of Tessera #126, whose producer/pin half is still open --
+but it means the scoped comparison has never run against a real packaged
+contract, only against tables constructed in
+`tests/test_tessera_scoped_route_receipt.py`. Re-pinning is the measurement
+that would change that claim.
 
 Coverage is the exact set of Tessera-selected allocation units (not BF16
 passthrough context keys). Their source tensors join explicit manifest
