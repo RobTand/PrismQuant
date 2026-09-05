@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **Campaign resume refuses W4A4 anchors priced under another activation
+  contract** (follow-on to #194; `tessera_campaign._require_resumable_anchor`).
+  A pre-#194 checkpoint's W4A4 rows carry no `input_global_scale` (dynamic
+  pricing) and rows from another calibration carry a different one; merging
+  either silently rebuilds the mixed-currency table on the activation axis
+  that the Hessian identity guard refuses on its own.
 - **The Tessera export arm fails closed on missing priced inputs, and the
   campaign supplies them** (#193; `run-pipeline.sh`,
   `tessera_export_lane.require_priced_export_inputs`,

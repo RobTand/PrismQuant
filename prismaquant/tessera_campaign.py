@@ -725,6 +725,50 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
     return menus
 
 
+def _format_executes_static_nvfp4(format_name: str) -> bool:
+    """Does this rung's route execute the static NVFP4 activation contract?"""
+    from .tessera_formats import (
+        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
+    )
+
+    family, rung = parse_tessera_format_name(format_name)
+    wire = tessera_wire_recipe(family, rung)
+    return tessera_serving_route(
+        family, wire, rung).activation_source_format == "NVFP4"
+
+
+def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
+    """Refuse a resumed anchor priced under a different activation contract.
+
+    Resume merges checkpoint rows into this run's table, and the table's rows
+    must be one currency.  A W4A4 anchor with no ``input_global_scale`` was
+    measured under the pre-#194 dynamic FP32-scale quantiser; one with a
+    *different* scale was measured on a different calibration.  Either way it
+    is not a price of this run's served A side, and merging it silently is the
+    exact mixed-table failure the Hessian identity guard exists to catch on
+    its own axis.
+    """
+    if not _format_executes_static_nvfp4(anchor.format_name):
+        return
+    if anchor.input_global_scale is None:
+        raise ActivationScaleContractError(
+            f"checkpoint anchor {anchor.qname} {anchor.format_name} carries "
+            "no input_global_scale: it was priced under the pre-served-"
+            "contract dynamic activation quantiser and cannot be merged into "
+            "a served-contract table. Delete the checkpoint (or pass a fresh "
+            "--checkpoint) to re-measure these anchors."
+        )
+    expected = static_scales.get(anchor.qname)
+    if expected is None or float(anchor.input_global_scale) != float(expected):
+        raise ActivationScaleContractError(
+            f"checkpoint anchor {anchor.qname} {anchor.format_name} was "
+            f"priced at input_global_scale={anchor.input_global_scale!r} but "
+            f"this run's calibration yields {expected!r}. A resumed anchor "
+            "must have been scored under this run's own static scales, or "
+            "the table mixes two activation calibrations under one identity."
+        )
+
+
 def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
                         hessian_identity, static_scales, static_scale_policy):
     """Write the exporter's ``--hessian`` and ``--input-scales`` inputs.
@@ -1012,6 +1056,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         raw = json.loads(checkpoint.read_text())
         for row in raw.get("anchors", []):
             anchor = CampaignAnchor(**row)
+            _require_resumable_anchor(anchor, static_scales)
             measured.setdefault(anchor.qname, {}).setdefault(
                 anchor.family, []).append(anchor)
         print(f"[campaign] resumed {sum(len(v) for f in measured.values() for v in f.values())} "

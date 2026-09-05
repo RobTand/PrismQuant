@@ -412,6 +412,37 @@ def test_the_priced_scale_travels_into_the_cost_rows(monkeypatch, tmp_path):
     assert rows[f"{fam}_R384"]["input_global_scale"] == pytest.approx(scale)
 
 
+def test_resume_refuses_w4a4_anchors_priced_under_another_contract():
+    """A resumed checkpoint row must be a price of THIS run's served A side.
+
+    Pre-#194 checkpoints priced W4A4 anchors under the dynamic FP32-scale
+    quantiser (no ``input_global_scale`` on the row); a row from another
+    calibration carries a different scale. Merging either silently builds the
+    mixed-currency table the Hessian identity guard exists to refuse on its
+    own axis.
+    """
+    import dataclasses
+
+    from prismaquant.tessera_campaign import (
+        ActivationScaleContractError, _require_resumable_anchor,
+    )
+
+    old = _anchor("m.q_proj", "TESSERA_E2M1_K2", 896, 1e-3)
+    with pytest.raises(ActivationScaleContractError,
+                       match="pre-served-.*contract"):
+        _require_resumable_anchor(old, {"m.q_proj": 71.68})
+    other_draw = dataclasses.replace(old, input_global_scale=10.0)
+    with pytest.raises(ActivationScaleContractError,
+                       match="mixes two activation calibrations"):
+        _require_resumable_anchor(other_draw, {"m.q_proj": 71.68})
+    _require_resumable_anchor(
+        dataclasses.replace(old, input_global_scale=71.68),
+        {"m.q_proj": 71.68})
+    # A dynamic-route row never carried a scale and resumes untouched.
+    _require_resumable_anchor(
+        _anchor("m.up", "TESSERA_E4M3_K1", 1024, 1e-3), {})
+
+
 def test_fused_siblings_share_one_static_scale():
     """q/k/v see one module input and the serve applies ONE scale.
 
