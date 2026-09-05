@@ -21,7 +21,9 @@ of `detect_profile`, and it must arrive as its own class, so a caller can tell
 """
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -585,3 +587,102 @@ def test_weight_session_does_not_swallow_the_refusal(monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         WeightSession(_qwen3_model())
+
+
+# --- the rule itself, pinned once over the whole tree (issue #202) ----------
+
+
+DETECTION_ENTRYPOINTS = {
+    "detect_profile",
+    "detect_profile_with_warning",
+    "profile_from_config",
+    "profile_from_model",
+}
+
+
+def _handler_is_broad(handler: ast.ExceptHandler) -> bool:
+    """True for `except:`, `except Exception:`, `except BaseException:`."""
+    node = handler.type
+    if node is None:
+        return True
+    parts = node.elts if isinstance(node, ast.Tuple) else [node]
+    return any(
+        isinstance(p, ast.Name) and p.id in ("Exception", "BaseException")
+        for p in parts
+    )
+
+
+def _handler_always_reraises(handler: ast.ExceptHandler) -> bool:
+    """True when the handler cannot fall through to a substituted answer.
+
+    `sample_parallel_probe.prepare_worker_source_cache` is the shape this
+    allows: it catches broadly and re-raises as `SampleParallelProbeError(...)
+    from exc`, which refuses by name and keeps the cause. A handler that always
+    raises never converts the refusal into an answer, so it needs no
+    `DeadVendoredOverrideError` clause of its own.
+    """
+    return bool(handler.body) and isinstance(handler.body[-1], ast.Raise)
+
+
+def _refuses_dead_override(node: ast.Try) -> bool:
+    """True when a dead override escapes this `try` instead of being answered."""
+    for handler in node.handlers:
+        if _handler_is_broad(handler):
+            # Reached the catch-all without having refused first.
+            return _handler_always_reraises(handler)
+        named = handler.type
+        parts = named.elts if isinstance(named, ast.Tuple) else [named]
+        for part in parts:
+            name = getattr(part, "id", None) or getattr(part, "attr", None)
+            if name == "DeadVendoredOverrideError":
+                return True
+    return True  # no broad handler at all: nothing swallows it
+
+
+def _swallowing_detection_sites() -> list[str]:
+    """Every `file:line` where detection sits in a `try` that answers instead."""
+    root = Path(__file__).resolve().parent.parent / "prismaquant"
+    bad: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if "archive" in path.parts:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try) or _refuses_dead_override(node):
+                continue
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if not isinstance(sub, ast.Call):
+                        continue
+                    func = sub.func
+                    name = getattr(func, "id", None) or getattr(func, "attr", None)
+                    if name in DETECTION_ENTRYPOINTS:
+                        rel = path.relative_to(root.parent)
+                        bad.append(f"{rel}:{sub.lineno} ({name})")
+    return sorted(set(bad))
+
+
+def test_no_call_site_swallows_the_dead_override_refusal():
+    """The refusal must reach the operator from every detection call site.
+
+    #201 made `_resolve` raise `DeadVendoredOverrideError` and stopped three
+    gate call sites from re-swallowing it. #202 is the rest of the census: 22
+    further call sites across 11 modules each wrapped detection in a broad
+    `except Exception` and continued with a substituted profile (`None`,
+    `DefaultProfile()`, `keep_composite = False`, a hardcoded prefix guess, a
+    count of 0, a bare `False`), which converts the refusal straight back into
+    the silent wrong answer one level up.
+
+    This is a structural pin as well as 18 behavioural ones above, because the
+    rule is structural: a dead override must never be *answered*. It therefore
+    also covers the four sites whose enclosing function cannot be reached
+    without a GPU, a loaded checkpoint or a built streaming context
+    (`aqua_activation_cost.py:661`, `build_rtn_cache.py:500`,
+    `sensitivity_probe.py:3592`, `streaming_production_cache.py:1776`) — and it
+    fails for a call site added next month, which no per-site test would.
+
+    The allowed shapes are (a) `except DeadVendoredOverrideError: raise` ahead
+    of the broad handler, or (b) a broad handler that always re-raises, which
+    is what `sample_parallel_probe` already did correctly.
+    """
+    assert _swallowing_detection_sites() == []
