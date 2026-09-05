@@ -178,18 +178,21 @@ def test_a_misspelt_stability_does_not_read_as_supported():
         })
 
 
-def test_the_tessera_arms_two_experiments_scripts_are_declared_not_hardcoded():
+def test_the_tessera_arms_experiments_scripts_are_declared_not_hardcoded():
     """#119 part 2. The dependency is recorded where a reader sees it."""
     spec = load_lane_spec("tessera")
     declared = {t.path for t in spec.producer_tools}
     assert declared == {
         "experiments/plan_from_layer_config.py",
         "experiments/export_tessera_serving.py",
+        # The producer's expert projection (PrismaQuant #183): declared here
+        # for the same reason as the other two.
+        "experiments/tessera_producer_plan.py",
     }
     for tool in spec.producer_tools:
         assert tool.repo_env == "TESSERA_REPO"
         assert tool.stability == "unsupported_experiments"
-        assert "119" in tool.tracking_issue
+        assert "119" in tool.tracking_issue or "183" in tool.tracking_issue
     # and the driver no longer carries its own copy of the roster
     assert "experiments/plan_from_layer_config.py" in DRIVER, (
         "the arm still CALLS the tool")
@@ -212,7 +215,7 @@ def test_the_preflight_refuses_a_declared_tool_that_is_not_there(tmp_path):
         path = tmp_path / tool.path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# fixture\n")
-    assert len(require_producer_tools(env={"TESSERA_REPO": str(tmp_path)})) == 2
+    assert len(require_producer_tools(env={"TESSERA_REPO": str(tmp_path)})) == 3
 
 
 # ---------------------------------------------------------------------------
