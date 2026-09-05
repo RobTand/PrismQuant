@@ -1,7 +1,54 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq87-paired-policy`. Stamps
+As of: 2026-09-05 · `codex/pq183-packed-capture`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq183-packed-capture`) for **one campaign
+capture, dense or packed** (§4.10; merge of the packed source-unit capture
+below with the priced-inputs contract stamped beneath it). The campaign has
+one Hessian-capture accumulator: a dense Linear's pre-hook and a packed
+projection's derived routed rows land in the same three per-unit outputs
+(bounded scoring rows, the exact XᵀX, and the max|x| behind the static
+`input_global_scale`), so a packed unit feeds `hessian_capture.pt` and
+`input_scales.safetensors` by the dense path rather than by a second capture.
+Nothing packed reaches those artifacts yet: the main-entry population refusal
+below still turns a live packed population away before calibration, by name,
+until the exact cached-wire/stack-plan bridge (PrismaQuant #183) lands. Gate:
+`tests/test_tessera_campaign_packed.py` (max|x| asserted per packed unit).
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
+campaign exclusions** (§4.10). The dense target walk now consults the existing
+`ModelProfile.is_pinned_name` accessor before capture/menuing. In particular,
+LFM's already-pinned router and short-convolution Linears cannot be priced as
+quantizable parameters. The profile still owns every pin; no new roster or
+default is introduced. Real main-entry regressions exercise both LFM's declared
+pins and a changed profile declaration, so the test cannot be satisfied by a
+private campaign pin list. Gate: `tests/test_tessera_campaign_pins.py`.
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **packed
+source-unit capture** (§4.10; PrismaQuant #183). Shared routed-expert
+discovery exposes per-expert projection views using the native exporter's
+profile-owned split; it does not invent Tessera serving groups. The existing
+packed activation collector offers an optional synchronous full-row consumer,
+leaving its default reservoir behavior unchanged. Campaign capture uses the
+existing router/SwiGLU derivation on those live inputs, accumulating every
+routed row into each selected unit's own Hessian before retaining bounded
+scoring rows. An unobserved selected expert refuses; no shared-Hessian or
+weight-only fallback is introduced. The main-entry packed-population refusal
+remains in force pending the producer's exact cached-wire/stack-plan bridge
+and its measured coverage. This is CPU-tested capture plumbing, not packed
+campaign/export eligibility or a GPU/served performance claim.
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for the **campaign
+population refusal** (§4.10; PrismaQuant #183). Before calibration, the
+Tessera campaign checks the profile-declared routed target population against
+live rank-three parameters under the same explicit layer stride used by its
+dense walk. Any in-scope packed expert parameters are named and refused;
+they can no longer disappear from a dense-only cost payload. This guard does
+not implement packed activation capture or the exact cached-wire/stack-plan
+producer bridge, and it makes no packed-MoE qualification claim. Gate:
+`tests/test_tessera_campaign_packed.py` (real main-entry synthetic mixed
+dense/packed regressions, both shown failing before the refusal).
 
 Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for a **frozen sequential
 native-candidate validation plan**, not a measured result. The opt-in
@@ -6104,12 +6151,12 @@ different rendering; the export fingerprint records the enumeration the shipped 
 so a shipped artifact names its rendering. Packed experts stamp the hook-only
 `metadata["activation_hook_scope_packed"]` (`fill_packed_expert_cache_entries` hooks the
 full visible module set and `store_qnames` narrows only storage, #145) and the union merge
-requires agreeing packed digests while tolerating dense-only shards. **One caveat remains.**
-The
-cache directory has no render-identity guard at all — resume is file-presence only — so a
-directory whose units were rendered under a narrower hook set will keep those bytes and
-silently mix them with newly rendered ones. Rebuild an assignment-scoped cache directory
-rather than resuming it across this change.
+requires agreeing packed digests while tolerating dense-only shards. Resume is now guarded
+by `render_identity.json` (#146): the base fill and packed append writers compare their
+respective identity sections before admitting file-presence reuse. A changed hook scope
+refuses and requires a fresh cache directory. A pre-guard directory can still be admitted
+on trust, but its existing shard names and count are recorded as `pre_guard_admission`;
+that history is not evidence that those old shards had a verified render identity.
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,
