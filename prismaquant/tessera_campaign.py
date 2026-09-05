@@ -40,9 +40,11 @@ Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
 ``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
-cache entry holds the wire beside the dequantised render, the export leg writes
-exactly the bytes this cost was measured on, and the identity holds by
-construction rather than by two code paths agreeing (principle 8).
+cache entry holds the wire beside the dequantised render. Checkpoint resume
+verifies those bytes against their producer input receipt. That proves the
+cached wire is the priced wire; export reuse and served qualification still
+owe their own receipts. The packed producer-plan/cached-wire bridge remains
+the separate work tracked by PrismaQuant #183 (principle 8).
 
 What this stage does NOT do
 ---------------------------
@@ -114,12 +116,10 @@ class CampaignAnchor:
     activation_quantized: bool
     wire_bytes: int
     seconds: float
-    #: Was a Hessian actually applied to these bytes?  A property of the RUNG'S
-    #: WIRE and not of the run: only a CHANNEL scale plane admits LDLQ and the
-    #: H refit, so every E2M1 rung is False even under ``--hessian require``.
-    #: Stamped per row rather than per table, because a mixed-family campaign
-    #: is legitimately half H-aware and a table-level flag would have to lie in
-    #: one direction or the other.
+    #: Was a Hessian actually applied to these bytes? Admission comes from the
+    #: producer's ActivationSource settings for this rung's scale plane, via
+    #: rung_accepts_hessian, not a campaign-owned plane roster. Stamped per
+    #: measured row so weights-only and H-aware results cannot be conflated.
     hessian_applied: bool = False
     #: The static NVFP4 ``input_global_scale`` this anchor's A side was scored
     #: under, when the rung's route executes the static UE4M3 contract; None
@@ -351,7 +351,7 @@ def _measure_anchor(
     # The wire, beside the render.  A ``.tessera`` shard per (qname, rung),
     # named the way the cache names its weight shards, so the export leg can
     # find the exact bytes this row was priced on instead of re-encoding.
-    wire_path = wire_dir / f"{qname.replace('.', '__')}__{format_name}.tessera"
+    wire_path = _wire_path(wire_dir, qname, format_name)
     tmp = wire_path.with_suffix(".tessera.tmp")
     tmp.write_bytes(blob)
     os.replace(tmp, wire_path)
@@ -548,6 +548,132 @@ def campaign_cost_payload(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _wire_path(wire_dir: Path, qname: str, format_name: str) -> Path:
+    return wire_dir / f"{qname.replace('.', '__')}__{format_name}.tessera"
+
+
+def _checkpoint_identity_api():
+    try:
+        from tessera import cached_unit
+    except ImportError as exc:
+        raise RuntimeError(
+            "Tessera campaign checkpoint identity requires the producer's "
+            "cached_unit input/byte receipt API; refusing unbound resume") from exc
+    return cached_unit
+
+
+def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
+                                  calibration_identity, serving_scope,
+                                  static_scales, static_scale_policy):
+    """Bind the priced population, including score inputs when H is off.
+
+    The static A-side contract is a scoring input like the score rows: the
+    policy is env-resolved (``PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE``) and
+    the per-unit ``input_global_scale`` is a function of every calibration
+    row, not of the bounded rows or the Hessian bound beside it.  Binding
+    both here is what makes a checkpoint priced under another calibration or
+    policy refuse at the journal (``checkpoint identity mismatch at
+    units.<unit>.input_global_scale``) before any of its rows is read; the
+    per-row half of the same rule lives in :func:`_checkpoint_anchor_identity`.
+    """
+    from .production_weight_cache import _production_cache_source_sha256
+
+    api = _checkpoint_identity_api()
+    settings = vars(args).copy()
+    # Locations and a wall-clock interruption limit are not encoding/scoring
+    # inputs. All other explicit campaign settings remain bound by default.
+    for name in ("out", "cache_dir", "checkpoint", "deadline_seconds"):
+        settings.pop(name, None)
+    return {
+        "campaign_schema": SCHEMA,
+        "currency": CURRENCY,
+        "settings": settings,
+        "calibration": calibration_identity,
+        "serving_scope": serving_scope,
+        "encoder_recipe": th.encoder_recipe(),
+        "prismaquant_source_sha256": _production_cache_source_sha256(),
+        "encoder_source_sha256": api.encoder_source_sha256(),
+        "input_global_scale_policy": str(static_scale_policy),
+        "units": {
+            name: {
+                "weight": api.tensor_identity(weight),
+                "scoring_rows": (None if acts.get(name) is None
+                                 else api.tensor_identity(acts[name])),
+                "hessian": (None if hessians.get(name) is None
+                            else api.tensor_identity(hessians[name])),
+                "input_global_scale": (
+                    None if static_scales.get(name) is None
+                    else float(static_scales[name])),
+                "menu": sorted(rung.format_name for rung in menus[name]),
+            }
+            for name, weight in sorted(weights.items())
+        },
+    }
+
+
+def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
+                                static_scales):
+    """The resumed row's inputs, as this run's producer would stamp them.
+
+    ONE gate per resumed row, in the order the producer resolves the inputs:
+    the unit is priced, the format is a Tessera rung on the current menu, the
+    Hessian applicability is what ``rung_accepts_hessian`` says for that
+    rung's wire, and the A-side contract on the row is what
+    :func:`_measure_anchor` stamps for that rung under this run's static
+    scales (:func:`_require_resumable_anchor`).  Only then is the producer's
+    ``encoding_input_identity`` asked for, so the wire receipt is verified
+    against a row already known to be a price of this run.
+    """
+    from .tessera_formats import parse_tessera_format_name, tessera_wire_recipe
+    from .tessera_render import rung_accepts_hessian
+
+    if anchor.qname not in weights:
+        raise RuntimeError(f"checkpoint anchor names an unknown unit: {anchor.qname!r}")
+    parsed = parse_tessera_format_name(anchor.format_name)
+    if parsed is None:
+        raise RuntimeError(f"checkpoint anchor format is not Tessera: {anchor.format_name!r}")
+    family, rung = parsed
+    if (anchor.family, anchor.body_rate_q256) != (family.name, rung):
+        raise RuntimeError("checkpoint anchor family/rung disagrees with its format")
+    if anchor.format_name not in {entry.format_name for entry in menus[anchor.qname]}:
+        raise RuntimeError(f"checkpoint anchor is outside the current menu: {anchor.format_name}")
+    wire = tessera_wire_recipe(family, rung)
+    activation = (calibration_source if calibration_source is not None
+                  and rung_accepts_hessian(anchor.format_name, wire) else None)
+    if bool(anchor.hessian_applied) != (activation is not None):
+        raise RuntimeError("checkpoint anchor Hessian applicability disagrees with the producer")
+    _require_resumable_anchor(anchor, static_scales)
+    return _checkpoint_identity_api().encoding_input_identity(
+        weights[anchor.qname], anchor.qname, family.payload_grid(), int(rung),
+        activation=activation,
+    )
+
+
+def _checkpoint_wire_record(anchor, wire_dir, identity, *, existing=None):
+    """Use the producer's one receipt grammar for fresh and resumed bytes."""
+    path = _wire_path(wire_dir, anchor.qname, anchor.format_name)
+    if path.is_symlink() or path.resolve().parent != wire_dir.resolve():
+        raise RuntimeError(f"checkpoint cached wire escapes its directory: {path}")
+    try:
+        blob = path.read_bytes()
+        api = _checkpoint_identity_api()
+        if existing is None:
+            record = api.make_unit_record(blob, identity, filename=path.name)
+        else:
+            record = existing
+            api.verify_cached_unit(blob, record, identity)
+            if record.get("file") != path.name:
+                raise ValueError("cached wire filename differs from the priced unit/rung")
+        # CampaignAnchor.wire_bytes means the full blob, not plane-region bytes.
+        if anchor.wire_bytes != record["blob_bytes"]:
+            raise ValueError("cached wire length differs from the measured anchor")
+        return record
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError(
+            f"checkpoint cached wire identity refused for {anchor.qname} "
+            f"{anchor.format_name}: {exc}") from exc
+
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None):
@@ -864,15 +990,26 @@ def _format_executes_static_nvfp4(format_name: str) -> bool:
 def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
     """Refuse a resumed anchor priced under a different activation contract.
 
-    Resume merges checkpoint rows into this run's table, and the table's rows
-    must be one currency.  A W4A4 anchor with no ``input_global_scale`` was
-    measured under the pre-#194 dynamic FP32-scale quantiser; one with a
-    *different* scale was measured on a different calibration.  Either way it
-    is not a price of this run's served A side, and merging it silently is the
-    exact mixed-table failure the Hessian identity guard exists to catch on
-    its own axis.
+    The per-row half of the resume identity rule; its one caller is
+    :func:`_checkpoint_anchor_identity`, and the run-level half (this run's
+    static scales and policy, bound into the journal identity) is
+    :func:`_campaign_checkpoint_identity`.  Resume merges checkpoint rows into
+    this run's table, and the table's rows must be one currency.  A W4A4
+    anchor with no ``input_global_scale`` was measured under the pre-#194
+    dynamic FP32-scale quantiser; one with a *different* scale was measured
+    on a different calibration; a dynamic-route row carrying a scale was
+    stamped by no producer this campaign has.  None is a price of this run's
+    served A side, and merging one silently is the exact mixed-table failure
+    the Hessian identity guard exists to catch on its own axis.
     """
     if not _format_executes_static_nvfp4(anchor.format_name):
+        if anchor.input_global_scale is not None:
+            raise ActivationScaleContractError(
+                f"checkpoint anchor {anchor.qname} {anchor.format_name} "
+                f"carries input_global_scale={anchor.input_global_scale!r} "
+                "but its route keeps the serving format's dynamic activation "
+                "quantiser: no producer of this campaign stamps a static scale "
+                "on that route, so the row is not one of this run's prices.")
         return
     if anchor.input_global_scale is None:
         raise ActivationScaleContractError(
@@ -977,7 +1114,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--out", required=True, help="cost payload (.pkl)")
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--checkpoint", default=None,
-                    help="resumable per-anchor JSON; defaults beside --out")
+                    help="identity-bound JSON manifest with sibling .parts "
+                         "unit shards; defaults beside --out")
     ap.add_argument("--menu-mode", default=None, choices=sorted(MENU_MODES))
     ap.add_argument("--nsamples", type=int, default=8)
     ap.add_argument("--seqlen", type=int, default=512)
@@ -1171,25 +1309,62 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         context_by_unit=context_by_unit,
     )
 
+    from .cost_stage_checkpoint import prepare_journal, write_unit
+
+    # The resume identity, run level: everything a price is a function of,
+    # including the static A-side contract (scales + policy) the W4A4 rows
+    # are scored under.  A checkpoint from another calibration or policy is
+    # refused here, by field, before a row of it is read.
+    checkpoint_identity = _campaign_checkpoint_identity(
+        weights=weights, acts=acts, hessians=hessians, menus=menus, args=args,
+        calibration_identity=hessian_identity,
+        serving_scope=(scope_provenance(serving_target, context_by_unit)
+                       if serving_target is not None else None),
+        static_scales=static_scales, static_scale_policy=static_scale_policy,
+    )
+    journal, identity_sha256, resumed = prepare_journal(
+        checkpoint.with_name(checkpoint.name + ".parts"), manifest_path=checkpoint,
+        stage="Tessera campaign", resume=True, identity=checkpoint_identity,
+        qnames=targets,
+    )
     measured: dict[str, dict[str, list[CampaignAnchor]]] = {}
-    if checkpoint.is_file():
-        raw = json.loads(checkpoint.read_text())
-        for row in raw.get("anchors", []):
+    wire_records = {name: {} for name in targets}
+    dirty_checkpoint_units = set()
+    for name, state in resumed.items():
+        if set(state) != {"anchors", "wire_records"} or not isinstance(state["anchors"], list) \
+                or not isinstance(state["wire_records"], dict):
+            raise RuntimeError(f"checkpoint state has an invalid anchor/record envelope for {name}")
+        formats = set()
+        for row in state["anchors"]:
             anchor = CampaignAnchor(**row)
-            _require_resumable_anchor(anchor, static_scales)
-            measured.setdefault(anchor.qname, {}).setdefault(
-                anchor.family, []).append(anchor)
+            if anchor.qname != name or anchor.format_name in formats:
+                raise RuntimeError(f"checkpoint anchor has a wrong or duplicate unit/rung: {name}")
+            formats.add(anchor.format_name)
+            if anchor.format_name not in state["wire_records"]:
+                raise RuntimeError(f"checkpoint anchor has no priced-wire receipt: {name}")
+            # Row level, the same rule: the row's inputs (Hessian
+            # applicability, static scale) must be what this run's producer
+            # stamps for its rung, then its wire receipt must verify.
+            identity = _checkpoint_anchor_identity(
+                anchor, weights=weights, menus=menus,
+                calibration_source=calibration_source, static_scales=static_scales)
+            wire_records[name][anchor.format_name] = _checkpoint_wire_record(
+                anchor, wire_dir, identity, existing=state["wire_records"][anchor.format_name])
+            measured.setdefault(name, {}).setdefault(anchor.family, []).append(anchor)
+        if formats != set(state["wire_records"]):
+            raise RuntimeError(f"checkpoint has wire receipts outside its measured anchors: {name}")
+    if resumed:
         print(f"[campaign] resumed {sum(len(v) for f in measured.values() for v in f.values())} "
-              f"anchors from {checkpoint}", flush=True)
+              f"verified anchors from {checkpoint}", flush=True)
 
     def flush_checkpoint() -> None:
-        rows = [
-            vars(a) for by_f in measured.values()
-            for anchors in by_f.values() for a in anchors
-        ]
-        tmp = checkpoint.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"schema": SCHEMA, "anchors": rows}))
-        os.replace(tmp, checkpoint)
+        for name in sorted(dirty_checkpoint_units):
+            rows = [vars(anchor) for anchors in measured.get(name, {}).values()
+                    for anchor in anchors]
+            write_unit(journal, stage="Tessera campaign", qname=name,
+                       identity_sha256=identity_sha256,
+                       state={"anchors": rows, "wire_records": wire_records[name]})
+        dirty_checkpoint_units.clear()
 
     started = time.time()
     deadline = float(args.deadline_seconds)
@@ -1381,7 +1556,12 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 print(f"[campaign] {name} {fmt}: FAILED {type(exc).__name__}: "
                       f"{exc}", flush=True)
                 continue
+            identity = _checkpoint_anchor_identity(
+                anchor, weights=weights, menus=menus,
+                calibration_source=calibration_source, static_scales=static_scales)
+            wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
             measured.setdefault(name, {}).setdefault(family, []).append(anchor)
+            dirty_checkpoint_units.add(name)
             if index % 10 == 0:
                 flush_checkpoint()
                 print(f"[campaign] r{round_index} {index}/{len(pending)} "

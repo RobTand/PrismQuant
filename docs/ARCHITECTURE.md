@@ -1,7 +1,52 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq183-packed-capture`. Stamps
+As of: 2026-09-05 · `codex/pq186-campaign-identity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq186-campaign-identity`) for **one resume
+identity, including the served A-side contract** (§4.10; merge of the
+identity-bound resume below with the priced-inputs contract stamped beneath
+it). The static NVFP4 `input_global_scale` per unit and the resolved
+`input_global_scale_policy` are scoring inputs, so the campaign checkpoint's
+journal identity binds them beside the score rows and Hessians: a checkpoint
+priced under another calibration or policy refuses at the manifest, by field,
+before a row of it is read. The per-row half of the same rule — a resumed
+W4A4 row must carry exactly this run's scale for its unit, a dynamic-route
+row must carry none — is asked inside the per-anchor identity check, beside
+the Hessian-applicability check and before the producer's wire receipt is
+verified; the separate resume-time scale gate is gone. One rule, one home,
+one refusal grammar (`checkpoint identity mismatch at
+units.<unit>.input_global_scale` / `ActivationScaleContractError` on the row).
+Gate: `tests/test_tessera_campaign_resume.py` (`input_scale`, `scale_policy`
+and pre-contract-row cases) and
+`tests/test_tessera_campaign.py::test_resume_refuses_w4a4_anchors_priced_under_another_contract`.
+
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for **identity-bound
+Tessera campaign resume** (§4.10; PrismaQuant #186). The existing cost journal
+binds the current selected weights, scoring rows even with Hessians off, actual
+Hessians, corpus/token draw, menus/scope, explicit campaign settings, resolved
+encoder configuration and both producer/package source seals. Its original
+`--checkpoint` file path is the manifest; sibling `.parts` shards hold durable
+checksummed per-unit anchors and the producer's own cached-byte receipts.
+Every resumed anchor must belong to the current unit/menu, agree with the
+producer's Hessian applicability and verify its exact wire bytes against a
+fresh producer input identity before entering the cost payload. Legacy unbound
+JSON, changed inputs, extra/missing receipts and missing/changed wire refuse;
+old anchors never acquire today's identity. This consumes the pending producer
+`tessera.cached_unit` API and does not change the release pin, admit packed
+campaigns, or establish served/GPU qualification. Gate:
+`tests/test_tessera_campaign_resume.py`.
+
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for the shared
+checkpoint journal's **explicit manifest pathname** (§4.10; PrismaQuant #186).
+`cost_stage_checkpoint.prepare_journal` can retain a file-oriented caller's
+manifest path while storing per-unit shards in its checkpoint directory. It
+uses the existing manifest/unit schemas, exact identity comparison, checksums,
+and durable writes; existing directory-oriented callers are unchanged. This
+adapter enables the campaign's identity-bound resume without changing its
+`--checkpoint` filename/default or introducing another checkpoint grammar.
+The campaign's intake/wire verification is a separate change, not supplied
+merely by this optional argument.
 
 Re-stamped (2026-09-05, `codex/pq183-packed-capture`) for **one campaign
 capture, dense or packed** (§4.10; merge of the packed source-unit capture
@@ -5644,6 +5689,19 @@ stopped it.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
+Resume is an identity check, not a name match. The JSON checkpoint manifest
+uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in
+its sibling `.parts` directory. It binds actual selected weights, scoring rows,
+Hessians and calibration draw, resolved menus/scope/settings and the producer
+and PrismaQuant source seals. Each priced wire has a `tessera.cached_unit`
+receipt, verified against freshly derived producer inputs before its saved
+cost is admitted. Changed or unverifiable inputs, old identity-free anchor
+lists, absent/corrupt wire and receipt coverage mismatch refuse without
+recomputing or relabelling the old result. Output/cache paths and the wall-clock
+interruption limit are not numerical inputs; moving them is allowed only if
+the same manifest, unit journal and verified priced wire remain available.
+The producer API is required; an older producer without it refuses.
+
 > **Premise correction.** This work was briefed on the belief that Tessera's
 > "embedded rate axis" would let one deep encode per unit yield exact decodes of
 > every lower rate. It does not, on the wire: the embedded axis is a decode-time
@@ -5683,7 +5741,9 @@ Two properties make the numbers comparable with the rest of the menu:
 * **Rendering identity (§P8).** The tensor that is priced *is* the decoded wire:
   `_encode_and_render` returns `read_unit_artifact(unit.blob)`, and the blob is
   stored beside the render in the cache. Not two code paths that agree — one
-  object.
+  object. This proves the cached wire is the priced wire, not that an export
+  or serving runtime reused it; those paths owe their own exact-byte and
+  served receipts. The packed bridge remains tracked by PrismaQuant #183.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
