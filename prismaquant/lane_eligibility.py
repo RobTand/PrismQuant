@@ -157,7 +157,7 @@ LANE_ELIGIBILITY_SCHEMA_TESSERA_LEGACY_V3 = "tessera.lane-eligibility.v3"
 #: itself against this name, which made a version bump silently demote the
 #: previous grammar from "scoped" to "legacy unscoped". Scope is a property a
 #: set answers, not a single constant: see :data:`SCOPED_LANE_SCHEMAS`.
-LANE_ELIGIBILITY_SCHEMA_TESSERA = LANE_ELIGIBILITY_SCHEMA_TESSERA_V8
+LANE_ELIGIBILITY_SCHEMA_TESSERA = LANE_ELIGIBILITY_SCHEMA_TESSERA_V9
 
 #: The schemas whose cells carry a per-cell runtime scope, so an explicit
 #: serving context (image + execution mode) can be matched rather than

@@ -42,22 +42,22 @@ contain, which nobody else can re-derive.
 
 The pin below was first bound that way on 2026-09-04, when master was
 `5acc2a6f` (contract v17), and re-bound on 2026-09-05 to Tessera master at
-`3efd690` — the merge of Tessera #324, and master's tip when it was bound
-(contract v21, lane schema v8). The release checkout Rob named, `e78959ed`,
+`8ed1d9a` — the merge of Tessera #332, and master's tip when it was bound
+(contract v22, lane schema v9). The release checkout Rob named, `e78959ed`,
 carried contract v20; the one published move past it is Tessera #313
 (`b8b1cb38`, eleven PR merges back from the pinned tip): the routed-MoE
 cells' smoke, re-measured and now `recorded`; PrismaQuant #198 option C.
 Re-check what is recorded against the COMMIT, never against a later `HEAD`:
 
 ```bash
-git -C "$TS" cat-file -p 3efd690dd4e4a1b71fb604a14bee521dc57badb3:src/tessera/serving/runtime_contract.json | sha256sum
+git -C "$TS" cat-file -p 8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a:src/tessera/serving/runtime_contract.json | sha256sum
 ```
 
 The 56 commits (11 PR merges: Tessera #312 and #314–#324) between #313's merge
 and the pinned tip package byte-identical contract bytes, which is why moving
 the pin forward to master's tip did not move the digest. A Tessera commit
 re-stales this pin only when it changes what the runtime publishes. No tag
-names `3efd690`, so `version_is_release` stays `false`.
+names `8ed1d9a`, so `version_is_release` stays `false`.
 
 **`version_is_release` is advisory.** Still required, still parsed, still
 recorded, and still unable to be `true` over a PENDING commit — so it keeps
@@ -146,11 +146,11 @@ both exists and is read by a gate on this side. When Tessera publishes wheels, a
 Verified against `RobTand/tessera` master on 2026-09-05:
 
 ```
-commit           3efd690dd4e4a1b71fb604a14bee521dc57badb3
-contract_sha256  34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e
+commit           8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a
+contract_sha256  719daa02da1564b56a141ca2702ae29d4fda553460978efbb6510ddcd1824927
 versions.tessera 0.1.0
-contract_version 21
-lane schema      tessera.lane-eligibility.v8
+contract_version 22
+lane schema      tessera.lane-eligibility.v9
 ```
 
 Five values, two files, one commit. Resolve the new commit, digest and version

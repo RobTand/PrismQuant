@@ -87,7 +87,17 @@ def _raw() -> tuple[dict, str]:
 
 @pytest.fixture
 def payload():
-    return _raw()[0]
+    """The installed contract expressed as a v8 lane table.
+
+    Since the pin moved to contract v22 the installed table is v9, so this
+    file is a LEGACY-grammar file and owns its fixture -- the rule
+    ``conftest.down_convert_lane_table`` exists for, applied here exactly as
+    ``test_tessera_lane_v6.py`` applies it. Everything v9 did not change
+    (families, rungs, route statuses, launches, images, the artifact block)
+    is still the installed table's, so these tests still read real cells.
+    """
+    return down_convert_lane_table(
+        _raw()[0], lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8)
 
 
 def _table(payload):
@@ -137,13 +147,22 @@ def _facts(structure):
 # The grammar
 # ---------------------------------------------------------------------------
 def test_the_installed_contract_is_read_at_its_own_schema(table, payload):
+    """This file's fixture is v8; the CURRENT grammar is v9.
+
+    Until contract v22 the installed table was v8 and this asserted the two
+    were the same string. They are not any more, and the assertion that
+    matters is the one that outlives every bump: the fixture reads at the
+    schema it declares, and no earlier grammar was demoted out of
+    ``SCOPED_LANE_SCHEMAS`` when v9 became current.
+    """
     assert table.schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8
-    assert lane.LANE_ELIGIBILITY_SCHEMA_TESSERA == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8
+    assert lane.LANE_ELIGIBILITY_SCHEMA_TESSERA == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V9
     for older in (lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V5,
                   lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6,
-                  lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V7):
+                  lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V7,
+                  lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8):
         assert older in lane.SCOPED_LANE_SCHEMAS, (
-            f"{older} must stay SCOPED when v8 becomes current; a version bump "
+            f"{older} must stay SCOPED when v9 becomes current; a version bump "
             "that demotes a previous grammar to 'legacy unscoped' silently "
             "widens what a legacy table is allowed to attest")
     assert _parse(payload).lane_schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8

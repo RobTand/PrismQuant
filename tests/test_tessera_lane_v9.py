@@ -220,8 +220,15 @@ def test_v9_is_scoped_and_carries_every_earlier_evidence_field(tessera_v9):
 
 
 def test_a_record_on_a_v8_table_is_refused_as_an_unknown_field():
-    """v9's key is not readable by the v8 grammar, and is not read as one."""
-    payload = _installed()
+    """v9's key is not readable by the v8 grammar, and is not read as one.
+
+    The installed table IS v9 now, so the v8 table is down-converted first --
+    a test about an older grammar owns its fixture.
+    """
+    from conftest import down_convert_lane_table
+
+    payload = down_convert_lane_table(
+        _installed(), lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8)
     _cell(payload, MOE_DECODE)["evidence"]["smoke"]["record"] = copy.deepcopy(RECORD)
     with pytest.raises(lane.LaneEligibilityError, match="unknown field"):
         _table(payload)

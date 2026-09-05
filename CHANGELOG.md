@@ -106,9 +106,9 @@
 
 ### Added
 
-- **The Tessera pin moves to master's tip `3efd690` (contract v21, lane schema
-  v8 — v21 landed eleven PR merges earlier in Tessera #313, `b8b1cb38`, and the
-  release `e78959ed` carried v20), and the reader consumes the contract's
+- **The Tessera pin moves to master's tip `8ed1d9a` (contract v22, lane schema
+  v9 — v21 landed at `b8b1cb38` in Tessera #313 and the release `e78959ed`
+  carried v20), and the reader consumes the contract's
   lane predicate through Tessera's own decision core** (RobTand/tessera#195,
   #198, #264, #313; `lane_eligibility.py`, `tessera_render.py`,
   `tessera_runtime_contract.py`, `tessera_serving_runtime_pin.py`,
@@ -175,7 +175,7 @@
   streamed E4M3 cells launch through the lane and their plan is what it reads);
   a BF16 cell that ever claimed the window-GEMV launch at 1792 (column rate 7)
   would be refused by name. Every admission is scoped: a context-free
-  `tessera_lane_attested(name)` answers `False` under the v8 table by SCOPE, so
+  `tessera_lane_attested(name)` answers `False` under the pinned table by SCOPE, so
   the allocator admits Tessera rungs only when the operator passes
   `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/--tessera-residency`.
   Dev pin, serving pin and their reviewed answer moved in one commit.

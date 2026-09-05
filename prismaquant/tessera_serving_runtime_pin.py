@@ -150,37 +150,39 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA2
 #:
 #: First recorded 2026-09-04T21:29-04:00 against Tessera master at 5acc2a6f
 #: (contract v17, lane schema ``tessera.lane-eligibility.v6``, its PR #176).
-#: Re-pinned 2026-09-05 to Tessera master at 3efd690 -- the merge of its
-#: PR #324, and master's tip when this was bound (contract v21, lane schema
-#: ``tessera.lane-eligibility.v8``).  The release checkout Rob named,
-#: e78959ed, carried contract v20; the ONE published move past it is the
-#: routed-MoE cells' smoke, which Tessera #313 (b8b1cb38, eleven PR merges
-#: back from the pinned tip) re-measured through the checkpoint's own chat
-#: template and records as ``recorded`` (receipt
+#: Re-pinned 2026-09-05 to Tessera master at 8ed1d9a -- the merge of its
+#: PR #332, and master's tip when this was bound (contract v22, lane schema
+#: ``tessera.lane-eligibility.v9``).  The release checkout Rob named,
+#: e78959ed, carried contract v20; two published moves lie past it.  #313
+#: (b8b1cb38) re-measured the routed-MoE smoke through the checkpoint's own
+#: chat template and recorded it clean (v21, receipt
 #: ``docs/measurements/moe-smoke-recorded-2026-09-05.md``; prismaquant #198
-#: option C).  Relative to the first pin (v17) the lane table also gained a
-#: smoke control and attribution (v7), an encoder artifact (v8) and the
-#: per-extension lane predicate (v20), and
+#: option C).  #332 then answered Tessera's own #327 (P1): that ``recorded``
+#: rested on a repetition rule which lived only in the measurements file and
+#: was checked by nothing, so v22 moves the rule and its rows INTO the
+#: contract as ``smoke.record`` and derives both the status and the
+#: attribution from them.  Relative to the first pin (v17) the lane table
+#: also gained a smoke control and attribution (v7), an encoder artifact
+#: (v8) and the per-extension lane predicate (v20), and
 #: ``tessera_runtime_contract.TESSERA_DEV_PIN_ANSWER`` moved with all of it in
 #: the same commit.  Re-check it against the COMMIT rather than a past HEAD,
 #: which nobody can re-run::
 #:
-#:     git -C "$TS" cat-file -p 3efd690dd4e4a1b71fb604a14bee521dc57badb3:src/tessera/serving/runtime_contract.json | sha256sum
+#:     git -C "$TS" cat-file -p 8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a:src/tessera/serving/runtime_contract.json | sha256sum
 #:
-#: The 56 commits (11 PR merges: Tessera #312 and #314-#324) between #313's
-#: merge and this tip package byte-identical contract bytes, which is why the
-#: digest below did not move when the commit did.  That is the property this
-#: design is for -- a Tessera commit only re-stales the pin when it changes
-#: what the runtime PUBLISHES.
+#: A Tessera commit re-stales this pin only when it changes what the runtime
+#: PUBLISHES: the previous bind walked master forward 56 commits (#312 and
+#: #314-#324) without moving the digest at all, because none of them touched
+#: the contract.  This one moves it, because #332 does.
 #: No git tag names this commit, so ``version_is_release`` stays false in the
 #: JSON beside this module: ``0.1.0`` is what the checkout's ``pyproject``
 #: says, not a cut release.
 TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
-    "3efd690dd4e4a1b71fb604a14bee521dc57badb3"
+    "8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a"
 )
 TESSERA_SERVING_RUNTIME_PINNED_VERSION = "0.1.0"
 TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (
-    "34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e"
+    "719daa02da1564b56a141ca2702ae29d4fda553460978efbb6510ddcd1824927"
 )
 
 #: The vLLM plugin entry-point name the released runtime registers.  It is the

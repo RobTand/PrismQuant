@@ -147,9 +147,9 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v21 / lane schema v8 (Tessera master 3efd690, the merge of its
-#: #324; contract v21 landed eleven merges earlier in its #313, at b8b1cb38,
-#: and the release e78959ed carried v20), which is the same commit
+#: contract v22 / lane schema v9 (Tessera master 8ed1d9a, the merge of its
+#: #332, which answers its #327; v21 landed at b8b1cb38 in its #313 and the
+#: release e78959ed carried v20), which is the same commit
 #: ``tessera_serving_runtime_pin`` binds: the two pins name ONE object, and
 #: letting them drift is how two of this repository's own spec files came to
 #: disagree about one runtime.  Between the v17 review and this one the
@@ -179,23 +179,38 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: PROMOTED past the menu is still Rob's decision under principle 9 (#198
 #: stays open for it).
 #:
-#: Re-pinned to master's current tip on 2026-09-05 rather than to b8b1cb38,
-#: the commit that first published this answer: 56 commits (11 PR merges,
-#: Tessera #312 and #314-#324) later, ``src/tessera/serving/
-#: runtime_contract.json`` is byte-identical, so the answer below is
-#: unchanged and the digest is the same one.  That is the property this
-#: design is for -- what re-stales a pin is a move in what the runtime
-#: PUBLISHES, not a move in ``master``.  Verified by fetching
-#: ``RobTand/tessera`` master and hashing the blob at the tip, not a working
-#: tree (the command is in ``tessera_runtime/README.md``).
-TESSERA_DEV_PIN_COMMIT = "3efd690dd4e4a1b71fb604a14bee521dc57badb3"
+#: What moved v21 -> v22 (Tessera #332, answering its #327), and nothing
+#: else -- same ten cell ids in the same order, no family, rung, route
+#: status, launch, image or version:
+#:   1. lane_schema v8 -> v9;
+#:   2. every cell's ``evidence.smoke`` gained ``record`` -- ``null`` on the
+#:      eight dense cells, and on the two ``routed_moe`` cells the
+#:      instrument, the rule, the reference and the rows the status was
+#:      derived over;
+#:   3. those two cells' ``smoke.attribution`` moved ``unattributed`` ->
+#:      ``shared_with_reference``, DERIVED from the record by Tessera's own
+#:      ``derive_smoke_attribution`` rather than asserted.
+#: Why that is a re-review and not a bump: at v21 the ``recorded`` status
+#: rested on a repetition rule that lived only in a dated measurements file,
+#: was checked by nothing, and was satisfiable by an empty completion
+#: (Tessera #327, P1).  v22 puts the rule and its observations in the
+#: contract, so the status this pin admits on is one a reader can re-derive
+#: -- which ``lane_eligibility.parse_cell_evidence`` does, through Tessera's
+#: ``derive_smoke_status``, refusing a published status the record does not
+#: derive.  The admission itself is unchanged: ``cell_evidence_admits`` is
+#: still status-only and still ``{repetitive}``.
+#:
+#: Verified by fetching ``RobTand/tessera`` master into a scratch repository
+#: and hashing the blob at the tip -- never a working tree (the command is in
+#: ``tessera_runtime/README.md``).  No tag names the commit.
+TESSERA_DEV_PIN_COMMIT = "8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
 #: compared into provenance against the bytes this run read, so prose-only
 #: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e"
+    "719daa02da1564b56a141ca2702ae29d4fda553460978efbb6510ddcd1824927"
 )
 
 #: The ANSWER this pin was reviewed against -- every value the ADMISSION
@@ -209,16 +224,19 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 #: field-level diff naming it.  The git diff of this literal is the review.
 #:
 #: It also re-stales when the PROJECTION widens, which is the other half of
-#: the same property and is why every cell below now ends in one more
-#: ``None``: reading lane schema v9 gave ``CellEvidence.answer()`` a seventh
-#: member for the smoke's record, so the ten cells the pinned v21 contract
-#: publishes -- which carry no record, because v21 has no such field --
-#: project one trailing ``null`` each.  Nothing Tessera publishes moved; the
-#: drift was ten entries and every one of them was that ``None``.  A reader
-#: that widened what it looks at without re-reviewing would be admitting a
-#: field nobody had read.
+#: the same property: reading lane schema v9 gave ``CellEvidence.answer()`` a
+#: seventh member for the smoke's record, and a reader that widened what it
+#: looks at without re-reviewing would be admitting a field nobody had read.
+#:
+#: Against the v22 contract that seventh member is where the review is.  The
+#: eight dense cells publish ``record: null`` and project a trailing ``None``,
+#: so they did not move at all; the drift from the v21 answer was exactly
+#: three entries -- ``lane_schema`` (v8 -> v9) and the two ``routed_moe``
+#: cells, which gained the record and whose ``attribution`` moved
+#: ``unattributed`` -> ``shared_with_reference`` because v9 DERIVES it from
+#: that record.  Read those three and nothing else changed.
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
- 'lane_schema': 'tessera.lane-eligibility.v8',
+ 'lane_schema': 'tessera.lane-eligibility.v9',
  'required_regimes': ['batch', 'decode'],
  'quant_method': 'tessera',
  'fused_module': {'schema': 'tessera.fused-module.v1',
@@ -496,10 +514,64 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             ['kl_lower_bound',
              'recorded',
              ['topk_intersection_lower_bound@1024'],
-             'unattributed',
+             'shared_with_reference',
              None,
              None,
-             None]],
+             ['experiments/moe_greedy_smoke.py',
+              'repetitive iff the completion ends in a cycle: some period p '
+              'with 2p <= L has a p-periodic suffix holding >= 2 full periods '
+              '(s >= 2p), whatever its share of the completion; not_recorded '
+              'iff the completion is empty (L = 0), which is no completion '
+              'for a verdict to be true of; recorded otherwise; tokens are '
+              "the artifact tokenizer's canonical encoding of the returned "
+              'text',
+              'bf16_source',
+              [['P0',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2', 'campaign', 'raw_completion', 'recorded', 'repetitive'],
+               ['P3',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P6', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P0',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P3',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P6',
+                'pure_greedy',
+                'chat_template',
+                'recorded',
+                'recorded']]]]],
            ['tessera_e4m3_k1_routed_moe_sm121_decode_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -517,7 +589,67 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['eager']},
             '0.28.1rc1.dev397+gfd4a15126.d20260904',
             '2.13.0+cu130',
-            ['route_only', 'recorded', [], 'unattributed', None, None, None]]]}
+            ['route_only',
+             'recorded',
+             [],
+             'shared_with_reference',
+             None,
+             None,
+             ['experiments/moe_greedy_smoke.py',
+              'repetitive iff the completion ends in a cycle: some period p '
+              'with 2p <= L has a p-periodic suffix holding >= 2 full periods '
+              '(s >= 2p), whatever its share of the completion; not_recorded '
+              'iff the completion is empty (L = 0), which is no completion '
+              'for a verdict to be true of; recorded otherwise; tokens are '
+              "the artifact tokenizer's canonical encoding of the returned "
+              'text',
+              'bf16_source',
+              [['P0',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2', 'campaign', 'raw_completion', 'recorded', 'repetitive'],
+               ['P3',
+                'campaign',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P6', 'campaign', 'chat_template', 'recorded', 'recorded'],
+               ['P0',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P1',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P2',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P3',
+                'pure_greedy',
+                'raw_completion',
+                'repetitive',
+                'repetitive'],
+               ['P4', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P5', 'pure_greedy', 'chat_template', 'recorded', 'recorded'],
+               ['P6',
+                'pure_greedy',
+                'chat_template',
+                'recorded',
+                'recorded']]]]]]}
 
 #: Route statuses under which a cell says a native route EXECUTES.
 _NATIVE_ROUTE_STATUSES = frozenset(

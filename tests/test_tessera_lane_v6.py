@@ -86,7 +86,18 @@ REPETITIVE_RECEIPT = "docs/measurements/tessera-lfm-campaign-2026-09-04.md"
 
 
 def _with_repetitive_smoke(payload, *cell_ids):
-    moved = copy.deepcopy(payload)
+    """The v17-v20 shape: routed-MoE cells whose greedy smoke degenerated.
+
+    Down-converted to v8 FIRST, because the installed table is v9 since the
+    pin moved to contract v22 and a v9 cell's status is DERIVED from its
+    ``smoke.record``.  Writing ``repetitive`` over a record whose rows derive
+    ``recorded`` produces a table Tessera's own validator would refuse, and
+    this reader refuses it too -- correctly, and by name.  The historical
+    world being reconstructed here is one where no record existed at all, so
+    the fixture drops it rather than lying about what it derives.
+    """
+    moved = down_convert_lane_table(
+        payload, lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V8)
     for cell_id in cell_ids or (MOE_DECODE, MOE_BATCH):
         smoke = _cell(moved, cell_id)["evidence"]["smoke"]
         smoke["status"] = "repetitive"

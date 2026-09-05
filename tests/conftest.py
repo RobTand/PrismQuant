@@ -49,12 +49,23 @@ def down_convert_lane_table(payload: dict, schema: str) -> dict:
     launches -- so the test still exercises real cells. It is a FIXTURE and
     never an attestation: nothing derived from it is recorded anywhere.
 
-    ``schema`` is ``tessera.lane-eligibility.v7`` (drop the v8
-    ``evidence.artifact``), ``...v6`` (drop v7's ``smoke.attribution`` and
-    ``smoke.control`` as well), ``...v5`` (drop the whole ``evidence`` block
-    and the ``runtime`` version fields) or ``...v4`` (drop the per-cell
-    ``runtime`` scope as well).
+    ``schema`` is ``tessera.lane-eligibility.v8`` (drop the v9
+    ``smoke.record``), ``...v7`` (drop the v8 ``evidence.artifact`` as well),
+    ``...v6`` (drop v7's ``smoke.attribution`` and ``smoke.control`` too),
+    ``...v5`` (drop the whole ``evidence`` block and the ``runtime`` version
+    fields) or ``...v4`` (drop the per-cell ``runtime`` scope as well).
+
+    Dropping v9's record is not only a key removal: v9 DERIVES
+    ``smoke.attribution`` from the record, and v7/v8 derive it from the
+    control.  A fixture that removed the record and kept the derived
+    attribution would be a table no validator would accept, so the
+    attribution is re-derived under the older rule -- through the reader's own
+    ``derive_smoke_attribution``, which is that rule's home here.
     """
+    from prismaquant.lane_eligibility import (
+        EVIDENCE_ATTRIBUTION_UNATTRIBUTED, EVIDENCE_OUTCOME_IDENTICAL,
+        EVIDENCE_ATTRIBUTION_SHARED, EVIDENCE_ATTRIBUTION_NOT_SHARED)
+
     payload = copy.deepcopy(payload)
     lane = payload["lane_eligibility"]
     lane["schema"] = schema
@@ -64,6 +75,15 @@ def down_convert_lane_table(payload: dict, schema: str) -> dict:
             cell.pop("evidence", None)
         else:
             evidence = cell["evidence"]
+            if version <= 8:
+                smoke = evidence["smoke"]
+                if smoke.pop("record", None) is not None:
+                    control = smoke.get("control")
+                    smoke["attribution"] = (
+                        EVIDENCE_ATTRIBUTION_UNATTRIBUTED if control is None
+                        else EVIDENCE_ATTRIBUTION_SHARED
+                        if control["outcome"] == EVIDENCE_OUTCOME_IDENTICAL
+                        else EVIDENCE_ATTRIBUTION_NOT_SHARED)
             if version <= 7:
                 evidence.pop("artifact", None)
             if version <= 6:
