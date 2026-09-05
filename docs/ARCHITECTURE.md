@@ -8331,7 +8331,7 @@ schema is not `tessera.serving.route_census/2`. Under
 emitted `route_census/1`, so no scoped receipt could be filled or replayed and
 `route.census` on a scoped card stayed `UNFILLED` by the pin. At the pin this
 document is stamped for (`8ed1d9a`, contract v22) the packaged table is
-`tessera.lane-eligibility.v8` -- the schema the constant names -- and the
+`tessera.lane-eligibility.v9` -- the schema the constant names -- and the
 producer at that commit emits `route_census/2`, so both refusals lift and the
 comparison below is the live gate on a scoped card. What has NOT changed: no
 scoped receipt from a real serve has been replayed yet (nothing has been
@@ -8370,7 +8370,7 @@ never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
 with the replay; explicit scope fields cannot be flattened into those rows.
 A scoped card, or a current table of the scoped schema
-(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v8 at the pin), refuses a flat legacy
+(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v9 at the pin), refuses a flat legacy
 receipt instead of inventing the missing runtime, naming the schema that
 refused; flat rows stay attestable only where no `tessera` is installed to
 publish a current table (`tests/test_tessera_route_receipt.py`). At the `1221d2a`
