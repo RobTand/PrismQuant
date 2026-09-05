@@ -325,24 +325,30 @@ def test_rtn_quantizable_tensor_walk_does_not_swallow_the_refusal(monkeypatch):
         list(iter_quantizable_tensors(model))
 
 
-def _dummy_shard_kwargs(**overrides):
+def _dummy_shard_kwargs(tmp_path, **overrides):
     """Filler for a cost-shard runner's arguments.
 
     Every shard runner below detects the profile before it reads any of
-    these, so the refusal must arrive without a real activation cache,
-    format spec list or output path.
+    these, so the refusal must arrive without a real activation cache or
+    format spec list. `output_path` still goes under `tmp_path`: these
+    runners write an empty shard pickle on several of their early-exit
+    paths, so a bare relative name would litter the repo root whenever one
+    of them is reached (as it is when the fix is reverted to re-check that
+    these tests fail).
     """
     kwargs = dict(
         linear_include=".*", probe_stats={}, act_cache=None, specs=[],
         device="cpu", dtype=None, mode="unbatched", chunk_size=1,
-        h_detail=None, output_path="unused", model_name="m",
-        probe_path="p",
+        h_detail=None, output_path=str(tmp_path / "shard.pkl"),
+        model_name="m", probe_path="p",
     )
     kwargs.update(overrides)
     return kwargs
 
 
-def test_incremental_body_cost_shard_does_not_swallow_the_refusal(monkeypatch):
+def test_incremental_body_cost_shard_does_not_swallow_the_refusal(
+    tmp_path, monkeypatch
+):
     """`_run_body_cost_shard` answered `profile = None` and sharded on."""
     from prismaquant.incremental_measure_quant_cost import _run_body_cost_shard
 
@@ -351,10 +357,14 @@ def test_incremental_body_cost_shard_does_not_swallow_the_refusal(monkeypatch):
     )
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
-        _run_body_cost_shard(ctx, shard_kind="body", **_dummy_shard_kwargs())
+        _run_body_cost_shard(
+            ctx, shard_kind="body", **_dummy_shard_kwargs(tmp_path)
+        )
 
 
-def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(monkeypatch):
+def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(
+    tmp_path, monkeypatch
+):
     """`_run_visual_cost_shard` answered `profile = None` and priced on."""
     from prismaquant.incremental_measure_quant_cost import _run_visual_cost_shard
 
@@ -362,11 +372,13 @@ def test_incremental_visual_cost_shard_does_not_swallow_the_refusal(monkeypatch)
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         _run_visual_cost_shard(
-            model_path="unused",
+            model_path=str(tmp_path / "ckpt"),
             mm_ctx=mm_ctx,
             # A non-empty stat the include regex matches, or the runner
             # short-circuits to an empty shard before it ever detects.
-            **_dummy_shard_kwargs(probe_stats={"visual.blocks.0.attn.qkv": {}}),
+            **_dummy_shard_kwargs(
+                tmp_path, probe_stats={"visual.blocks.0.attn.qkv": {}}
+            ),
         )
 
 
@@ -424,7 +436,7 @@ def test_head_resident_prefixes_do_not_swallow_the_refusal(monkeypatch):
         _head_prefixes(_qwen3_model(), "model")
 
 
-def test_cost_pass_does_not_swallow_the_refusal(monkeypatch):
+def test_cost_pass_does_not_swallow_the_refusal(tmp_path, monkeypatch):
     """`measure_quant_cost.run_cost_pass` answered `model_profile = None`.
 
     And went on to measure per-(Linear, format) cost against upstream
@@ -436,7 +448,7 @@ def test_cost_pass_does_not_swallow_the_refusal(monkeypatch):
     with pytest.raises(DeadVendoredOverrideError):
         run_cost_pass(
             _qwen3_model(), None, set(), [], [], "m", "p", "cpu", None,
-            "unbatched", 1, "unused",
+            "unbatched", 1, str(tmp_path / "cost.pkl"),
         )
 
 
