@@ -136,7 +136,8 @@ PY
 
 ```bash
 CUDA_VISIBLE_DEVICES="" PYTHONPATH=. TRITON_CACHE_DIR=/home/rob/tmp/triton-cache \
-  python -m pytest -q -p no:cacheprovider tests/test_tessera_release_pin_flip.py
+  /home/rob/dq-runs/venvs/prismaquant-cu130/bin/python \
+  -m pytest -q -p no:cacheprovider tests/test_tessera_release_pin_flip.py
 ```
 
 `tests/test_tessera_release_pin_flip.py` is the merge guard: three of its four
@@ -144,6 +145,21 @@ tests FAIL while the sentinels stand, so a branch that prepares the flip cannot
 be merged before the tag exists, and the same file is the flip's verification.
 Its fourth test — the pin-vs-contract extension transcription — passes today
 and is independent of the tag.
+
+**Those three tests are SPENT once they pass, and the flip commit deletes
+them.** Keep only `test_the_pin_transcribes_the_installed_contracts_native_
+extensions`. Their purpose is to block a merge before the tag exists, and one
+of them would go on to be actively wrong: `test_the_pinned_version_is_the_
+version_the_packaged_runtime_publishes` asserts the pin equals
+`versions.tessera` in whatever `tessera.serving` is importable, which is the
+editable checkout's *master*. That is the right attestation while choosing the
+value to write; left in the suite afterwards it turns the next ordinary Tessera
+version bump into a red `main` whose message reads "re-pin to the new version".
+A moving master is not a review event — the same rule `TESSERA_DEV_PIN_COMMIT`
+states — and a pin bump is a reviewed release, never a test's demand. The
+post-flip guarantees are already carried by
+`test_tessera_lane_admission.py` and by the reader's own
+JSON-equals-constants rule.
 
 **Four existing tests assert the PENDING state and invert in the same commit.**
 They are not collateral damage; their content *is* "no release tag exists", so

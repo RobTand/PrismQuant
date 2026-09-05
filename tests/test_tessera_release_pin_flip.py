@@ -27,6 +27,18 @@ this repository must not shell into a sibling checkout -- so what is pinned
 here is its *shape* (a full 40-hex sha, equal in both files), and the reviewed
 identity travels in the pin's git diff.
 
+These three tests are SPENT once they pass: **the flip commit deletes them**,
+keeping only the fourth.  Blocking a premature merge is their whole purpose,
+and one of them would go on to be actively wrong -- the version attestation
+reads ``versions.tessera`` from whatever ``tessera.serving`` is importable,
+which is a moving Tessera master, so leaving it in the suite would turn the
+next ordinary version bump into a red ``main`` demanding a re-pin.  A moving
+master is not a review event (the rule ``TESSERA_DEV_PIN_COMMIT`` states) and a
+pin bump is a reviewed release, never a test's demand.  What the pin must go on
+satisfying afterwards is already covered by
+``tests/test_tessera_lane_admission.py`` and by the reader's own
+JSON-equals-constants rule.
+
 The fourth test is the half that is already ready, and it passes today: the
 pin's ``serving_native_extensions`` table is the installed contract's
 ``native_extensions`` table, compared value for value by the production

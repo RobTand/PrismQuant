@@ -6070,7 +6070,12 @@ ATTESTED, read from `versions.tessera` in the packaged contract rather than
 typed (principle 14); the commit cannot be attested from inside this
 repository, so only its shape (a full 40-hex sha, equal in both files) is
 checked and its identity travels in the pin's diff. The same file is the
-command that verifies the flip. `prismaquant/tessera_runtime/README.md` carries
+command that verifies the flip — and the three tag-dependent tests are SPENT
+when they pass: the flip commit deletes them, keeping only the transcription
+test. Left in the suite, the version attestation would read `versions.tessera`
+from a moving Tessera master and turn the next ordinary version bump into a red
+`main` demanding a re-pin, which is the "a moving master is not a review event"
+rule read backwards. `prismaquant/tessera_runtime/README.md` carries
 the exact five-value edit and the four existing tests whose content *is* "no
 release tag exists" and which therefore invert in the same reviewed commit.
 
