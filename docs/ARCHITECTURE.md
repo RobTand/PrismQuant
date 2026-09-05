@@ -3,6 +3,34 @@
 As of: 2026-09-05 · `claude/pq-183-packed-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the campaign
+pricing the producer-projected packed population** (§4.10; PrismaQuant #183).
+`tessera_campaign.main` now keeps the population `_require_campaign_population`
+admits -- the in-scope packed parameters the profile splits into per-expert
+`gate_up`/`down` projections, with the producer's projection tool declared and
+present -- and prices those per-expert 2-D views beside the dense Linears:
+one producer request per campaign (`_project_expert_population`), the answer
+bound exactly to the profile-declared units, every unit's source tensor read
+from the shard the producer hashed and compared byte-for-byte with the live
+view (a disagreement refuses by name before any encode), expert anchors
+grouped per producer stack, receipts sealed with the producer's
+`unit_input_identity`, measured-only cost rows for wire-backed units, and a
+payload that names the priced and omitted population
+(`provenance.population`, `provenance.tessera_expert_projection`,
+`tessera_expert_wires`). The gate refuses what the bridge does not carry: an
+in-scope packed parameter without a declared split, or no producer tool
+(`TESSERA_REPO` unset), each named before calibration. What is NOT claimed:
+no rung is scored on this branch against either producer checkout (the pin
+lacks `tessera.cached_unit`; the release publishes lane-eligibility v8, which
+PrismaQuant #192 admits), so the main-entry gate runs the producer's real
+encode and receipt without `_measure_anchor`'s route admission and says so.
+Gate: `tests/test_tessera_campaign_packed.py`
+(`test_main_prices_the_producer_projected_expert_population`, pre-fix:
+`RuntimeError: Tessera campaign cannot price the packed expert population
+yet: model.layers.2.feed_forward.experts.down_proj (2, 64, 64), ...` -- the
+old gate refused every packed population; the two by-name refusals and the
+source-mismatch refusal also shown failing before the change).
+
 Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
 expert count as the producer states it** (§4.10; PrismaQuant #183).
 `bind_expert_projection` read the stack's `experts` field as a list of
@@ -5826,7 +5854,35 @@ Two properties make the numbers comparable with the rest of the menu:
   object. This proves the cached wire is the priced wire, not that an export
   or serving runtime reused it; those paths owe their own exact-byte and
   served receipts.
-  served receipts. The packed bridge remains tracked by PrismaQuant #183.
+* **The packed expert population, priced as the producer projects it
+  (PrismaQuant #183).** `_require_campaign_population` admits the in-scope
+  packed parameters the profile splits into per-expert `gate_up`/`down`
+  projections *and* for which the producer's projection tool is declared and
+  present; anything else in scope is refused by name before calibration, and
+  the stride's leftovers are recorded as omitted. After the menus exist the
+  campaign asks the producer ONCE (`_project_expert_population`:
+  `experiments/tessera_producer_plan.py` over every in-scope stack, one
+  subprocess because the producer hashes the whole checkpoint), binds the
+  answer exactly to the profile-declared units, reads each unit's source
+  tensor from the shard the producer hashed and refuses, by name, a live view
+  that is not byte-for-byte that tensor. Expert anchors are grouped per
+  producer stack (`_group_key` → `s:<stack>`) so every member measures the
+  same rungs; their wire receipts are sealed with the producer's
+  `unit_input_identity` (the projection record inside the identity, which is
+  what the exporter's `--cached-expert-units` intake recomputes from the
+  source bytes) rather than the dense `encoding_input_identity`; and their
+  cost rows are **measured only** (`campaign_cost_payload(...,
+  wire_backed=)`), because an interpolated rung on a wire-backed unit would
+  be a price with no bytes behind it. The payload says what it priced:
+  `provenance.population` (`prismaquant.tessera_campaign_population.v1`:
+  priced dense / routed experts / packed parameters / stacks; omitted
+  dense-outside-stride, packed-outside-stride, pinned; counts),
+  `provenance.tessera_expert_projection` (the producer's answer verbatim
+  beside the request and the exact binding) and top-level
+  `tessera_expert_wires` (`{unit: {rung: receipt}}`). The checkpoint identity
+  binds the projection, so a resume under another source refuses at the
+  journal. What the producer cannot attest is still refused by name: a packed
+  source layout, an undeclared split, a missing tool.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
