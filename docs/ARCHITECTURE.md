@@ -3,6 +3,14 @@
 As of: 2026-09-05 · `codex/tessera-anchored-surface`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for opt-in,
+receipt-bound Tessera anchored-shape replay (§4.10). A declared shared pilot
+and one/two per-unit anchors predict a curve; separate audit rungs, exact
+measured values, a PWL comparison and deterministic measurement requests
+make its limitations inspectable. The CLI emits a research report only and
+imports the campaign's actual output-MSE currency. It does not qualify an
+AURA price, publish allocator rows or replace the campaign scheduler.
+
 Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for the shared
 `anchored_shape` numerical core. The existing AURA receipt/currency wrappers
 delegate centered log-shape fitting without changing their numerical result
@@ -6497,6 +6505,14 @@ and available-rung limits still apply; fewer than three measurements cannot
 close the leave-one-out gate and report its error as null.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
+
+The separate `tools/tessera_surface_replay.py` research command can compare
+the existing PWL model with shared-shape transfer from one/two anchors. It
+binds current campaign payload and journal identities, checks recorded wire
+hashes, and keeps activation/recipe segments distinct. A successful replay is
+not fresh source/producer attestation or serving qualification. Details and
+the pending joint-AURA/prefill extension (#237) are in
+[`docs/design/tessera_anchored_replay.md`](design/tessera_anchored_replay.md).
 
 Resume is an identity check, not a name match. The JSON checkpoint manifest
 uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in
