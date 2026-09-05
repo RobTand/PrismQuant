@@ -2340,7 +2340,7 @@ def main():
     # DP would trade them against each other. Raises on a mix; reports what
     # it found otherwise, so "no claim" stays distinguishable from "a
     # matching claim" (principle 14).
-    from .tessera_menu import assert_uniform_hessian_identity
+    from .tessera_menu import assert_uniform_hessian_identity, priced_static_scales
     tessera_hessian_identity = assert_uniform_hessian_identity(costs)
     if tessera_hessian_identity.get("stamped_rows") or \
             tessera_hessian_identity.get("unstamped_rows"):
@@ -5462,6 +5462,20 @@ def main():
         **({"tessera_hessian": dict(tessera_hessian_identity)}
            if (tessera_hessian_identity.get("stamped_rows")
                or tessera_hessian_identity.get("unstamped_rows")) else {}),
+        # The static A-side scale VALUE each selected Tessera unit was priced
+        # under, read from its own cost row (RobTand/prismaquant#204). The
+        # export gate compares the exporter's --input-scales file against
+        # this, value for value; until it existed the gate could only check
+        # that a key was present. Absent when no Tessera unit is selected, so
+        # a stock run's metadata is unchanged. Read from the unfiltered table
+        # (`cost_data["costs"]`): every selected unit's row is there whatever
+        # the lm_head / visual filters removed from the DP's view.
+        **({"tessera_activation_static_scales": priced_static_scales(
+                {name: fmt for name, fmt in assignment_expanded.items()
+                 if str(fmt).startswith("TESSERA_")},
+                cost_data["costs"])}
+           if any(str(fmt).startswith("TESSERA_")
+                  for fmt in assignment_expanded.values()) else {}),
         **({"tessera_dev_pin": dict(tessera_dev_pin)} if tessera_dev_pin else {}),
         **({"solve_diagnostics": {
                 str(k): {

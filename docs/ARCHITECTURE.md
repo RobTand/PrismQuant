@@ -123,6 +123,137 @@ are stamped separately. Gate: `tests/test_tessera_expert_projection.py`
 `tessera.serving_parts.source_identity`'s roster where the producer is
 importable) and the roster assertion in `tests/test_lane_gate_recording.py`.
 
+Re-stamped (2026-09-05, `claude/pq-204`) for **binding the Tessera export
+inputs to the payload and the values that priced the allocation** (§5;
+RobTand/prismaquant#204, P0). The #193 gate compared the allocation's identity
+triple against `<capture>.provenance.json` — a sidecar Tessera's
+`ActivationSource.from_capture` never reads — and checked only that each W4A4
+unit's key existed in the scales file; codex's `prismaquant_seam_inputs.py`
+showed a stale sidecar over a rewritten payload, the same triple over H = I vs
+H = 2I, and `input_global_scale` 1.0 vs 10000.0 at one key all accepted.
+Now: (1) `tessera_export_lane.hessian_capture_sha256` — Tessera's own
+`ActivationSource.capture_sha256` rule (release e78959e), reimplemented with
+torch alone because the dev pin 1221d2a predates it: the triple plus capture
+context (`model`, `seqlen`, `source`) and every unit's H by dtype/shape/bytes;
+where the running Tessera publishes the seal the gate computes both and refuses
+on disagreement. The campaign stamps that digest on every cost row
+(`hessian_identity.capture_sha256`) and in `provenance.hessian.capture_sha256`;
+`assert_uniform_hessian_identity` keys on it, so two captures of one draw
+refuse to merge; the allocator's `tessera_hessian` stamp carries it; the gate
+always loads the `.pt`, digests it, and refuses a payload whose digest is not
+the allocation's (by name, distinguishing "same triple, different content"
+from a triple mismatch), an allocation without the digest (pre-#204: unbound,
+never "any capture of this draw"), and a sidecar that does not seal the
+payload beside it. `write_export_inputs` stages both files and renames the
+sidecar last, carrying `capture_sha256` / `capture_sha256_schema`, so no
+sidecar can sit beside a payload it does not describe; it returns the digest.
+(2) `tessera_menu.priced_static_scales` reduces the selected units' rows to
+`tessera_activation_static_scales` (`{"schema":
+"prismaquant.tessera_activation_static_scales.v1", "units": {unit:
+input_global_scale}}`), emitted in `layer_config.json` metadata whenever a
+Tessera unit is selected; the gate reads each selected W4A4 unit's F32 scalar
+from the file and refuses a value that is not the priced one, an allocation
+without the block (unbound), and a unit the block prices no scale for. Stock
+runs' metadata is unchanged. New fields: cost-row `hessian_identity.
+capture_sha256`; layer_config `__prismaquant__.tessera_hessian.capture_sha256`
+and `__prismaquant__.tessera_activation_static_scales`; sidecar
+`capture_sha256`, `capture_sha256_schema`; preflight report
+`hessian_capture_sha256`, `hessian_capture_seal_crosscheck`,
+`input_scales_bound_units`. Consequence: H-aware or W4A4 allocations from
+pre-#204 tables refuse at export until the campaign is re-run and the
+allocation rebuilt. Tests: `test_tessera_priced_export_inputs.py` (pre-fix:
+the codex cases accepted), `test_allocator_tessera_priced_inputs.py` (the
+real allocator's stamp through the gate), `test_tessera_campaign.py`
+additions.
+
+Re-stamped (2026-09-05, `claude/pq-cleanup`) for **one home for text-only
+staging** (PrismaQuant #210). `sensitivity_probe.stage_text_only` and
+`perturbed_x_cache.stage_text_only_under_work_root` each carried their own
+~90-line copy of the same body, including a textually-identical hardcoded
+7-key strip-key fallback (`vision_config`, `audio_config`, `speech_config`,
+`image_token_id`, `video_token_id`, `vision_start_token_id`,
+`vision_end_token_id`). Both names now delegate to one shared
+`sensitivity_probe._stage_text_only_impl(model_path, *, staging_root)`;
+`staging_root=None` keeps `stage_text_only`'s tempdir-under-`/tmp` +
+`atexit` cleanup, an explicit `staging_root` keeps
+`stage_text_only_under_work_root`'s caller-owned, non-`/tmp` root. Both
+public names and their exact signatures are unchanged, so no caller moves.
+Established per the issue's own ask: several live `ModelStructureSpec`s
+already declare a `text_only_strip_keys` that differs from that hardcoded
+7-key fallback — `gemma4.json` adds `audio_token_id` (8 keys);
+`lfm2_moe.json` and `qwen3.json` declare `[]` (strip nothing) — but this
+does not make the two call sites disagree with each other: `detect_profile`
+never actually returns `None` for a real checkpoint (an unregistered
+architecture resolves to `DefaultProfile`, a real profile whose own
+`base.py` default is a *different*, 3-key list, `vision_config`/
+`audio_config`/`speech_config`), so both call sites always took the
+identical `profile.stage_text_only_strip_keys()` branch on independently
+-detected-but-equivalent profiles; the hardcoded 7-key literal itself is
+reachable only if `detect_profile` raises a non-`DeadVendoredOverrideError`
+exception, which does not happen in normal operation. Verified empirically
+on `main` before this merge (byte-identical staged `config.json` for a
+synthetic multimodal+MoE checkpoint) and pinned by
+`tests/test_stage_text_only_shared.py`
+(`test_stage_text_only_and_under_work_root_agree_on_staged_config`) — a pin,
+not a failing-first regression, since the two paths already agreed.
+Severity stays P3: no live divergence found *between* the two staging call
+sites, only between the (dead-in-practice) hardcoded fallback and
+profile-declared lists, which is an existing, unrelated policy split
+untouched by this merge. No default, format menu, or served byte moves.
+
+Re-stamped (2026-09-05, `claude/pq-205`) for the **served activation contract
+as a property of the spec** (§5.1, §5.7; #205). A Tessera W4A4 rung is served
+by `scaled_fp4_quant` with a STATIC per-unit `input_global_scale` and UE4M3
+block scales; the campaign priced it that way (#196) but the assignment-KL
+hooks (`perturbed_x_cache._activation_qdq`) and the production cache scorer
+(`production_weight_cache._render_score_record`) decided "which activation
+quantizer does this spec serve" by `canonical_format_name(spec.name) ==
+"NVFP4"`, which a Tessera name fails — so both priced the rung under NVFP4's
+dynamic FP32-scale RTN, the Tessera record could never retain a calibration
+maximum (the fill only measured max|x| when `"NVFP4"` was in the format set),
+and at G=1 a 1e-3 block that serves as exactly 0 was priced at 1e-3 (codex's
+`prismaquant_activation_consumers.py`). One rule, one home:
+`FormatSpec.static_activation_contract`
+(`nvfp4_activation_contract.StaticActivationContract`: execution, group
+size, the owner's G rule, the served oracle, and `measured_as_served`) is set
+on the `NVFP4` row (screen default, served emulation stays the env opt-in) and
+re-stamped `measured_as_served=True` on a Tessera W4A4 spec, whose plugin has
+no dynamic path. `_activation_qdq`, `_render_score_record` (now recording
+`activation_max_abs` and `input_global_scale`), the fill's two max|x| gates
+(`_formats_need_static_activation_max`) and `measure_assignment_kl`'s hook
+construction (`PerturbedActivationCache.served_activation_scale_gaps`, a
+preflight refusal by name before the first forward) all read the spec; the
+refusal is the owner's `ActivationScaleContractError`, which the campaign's
+class of the same name now subclasses. The stock-NVFP4 screen default and the
+campaign callback do not move. Gate:
+`tests/test_served_activation_contract.py` (pre-fix: `Tessera hook priced
+0.00099945068359375 where the served oracle gives 0.0`; cache score `0.0 ==
+0.000255718827...`); `test_the_activation_side_is_the_serving_formats_own_quantiser`
+now asserts the served contract alongside the by-reference dynamic callable.
+
+Re-stamped (2026-09-05, `claude/pq-202-detection-swallows`) for **the
+dead-vendored-override refusal reaching every call site** (§8.1; PrismaQuant
+#202, follow-up to #201). #201 made `_resolve` raise
+`DeadVendoredOverrideError` and stopped three gate call sites re-swallowing
+it; the census filed with that issue found 22 more, across 11 modules, each
+wrapping detection in a broad `except Exception` and continuing with a
+substituted profile — so the refusal was converted back into the silent wrong
+answer one level up. All 22 now re-raise this one class ahead of their broad
+handler. Each was read against its own contract, and the answer was the same
+at all 22, including the two the census flagged as possibly legitimate
+swallows: `layer_streaming.py:1140` returns a count, but returning `0` on a
+dead override reports exactly the zero-initialized-experts breakage the
+function exists to prevent; `streaming_model.py:112` returns a bool, but is
+only reached for a native-FP8 block-scaled checkpoint, where `False` runs the
+HF module rewrite the profile would have forbidden. No shared helper was
+added — the rule keeps its single home in the registry, and a helper would
+have had to own each site's differing fallback. No default, format menu,
+serving lane or exported byte moves, and the *absent*-profile path is
+unchanged everywhere; what changes is that a dead vendored path now refuses at
+the call site instead of being answered. The rule is pinned tree-wide by an
+executable census that fails for any future detection call inside a broad
+`except`. Gate: `tests/test_vendored_override_gate.py`.
+
 Re-stamped (2026-09-05, `claude/pq-decisions`) for the **replayed candidate
 decision in the paired validation driver** (§7.2; #87). The opt-in
 `experiments/pq87_paired_validation.py` counted a candidate arm as observed
@@ -6252,6 +6383,21 @@ uses a static `input_global_scale` (`:674-676`). The `torch.compile` RTN hot pat
 MSE-identical but not bit-identical to eager (~0.036% of elements flip at codebook midpoints,
 `:445-458`).
 
+What serving *does* execute travels on the spec as well (#205):
+`FormatSpec.static_activation_contract`
+(`nvfp4_activation_contract.StaticActivationContract`) names the served
+static-scale contract — execution `e2m1_group16_ue4m3_static`, group 16, the
+owner's `input_global_scale_from_max_abs` rule at the resolved policy, and the
+served oracle `nvfp4_activation_qdq_served` — for any spec the kernel serves
+against a calibrated per-unit G. `activation_quantize_dequantize` takes no G
+and so can only ever be the dynamic quantiser; a consumer holding the unit's
+calibrated maximum (the assignment-KL hooks, the production cache scorer, the
+campaign) asks the contract which quantiser and which G, never the format's
+name. The contract's `measured_as_served` is the spec's measurement policy:
+`False` on the `NVFP4` row (the dynamic RTN stays the screen baseline; the
+served emulation is `PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES`), `True` on
+a Tessera W4A4 spec (§5.7). Dynamic W8A8 (FP8, MX) and A16 rows carry `None`.
+
 ### 5.2 Scale rules and JSO
 
 NVFP4 scale rules live in the *exporter*, not the registry
@@ -6542,6 +6688,31 @@ weight-only decode inside the GEMV, and no runtime serves it. Pricing the route
 is what stops the allocator comparing a W4A4 rung against a W8A8 one as if the
 activation side were free — the NVFP4_CB lesson of 2026-08-17 (§4 P8).
 
+**The W4A4 route is priced as it serves, everywhere it is measured (#205).**
+The synthesized spec takes two things by reference from the route's source row
+(`synthesize_tessera_spec`): NVFP4's no-G `activation_quantize_dequantize` —
+the dynamic FP32-scale RTN, kept as the screen baseline a consumer without a
+calibrated maximum can run and as the campaign tests' dynamic *control* — and
+NVFP4's `static_activation_contract` (§5.1), re-stamped
+`measured_as_served=True` because the plugin has no dynamic path: it reads the
+artifact's `trellis_input_global_scale` and calls `scaled_fp4_quant`. That
+flag is what routes the assignment-KL hooks (`perturbed_x_cache._activation_qdq`)
+and the production cache scorer (`_render_score_record`, which retains the
+row's `activation_max_abs` and the `input_global_scale` it was priced at)
+through the served oracle at the unit's G, the same operation the campaign's
+`_measure_anchor` already prices (§"Priced as served", #196) — and what makes a
+unit with no calibrated maximum refuse by name
+(`nvfp4_activation_contract.ActivationScaleContractError`; the campaign's own
+class subclasses it) instead of being priced under a quantiser the runtime
+never runs. The fill's max|x| measurement is gated on the same property
+(`_formats_need_static_activation_max`), so a Tessera-only cache has the scale
+identity its records and hooks need, and `measure_assignment_kl` asks
+`PerturbedActivationCache.served_activation_scale_gaps()` at hook construction
+so the refusal lists every such unit before the first forward. The question
+"which activation quantizer does this spec serve" is answered by the spec, not
+by comparing its name to `"NVFP4"`, which a Tessera name can never satisfy
+(`tests/test_served_activation_contract.py`).
+
 **Admission is a lookup, not a constant — and Tessera's own table is what it
 reads.** Principle 9 makes "a runtime executes this rung natively" a measured
 platform fact and principle 14 says the fact is read from the runtime's own
@@ -6640,7 +6811,14 @@ exporter — `TESSERA_HESSIAN` (the campaign's `hessian_capture.pt`) and
 `tessera_export_lane.require_priced_export_inputs` fails closed before the
 plan translation when the allocation's `tessera_hessian` stamp or its
 selected W4A4 routes declare a requirement the supplied files do not satisfy
-(#193): the artifact built must be the artifact priced. The arm opens
+(#193): the artifact built must be the artifact priced. The binding is to
+content, not to names (#204): the allocation carries the campaign capture's
+`capture_sha256` (Tessera's own seal rule, `hessian_capture_sha256`) and the
+`input_global_scale` each selected W4A4 unit was priced under
+(`tessera_activation_static_scales`), and the gate digests the `.pt` the
+exporter loads and reads each scalar from the safetensors file, refusing a
+payload, sidecar or value that is not what priced the row, and an allocation
+that carries no binding at all as unbound. The arm opens
 a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
 serve, endpoint, gates, KL evaluator and executed activation contracts.
 Allocation uses `tessera_menu` and its reviewed development contract; that
@@ -6649,8 +6827,9 @@ The pending release and supported producer-tool boundary remain D33, rather
 than an absence of pipeline integration. Tests include
 `test_tessera_formats.py`, `test_tessera_footprint.py`,
 `test_tessera_shape_dependent_recipe.py`, `test_tessera_lane_admission.py`,
-`test_tessera_menu.py`, `test_tessera_export_lane.py` and
-`test_tessera_priced_export_inputs.py`.
+`test_tessera_menu.py`, `test_tessera_export_lane.py`,
+`test_tessera_priced_export_inputs.py` and
+`test_allocator_tessera_priced_inputs.py`.
 
 ## 6. Export & serving invariants
 
@@ -8891,14 +9070,30 @@ completeness *gate* that answered `None`), `incremental_probe._detect_profile_fo
 answered `DefaultProfile`) and `validate_native_export._resolve_validation_target_profile` (a
 *validator* that answered `None`). Each documents tolerance for an architecture this build does
 not know, which is a different statement from a known architecture on a dead path.
-**Not fixed here:** 22 further broad-`except` swallows around
-`detect_profile`/`profile_from_config`/`profile_from_model`, across 11 modules, can still convert
-this refusal into `None`, `DefaultProfile`, `False` or a skipped branch at their own call sites.
-Several of those are genuinely optional hints where `None` is the right answer for an *absent*
-profile and the wrong one for a *dead* one, so they need reading one at a time against their own
-contract; censused with `file:line` in #202 rather than swept inside this diff. One site already
-has the right shape and is excluded: `sample_parallel_probe.py:568` re-raises as
-`SampleParallelProbeError(...) from exc`.
+The remaining 22 broad-`except` swallows around
+`detect_profile`/`profile_from_config`/`profile_from_model`, across 11 modules, were closed by
+#202 (2026-09-05). Each was read against its own contract rather than swept: the answer was the
+same at all 22, including the two the census singled out as possible legitimate swallows
+(`layer_streaming.py:1140`, which returns a count, and `streaming_model.py:112`, which returns a
+bool). Both turned out to be the strongest cases rather than the weakest — the first exists
+*because* the packed params would otherwise stay zero-initialized, so a clean `0` reports the
+silent breakage it was written to prevent; the second is only reached for a native-FP8
+block-scaled checkpoint, so `False` is a decision, not a neutral default. Every site keeps its
+other tolerances: the `except DeadVendoredOverrideError: raise` clause sits ahead of the broad
+handler and nothing about the *absent*-profile path changed anywhere.
+
+**Where this rule lives.** No shared "detect or refuse" helper was added, deliberately. The rule —
+what "dead" means and that it must never be answered — has one home, `_refuse_dead_vendored_override`
+and `DeadVendoredOverrideError` in the registry; a helper would have had to own each call site's
+*fallback* too, and those differ (`None`, `DefaultProfile()`, `keep_composite = False`, `return 0`,
+`return False`, a hardcoded prefix guess, `pass`), so it would have moved tolerance policy into the
+registry rather than removing duplication. Each site's import is hoisted just outside its `try` so
+the new `except` clause can always be evaluated. The rule is pinned tree-wide by an executable
+census in `tests/test_vendored_override_gate.py`, which walks `prismaquant/` and fails for any
+detection call inside a broad-`except` `try` that does not either re-raise this class first or
+re-raise unconditionally — so a 23rd such call site fails the suite when it is written.
+`sample_parallel_probe.py:568` already had the second shape (`SampleParallelProbeError(...) from
+exc`) and passes unchanged.
 
 The `DefaultProfile` fallback is *guarded, not silent*: `allocator.py:1550-1554` calls
 `validate_default_profile_format_menu(...)` (`:961-988`), which refuses a multi-format menu

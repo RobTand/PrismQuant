@@ -85,9 +85,19 @@ class WeightSession:
         self._strict_production_cache = bool(strict_production_cache)
         self._linear_by_qname: dict[str, tuple[nn.Module, str]] = {}
         if profile is None:
+            from prismaquant.model_profiles import (
+                DeadVendoredOverrideError,
+                profile_from_model,
+            )
             try:
-                from prismaquant.model_profiles import profile_from_model
                 profile = profile_from_model(model)
+            except DeadVendoredOverrideError:
+                # The profile is handed straight to `iter_quantizable_tensors`
+                # below to build the qname -> live Linear map this session
+                # swaps weights through. A dead override silently builds that
+                # map over a different set of tensors, so the session reverts
+                # and re-renders the wrong ones (#202).
+                raise
             except Exception:
                 profile = None
         self._profile = profile
