@@ -22,8 +22,10 @@ of `detect_profile`, and it must arrive as its own class, so a caller can tell
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+import torch.nn as nn
 
 import prismaquant.vendored as vendored
 from prismaquant.model_profiles.registry import (
@@ -47,6 +49,19 @@ QWEN3_CONFIG = {
     "model_type": "qwen3",
     "architectures": ["Qwen3ForCausalLM"],
 }
+
+
+def _qwen3_model():
+    """A live model the qwen3 profile claims, for `profile_from_model` sites.
+
+    `profile_from_config` reads only `model_type` / `architectures` off
+    `model.config`, and every call site below reaches detection before it
+    touches the module tree, so a bare `nn.Module` carrying a config is
+    enough to exercise the refusal.
+    """
+    model = nn.Module()
+    model.config = SimpleNamespace(**QWEN3_CONFIG)
+    return model
 
 
 @pytest.fixture(autouse=True)
@@ -267,3 +282,42 @@ def test_the_native_export_validator_does_not_swallow_it(tmp_path, monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         _resolve_validation_target_profile(path, None)
+
+
+# --- the remaining 22 call sites, one module at a time (issue #202) ---------
+#
+# Same rule, same home: these pin where the registry's refusal is allowed to
+# stop, so they live beside #201's rather than in each module's own test file.
+# A site whose enclosing function cannot be reached without a GPU, a loaded
+# checkpoint or a built streaming context is pinned by the tree-wide census
+# test at the bottom of this file instead.
+
+
+def test_rtn_staging_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`build_rtn_cache.stage_multimodal` answered `keep_composite = False`.
+
+    Which silently selects the text-only flatten for a family whose own
+    comment says it "cannot survive" that flatten.
+    """
+    from prismaquant.build_rtn_cache import stage_multimodal
+
+    path = _checkpoint(
+        tmp_path, **QWEN3_CONFIG, text_config={"model_type": "qwen3"}
+    )
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        stage_multimodal(path)
+
+
+def test_rtn_quantizable_tensor_walk_does_not_swallow_the_refusal(monkeypatch):
+    """`build_rtn_cache.iter_quantizable_tensors` answered `profile = None`.
+
+    The profile owns which packed-MoE parameter names are quantizable, so a
+    dead override silently changed the set of tensors RTN quantizes.
+    """
+    from prismaquant.build_rtn_cache import iter_quantizable_tensors
+
+    model = _qwen3_model()
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        list(iter_quantizable_tensors(model))
