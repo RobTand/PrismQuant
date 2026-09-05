@@ -7485,6 +7485,11 @@ class _PackedExpertActivationCollector:
     larger than the per-Linear ``max_rows`` budget: with top-k routing over E
     experts each expert only sees ~``top_k/E`` of the tokens, so a stable
     per-expert Hessian needs ``~max_rows_per_expert * E / top_k`` module tokens.
+
+    An optional ``row_consumer(qname, X)`` observes each full, live input before
+    storage selection. It must consume synchronously rather than retain X;
+    campaigns use it to accumulate full-calibration Hessians without creating
+    a second module-input cache. The default leaves reservoir sampling intact.
     """
 
     def __init__(
@@ -7497,9 +7502,11 @@ class _PackedExpertActivationCollector:
         store_dtype: torch.dtype = torch.float32,
         profile=None,
         store_qnames: set[str] | None = None,
+        row_consumer=None,
     ):
         self.model = model
         self.profile = profile
+        self.row_consumer = row_consumer
         # #145: ``experts_qnames`` is the enumeration the collector HOOKS --
         # the full visible module set -- and ``store_qnames`` narrows only
         # which modules keep full activation tensors. One shared generator
@@ -7544,6 +7551,8 @@ class _PackedExpertActivationCollector:
             if not args or not isinstance(args[0], torch.Tensor):
                 return
             x = args[0]
+            if self.row_consumer is not None:
+                self.row_consumer(qname, x)
             # Draw this call's row priorities for EVERY hooked module,
             # stored or not. One generator feeds every module's reservoir, so
             # the slice of the stream a module receives is a function of how

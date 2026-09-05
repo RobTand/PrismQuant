@@ -1,5 +1,5 @@
-"""Mechanical half of the ARCHITECTURE.md maintenance contract (CLAUDE.md §4
-principle 13, AGENTS.md rule 10): the master document's defaults table must
+"""Mechanical half of the ARCHITECTURE.md maintenance contract in AGENTS.md
+and CLAUDE.md: the master document's defaults table must
 match `prismaquant/run-pipeline.sh`, and its structural anchors must exist.
 
 The judgment half — prose describing behavior that changed — cannot be tested;

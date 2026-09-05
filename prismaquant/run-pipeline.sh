@@ -70,7 +70,8 @@ if [[ ",${FORMATS}," == *",TESSERA,"* ]]; then
   if [[ -z "${COST_PATH_OVERRIDE:-}" ]]; then
     echo "[pipeline] ERROR: FORMATS contains the TESSERA menu token, whose cost stage is prismaquant.tessera_campaign and is not yet run by this orchestrator. Produce it first:" >&2
     echo "[pipeline]   PRISMAQUANT_TESSERA_MENU=research python -m prismaquant.tessera_campaign --model \"\$MODEL_PATH\" --out \"\$WORK_DIR/artifacts/cost.pkl\" --cache-dir \"\$WORK_DIR/artifacts/tessera-cache\"" >&2
-    echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it. Note PRISMAQUANT_TESSERA_MENU: with no Tessera contract pinned the default (attested) menu is EMPTY; under PRISMAQUANT_TESSERA_DEV_PIN it is three rungs, one per family (E2M1_K2 R896 at 4.0000 bpp, E4M3_K1 R1024 at 4.0781, BF16_K1 R1792 at 7.1406 on a 2048x1024 unit), all at TP world size 1. Research mode admits every serialisable rung and stamps route_status=unattested on each for the export gate to fail closed on." >&2
+    echo "[pipeline] then re-run with COST_PATH_OVERRIDE pointing at it and COST_MODE matching its explicit provenance.cost_mode. The available Tessera menu comes from the reviewed producer contract and the explicit serving target, not a fixed rung roster. Research mode admits serialisable rungs but does not attest them for export." >&2
+    echo "[pipeline] The campaign also writes the export leg's PRICED INPUTS beside its --cache-dir; hand them back on the re-run or the Tessera export preflight refuses (RobTand/prismaquant#193): TESSERA_HESSIAN=\"\$WORK_DIR/artifacts/tessera-cache/hessian_capture.pt\" TESSERA_INPUT_SCALES=\"\$WORK_DIR/artifacts/tessera-cache/input_scales.safetensors\". A weights-only (--hessian off) campaign supplies neither." >&2
     exit 2
   fi
 fi
@@ -991,6 +992,19 @@ case "$COST_MODE" in
     ;;
 esac
 
+# An explicit prepriced input is immutable caller data, not a cache to rebuild.
+# Validate before probe/GPU work and keep the allocator's original input path.
+PREPRICED_COST_REPORT=""
+if [[ -n "${COST_PATH_OVERRIDE:-}" ]]; then
+  PREPRICED_COST_REPORT="${WORK_DIR}/artifacts/prepriced_cost_input.json"
+  if ! python3 -m prismaquant.prepriced_cost \
+      --path "$COST_PATH_OVERRIDE" --cost-mode "$COST_MODE" \
+      --model "$MODEL_PATH" --report "$PREPRICED_COST_REPORT"; then
+    exit 2
+  fi
+  COST_PATH="$COST_PATH_OVERRIDE"
+fi
+
 case "${HADAMARD_DUQUANT:-}" in
   0|false|False|FALSE|no|No|NO|"") ;;
   *)
@@ -1514,6 +1528,9 @@ fi
 # 2. Cost measurement (per-(Linear, format) measured RTN error,
 #    body + MTP in one pass)
 # -----------------------------------------------------------------------
+if [[ -n "$PREPRICED_COST_REPORT" ]]; then
+  echo "[pipeline] [2/4] using validated prepriced input: $COST_PATH (cost builders skipped)"
+else
 require_stage_settings "${BASE_COST_PATH}" base-cost
 # Under COST_MODE=local the baseline IS the allocator's cost table, so it is
 # also gated on the stamped cost_mode. Under the other modes cost_baseline.pkl
@@ -1794,6 +1811,7 @@ PY
     echo "[pipeline] [2d/4] AURA allocator cost exists, skipping"
   fi
 fi
+fi  # no prepriced input: normal cost measurement/finalization
 
 
 # -----------------------------------------------------------------------
@@ -1867,6 +1885,13 @@ if [[ -n "$SERVE_DISPATCH_TABLE" ]]; then
   echo "[pipeline] serving constraints ACTIVE: table=$SERVE_DISPATCH_TABLE mix='${SERVE_WORKLOAD_MIX}' (PROPOSAL DATA; the served NATIVE-PARITY protocol is the release gate)"
 fi
 ALLOCATOR_CB_ARGS=()
+# Recheck the exact original input (including symlink target) after probe work
+# and immediately before the allocator consumes it. Never rewrite that input.
+if [[ -n "$PREPRICED_COST_REPORT" ]]; then
+  if ! python3 -m prismaquant.prepriced_cost --verify-report "$PREPRICED_COST_REPORT"; then
+    exit 2
+  fi
+fi
 python3 -m prismaquant.allocator \
   --probe "${PROBE_PATH}" \
   --costs "${COST_PATH}" \

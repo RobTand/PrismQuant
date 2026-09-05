@@ -174,8 +174,14 @@ def prepare_journal(
     resume: bool,
     identity: Mapping[str, object],
     qnames: Sequence[str],
+    manifest_path: str | Path | None = None,
 ) -> tuple[Path, str, dict[str, dict[str, object]]]:
-    """Create/validate a journal and return all exact completed unit states."""
+    """Create/validate a journal and return all exact completed unit states.
+
+    File-oriented callers can retain their explicit manifest pathname while
+    placing unit shards in ``checkpoint_dir``. The same manifest/unit schemas
+    and refusal rules apply; directory-oriented callers keep ``manifest.json``.
+    """
     root = Path(checkpoint_dir)
     if root.exists() and not root.is_dir():
         raise RuntimeError(f"{stage} checkpoint path is not a directory: {root}")
@@ -184,7 +190,7 @@ def prepare_journal(
     identity_sha256 = canonical_json_sha256(
         canonical_identity, where=f"{stage} identity"
     )
-    manifest_path = root / "manifest.json"
+    manifest_path = Path(manifest_path) if manifest_path is not None else root / "manifest.json"
     if manifest_path.is_file():
         if not resume:
             raise RuntimeError(

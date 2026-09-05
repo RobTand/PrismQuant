@@ -40,9 +40,11 @@ Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
 ``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
-cache entry holds the wire beside the dequantised render, the export leg writes
-exactly the bytes this cost was measured on, and the identity holds by
-construction rather than by two code paths agreeing (principle 8).
+cache entry holds the wire beside the dequantised render. Checkpoint resume
+verifies those bytes against their producer input receipt. That proves the
+cached wire is the priced wire; export reuse and served qualification still
+owe their own receipts. The packed producer-plan/cached-wire bridge remains
+the separate work tracked by PrismaQuant #183 (principle 8).
 
 What this stage does NOT do
 ---------------------------
@@ -114,12 +116,10 @@ class CampaignAnchor:
     activation_quantized: bool
     wire_bytes: int
     seconds: float
-    #: Was a Hessian actually applied to these bytes?  A property of the RUNG'S
-    #: WIRE and not of the run: only a CHANNEL scale plane admits LDLQ and the
-    #: H refit, so every E2M1 rung is False even under ``--hessian require``.
-    #: Stamped per row rather than per table, because a mixed-family campaign
-    #: is legitimately half H-aware and a table-level flag would have to lie in
-    #: one direction or the other.
+    #: Was a Hessian actually applied to these bytes? Admission comes from the
+    #: producer's ActivationSource settings for this rung's scale plane, via
+    #: rung_accepts_hessian, not a campaign-owned plane roster. Stamped per
+    #: measured row so weights-only and H-aware results cannot be conflated.
     hessian_applied: bool = False
     #: The static NVFP4 ``input_global_scale`` this anchor's A side was scored
     #: under, when the rung's route executes the static UE4M3 contract; None
@@ -351,7 +351,7 @@ def _measure_anchor(
     # The wire, beside the render.  A ``.tessera`` shard per (qname, rung),
     # named the way the cache names its weight shards, so the export leg can
     # find the exact bytes this row was priced on instead of re-encoding.
-    wire_path = wire_dir / f"{qname.replace('.', '__')}__{format_name}.tessera"
+    wire_path = _wire_path(wire_dir, qname, format_name)
     tmp = wire_path.with_suffix(".tessera.tmp")
     tmp.write_bytes(blob)
     os.replace(tmp, wire_path)
@@ -549,9 +549,135 @@ def campaign_cost_payload(
 # CLI
 # ---------------------------------------------------------------------------
 
+def _wire_path(wire_dir: Path, qname: str, format_name: str) -> Path:
+    return wire_dir / f"{qname.replace('.', '__')}__{format_name}.tessera"
+
+
+def _checkpoint_identity_api():
+    try:
+        from tessera import cached_unit
+    except ImportError as exc:
+        raise RuntimeError(
+            "Tessera campaign checkpoint identity requires the producer's "
+            "cached_unit input/byte receipt API; refusing unbound resume") from exc
+    return cached_unit
+
+
+def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
+                                  calibration_identity, serving_scope,
+                                  static_scales, static_scale_policy):
+    """Bind the priced population, including score inputs when H is off.
+
+    The static A-side contract is a scoring input like the score rows: the
+    policy is env-resolved (``PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE``) and
+    the per-unit ``input_global_scale`` is a function of every calibration
+    row, not of the bounded rows or the Hessian bound beside it.  Binding
+    both here is what makes a checkpoint priced under another calibration or
+    policy refuse at the journal (``checkpoint identity mismatch at
+    units.<unit>.input_global_scale``) before any of its rows is read; the
+    per-row half of the same rule lives in :func:`_checkpoint_anchor_identity`.
+    """
+    from .production_weight_cache import _production_cache_source_sha256
+
+    api = _checkpoint_identity_api()
+    settings = vars(args).copy()
+    # Locations and a wall-clock interruption limit are not encoding/scoring
+    # inputs. All other explicit campaign settings remain bound by default.
+    for name in ("out", "cache_dir", "checkpoint", "deadline_seconds"):
+        settings.pop(name, None)
+    return {
+        "campaign_schema": SCHEMA,
+        "currency": CURRENCY,
+        "settings": settings,
+        "calibration": calibration_identity,
+        "serving_scope": serving_scope,
+        "encoder_recipe": th.encoder_recipe(),
+        "prismaquant_source_sha256": _production_cache_source_sha256(),
+        "encoder_source_sha256": api.encoder_source_sha256(),
+        "input_global_scale_policy": str(static_scale_policy),
+        "units": {
+            name: {
+                "weight": api.tensor_identity(weight),
+                "scoring_rows": (None if acts.get(name) is None
+                                 else api.tensor_identity(acts[name])),
+                "hessian": (None if hessians.get(name) is None
+                            else api.tensor_identity(hessians[name])),
+                "input_global_scale": (
+                    None if static_scales.get(name) is None
+                    else float(static_scales[name])),
+                "menu": sorted(rung.format_name for rung in menus[name]),
+            }
+            for name, weight in sorted(weights.items())
+        },
+    }
+
+
+def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
+                                static_scales):
+    """The resumed row's inputs, as this run's producer would stamp them.
+
+    ONE gate per resumed row, in the order the producer resolves the inputs:
+    the unit is priced, the format is a Tessera rung on the current menu, the
+    Hessian applicability is what ``rung_accepts_hessian`` says for that
+    rung's wire, and the A-side contract on the row is what
+    :func:`_measure_anchor` stamps for that rung under this run's static
+    scales (:func:`_require_resumable_anchor`).  Only then is the producer's
+    ``encoding_input_identity`` asked for, so the wire receipt is verified
+    against a row already known to be a price of this run.
+    """
+    from .tessera_formats import parse_tessera_format_name, tessera_wire_recipe
+    from .tessera_render import rung_accepts_hessian
+
+    if anchor.qname not in weights:
+        raise RuntimeError(f"checkpoint anchor names an unknown unit: {anchor.qname!r}")
+    parsed = parse_tessera_format_name(anchor.format_name)
+    if parsed is None:
+        raise RuntimeError(f"checkpoint anchor format is not Tessera: {anchor.format_name!r}")
+    family, rung = parsed
+    if (anchor.family, anchor.body_rate_q256) != (family.name, rung):
+        raise RuntimeError("checkpoint anchor family/rung disagrees with its format")
+    if anchor.format_name not in {entry.format_name for entry in menus[anchor.qname]}:
+        raise RuntimeError(f"checkpoint anchor is outside the current menu: {anchor.format_name}")
+    wire = tessera_wire_recipe(family, rung)
+    activation = (calibration_source if calibration_source is not None
+                  and rung_accepts_hessian(anchor.format_name, wire) else None)
+    if bool(anchor.hessian_applied) != (activation is not None):
+        raise RuntimeError("checkpoint anchor Hessian applicability disagrees with the producer")
+    _require_resumable_anchor(anchor, static_scales)
+    return _checkpoint_identity_api().encoding_input_identity(
+        weights[anchor.qname], anchor.qname, family.payload_grid(), int(rung),
+        activation=activation,
+    )
+
+
+def _checkpoint_wire_record(anchor, wire_dir, identity, *, existing=None):
+    """Use the producer's one receipt grammar for fresh and resumed bytes."""
+    path = _wire_path(wire_dir, anchor.qname, anchor.format_name)
+    if path.is_symlink() or path.resolve().parent != wire_dir.resolve():
+        raise RuntimeError(f"checkpoint cached wire escapes its directory: {path}")
+    try:
+        blob = path.read_bytes()
+        api = _checkpoint_identity_api()
+        if existing is None:
+            record = api.make_unit_record(blob, identity, filename=path.name)
+        else:
+            record = existing
+            api.verify_cached_unit(blob, record, identity)
+            if record.get("file") != path.name:
+                raise ValueError("cached wire filename differs from the priced unit/rung")
+        # CampaignAnchor.wire_bytes means the full blob, not plane-region bytes.
+        if anchor.wire_bytes != record["blob_bytes"]:
+            raise ValueError("cached wire length differs from the measured anchor")
+        return record
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError(
+            f"checkpoint cached wire identity refused for {anchor.qname} "
+            f"{anchor.format_name}: {exc}") from exc
+
+
 def _collect_activations(model, targets, tokens, max_rows: int, device,
-                         *, want_hessian: bool = False):
-    """One forward pass per calibration batch, per Linear.
+                         *, want_hessian: bool = False, profile=None):
+    """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``.
 
@@ -574,7 +700,17 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
       calibration than the one an exporter would take.
 
     Accumulated in fp32 on the model's device and moved to CPU once at the
-    end, matching how the kept rows are handled.
+    end, matching how the kept rows are handled. Packed units use the existing
+    module-input collector and routing/SwiGLU derivation, and land in the SAME
+    three accumulators as a dense Linear -- rows, Hessian and ``max_abs`` --
+    so there is one notion of "what the campaign captured" for either
+    population, and ``write_export_inputs`` has one input to write.  The
+    score-row cap never caps routed rows before the Hessian or the maximum.
+    This capture API does not open the main-entry packed-population/export
+    gate: :func:`_require_campaign_population` still refuses a live packed
+    population before calibration, so nothing here reaches a cost payload or
+    the export inputs until the producer's projection bridge exists
+    (PrismaQuant #183).
     """
     import torch
 
@@ -583,7 +719,40 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     hess: dict[str, object] = {name: None for name in targets}
     seen: dict[str, int] = {name: 0 for name in targets}
     amax: dict[str, float] = {name: 0.0 for name in targets}
+    routed_seen: dict[str, int] = {}
     handles = []
+    packed_collector = None
+
+    def accumulate(name, x):
+        # ONE accumulator for both populations: a dense Linear's pre-hook and
+        # a packed projection's routed rows land here, so the three outputs
+        # (score rows, Hessian, max|x|) are the same three for either, and a
+        # packed unit can feed ``_static_input_scales``/``write_export_inputs``
+        # by the same path a dense one does once the main-entry packed gate
+        # opens.  A zero-row call (an expert no token was routed to on this
+        # batch) contributes nothing to any of them.
+        flat = x.detach().reshape(-1, x.shape[-1])
+        if not flat.shape[0]:
+            return
+        if name in routed_seen:
+            routed_seen[name] += int(flat.shape[0])
+        amax[name] = max(
+            amax[name], float(flat.abs().amax().float().item()))
+        if want_hessian:
+            # Every row, before any cap: see the docstring.
+            f32 = flat.to(dtype=torch.float32)
+            gram = f32.t() @ f32
+            if hess[name] is None:
+                hess[name] = gram
+            else:
+                hess[name] += gram
+            seen[name] += int(f32.shape[0])
+        room = max_rows - kept[name]
+        if room <= 0:
+            return
+        take = flat[:room].to(dtype=torch.float32, device="cpu")
+        store[name].append(take)
+        kept[name] += int(take.shape[0])
 
     def make_hook(name):
         def hook(_module, args):
@@ -592,36 +761,79 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             x = args[0]
             if not isinstance(x, torch.Tensor):
                 return
-            flat = x.detach().reshape(-1, x.shape[-1])
-            amax[name] = max(
-                amax[name], float(flat.abs().amax().float().item()))
-            if want_hessian:
-                # Every row, before any cap: see the docstring.
-                f32 = flat.to(dtype=torch.float32)
-                gram = f32.t() @ f32
-                if hess[name] is None:
-                    hess[name] = gram
-                else:
-                    hess[name] += gram
-                seen[name] += int(f32.shape[0])
-            room = max_rows - kept[name]
-            if room <= 0:
-                return
-            take = flat[:room].to(dtype=torch.float32, device="cpu")
-            store[name].append(take)
-            kept[name] += int(take.shape[0])
+            accumulate(name, x)
         return hook
 
     modules = dict(model.named_modules())
-    for name in targets:
-        handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+    missing_modules = set(targets) - modules.keys()
+    if missing_modules:
+        from .routed_experts import (
+            profile_declared_packed_expert_projections,
+            resolve_routed_expert_profile,
+        )
+        from .measure_quant_cost import (
+            _packed_experts_parent_module, derive_per_expert_activations,
+        )
+        from .production_weight_cache import _PackedExpertActivationCollector
+
+        profile = resolve_routed_expert_profile(model, profile)
+        inventory = profile_declared_packed_expert_projections(model, profile)
+        by_name = {member.qname: member for member in inventory}
+        unknown = missing_modules - by_name.keys()
+        if unknown:
+            raise RuntimeError(f"campaign activation targets are not declared units: {sorted(unknown)}")
+        selected_by_module = {}
+        # These are the input kinds published by the existing derivation,
+        # not a mapping to the producer's served role/group vocabulary.
+        input_kind = {"gate_up_proj": "gate_up", "down_proj": "down"}
+        for name in sorted(missing_modules):
+            member = by_name[name]
+            if member.param_name not in input_kind:
+                raise RuntimeError(
+                    f"packed activation derivation does not support {member.packed_qname!r}")
+            selected_by_module.setdefault(member.module_qname, []).append(member)
+            routed_seen[name] = 0
+        parents = {name: _packed_experts_parent_module(model, name)
+                   for name in selected_by_module}
+
+        def consume_packed(module_qname, x):
+            selected = selected_by_module.get(module_qname)
+            if not selected:
+                return
+            derived = derive_per_expert_activations(
+                selected[0].module, x, parents[module_qname],
+                capture_down=any(input_kind[member.param_name] == "down"
+                                 for member in selected),
+                max_rows_per_expert=None,
+            )
+            for member in selected:
+                accumulate(member.qname,
+                           derived[input_kind[member.param_name]][member.expert_id])
+
+        packed_collector = _PackedExpertActivationCollector(
+            model, {member.module_qname for member in inventory},
+            module_token_budget=0, store_device=device, store_qnames=set(),
+            profile=profile, row_consumer=consume_packed,
+        )
     try:
+        for name in targets:
+            if name not in missing_modules:
+                handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+        if packed_collector is not None:
+            packed_collector.install()
         with torch.no_grad():
             for batch in tokens:
                 model(batch.to(device))
     finally:
         for handle in handles:
             handle.remove()
+        if packed_collector is not None:
+            packed_collector.remove()
+    unobserved = [name for name, count in routed_seen.items() if not count]
+    if unobserved:
+        raise RuntimeError(
+            "packed campaign units have no routed calibration rows: "
+            f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
     rows = {
         name: (torch.cat(chunks, dim=0) if chunks else None)
         for name, chunks in store.items()
@@ -725,6 +937,44 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
     return menus
 
 
+def _campaign_layer_scope(names, layer_stride: int) -> list[str]:
+    """The same explicit layer scope for supported and unsupported units."""
+    if layer_stride <= 1:
+        return list(names)
+    import re
+
+    selected = []
+    for name in names:
+        match = re.search(r"\.layers\.(\d+)\.", name)
+        if match is None or int(match.group(1)) % layer_stride == 0:
+            selected.append(name)
+    return selected
+
+
+def _require_campaign_population(model, profile, layer_stride: int) -> None:
+    """Refuse packed units before an incomplete dense-only campaign starts.
+
+    The profile's routed-target discovery owns membership. An arbitrary 3-D
+    parameter (for example a convolution) is not an expert by shape alone.
+    """
+    from .routed_experts import profile_declared_routed_expert_targets
+
+    parameters = dict(model.named_parameters())
+    packed = {
+        name: tuple(parameters[name].shape)
+        for name in profile_declared_routed_expert_targets(model, profile)
+        if name in parameters and parameters[name].ndim == 3
+    }
+    missing = _campaign_layer_scope(packed, layer_stride)
+    if missing:
+        raise RuntimeError(
+            "Tessera campaign cannot price the packed expert population yet: "
+            + ", ".join(f"{name} {packed[name]}" for name in missing)
+            + ". Refusing an incomplete dense-only cost payload; per-expert "
+            "activation/Hessian capture and the producer's explicit projection "
+            "are required (PrismaQuant #183).")
+
+
 def _format_executes_static_nvfp4(format_name: str) -> bool:
     """Does this rung's route execute the static NVFP4 activation contract?"""
     from .tessera_formats import (
@@ -740,15 +990,26 @@ def _format_executes_static_nvfp4(format_name: str) -> bool:
 def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
     """Refuse a resumed anchor priced under a different activation contract.
 
-    Resume merges checkpoint rows into this run's table, and the table's rows
-    must be one currency.  A W4A4 anchor with no ``input_global_scale`` was
-    measured under the pre-#194 dynamic FP32-scale quantiser; one with a
-    *different* scale was measured on a different calibration.  Either way it
-    is not a price of this run's served A side, and merging it silently is the
-    exact mixed-table failure the Hessian identity guard exists to catch on
-    its own axis.
+    The per-row half of the resume identity rule; its one caller is
+    :func:`_checkpoint_anchor_identity`, and the run-level half (this run's
+    static scales and policy, bound into the journal identity) is
+    :func:`_campaign_checkpoint_identity`.  Resume merges checkpoint rows into
+    this run's table, and the table's rows must be one currency.  A W4A4
+    anchor with no ``input_global_scale`` was measured under the pre-#194
+    dynamic FP32-scale quantiser; one with a *different* scale was measured
+    on a different calibration; a dynamic-route row carrying a scale was
+    stamped by no producer this campaign has.  None is a price of this run's
+    served A side, and merging one silently is the exact mixed-table failure
+    the Hessian identity guard exists to catch on its own axis.
     """
     if not _format_executes_static_nvfp4(anchor.format_name):
+        if anchor.input_global_scale is not None:
+            raise ActivationScaleContractError(
+                f"checkpoint anchor {anchor.qname} {anchor.format_name} "
+                f"carries input_global_scale={anchor.input_global_scale!r} "
+                "but its route keeps the serving format's dynamic activation "
+                "quantiser: no producer of this campaign stamps a static scale "
+                "on that route, so the row is not one of this run's prices.")
         return
     if anchor.input_global_scale is None:
         raise ActivationScaleContractError(
@@ -853,7 +1114,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--out", required=True, help="cost payload (.pkl)")
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--checkpoint", default=None,
-                    help="resumable per-anchor JSON; defaults beside --out")
+                    help="identity-bound JSON manifest with sibling .parts "
+                         "unit shards; defaults beside --out")
     ap.add_argument("--menu-mode", default=None, choices=sorted(MENU_MODES))
     ap.add_argument("--nsamples", type=int, default=8)
     ap.add_argument("--seqlen", type=int, default=512)
@@ -932,21 +1194,17 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     from .model_profiles import detect_profile
 
     profile = detect_profile(args.model)
+    _require_campaign_population(model, profile, args.layer_stride)
     targets: list[str] = []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.Linear):
             continue
         if name.endswith("lm_head") or "embed" in name:
             continue
+        if profile.is_pinned_name(name):
+            continue
         targets.append(name)
-    if args.layer_stride > 1:
-        import re as _re
-        keep = []
-        for name in targets:
-            match = _re.search(r"\.layers\.(\d+)\.", name)
-            if match is None or int(match.group(1)) % args.layer_stride == 0:
-                keep.append(name)
-        targets = keep
+    targets = _campaign_layer_scope(targets, args.layer_stride)
     print(f"[campaign] {len(targets)} target Linears, mode={mode}, "
           f"device={device}", flush=True)
 
@@ -1051,25 +1309,62 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         context_by_unit=context_by_unit,
     )
 
+    from .cost_stage_checkpoint import prepare_journal, write_unit
+
+    # The resume identity, run level: everything a price is a function of,
+    # including the static A-side contract (scales + policy) the W4A4 rows
+    # are scored under.  A checkpoint from another calibration or policy is
+    # refused here, by field, before a row of it is read.
+    checkpoint_identity = _campaign_checkpoint_identity(
+        weights=weights, acts=acts, hessians=hessians, menus=menus, args=args,
+        calibration_identity=hessian_identity,
+        serving_scope=(scope_provenance(serving_target, context_by_unit)
+                       if serving_target is not None else None),
+        static_scales=static_scales, static_scale_policy=static_scale_policy,
+    )
+    journal, identity_sha256, resumed = prepare_journal(
+        checkpoint.with_name(checkpoint.name + ".parts"), manifest_path=checkpoint,
+        stage="Tessera campaign", resume=True, identity=checkpoint_identity,
+        qnames=targets,
+    )
     measured: dict[str, dict[str, list[CampaignAnchor]]] = {}
-    if checkpoint.is_file():
-        raw = json.loads(checkpoint.read_text())
-        for row in raw.get("anchors", []):
+    wire_records = {name: {} for name in targets}
+    dirty_checkpoint_units = set()
+    for name, state in resumed.items():
+        if set(state) != {"anchors", "wire_records"} or not isinstance(state["anchors"], list) \
+                or not isinstance(state["wire_records"], dict):
+            raise RuntimeError(f"checkpoint state has an invalid anchor/record envelope for {name}")
+        formats = set()
+        for row in state["anchors"]:
             anchor = CampaignAnchor(**row)
-            _require_resumable_anchor(anchor, static_scales)
-            measured.setdefault(anchor.qname, {}).setdefault(
-                anchor.family, []).append(anchor)
+            if anchor.qname != name or anchor.format_name in formats:
+                raise RuntimeError(f"checkpoint anchor has a wrong or duplicate unit/rung: {name}")
+            formats.add(anchor.format_name)
+            if anchor.format_name not in state["wire_records"]:
+                raise RuntimeError(f"checkpoint anchor has no priced-wire receipt: {name}")
+            # Row level, the same rule: the row's inputs (Hessian
+            # applicability, static scale) must be what this run's producer
+            # stamps for its rung, then its wire receipt must verify.
+            identity = _checkpoint_anchor_identity(
+                anchor, weights=weights, menus=menus,
+                calibration_source=calibration_source, static_scales=static_scales)
+            wire_records[name][anchor.format_name] = _checkpoint_wire_record(
+                anchor, wire_dir, identity, existing=state["wire_records"][anchor.format_name])
+            measured.setdefault(name, {}).setdefault(anchor.family, []).append(anchor)
+        if formats != set(state["wire_records"]):
+            raise RuntimeError(f"checkpoint has wire receipts outside its measured anchors: {name}")
+    if resumed:
         print(f"[campaign] resumed {sum(len(v) for f in measured.values() for v in f.values())} "
-              f"anchors from {checkpoint}", flush=True)
+              f"verified anchors from {checkpoint}", flush=True)
 
     def flush_checkpoint() -> None:
-        rows = [
-            vars(a) for by_f in measured.values()
-            for anchors in by_f.values() for a in anchors
-        ]
-        tmp = checkpoint.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"schema": SCHEMA, "anchors": rows}))
-        os.replace(tmp, checkpoint)
+        for name in sorted(dirty_checkpoint_units):
+            rows = [vars(anchor) for anchors in measured.get(name, {}).values()
+                    for anchor in anchors]
+            write_unit(journal, stage="Tessera campaign", qname=name,
+                       identity_sha256=identity_sha256,
+                       state={"anchors": rows, "wire_records": wire_records[name]})
+        dirty_checkpoint_units.clear()
 
     started = time.time()
     deadline = float(args.deadline_seconds)
@@ -1261,7 +1556,12 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                 print(f"[campaign] {name} {fmt}: FAILED {type(exc).__name__}: "
                       f"{exc}", flush=True)
                 continue
+            identity = _checkpoint_anchor_identity(
+                anchor, weights=weights, menus=menus,
+                calibration_source=calibration_source, static_scales=static_scales)
+            wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
             measured.setdefault(name, {}).setdefault(family, []).append(anchor)
+            dirty_checkpoint_units.add(name)
             if index % 10 == 0:
                 flush_checkpoint()
                 print(f"[campaign] r{round_index} {index}/{len(pending)} "

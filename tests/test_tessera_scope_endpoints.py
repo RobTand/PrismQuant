@@ -124,7 +124,15 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
     import transformers
 
     modules = {name: torch.nn.Linear(32, 32, bias=False) for name in (DENSE, EXPERT)}
-    model = SimpleNamespace(named_modules=lambda: modules.items(), eval=lambda: None)
+    # The campaign reads the nn.Module API: named_modules for its dense walk
+    # and named_parameters for the packed-population refusal (#183), so the
+    # stand-in presents both, and the parameters are those of its modules.
+    model = SimpleNamespace(
+        named_modules=lambda: modules.items(), eval=lambda: None,
+        named_parameters=lambda: (
+            (f"{name}.{attr}", parameter)
+            for name, module in modules.items()
+            for attr, parameter in module.named_parameters()))
     monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", lambda *a, **k: model)
     monkeypatch.setattr(render, "tessera_encoder_hessian_status", lambda: {"accepted": True})
     monkeypatch.setattr(campaign, "_calibration_tokens", lambda *a: ([torch.ones(1, 1, dtype=torch.int64)], "fixture"))
@@ -149,6 +157,8 @@ def test_campaign_main_passes_live_model_topology_to_real_menu_boundary(tmp_path
 
 
 def _allocator_inputs(tmp_path, fmt="BF16"):
+    from prismaquant.cost_currency import RENDER_SCORE_COST_MODE
+    from prismaquant.tessera_campaign import CURRENCY
     from prismaquant.tessera_formats import SUPERBLOCK_WEIGHTS
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -164,10 +174,11 @@ def _allocator_inputs(tmp_path, fmt="BF16"):
     # A scoped Tessera route quantizes activations: the legitimate guard must
     # not mistake this synthetic fixture for a measured zero-cost identity.
     cost_row = ({"weight_mse": 1e-4, "output_mse": 4e-4,
-                 "output_mse_measured": True}
+                 "output_mse_measured": True, "currency": CURRENCY}
                 if fmt.startswith("TESSERA_") else {"predicted_dloss": 0.0})
     costs.write_bytes(pickle.dumps({"costs": {
-        name: {fmt: dict(cost_row)} for name in stats}, "formats": [fmt]}))
+        name: {fmt: dict(cost_row)} for name in stats}, "formats": [fmt],
+        "provenance": {"cost_mode": RENDER_SCORE_COST_MODE}}))
     return ["--probe", str(probe), "--costs", str(costs), "--formats", fmt,
             "--allow-legacy-fisher-norm",
             "--target-profile", "tessera_research_sm121", "--target-bits", "16",

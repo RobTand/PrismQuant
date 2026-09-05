@@ -295,6 +295,58 @@ def profile_declared_unpacked_expert_linears(
     return sorted(out, key=lambda member: member.qname)
 
 
+@dataclass(frozen=True)
+class PackedExpertProjection:
+    """One profile-declared 2-D view of a live packed expert parameter.
+
+    ``qname`` is the virtual per-expert module spelling in the live namespace,
+    not a Tessera serving-group name. The producer still owns the projection
+    from source units to its executed groups and wire containers.
+    """
+
+    qname: str
+    packed_qname: str
+    module_qname: str
+    module: nn.Module
+    param_name: str
+    expert_id: int
+    projection_name: str
+    weight: torch.Tensor
+
+
+def profile_declared_packed_expert_projections(
+    model: nn.Module, profile=None,
+) -> list[PackedExpertProjection]:
+    """Split declared packed tensors using the native exporter's exact views.
+
+    This shares source topology, not an encoder or a serving grammar. Views
+    retain the live weight device/dtype and do not allocate a second cache.
+    """
+    from .export_native_compressed import _split_packed_expert_tensor
+    from .measure_quant_cost import _enumerate_packed_experts
+
+    profile = resolve_routed_expert_profile(model, profile)
+    targets = set(profile_declared_routed_expert_targets(model, profile))
+    result = []
+    for packed_qname, packed, module_qname, module in _enumerate_packed_experts(
+        model, targets, profile,
+    ):
+        param_name = packed_qname.rsplit(".", 1)[-1]
+        for projection, weight in _split_packed_expert_tensor(packed, param_name, profile):
+            for expert_id in range(int(weight.shape[0])):
+                result.append(PackedExpertProjection(
+                    qname=f"{module_qname}.{expert_id}.{projection}",
+                    packed_qname=packed_qname, module_qname=module_qname,
+                    module=module, param_name=param_name,
+                    expert_id=expert_id, projection_name=projection,
+                    weight=weight[expert_id],
+                ))
+    names = [member.qname for member in result]
+    if len(set(names)) != len(names):
+        raise RuntimeError("profile declares duplicate packed expert projection qnames")
+    return sorted(result, key=lambda member: member.qname)
+
+
 def profile_declared_routed_expert_targets(
     model: nn.Module,
     profile=None,
@@ -319,6 +371,8 @@ __all__ = [
     "ProfileRoutedExpertClassifier",
     "RoutedExpertMatch",
     "UnpackedExpertLinear",
+    "PackedExpertProjection",
+    "profile_declared_packed_expert_projections",
     "profile_declared_routed_expert_targets",
     "profile_declared_unpacked_expert_linears",
     "resolve_routed_expert_profile",
