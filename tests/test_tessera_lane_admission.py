@@ -59,6 +59,25 @@ FIXTURE_COMMIT = "0" * 39 + "1"
 FIXTURE_VERSION = "0.1.0"
 
 
+def _default_serve_image() -> str:
+    """The serve image the packaged contract publishes as its default."""
+    return _packaged_contract()["versions"]["default_serve_image"]
+
+
+def _dense_context():
+    """The scope the eight dense cells of the pinned (v8) table publish.
+
+    The table is scoped: a cell attests a rung only at an exact platform,
+    image, execution mode and residency, so an admission is asked at one --
+    the operator's ``--tessera-*`` flags in production.  A context-free ask
+    is refused by SCOPE, asserted apart from the pin's refusal below.
+    """
+    from prismaquant.lane_eligibility import ServingContext
+    return ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+
+
 def _packaged_contract() -> dict:
     from importlib.resources import as_file
 
@@ -274,26 +293,39 @@ def test_admission_is_true_under_a_released_pin_on_the_real_packaged_contract(
     refusal above is the pin's and not an artefact of an unreadable table.
     """
     assert tr._release_pin_satisfied() is True
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896") is True
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R1024") is True
+    context = _dense_context()
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K2_R896", serving_context=context) is True
+    assert tr.tessera_lane_attested(
+        "TESSERA_E4M3_K1_R1024", serving_context=context) is True
     # a serialisable rate no cell names, on a published family
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R512") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K2_R512", serving_context=context) is False
     # the family's own terminal rate, which the reader range excludes
-    assert tr.tessera_lane_attested("TESSERA_E4M3_K1_R2048") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E4M3_K1_R2048", serving_context=context) is False
     # a family the contract does not publish at all
-    assert tr.tessera_lane_attested("TESSERA_E2M1_K1_R640") is False
+    assert tr.tessera_lane_attested(
+        "TESSERA_E2M1_K1_R640", serving_context=context) is False
+    # and the same admitted rung, asked with no scope at all: refused by the
+    # SCOPE of the v8 table, not by the pin the fixture satisfied.
+    assert tr.tessera_lane_attested("TESSERA_E2M1_K2_R896") is False
 
 
 def test_the_synthesized_spec_reads_the_same_lookup(released_pin):
     """``producer_eligible`` is the AND of "the wire can carry it" and "a
     runtime serves it". The second conjunct is this lookup, so the menu admits
-    exactly the attested rungs and nothing else."""
+    exactly the attested rungs and nothing else -- at the scope the lookup is
+    asked; a context-free spec on the scoped table is not eligible."""
+    context = _dense_context()
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E2M1_K2_R896").producer_eligible is True
+        "TESSERA_E2M1_K2_R896", serving_context=context).producer_eligible is True
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E4M3_K1_R1024").producer_eligible is True
+        "TESSERA_E4M3_K1_R1024", serving_context=context).producer_eligible is True
     assert tr.synthesize_tessera_spec(
-        "TESSERA_E2M1_K2_R512").producer_eligible is False
+        "TESSERA_E2M1_K2_R512", serving_context=context).producer_eligible is False
+    assert tr.synthesize_tessera_spec(
+        "TESSERA_E2M1_K2_R896").producer_eligible is False
 
 
 @pytest.mark.parametrize("mutation,name", [
@@ -335,12 +367,15 @@ def test_the_rungs_a_cell_names_are_the_whole_admitted_set(tmp_path,
             row["attested_rungs_q256"] = [896]
             row["reader_rate_range_q256"] = [768, 896]
     table, formats = _load(_write(tmp_path, contract, "narrow.json"))
+    context = _dense_context()
     assert tr.tessera_lane_attested(
-        "TESSERA_E2M1_K2_R896", table=table, formats=formats) is True
+        "TESSERA_E2M1_K2_R896", table=table, formats=formats,
+        serving_context=context) is True
     # inside the reader range, so the rate RESOLVES -- and is still refused,
     # because no cell names it.
     assert tr.tessera_lane_attested(
-        "TESSERA_E2M1_K2_R768", table=table, formats=formats) is False
+        "TESSERA_E2M1_K2_R768", table=table, formats=formats,
+        serving_context=context) is False
 
 
 def test_an_absent_table_admits_nothing(tmp_path, released_pin):
@@ -513,7 +548,7 @@ def test_route_admission_refuses_a_drifted_a_side(tmp_path, monkeypatch):
     table, formats = _load(_write(tmp_path, contract, "a_side_drift.json"))
     monkeypatch.setattr(tr, "_pinned_serving_table", lambda: (table, formats))
     with pytest.raises(tm.TesseraMenuError, match="not what the attesting cells execute"):
-        tm.route_admission("TESSERA_E2M1_K2_R896")
+        tm.route_admission("TESSERA_E2M1_K2_R896", serving_context=_dense_context())
 
 
 def test_the_tessera_lane_is_declared_and_advisory():
@@ -563,21 +598,29 @@ def test_the_stamped_attestation_source_names_the_table_that_answered():
 
 
 def test_the_unattested_detail_names_the_conjunct_that_actually_refused():
-    """The refusal today is the PIN's, and the detail has to say so.
+    """The context-free refusal today is the SCOPE's, and the detail says so.
 
     The packaged contract publishes ``TESSERA_E2M1_K2`` and carries a
     device-qualified native cell naming R896 -- the released-pin test above
-    proves it by admitting the same rung with only the release boundary
-    moved.  So a detail reading "the pinned serving release publishes no cell
-    covering this family and rate" is false about the contract on disk, and it
-    points a reader at re-pinning a table that already carries the row.
+    proves it by admitting the same rung at the dense scope.  So a detail
+    reading "the pinned serving release publishes no cell covering this
+    family and rate" is false about the contract on disk, and it points a
+    reader at re-pinning a table that already carries the row.  Before the
+    pin resolved, the conjunct that refused here was the PIN (and the detail
+    said "pin"); with the pin resolved and the table scoped (v8), the
+    conjunct is the missing serving context, and the detail names that.
     """
     from prismaquant import tessera_menu as tm
 
     admission = tm.route_admission("TESSERA_E2M1_K2_R896")
     assert admission.route_status == tm.ROUTE_STATUS_UNATTESTED
     assert "no cell covering" not in admission.detail
-    assert "pin" in admission.detail
+    assert admission.requires_serving_context is True
+    assert "explicit serving context" in admission.detail
+    assert "pin" not in admission.detail
+    # the same rung, at the scope the cell publishes: admitted, by the pin.
+    scoped = tm.route_admission("TESSERA_E2M1_K2_R896", serving_context=_dense_context())
+    assert scoped.route_status in {tm.ROUTE_STATUS_BACKED, tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG}
 
     # and a family the packaged contract never publishes keeps its OWN reason,
     # so the two refusals are not spelled the same: this one is fixed by a

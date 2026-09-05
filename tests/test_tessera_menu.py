@@ -29,6 +29,33 @@ from prismaquant.tessera_formats import (
 SHAPE = (2048, 1024)
 
 
+def _default_serve_image() -> str:
+    """The serve image the pinned contract publishes as its default."""
+    import json
+    return json.loads(trc.contract_path().read_text(encoding="utf-8"))[
+        "versions"]["default_serve_image"]
+
+
+def _dense_context():
+    """The scope the eight dense cells of the pinned (v8) table publish.
+
+    The table is scoped: a cell attests a rung only at an exact platform,
+    image, execution mode and residency, so every admission below is asked
+    at one -- the operator's ``--tessera-*`` flags, in production.  Asked
+    context-free, the scoped table refuses by SCOPE, which
+    ``test_the_scoped_table_answers_nothing_without_a_scope`` pins.
+    """
+    from prismaquant.lane_eligibility import ServingContext
+    return ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+
+
+def _scope():
+    """``context_by_unit`` for the token expansion: one dense unit."""
+    return {"unit": _dense_context()}
+
+
 @pytest.fixture
 def dev_pin(monkeypatch):
     """Turn on the Tessera development pin for one test.
@@ -379,13 +406,14 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
     carries the cell's status rather than a status this file typed.
     """
     contract = trc.load_tessera_contract()
+    context = _dense_context()
     expected = {
         f"{family}_R{rung}"
         for family in contract.reader_rate_range
         for rung in sorted(contract.attested_rungs.get(family, ()))
-        if contract.native_cells(family, rung)
+        if contract.native_cells(family, rung, serving_context=context)
     }
-    rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED)
+    rungs = tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED, serving_context=context)
     names = [r.format_name for r in rungs]
     assert set(names) == expected, (names, sorted(expected))
     assert len(names) == len(set(names)), names
@@ -400,7 +428,7 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
         # Read off the cell, not typed: these cells are backed_with_serve_flag.
         assert rung.admission.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
         cells = contract.native_cells(
-            rung.admission.payload_family, rung.body_rate_q256)
+            rung.admission.payload_family, rung.body_rate_q256, serving_context=context)
         assert rung.admission.requires_serve_flags == tuple(sorted({
             flag for cell in cells for flag in cell.requires_serve_flags
         }))
@@ -412,10 +440,30 @@ def test_the_dev_pin_attests_exactly_the_rungs_the_contract_publishes(dev_pin):
     assert expected, "the pinned contract attests no rung at all"
 
 
+def test_the_scoped_table_answers_nothing_without_a_scope(dev_pin):
+    """The pinned table is scoped, so a context-free ask is refused by SCOPE.
+
+    Not by the pin and not by absence of a cell: the same rungs the test
+    above admits at the dense scope are unattested here, and the detail says
+    the contract requires an explicit serving context.  This is the honest
+    shape of the default path without the operator's ``--tessera-*`` flags
+    (``run-pipeline.sh`` derives them from ``TESSERA_PLATFORM``,
+    ``TESSERA_RUNTIME_IMAGE``, ``TESSERA_EXECUTION_MODE``,
+    ``TESSERA_SERVE_MODE``).
+    """
+    assert tm.expand_tessera_menu(SHAPE, mode=tm.MENU_ATTESTED) == []
+    bare = tm.route_admission("TESSERA_E4M3_K1_R1024")
+    assert bare.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert bare.requires_serving_context is True
+    assert "explicit serving context" in bare.detail
+    assert "no cell covering" not in bare.detail
+
+
 def test_a_rate_the_contract_does_not_publish_is_unattested_not_backed(dev_pin):
     """One q256 step off the published rung is absence of a claim."""
-    on = tm.route_admission("TESSERA_E4M3_K1_R1024")
-    off = tm.route_admission("TESSERA_E4M3_K1_R1023")
+    context = _dense_context()
+    on = tm.route_admission("TESSERA_E4M3_K1_R1024", serving_context=context)
+    off = tm.route_admission("TESSERA_E4M3_K1_R1023", serving_context=context)
     assert on.route_status == tm.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
     assert off.route_status == tm.ROUTE_STATUS_UNATTESTED
     assert "R1023" in off.detail and "[1024]" in off.detail
@@ -1165,7 +1213,7 @@ PRICED = [
 def test_the_menu_token_expands_to_the_attested_subset_and_reports_the_rest(dev_pin):
     """The default path allocates over the backed axis, not over nothing."""
     menu, dropped = tm.expand_menu_tokens_report(
-        ["NVFP4", tm.MENU_TOKEN, "BF16"], PRICED)
+        ["NVFP4", tm.MENU_TOKEN, "BF16"], PRICED, context_by_unit=_scope())
     assert menu == [
         "NVFP4", "TESSERA_E2M1_K2_R896", "TESSERA_E4M3_K1_R1024", "BF16",
     ], menu
@@ -1176,7 +1224,7 @@ def test_the_menu_token_expands_to_the_attested_subset_and_reports_the_rest(dev_
     ]), dropped
     # and the filter is the same predicate the guard refuses on, so the token
     # can never expand to something ``require_producer_formats`` then rejects.
-    fr.require_producer_formats(menu, where="test")
+    fr.require_producer_formats(menu, where="test", context_by_unit=_scope())
 
 
 def test_an_explicitly_named_unattested_rung_still_refuses(dev_pin):
