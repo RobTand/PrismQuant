@@ -282,6 +282,53 @@ def test_scope_without_a_projection_is_the_unchanged_pre_bridge_lane(case):
     assert "expert_projection" not in report
 
 
+def test_the_receipt_names_which_path_produced_the_routed_bytes(case):
+    # PrismaQuant #222.  The fallback above is legitimate and stays -- but it
+    # was SILENT: an allocation with all four keys stripped re-encodes its
+    # routed units from source, and nothing in the export's own output said the
+    # bytes about to ship were not the bytes the campaign priced.  The two
+    # paths are now distinguishable in the scope receipt, derived where the
+    # choice is made, without changing what either path refuses or encodes.
+    priced = _scope(case)
+    assert priced[export.ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_PRICED_WIRES
+    assert set(priced["expert_projection"]["units"]) == set(_units())
+
+    # The INCOHERENT case is #220's refusal and must not weaken: priced wires
+    # bound to no executed unit are still refused by name, never stamped as a
+    # fallback and shipped.
+    _meta(case).pop(PROJECTION_KEY)
+    _save(case)
+    with pytest.raises(export.TesseraExportLaneError,
+                       match="no producer expert projection"):
+        _scope(case)
+
+    # All four gone: the pre-#183 lane, which still succeeds and still resolves
+    # every unit exactly as the priced run did.  Only the receipt is different.
+    for key in (EXPERT_WIRES_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY):
+        _meta(case).pop(key)
+    _save(case)
+    fallback = _scope(case)
+    assert fallback[export.ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_REENCODED
+    assert "expert_projection" not in fallback
+    assert fallback["by_unit"] == priced["by_unit"]
+
+
+def test_an_export_that_ships_no_routed_bytes_is_not_stamped_as_a_re_encode(case):
+    # The stamp names what produced the ROUTED bytes, so an export that ships
+    # none must not read as the fallback -- a dense allocation re-encodes no
+    # routed unit because it selects none.  True on both sides of the carried
+    # projection, since neither run hands a routed unit to the exporter.
+    for name in _units():
+        case.payload[name] = "BF16"
+        _meta(case)["tessera_serving_scope"]["by_unit"].pop(name)
+    _save(case)
+    assert _scope(case)[export.ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_NONE
+    for key in (PROJECTION_KEY, EXPERT_WIRES_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY):
+        _meta(case).pop(key)
+    _save(case)
+    assert _scope(case)[export.ROUTED_EXPERT_BYTES_KEY] == export.ROUTED_EXPERT_BYTES_NONE
+
+
 def test_scope_without_a_projection_still_refuses_a_predicated_cell(case):
     # And the refusal that made #183 necessary stays: without the producer's
     # record, a source-member dimension does not attest a fused execution unit.
@@ -413,6 +460,29 @@ def test_cli_writes_no_bundle_for_an_allocation_without_a_projection(case, tmp_p
     build = json.loads((tmp_path / "build.json").read_text())
     assert "cached_expert_units" not in build
     assert not list(case.wire_dir.glob("*.json"))
+
+
+def test_the_build_anchor_carries_which_path_produced_the_routed_bytes(case, tmp_path,
+                                                                       monkeypatch):
+    # The build anchor is the only thing the CLI serialises, and
+    # `lane_shipcard open --build-json` stamps it whole onto the artifact's
+    # ship record -- so this is where a consumer of the SHIPPED artifact reads
+    # which path produced its routed bytes (#222).  One derivation: the anchor
+    # copies the scope receipt's answer, it does not recompute it.
+    _isolate_other_gates(monkeypatch)
+    assert _cli(case, tmp_path) == 0
+    build = json.loads((tmp_path / "build.json").read_text())
+    assert (build[export.BUILD_ROUTED_EXPERT_BYTES_KEY]
+            == export.ROUTED_EXPERT_BYTES_PRICED_WIRES)
+    assert build["tessera_expert_stack_formats"] == {STACK: FMT}
+    for key in (PROJECTION_KEY, EXPERT_WIRES_KEY, STACK_FORMATS_KEY, WIRE_DIR_KEY):
+        _meta(case).pop(key)
+    _save(case)
+    assert _cli(case, tmp_path) == 0
+    build = json.loads((tmp_path / "build.json").read_text())
+    assert (build[export.BUILD_ROUTED_EXPERT_BYTES_KEY]
+            == export.ROUTED_EXPERT_BYTES_REENCODED)
+    assert "tessera_expert_stack_formats" not in build
 
 
 def test_shell_hands_the_exporter_the_bundle_the_preflight_wrote():

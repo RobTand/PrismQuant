@@ -1,7 +1,37 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-218`. Stamps
+As of: 2026-09-05 · `claude/pq-222`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-222`) for **the routed re-encode fallback
+being readable in the receipt** (§5 export lane; RobTand/prismaquant#222, P3).
+#220 made the producer's expert projection an UNLOCK, not a requirement: an
+allocation carrying none keeps the pre-#183 lane byte for byte, and
+`require_assignment_scope` refuses only the INCOHERENT case (priced wires,
+`tessera_expert_stack_formats` or a wire directory carried with the projection
+stripped). That call stands and is unchanged here — the fallback is not
+refused, no unit's bytes move, and making the projection mandatory (#222's
+option (b)) remains Rob's to price, because it would force every profile that
+gains a producer tool to re-run its campaign before it could export again.
+What was wrong is that the fallback was **silent**: an allocation with all
+four keys absent re-encodes its routed units from source and nothing said the
+bytes about to ship were not the bytes the campaign priced. It now says so.
+`_carried_expert_projection` returns the ANSWER beside the bundle —
+`priced_wires`, `reencoded_from_source`, or `no_routed_units` when the
+allocation selects no routed unit at all, so a dense export is never
+mislabelled a fallback — because it is the only function that sees both the
+carried keys and the selection, and a receipt derived anywhere else could
+disagree with the path taken. `require_assignment_scope` stamps it as
+`routed_expert_bytes` in the scope receipt and `preflight` copies it into the
+build anchor as `tessera_routed_expert_bytes`, whence `lane_shipcard open
+--build-json` carries it onto the artifact's ship record. **A reader of the
+old shape sees neither key, and that absence means "this preflight predates
+#222 and does not say" — never `priced_wires`.** New anchors stay readable by
+older consumers: the build block is an open schema (`build_shipcard` stores it
+verbatim, `_verify_build_block` checks only keys it knows and states that a
+card written before a key existed is left alone), so an unknown key is
+carried and ignored. No default, format menu, serving lane, ship gate or byte
+changes.
 
 Re-stamped (2026-09-05, `claude/pq-218`) for **format-name resolution: case is
 the registry's question, and a predicate over a format menu must be total**
@@ -6164,6 +6194,28 @@ Two properties make the numbers comparable with the rest of the menu:
   blobs instead of re-encoding the source. An allocation with no routed
   expert unit bundles nothing and the encode is byte-identical to one built
   before this existed.
+
+* **And the receipt names which path produced the routed bytes (PrismaQuant
+  #222).** The projection is an unlock, not a requirement, so an allocation
+  carrying none is not refused — its routed units resolve on source-member
+  shapes and the exporter **re-encodes them from the source checkpoint**.
+  That lane is sanctioned and unchanged, but it does not ship the bytes the
+  campaign priced, so it is stated rather than inferred.
+  `_carried_expert_projection` returns which path it took beside the bundle —
+  it is the only function that sees both the carried keys and whether any
+  routed unit was selected — and `require_assignment_scope` stamps that answer
+  into its receipt as `routed_expert_bytes`: `priced_wires`,
+  `reencoded_from_source`, or `no_routed_units` for an allocation that selects
+  none, so a dense export never reads as a fallback. `preflight` copies the
+  same value into the build anchor as `tessera_routed_expert_bytes`, and
+  `lane_shipcard open --build-json` stamps the anchor whole onto the
+  artifact's ship record, so a consumer of the shipped bytes reads it there.
+  **Absence of the key means the preflight predates #222 and does not say; it
+  never means `priced_wires`** — every artifact built before this stamp is in
+  that state, and most of them re-encoded. Whether the fallback should instead
+  be REFUSED once a profile has a producer tool is #222's option (b), open and
+  Rob's to price: it would make every lane whose profile gains one re-run its
+  campaign before its next export.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
