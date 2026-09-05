@@ -95,6 +95,28 @@ def register_profile(cls: type[ModelProfile]) -> None:
         _REGISTRY_GENERATION += 1
 
 
+class DeadVendoredOverrideError(RuntimeError):
+    """A profile matched, but its vendored-modelling override is known dead.
+
+    Its own class, not a bare `RuntimeError`, because the two failures a caller
+    can see out of detection are not the same failure and must not be handled
+    the same way:
+
+      - *nothing matched this checkpoint* — detection answers `DefaultProfile`,
+        which is a legitimate answer for a not-yet-registered architecture and
+        is guarded downstream (`allocator.validate_default_profile_format_menu`);
+      - *a profile matched and its vendored modelling path is dead* — there is
+        no legitimate answer. The run would load UPSTREAM modelling code under
+        a profile that promises the vendored copy, which is a wrong number with
+        no exception attached to it (issue #19).
+
+    A caller that legitimately tolerates the first can therefore refuse the
+    second without catching every `RuntimeError` detection might raise.
+    Subclasses `RuntimeError` so existing `except RuntimeError` handlers and
+    the gate's original contract are unchanged.
+    """
+
+
 def _refuse_dead_vendored_override(model_type: str) -> None:
     """Fail if this model_type's vendored-modeling override is known dead.
 
@@ -114,7 +136,7 @@ def _refuse_dead_vendored_override(model_type: str) -> None:
         return
     detail = OVERRIDE_ERRORS.get(str(model_type))
     if detail:
-        raise RuntimeError(
+        raise DeadVendoredOverrideError(
             f"vendored modelling override for model_type={model_type!r} did "
             f"not take effect, so a load here would silently run UPSTREAM "
             f"modelling code instead of the vendored copy:\n{detail}"
@@ -175,10 +197,19 @@ def detect_profile_with_warning(
     that intentionally keep running on vanilla or not-yet-registered models,
     but it prevents architecture-specific fused/MoE checks from disappearing
     without any log signal.
+
+    What it tolerates is an architecture this build does not know. It does not
+    tolerate `DeadVendoredOverrideError`, which says the architecture IS known
+    and its modelling path is dead: there is no fallback to log there, because
+    continuing runs upstream modelling code under a profile that promises the
+    vendored copy. A printed warning is not a refusal, and this one would have
+    printed "architecture unregistered or config unreadable", which is false.
     """
     reason = ""
     try:
         profile = detect_profile(model_path)
+    except DeadVendoredOverrideError:
+        raise
     except Exception as exc:
         reason = f"detect_profile raised {type(exc).__name__}: {exc}"
         profile = DefaultProfile()
@@ -285,39 +316,52 @@ def _new_instance(candidate) -> ModelProfile:
 
 
 def _resolve(model_type: str, archs: list[str]) -> ModelProfile:
-    """Walk detection candidates in priority order, build the first match."""
+    """Walk detection candidates in priority order, build the first match.
+
+    The candidate walk is deliberately tolerant: a candidate that cannot be
+    asked (`matches()` raises) or cannot be built is not a match, so detection
+    keeps walking rather than failing a whole run over one broken profile.
+    That tolerance is scoped to *choosing* a candidate. It must not extend to
+    the dead-vendored-override refusal, which is a statement about the
+    candidate that WON — so that gate runs after the `except Exception`, not
+    inside it (issue #201). Inside it, the refusal was demoting the matched
+    profile and detection walked on to `DefaultProfile`, which is exactly the
+    silent substitution the gate exists to prevent.
+    """
     for cls in detection_order():
         try:
-            if _claims(cls, model_type, archs):
-                inst = _new_instance(cls)
-                # Hand the profile what the checkpoint declared. A family can
-                # cover several serving classes (a multimodal wrapper and its
-                # text-only carve-out) whose namespaces differ, and only the
-                # declaration distinguishes them. Profiles that ignore it are
-                # unaffected: the stash is inert unless read.
-                inst.declare_config(model_type, archs)
-                # Some profiles need to register vendored modeling code
-                # with transformers before the model loads. Defer to
-                # the profile method (refactor #32) so callers don't
-                # need to know the architecture-specific bootstrap.
-                try:
-                    inst.register_vendored_modeling()
-                except Exception:
-                    # Don't let a vendoring failure block profile
-                    # DETECTION — but do not lose it either. The old
-                    # comment here assumed "the eventual model load
-                    # error" would surface it; that reasoning only holds
-                    # for a failure that raises at load time. The failure
-                    # mode this swallow actually hides is the opposite
-                    # one (issue #19): a registration that silently
-                    # no-ops, after which the load succeeds against the
-                    # WRONG modelling code and nothing ever raises.
-                    # `prismaquant.vendored` records those in
-                    # OVERRIDE_ERRORS; the gate below refuses to hand
-                    # back a profile whose vendored path is known dead.
-                    pass
-                _refuse_dead_vendored_override(model_type)
-                return inst
+            if not _claims(cls, model_type, archs):
+                continue
+            inst = _new_instance(cls)
+            # Hand the profile what the checkpoint declared. A family can
+            # cover several serving classes (a multimodal wrapper and its
+            # text-only carve-out) whose namespaces differ, and only the
+            # declaration distinguishes them. Profiles that ignore it are
+            # unaffected: the stash is inert unless read.
+            inst.declare_config(model_type, archs)
+            # Some profiles need to register vendored modeling code
+            # with transformers before the model loads. Defer to
+            # the profile method (refactor #32) so callers don't
+            # need to know the architecture-specific bootstrap.
+            try:
+                inst.register_vendored_modeling()
+            except Exception:
+                # Don't let a vendoring failure block profile
+                # DETECTION — but do not lose it either. The old
+                # comment here assumed "the eventual model load
+                # error" would surface it; that reasoning only holds
+                # for a failure that raises at load time. The failure
+                # mode this swallow actually hides is the opposite
+                # one (issue #19): a registration that silently
+                # no-ops, after which the load succeeds against the
+                # WRONG modelling code and nothing ever raises.
+                # `prismaquant.vendored` records those in
+                # OVERRIDE_ERRORS; the gate below refuses to hand
+                # back a profile whose vendored path is known dead.
+                pass
         except Exception:
             continue
+        # Outside the swallow, deliberately (see the docstring).
+        _refuse_dead_vendored_override(model_type)
+        return inst
     return DefaultProfile(architectures=archs)
