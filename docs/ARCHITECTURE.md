@@ -83,6 +83,34 @@ comparison), the drift refusal at the digest and at the gate, and the
 documented fallback (pre-fix at the release tip: `DID NOT RAISE
 TesseraExportLaneError`, the bind reaching the seal cross-check instead).
 
+Re-stamped (2026-09-05, `claude/pq-211`) for **the export leg's inputs being
+written only after the resume identity has accepted the run** (§5.7;
+RobTand/prismaquant#211, P1). `tessera_campaign.main()` called
+`write_export_inputs` immediately after collecting activations — before
+`prepare_journal` and before the per-row resume verification — so a resume the
+checkpoint identity **refuses** had already overwritten
+`<cache-dir>/hessian_capture.pt`, its `.provenance.json` sidecar and
+`input_scales.safetensors` with the refused draw's Hessians and static scales.
+The checkpoint and the previous cost file correctly survived that refusal; the
+export half of the same surviving table did not, so the table that survived
+could not be exported and had to be re-priced from scratch. #204 bounded the
+damage (the old allocation now refuses the rewritten capture by
+`capture_sha256` instead of exporting under the wrong Hessian and scale) but
+did not stop the destruction. The call is now made **after** the resume
+verification loop and its `[campaign] resumed …` print and **before**
+`started = time.time()`, so #193's guarantee — written before the anchor loop,
+so even a deadline-stopped campaign leaves them — is unchanged, and an
+accepted resume rewrites byte-identical files because the run-level identity
+binds the Hessians, static scales and scale policy that are exactly that
+call's inputs. Nothing between the two sites consumes `hessian_capture_path`,
+`input_scales_path` or `capture_sha256`; the first consumer remains the
+provenance block, and `_campaign_checkpoint_identity` takes the Hessians and
+the calibration identity, never the digest. No file format, field, default or
+gate changes. Regression:
+`test_tessera_campaign_resume.py::test_refused_resume_leaves_the_surviving_tables_export_inputs`,
+which needs the release Tessera's `cached_unit` receipt API to reach the
+resume and therefore skips at the development pin.
+
 Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the export lane
 handing the exporter the priced expert wires** (§4.10, §9.4; PrismaQuant
 #183). `require_assignment_scope` now re-binds every selected routed expert
@@ -6901,7 +6929,17 @@ and a by-name refusal when the two rosters disagree — #216) and the
 (`tessera_activation_static_scales`), and the gate digests the `.pt` the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation
-that carries no binding at all as unbound. The arm opens
+that carries no binding at all as unbound. The campaign writes those two
+files at one point in `main()`: **after** the resume identity has accepted
+this run's inputs and **before** the anchor loop (#211). Before the loop, so a
+deadline-stopped campaign still leaves them (#193); after the gate, because
+they are the export half of whatever table survives a refusal — a resume the
+checkpoint identity refuses leaves the checkpoint and the previous cost file
+untouched, and must leave the capture, its sidecar and the scales untouched
+for the same reason, or the surviving table can no longer be exported at all.
+An accepted resume rewrites byte-identical files, because the identity binds
+the Hessians, the static scales and the scale policy that are exactly that
+call's inputs. The arm opens
 a lane-gated shipcard; `prismaquant/lane_specs/tessera.json` (§9.4) declares the
 serve, endpoint, gates, KL evaluator and executed activation contracts.
 Allocation uses `tessera_menu` and its reviewed development contract; that
