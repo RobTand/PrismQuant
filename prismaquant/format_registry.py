@@ -328,6 +328,27 @@ def register_format(spec: FormatSpec) -> FormatSpec:
 
 
 def canonical_format_name(name: str) -> str:
+    """The registry's own spelling of a requested format name.
+
+    Case is not part of a format's identity, and this function is where that
+    is decided -- once, for every consumer.  The raw-then-upper probes below
+    cover "the caller typed lower case and the row is upper case"; they did
+    NOT cover the mirror image, and exactly one registered row is mixed case
+    (``INT4_W4A16_g128``).  So every caller that normalizes a requested name
+    by upper-casing it -- ``production_weight_cache._render_base_format``, the
+    cache identity keys, ``render_production_weight`` -- handed the resolver a
+    name no resolver owned, and ``get_format`` raised ``KeyError`` on a format
+    PrismaQuant ships and a precision plan can select (#218).
+
+    The case-insensitive probe is last, so it fires only where the exact
+    probes have already failed: nothing that resolved before resolves
+    differently now, and an unknown name is still returned unchanged for
+    ``get_format`` to refuse by name.  No two registered names differ only by
+    case (pinned by ``tests/test_format_registry.py``), so the answer is
+    unambiguous.  It is a linear scan over ~80 rows on the MISS path only,
+    which is also the path every synthesized Tessera rung takes; that is
+    string comparison against a fixed-size table, not a hot-loop cost.
+    """
     raw = str(name).strip()
     if raw in FORMAT_ALIASES:
         return FORMAT_ALIASES[raw]
@@ -338,6 +359,13 @@ def canonical_format_name(name: str) -> str:
         return FORMAT_ALIASES[upper]
     if upper in REGISTRY:
         return upper
+    folded = raw.casefold()
+    for alias, target in FORMAT_ALIASES.items():
+        if alias.casefold() == folded:
+            return target
+    for registered in REGISTRY:
+        if registered.casefold() == folded:
+            return registered
     return raw
 
 
