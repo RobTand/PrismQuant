@@ -291,24 +291,37 @@ def _measure_anchor(
     # the predicate reads and the plane the encode writes are this object --
     # not three lookups that agree only while nothing clears the recipe memo.
     wire = tessera_wire_recipe(family, rung)
-    # The A side, as served.  An NVFP4-materialising route executes vLLM's
-    # static-global-scale ``scaled_fp4_quant`` (UE4M3 block scales) against the
-    # artifact's ``trellis_input_global_scale``; every other route keeps the
-    # serving format's own dynamic quantiser, taken by reference from the spec.
+    # The A side, as served.  A route with a STATIC activation contract
+    # executes vLLM's static-global-scale ``scaled_fp4_quant`` (UE4M3 block
+    # scales) against the artifact's ``trellis_input_global_scale``; every
+    # other route keeps the serving format's own dynamic quantiser, taken by
+    # reference from the spec.
+    #
+    # WHICH of the two is the SPEC's answer, never a compare of the route's
+    # source-format name against ``"NVFP4"`` (#205's rule, #221's fix): the
+    # spec resolved above already carries the contract, because
+    # ``synthesize_tessera_spec`` derived it from the registry row the route
+    # names.  A Tessera rung routed through the same kernel has the same
+    # contract and a different name, and the day a second registry row gets a
+    # contract, a name compare here would price it under a quantiser the
+    # runtime never runs while the cache scorer and the KL hooks -- which
+    # already read the row -- refuse the same unit.
     route = tessera_serving_route(family, wire, rung)
-    if route.activation_source_format == "NVFP4":
+    contract = spec.static_activation_contract
+    if contract is not None:
         if static_input_scale is None or not float(static_input_scale) > 0:
             raise ActivationScaleContractError(
                 f"{qname} {format_name}: this rung's route executes the "
-                f"static NVFP4 activation contract ({route.contract}) and no "
-                "calibrated input_global_scale was supplied. Scoring it with "
-                "the registry's dynamic FP32-scale quantiser would price an "
-                "activation regime the serve does not execute; a lookup that "
-                "misses must refuse, not fall back."
+                f"static activation contract {contract.execution} "
+                f"({route.contract}) and no calibrated input_global_scale was "
+                "supplied. Scoring it with the registry's dynamic FP32-scale "
+                "quantiser would price an activation regime the serve does "
+                "not execute; a lookup that misses must refuse, not fall back."
             )
         input_scale = float(static_input_scale)
+        # The contract's own oracle, not a second spelling of it.
         activation_qdq = (
-            lambda x: fr.nvfp4_activation_qdq_served(x, input_scale))
+            lambda x: contract.quantize_dequantize(x, input_scale))
     else:
         input_scale = None
         activation_qdq = spec.activation_quantize_dequantize
@@ -1201,16 +1214,18 @@ def _population_block(*, dense_priced, expert_priced, dense_all, pinned,
     }
 
 
-def _format_executes_static_nvfp4(format_name: str) -> bool:
-    """Does this rung's route execute the static NVFP4 activation contract?"""
-    from .tessera_formats import (
-        parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
-    )
+def _format_executes_static_activation_contract(format_name: str) -> bool:
+    """Does this rung's route execute a STATIC activation contract?
 
-    family, rung = parse_tessera_format_name(format_name)
-    wire = tessera_wire_recipe(family, rung)
-    return tessera_serving_route(
-        family, wire, rung).activation_source_format == "NVFP4"
+    The spec's answer (``FormatSpec.static_activation_contract``), which
+    ``synthesize_tessera_spec`` derives from the registry row the rung's route
+    names -- never a compare of that row's NAME against ``"NVFP4"`` (#205,
+    #221).  Same field ``_measure_anchor`` prices through, so the rung this
+    refuses to resume is exactly the rung it refuses to score.
+    """
+    from . import format_registry as fr
+
+    return fr.get_format(format_name).static_activation_contract is not None
 
 
 def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
@@ -1228,7 +1243,7 @@ def _require_resumable_anchor(anchor: CampaignAnchor, static_scales) -> None:
     served A side, and merging one silently is the exact mixed-table failure
     the Hessian identity guard exists to catch on its own axis.
     """
-    if not _format_executes_static_nvfp4(anchor.format_name):
+    if not _format_executes_static_activation_contract(anchor.format_name):
         if anchor.input_global_scale is not None:
             raise ActivationScaleContractError(
                 f"checkpoint anchor {anchor.qname} {anchor.format_name} "

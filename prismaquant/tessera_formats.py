@@ -1395,6 +1395,41 @@ def tessera_serving_route(
     return _KERNEL_ROUTE
 
 
+def route_static_activation_contract(
+    route: TesseraServingRoute,
+) -> "StaticActivationContract | None":
+    """The A-side served STATIC-scale contract of ``route``, or None.
+
+    "Does this route execute a static per-unit activation scale" has exactly
+    one derivation, and it is this one: the route names the registry row whose
+    contract it executes (``activation_source_format``), and **the row owns the
+    answer** (``FormatSpec.static_activation_contract``).  Never a compare of
+    that name against ``"NVFP4"`` -- which is the same rule
+    ``StaticActivationContract``'s own docstring states for specs, one level
+    down (#205), and the same shape as :func:`_hardware_min_sm` above, which
+    takes the capability floor by reference from the terminal row rather than
+    restating it.
+
+    A name compare answers the same question today only because ``NVFP4`` is
+    the single row carrying a contract; the field is typed as a spec-level
+    property, not an NVFP4 flag, so the day a second row gets one the compare
+    silently splits the pipeline in two (#221).
+
+    Returned as the CONTRACT, not a bool, because the consumers need what is
+    in it: ``tessera_render.synthesize_tessera_spec`` re-stamps it
+    ``measured_as_served=True`` onto the rung's spec, and the campaign prices
+    and refuses through ``execution`` and ``quantize_dequantize``.  A bool
+    would have sent each of them back to the row for the rest.
+    """
+    source = route.activation_source_format
+    if source is None:
+        # Weight-only (or unquantised-A) route: no A-side row, so no contract.
+        return None
+    from . import format_registry as fr
+
+    return fr.get_format(source).static_activation_contract
+
+
 def materialised_terminal_format(
     family: "str | TesseraFamily",
     recipe: "WireRecipe | None" = None,

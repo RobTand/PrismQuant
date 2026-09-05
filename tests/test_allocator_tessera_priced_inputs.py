@@ -91,7 +91,8 @@ def test_the_allocation_carries_the_digest_and_the_priced_scales(
     report = export.require_priced_export_inputs(
         layer, hessian_path=capture, input_scales_path=scales)
     assert report["hessian_capture_sha256"] == digest
-    assert report["w4a4_units"] == report["input_scales_bound_units"] == 3
+    assert (report["static_activation_contract_units"]
+            == report["input_scales_bound_units"] == 3)
 
 
 def test_the_gate_refuses_other_files_against_that_allocation(
