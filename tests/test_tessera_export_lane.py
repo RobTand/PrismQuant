@@ -429,10 +429,19 @@ def test_the_arm_invokes_exactly_the_declared_producer_tools():
     `producer_tools` and the driver's `${TESSERA_REPO}` command invocations
     (not its banner echoes, which name the serve script and the census for
     the operator) -- so a third tool needs no test edit, only a declaration
-    the arm honors."""
+    the arm honors.
+
+    One declared tool is run by PrismaQuant itself rather than by the arm: the
+    campaign asks the producer for its expert projection (#183) long before
+    the export container is chosen. That call site spells the path ONCE, as
+    the module constant `tessera_expert_projection.PRODUCER_PLAN_TOOL`, and
+    resolves it THROUGH `require_producer_tools` -- so it is counted here as
+    an invocation rather than exempted, and a fourth tool that nobody runs
+    still fails this test."""
     import re
 
     from prismaquant.lane_spec import load_lane_spec
+    from prismaquant.tessera_expert_projection import PRODUCER_PLAN_TOOL
 
     text = _run_pipeline_text()
     declared = {
@@ -440,7 +449,7 @@ def test_the_arm_invokes_exactly_the_declared_producer_tools():
         for tool in load_lane_spec("tessera").producer_tools
     }
     assert declared, "the lane declares no producer tools at all"
-    invoked = set()
+    invoked = {"${TESSERA_REPO%/}/" + PRODUCER_PLAN_TOOL}
     for line in text.splitlines():
         stripped = line.strip()
         if not (stripped.startswith("python3 ") or stripped.startswith("bash ")):

@@ -2522,6 +2522,7 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
       --assignment "${WORK_DIR}/artifacts/layer_config.json" \
       --write-build-json "$TESSERA_BUILD_JSON" \
+      --write-cached-expert-units \
       --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}" \
       "${TESSERA_PRICED_INPUT_ARGS[@]}"; then
     exit 2
@@ -2558,6 +2559,20 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
     echo "[pipeline] [4/4] Tessera plan exists, skipping"
   fi
 
+  # The priced expert wires, if this allocation selected any. The preflight
+  # above bundled exactly the rungs it selected into the campaign's own wire
+  # directory and wrote the manifest path into the build anchor; the exporter
+  # reuses those blobs instead of re-encoding the source, which is what makes
+  # the exported routed-expert bytes THE bytes the campaign priced. An
+  # allocation with no routed expert unit names no manifest and the array
+  # stays empty, so the encode is byte-identical to one built before this
+  # existed (PrismaQuant #183).
+  TESSERA_CACHED_UNIT_ARGS=()
+  TESSERA_CACHED_EXPERT_UNITS=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("cached_expert_units", ""))' "$TESSERA_BUILD_JSON")
+  if [[ -n "$TESSERA_CACHED_EXPERT_UNITS" ]]; then
+    TESSERA_CACHED_UNIT_ARGS+=(--cached-expert-units "$TESSERA_CACHED_EXPERT_UNITS")
+  fi
+
   echo "[pipeline] [4/4] exporting to the Tessera wire ..."
   # The same priced inputs the preflight just validated, handed to the encode:
   # the Hessian that shaped the priced bytes and the static activation scales
@@ -2570,6 +2585,7 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
     --plan-json "$TESSERA_PLAN" \
     --device "$EXPORT_DEVICE" \
     "${TESSERA_PRICED_INPUT_ARGS[@]}" \
+    "${TESSERA_CACHED_UNIT_ARGS[@]}" \
     2>&1 | tee "${WORK_DIR}/logs/export.log"
 
   echo
