@@ -64,7 +64,7 @@ def _projection(experts=(0, 1), *, stacks=(STACK,), n=8, k=4) -> dict:
                 tensors[unit["tensor"]] = SHARD
         stack_entries[stack] = {
             "source_layout": tep.SOURCE_LAYOUT_UNPACKED, "grid": "E4M3", "q256": 1024,
-            "experts": list(experts), "units": units,
+            "experts": len(experts), "units": units,
         }
     return {
         "schema": tep.PROJECTION_SCHEMA,
@@ -207,7 +207,8 @@ def test_bind_accepts_the_producers_whole_unpacked_units():
     (lambda p: p["stacks"][STACK]["units"][0].update(
         tensor=f"{STACK}.9.w1.weight", source_tensor=f"{STACK}.9.w1.weight"),
      "the profile does not declare"),
-    (lambda p: p["stacks"][STACK].update(experts=[0]), "experts .* disagree"),
+    (lambda p: p["stacks"][STACK].update(experts=1), "experts .* disagree"),
+    (lambda p: p["stacks"][STACK].update(experts=[0, 1]), "experts .* disagree"),
     (lambda p: p["stacks"].pop(STACK), "does not plan stacks"),
     (lambda p: p["source"].pop("tensors"), "source identity must carry exactly"),
     (lambda p: p["source"]["tensors"].pop(f"{STACK}.0.w1.weight"),

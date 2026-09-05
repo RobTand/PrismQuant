@@ -291,8 +291,11 @@ def bind_expert_projection(projection: Any, *,
         if undeclared:
             raise ExpertProjectionError(
                 f"{stack}: producer projection does not cover declared units {undeclared}")
+        # The producer states the stack's expert COUNT (``plan_expert_stack``
+        # has already refused a gap or an undeclared index against
+        # config.json); its units must then be exactly ``range(count)``.
         planned = entry.get("experts")
-        if not isinstance(planned, list) or sorted(planned) != sorted(experts):
+        if type(planned) is not int or sorted(experts) != list(range(planned)):
             raise ExpertProjectionError(
                 f"{stack}: producer stack experts {planned!r} disagree with its units' "
                 f"experts {sorted(experts)}")

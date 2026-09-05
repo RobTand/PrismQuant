@@ -4,6 +4,16 @@ As of: 2026-09-05 · `claude/pq-183-packed-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
+expert count as the producer states it** (§4.10; PrismaQuant #183).
+`bind_expert_projection` read the stack's `experts` field as a list of
+indices; the producer (`plan_expert_stack`) states the COUNT, having already
+refused a gap or an undeclared index against `config.json`. The binder now
+requires an integer count whose units are exactly `range(count)`; a list is
+refused. Found by the first real run of the tool inside the campaign gate.
+Gate: `tests/test_tessera_expert_projection.py` (pre-fix:
+`producer stack experts 2 disagree with its units' experts [0, 1]`).
+
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the producer's
 expert projection, read in one place** (§4.10, §9.4; PrismaQuant #183).
 `prismaquant/tessera_expert_projection.py` is the only reader of Tessera's
 `tessera.expert_projection.v1` answer (`experiments/tessera_producer_plan.py`,
@@ -5815,6 +5825,7 @@ Two properties make the numbers comparable with the rest of the menu:
   stored beside the render in the cache. Not two code paths that agree — one
   object. This proves the cached wire is the priced wire, not that an export
   or serving runtime reused it; those paths owe their own exact-byte and
+  served receipts.
   served receipts. The packed bridge remains tracked by PrismaQuant #183.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
