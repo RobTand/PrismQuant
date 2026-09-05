@@ -22,8 +22,13 @@ never against a fixture this repository wrote for itself:
 The evidence gate itself is the subject of the second half. What it refuses is
 a MEASURED serving defect -- a greedy smoke the runtime recorded as degenerate
 -- and not a structure. Nothing in this repository names ``routed_moe`` as
-ineligible; the two cells refused today are refused for what was measured on
-them.
+ineligible. From contract v17 through v20 the two routed-MoE cells were refused
+for what was measured on them; contract v21 (Tessera #313) re-measured that
+smoke through the checkpoint's own chat template and records it clean, so the
+installed table admits all ten cells and the refusal grammar is exercised here
+on the historical shape -- the v17 smoke transplanted back onto the installed
+routed-MoE cells (``_with_repetitive_smoke``), never on a cell this repository
+invented.
 """
 import copy
 import hashlib
@@ -72,6 +77,27 @@ def _cell(payload, cell_id):
         if cell["id"] == cell_id:
             return cell
     raise AssertionError(f"the installed contract publishes no cell {cell_id!r}")
+
+
+#: The smoke the routed-MoE cells published from contract v17 through v20: a
+#: greedy generation that degenerated, on a receipt of Tessera's own. v21
+#: retired it for a recorded smoke; the gate's refusal half is read on it.
+REPETITIVE_RECEIPT = "docs/measurements/tessera-lfm-campaign-2026-09-04.md"
+
+
+def _with_repetitive_smoke(payload, *cell_ids):
+    moved = copy.deepcopy(payload)
+    for cell_id in cell_ids or (MOE_DECODE, MOE_BATCH):
+        smoke = _cell(moved, cell_id)["evidence"]["smoke"]
+        smoke["status"] = "repetitive"
+        smoke["receipt"] = REPETITIVE_RECEIPT
+    return moved
+
+
+def _table_of(payload):
+    return lane._parse_table(payload["lane_eligibility"], payload["formats"],
+                             "", "", "x",
+                             native_extensions=payload["native_extensions"])
 
 
 def _moe_context(payload):
@@ -179,8 +205,22 @@ def test_an_unknown_smoke_status_is_refused_never_read_as_passing(payload):
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
-def test_the_routed_moe_cells_are_refused_on_their_own_recorded_smoke(table):
-    refused = {c.id: lane.cell_evidence_admits(c) for c in table.cells
+def test_the_installed_table_admits_every_cell_on_its_own_recorded_smoke(table):
+    """v21: the routed-MoE smoke reads ``recorded`` and nothing is refused."""
+    for cell in table.cells:
+        assert cell.evidence.smoke_status == lane.EVIDENCE_SMOKE_RECORDED or \
+            cell.evidence.smoke_status == "not_recorded", cell.id
+        assert lane.cell_evidence_admits(cell) == (True, ""), cell.id
+    for cell_id in (MOE_DECODE, MOE_BATCH):
+        moe = next(c for c in table.cells if c.id == cell_id)
+        assert moe.evidence.smoke_status == lane.EVIDENCE_SMOKE_RECORDED
+        assert moe.evidence.smoke_receipt == (
+            "docs/measurements/moe-smoke-recorded-2026-09-05.md")
+
+
+def test_the_routed_moe_cells_were_refused_on_the_smoke_v17_through_v20_published(payload):
+    refused = {c.id: lane.cell_evidence_admits(c)
+               for c in _table_of(_with_repetitive_smoke(payload)).cells
                if not lane.cell_evidence_admits(c)[0]}
     assert set(refused) == {MOE_DECODE, MOE_BATCH}
     for cell_id, (_, why) in refused.items():
@@ -195,23 +235,38 @@ def test_no_dense_cell_is_refused_so_the_shipping_menu_does_not_move(table):
 
 
 def test_the_gate_is_evidence_not_structure(table, payload):
-    """Flip the smoke, and the same routed-MoE cells admit.
+    """Flip the smoke either way and the same routed-MoE cells follow it.
 
     This is what makes the refusal a MEASURED fact rather than a ban: nothing
-    in the predicate mentions ``routed_moe``, so the day Tessera records a
-    clean smoke the cell stops being refused HERE -- and is stopped instead by
-    the pin, which is a review event with a human in it.
+    in the predicate mentions ``routed_moe``. The day Tessera recorded a clean
+    smoke (contract v21) the cells stopped being refused HERE and were stopped
+    instead by the pin -- a review event with a human in it, which is the
+    re-pin this table was read under. Transplant the degenerate smoke back and
+    the same two cells are refused again; flip one back and it alone admits.
     """
-    healed = copy.deepcopy(payload)
-    for cell_id in (MOE_DECODE, MOE_BATCH):
-        _cell(healed, cell_id)["evidence"]["smoke"]["status"] = "recorded"
-    parsed = lane._parse_table(healed["lane_eligibility"], healed["formats"],
-                               "", "", "x",
-                               native_extensions=healed["native_extensions"])
-    assert all(lane.cell_evidence_admits(c)[0] for c in parsed.cells)
+    assert all(lane.cell_evidence_admits(c)[0] for c in table.cells)
+    both = _table_of(_with_repetitive_smoke(payload))
+    assert {c.id for c in both.cells if not lane.cell_evidence_admits(c)[0]} == {
+        MOE_DECODE, MOE_BATCH}
+    one = _table_of(_with_repetitive_smoke(payload, MOE_BATCH))
+    assert {c.id for c in one.cells if not lane.cell_evidence_admits(c)[0]} == {
+        MOE_BATCH}
 
 
-def test_the_export_gate_refuses_the_routed_moe_unit_and_names_the_cell(table, payload):
+def test_the_export_gate_resolves_the_routed_moe_unit_backed_on_the_recorded_smoke(table, payload):
+    route = lane.resolve_unit_route(
+        _facts("routed_moe"), table, platform="sm_121", residency="resident",
+        runtime_image=_moe_context(payload).runtime_image, execution_mode="eager")
+    assert route.route_status == lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    assert {r.cell_id for r in route.regimes} == {MOE_DECODE, MOE_BATCH}
+    for regime in route.regimes:
+        assert regime.evidence_grade, (
+            "principle 12: a shipcard has to say which grade attested each unit")
+
+
+def test_the_export_gate_refuses_the_routed_moe_unit_and_names_the_cell(payload):
+    """The v17-through-v20 shape: refused, and the refusal names the cell."""
+    table = _table_of(_with_repetitive_smoke(payload))
     route = lane.resolve_unit_route(
         _facts("routed_moe"), table, platform="sm_121", residency="resident",
         runtime_image=_moe_context(payload).runtime_image, execution_mode="eager")
@@ -238,14 +293,22 @@ def test_the_dense_unit_still_resolves_backed_with_its_grade_recorded(table, pay
 
 def test_the_development_menu_reads_the_same_predicate(payload):
     parsed = _parse(payload)
-    assert parsed.native_cells(FAMILY, RATE,
-                               serving_context=_moe_context(payload)) == ()
+    admitted = parsed.native_cells(FAMILY, RATE, serving_context=_moe_context(payload))
+    assert {cell.cell_id for cell in admitted} == {MOE_DECODE, MOE_BATCH}
+    historical = _parse(_with_repetitive_smoke(payload))
+    assert historical.native_cells(FAMILY, RATE,
+                                   serving_context=_moe_context(payload)) == ()
 
 
 def test_the_renderer_names_the_evidence_when_it_refuses(payload, table, monkeypatch):
     formats = {row["family"]: row for row in payload["formats"]}
-    monkeypatch.setattr(render, "_pinned_serving_table", lambda: (table, formats))
     monkeypatch.setattr(render, "_release_pin_satisfied", lambda: True)
+    monkeypatch.setattr(render, "_pinned_serving_table", lambda: (table, formats))
+    admitted, reason = render.tessera_lane_admission(
+        NAME, serving_context=_moe_context(payload))
+    assert admitted, reason
+    historical = _table_of(_with_repetitive_smoke(payload))
+    monkeypatch.setattr(render, "_pinned_serving_table", lambda: (historical, formats))
     admitted, reason = render.tessera_lane_admission(
         NAME, serving_context=_moe_context(payload))
     assert not admitted
@@ -254,10 +317,14 @@ def test_the_renderer_names_the_evidence_when_it_refuses(payload, table, monkeyp
 
 
 def test_the_evidence_block_is_part_of_the_reviewed_answer(payload):
-    """A flipped smoke must re-stale the pin, not silently promote a route."""
+    """A flipped smoke must re-stale the pin, not silently promote a route.
+
+    v21 is the case in point: moving the routed-MoE smoke from ``repetitive``
+    to ``recorded`` moved the reviewed answer, and the re-pin that admitted
+    the cells was a human reading that diff.
+    """
     before = contract.contract_answer(_parse(payload))
-    moved = copy.deepcopy(payload)
-    _cell(moved, MOE_DECODE)["evidence"]["smoke"]["status"] = "recorded"
-    after = contract.contract_answer(_parse(moved))
+    after = contract.contract_answer(_parse(_with_repetitive_smoke(payload, MOE_DECODE)))
     assert before != after
-    assert contract._answer_drift(before, after)
+    drift = contract._answer_drift(before, after)
+    assert drift and any(MOE_DECODE in line for line in drift)

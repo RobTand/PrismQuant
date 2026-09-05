@@ -147,27 +147,44 @@ TESSERA_DEV_PIN_ENV = "PRISMAQUANT_TESSERA_DEV_PIN"
 #: The Tessera commit this pin's answer was reviewed against.  Declared and
 #: recorded; NOT compared to anything.  A moving ``master`` is not a review
 #: event -- :data:`TESSERA_DEV_PIN_ANSWER` is what refuses.  Last re-read at
-#: contract v17 / lane schema v6 (Tessera 5acc2a6, its PR #176), which is the
-#: same commit ``tessera_serving_runtime_pin`` now binds: the two pins name
-#: ONE object, and letting them drift is how two of this repository's own spec
-#: files came to disagree about one runtime.
+#: contract v21 / lane schema v8 (Tessera master b8b1cb38, the merge of its
+#: #313; the release e78959ed carried v20), which is the same commit
+#: ``tessera_serving_runtime_pin`` binds: the two pins name ONE object, and
+#: letting them drift is how two of this repository's own spec files came to
+#: disagree about one runtime.  Between the v17 review and this one the
+#: answer moved in exactly four places and nowhere else -- no family, rung,
+#: route status, launch, image or version moved, and the ten cell ids are the
+#: same ten in the same order: the lane schema (v6 -> v8); every cell's
+#: evidence gained ``smoke.attribution`` / ``smoke.control`` (v7) and
+#: ``artifact`` (v8); every native extension gained its ``lane`` predicate
+#: (v20); and the two ``routed_moe`` cells' ``smoke.status`` moved from
+#: ``repetitive`` to ``recorded`` (v21, Tessera #313, receipt
+#: ``docs/measurements/moe-smoke-recorded-2026-09-05.md``), with the v18
+#: control retired from them (``attribution: unattributed``, ``control:
+#: null`` -- the shape the BF16 cells already used).
 #:
 #: The answer below TRANSCRIBES what the runtime publishes, including its two
 #: ``routed_moe`` cells.  Transcribing them does not admit them: admission is
-#: a separate predicate (``lane_eligibility.cell_evidence_admits``) and it
-#: refuses both, on the degenerate greedy smoke the runtime itself records.
-#: Promoting routed-MoE Tessera is Rob's decision under principle 9, and the
-#: mechanism that keeps it his is exactly this: the evidence block is part of
-#: the answer, so the day Tessera records a clean smoke the pin goes stale and
-#: a human re-reviews before anything is admitted.
-TESSERA_DEV_PIN_COMMIT = "5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68"
+#: a separate predicate (``lane_eligibility.cell_evidence_admits``) that
+#: refuses on ``smoke.status`` alone.  Under v17 and v20 it refused both
+#: routed-MoE cells on the degenerate greedy smoke the runtime recorded
+#: (``repetitive``); under v21 the runtime records a smoke through the
+#: checkpoint's own chat template that does not degenerate on either arm, the
+#: status reads ``recorded``, and the SAME status-only rule admits both cells
+#: with no predicate change here (prismaquant #198, option C).  That is the
+#: mechanism working as designed: the evidence block is part of the answer,
+#: so the clean smoke re-staled the pin and this literal's diff is the review
+#: a human reads before anything is admitted.  Whether routed-MoE Tessera is
+#: PROMOTED past the menu is still Rob's decision under principle 9 (#198
+#: stays open for it).
+TESSERA_DEV_PIN_COMMIT = "b8b1cb38d581721d084860db1ae4a25b6afae50f"
 
 #: sha256 of ``tessera/serving/runtime_contract.json`` at that commit -- the
 #: bytes a human read when the answer below was accepted.  Recorded, and
 #: compared into provenance against the bytes this run read, so prose-only
 #: drift is visible; it is not the refusal.
 TESSERA_DEV_PIN_CONTRACT_SHA256 = (
-    "ba3a3c69027a11f7bf9ef570867c58d608d0865c3e6a17dfeea53ba43ce055e6"
+    "34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e"
 )
 
 #: The ANSWER this pin was reviewed against -- every value the ADMISSION
@@ -180,7 +197,7 @@ TESSERA_DEV_PIN_CONTRACT_SHA256 = (
 #: routes that need it, or what runs when it is absent) does -- with a
 #: field-level diff naming it.  The git diff of this literal is the review.
 TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
- 'lane_schema': 'tessera.lane-eligibility.v6',
+ 'lane_schema': 'tessera.lane-eligibility.v8',
  'required_regimes': ['batch', 'decode'],
  'quant_method': 'tessera',
  'fused_module': {'schema': 'tessera.fused-module.v1',
@@ -201,7 +218,8 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
                         'when_unavailable': {'resident': {'status': 'substituted',
                                                           'decoder': 'torch_materialize_stock'},
                                              'streamed': {'status': 'refused',
-                                                          'decoder': None}}},
+                                                          'decoder': None}},
+                        'lane': {'decoder': 'native_span2', 'requires': None}},
                        {'module_name_prefix': 'tessera_window_gemv',
                         'filename_glob': 'tessera_window_gemv*.so',
                         'match': 'basename_fnmatch',
@@ -209,7 +227,17 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
                         'when_unavailable': {'resident': {'status': 'substituted',
                                                           'decoder': 'torch_window'},
                                              'streamed': {'status': 'substituted',
-                                                          'decoder': 'torch_window'}}}],
+                                                          'decoder': 'torch_window'}},
+                        'lane': {'decoder': 'window_gemv',
+                                 'requires': {'column_rates': [1, 2, 4],
+                                              'window_bits': [14],
+                                              'body': 'window',
+                                              'plane': 'channel',
+                                              'release_overrides': False,
+                                              'diagonals': False,
+                                              'rotation': ['none'],
+                                              'start_state': False,
+                                              'grid_arities': [1]}}}],
  'families': {'TESSERA_BF16_K1': {'reader_rate_range_q256': [256, 4096],
                                   'attested_rungs_q256': [1792],
                                   'max_world_size': 1},
@@ -236,7 +264,12 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['kl_lower_bound', 'recorded', ['topk_intersection_lower_bound@1024']]],
+            ['kl_lower_bound',
+             'recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             None]],
            ['tessera_bf16_k1_dense_sm121_decode',
             'sm_121',
             'TESSERA_BF16_K1',
@@ -254,7 +287,7 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['route_only', 'recorded', []]],
+            ['route_only', 'recorded', [], 'unattributed', None, None]],
            ['tessera_e2m1_k2_dense_sm121_batch',
             'sm_121',
             'TESSERA_E2M1_K2',
@@ -272,7 +305,12 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['kl_lower_bound', 'not_recorded', ['topk_intersection_lower_bound@1024']]],
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             None]],
            ['tessera_e2m1_k2_dense_sm121_decode',
             'sm_121',
             'TESSERA_E2M1_K2',
@@ -290,7 +328,7 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['route_only', 'not_recorded', []]],
+            ['route_only', 'not_recorded', [], 'unattributed', None, None]],
            ['tessera_e4m3_k1_dense_sm121_batch_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -308,7 +346,17 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['kl_lower_bound', 'not_recorded', ['topk_intersection_lower_bound@1024']]],
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower']]],
            ['tessera_e4m3_k1_dense_sm121_batch_streamed',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -327,7 +375,17 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['kl_lower_bound', 'not_recorded', ['topk_intersection_lower_bound@1024']]],
+            ['kl_lower_bound',
+             'not_recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower']]],
            ['tessera_e4m3_k1_dense_sm121_decode_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -345,7 +403,17 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['compiled', 'eager']},
             '0.28.0',
             '2.13.0+cu130',
-            ['route_only', 'not_recorded', []]],
+            ['route_only',
+             'not_recorded',
+             [],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower']]],
            ['tessera_e4m3_k1_dense_sm121_decode_streamed',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -366,7 +434,15 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
             ['kl_lower_bound',
              'not_recorded',
              ['topk_intersection_lower_bound@1024',
-              'topk_intersection_lower_bound@1024']]],
+              'topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             ['gbfam/qwen3-0.6b-tessera-e4m3-reach-gridbook',
+              '8070ec6c4e0448826cda3f3f8d9401a125444e3b',
+              '331703661baaa67ed73900c3d9e99f300fdc8415',
+              'model.layers.0.mlp.down_proj',
+              'different',
+              'lower']]],
            ['tessera_e4m3_k1_routed_moe_sm121_batch_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -384,7 +460,12 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['eager']},
             '0.28.1rc1.dev397+gfd4a15126.d20260904',
             '2.13.0+cu130',
-            ['kl_lower_bound', 'repetitive', ['topk_intersection_lower_bound@1024']]],
+            ['kl_lower_bound',
+             'recorded',
+             ['topk_intersection_lower_bound@1024'],
+             'unattributed',
+             None,
+             None]],
            ['tessera_e4m3_k1_routed_moe_sm121_decode_resident',
             'sm_121',
             'TESSERA_E4M3_K1',
@@ -402,7 +483,7 @@ TESSERA_DEV_PIN_ANSWER = {'schema': 'tessera.runtime-contract.v1',
              'execution_modes': ['eager']},
             '0.28.1rc1.dev397+gfd4a15126.d20260904',
             '2.13.0+cu130',
-            ['route_only', 'repetitive', []]]]}
+            ['route_only', 'recorded', [], 'unattributed', None, None]]]}
 
 #: Route statuses under which a cell says a native route EXECUTES.
 _NATIVE_ROUTE_STATUSES = frozenset(

@@ -217,14 +217,18 @@ def test_the_packaged_tessera_contract_parses_and_every_cell_names_the_plugin():
         TESSERA_SERVING_PLUGIN_NAME]
     assert {e["kind"] for e in formats.values()} == {FORMAT_KIND_TESSERA_WIRE}
     assert table.trellis_families == frozenset(formats)
-    # Since contract v17 the table DECLARES routed_moe -- and publishes, on
-    # those cells, the measurement that refuses them: a greedy smoke that
-    # degenerated. Declaring a structure is not admitting it, so the honest
-    # assertion is both halves at once.
+    # Since contract v17 the table DECLARES routed_moe. Declaring a structure
+    # is not admitting it: v17 through v20 published, on those cells, a greedy
+    # smoke that degenerated and the evidence gate refused them; v21 (Tessera
+    # #313) re-measured the smoke through the checkpoint's own chat template
+    # and records it clean, so the SAME gate admits them. The honest assertion
+    # is that admission follows the cells' own evidence, read from the table.
     assert table.structures == ("dense", "routed_moe")
     routed = [cell for cell in table.cells if cell.structure == "routed_moe"]
-    assert routed and all(not cell_evidence_admits(cell)[0]
-                          for cell in routed)
+    assert routed
+    for cell in routed:
+        assert cell.evidence.smoke_status == "recorded", cell.id
+        assert cell_evidence_admits(cell) == (True, ""), cell.id
 
 
 def test_a_cell_claiming_a_route_with_no_plugin_requirement_is_refused(tmp_path):

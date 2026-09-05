@@ -34,16 +34,23 @@ SHA=$(git -C /home/rob/tessera rev-parse HEAD)
 git -C /home/rob/tessera show "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
 ```
 
-The pin below was bound that way on 2026-09-04, when master was `5acc2a6f`.
-Re-check what is recorded against the COMMIT, never against a later `HEAD`:
+The pin below was first bound that way on 2026-09-04, when master was
+`5acc2a6f` (contract v17), and re-bound on 2026-09-05 to Tessera master at
+`b8b1cb38` — the merge of Tessera #313 (contract v21, lane schema v8). The
+release checkout Rob named, `e78959ed`, carried contract v20; #313 is the one
+published move past it (the routed-MoE cells' smoke, re-measured and now
+`recorded`; PrismaQuant #198 option C). Re-check what is recorded against the
+COMMIT, never against a later `HEAD`:
 
 ```bash
-git -C /home/rob/tessera show 5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68:src/tessera/serving/runtime_contract.json | sha256sum
+git -C /home/rob/tessera show b8b1cb38d581721d084860db1ae4a25b6afae50f:src/tessera/serving/runtime_contract.json | sha256sum
 ```
 
-Re-verified 2026-09-05T02:35Z: master was 17 commits ahead of the pin and still
-packaged byte-identical contract bytes, so the pin still admitted. A Tessera
-commit re-stales this pin only when it changes what the runtime publishes.
+At the re-pin, master (`8446227d`, nine merges / 44 commits ahead of the pin,
+through Tessera #315 and on) still packaged byte-identical contract bytes
+(`sha256sum` of the file at that commit gives the digest above), so the pin
+admits master too. A Tessera commit re-stales this pin only when it changes what the runtime
+publishes. No tag names `b8b1cb38`, so `version_is_release` stays `false`.
 
 **`version_is_release` is advisory.** Still required, still parsed, still
 recorded, and still unable to be `true` over a PENDING commit — so it keeps
@@ -129,14 +136,14 @@ both exists and is read by a gate on this side. When Tessera publishes wheels, a
 
 ## Moving the pin
 
-Verified against the installed Tessera on 2026-09-04:
+Verified against the installed Tessera on 2026-09-05:
 
 ```
-commit           5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68
-contract_sha256  ba3a3c69027a11f7bf9ef570867c58d608d0865c3e6a17dfeea53ba43ce055e6
+commit           b8b1cb38d581721d084860db1ae4a25b6afae50f
+contract_sha256  34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e
 versions.tessera 0.1.0
-contract_version 17
-lane schema      tessera.lane-eligibility.v6
+contract_version 21
+lane schema      tessera.lane-eligibility.v8
 ```
 
 Five values, two files, one commit. Resolve the new commit, digest and version

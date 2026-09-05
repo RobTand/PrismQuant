@@ -145,23 +145,36 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA2
 #:     SHA=$(git -C /home/rob/tessera rev-parse HEAD)
 #:     git -C /home/rob/tessera show "$SHA:src/tessera/serving/runtime_contract.json" | sha256sum
 #:
-#: Recorded 2026-09-04T21:29-04:00 against Tessera master, which was
-#: 5acc2a6f then (contract v17, lane schema
-#: ``tessera.lane-eligibility.v6``, its PR #176).  Re-check it against the
-#: COMMIT rather than a past HEAD, which nobody can re-run::
+#: First recorded 2026-09-04T21:29-04:00 against Tessera master at 5acc2a6f
+#: (contract v17, lane schema ``tessera.lane-eligibility.v6``, its PR #176).
+#: Re-pinned 2026-09-05 to Tessera master at b8b1cb38 -- the merge of its
+#: PR #313 (contract v21, lane schema ``tessera.lane-eligibility.v8``).  The
+#: release checkout Rob named, e78959ed, carried contract v20; between the
+#: two the ONLY published move is the routed-MoE cells' smoke, which #313
+#: re-measured through the checkpoint's own chat template and records as
+#: ``recorded`` (receipt ``docs/measurements/moe-smoke-recorded-2026-09-05.md``;
+#: prismaquant #198 option C).  Relative to the first pin (v17) the lane table
+#: also gained a smoke control and attribution (v7), an encoder artifact (v8)
+#: and the per-extension lane predicate (v20), and
+#: ``tessera_runtime_contract.TESSERA_DEV_PIN_ANSWER`` moved with all of it in
+#: the same commit.  Re-check it against the COMMIT rather than a past HEAD,
+#: which nobody can re-run::
 #:
-#:     git -C /home/rob/tessera show 5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68:src/tessera/serving/runtime_contract.json | sha256sum
+#:     git -C /home/rob/tessera show b8b1cb38d581721d084860db1ae4a25b6afae50f:src/tessera/serving/runtime_contract.json | sha256sum
 #:
-#: Re-verified 2026-09-05T02:35Z: Tessera master had moved 17 commits past this
-#: commit and still packages byte-identical contract bytes, so the pin still
-#: admits.  That is the property this design is for -- a Tessera commit only
-#: re-stales the pin when it changes what the runtime PUBLISHES.
+#: At the re-pin Tessera master was 8446227d, nine merges (44 commits) past
+#: this commit, and still packaged byte-identical contract bytes (same
+#: ``sha256sum`` at that commit), so the pin admits master too.  That is the property this design is for -- a Tessera
+#: commit only re-stales the pin when it changes what the runtime PUBLISHES.
+#: No git tag names this commit, so ``version_is_release`` stays false in the
+#: JSON beside this module: ``0.1.0`` is what the checkout's ``pyproject``
+#: says, not a cut release.
 TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
-    "5acc2a6fc98b97ed41fe1d7cac6933eb3e3bbc68"
+    "b8b1cb38d581721d084860db1ae4a25b6afae50f"
 )
 TESSERA_SERVING_RUNTIME_PINNED_VERSION = "0.1.0"
 TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (
-    "ba3a3c69027a11f7bf9ef570867c58d608d0865c3e6a17dfeea53ba43ce055e6"
+    "34f1da7977f1aa155cd2ff18b584e5c35a6089b648bb4a51d449fc25082a2c3e"
 )
 
 #: The vLLM plugin entry-point name the released runtime registers.  It is the

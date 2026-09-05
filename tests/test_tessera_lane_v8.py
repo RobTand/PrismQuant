@@ -19,9 +19,20 @@ What this reader does with the new fields is the subject of the second half:
 it parses them closed, refuses by name what it does not understand, carries
 them into the refusal text and into route provenance, and does NOT adopt the
 consumer rule Tessera's v18 changelog states ("refuses on status 'repetitive'
-AND attribution other than 'shared_with_reference'"). Applying that rule would
-ADMIT the two routed-MoE cells, which is a promotion decision and not a
-reader's; prismaquant #198 holds it for Rob.
+AND attribution other than 'shared_with_reference'"). On the v20 table that
+rule would have ADMITTED the two routed-MoE cells on the strength of a control
+alone, which is a promotion decision and not a reader's; prismaquant #198 put
+it to Rob and Tessera answered with a measurement: contract v21 (its #313)
+re-ran the smoke through the checkpoint's own chat template, both cells read
+``status: recorded`` with the control retired (``control: null``,
+``attribution: unattributed`` -- the shape the dense cells already used), and
+the unchanged status-only rule admits them.
+
+Since v21 no installed cell carries a control, so the control GRAMMAR is
+exercised here on the installed routed-MoE cells with the v20 control
+transplanted back (``_with_v20_control``: the exact block v20 published), and
+the refusal text on that same shape. Everything about the installed table is
+still read off the installed table.
 """
 import copy
 import hashlib
@@ -43,6 +54,18 @@ MOE_BATCH = "tessera_e4m3_k1_routed_moe_sm121_batch_resident"
 DENSE_DECODE = "tessera_e4m3_k1_dense_sm121_decode_resident"
 E2M1_DECODE = "tessera_e2m1_k2_dense_sm121_decode"
 CONTROL_RECEIPT = "docs/measurements/moe-evidence-debt-2026-09-04.md"
+RECORDED_RECEIPT = "docs/measurements/moe-smoke-recorded-2026-09-05.md"
+REPETITIVE_RECEIPT = "docs/measurements/tessera-lfm-campaign-2026-09-04.md"
+
+#: The smoke block contract v20 published on both routed-MoE cells (its #195
+#: control over the v17 degenerate smoke), verbatim. v21 retired it.
+V20_SMOKE = {
+    "status": "repetitive",
+    "receipt": REPETITIVE_RECEIPT,
+    "attribution": "shared_with_reference",
+    "control": {"reference": "bf16_source", "outcome": "identical_completion",
+                "receipt": CONTROL_RECEIPT},
+}
 
 
 def _raw() -> tuple[dict, str]:
@@ -84,6 +107,14 @@ def _parsed_cell(table, cell_id):
     raise AssertionError(cell_id)
 
 
+def _with_v20_control(payload, *cell_ids):
+    """The installed table with v20's smoke transplanted onto routed-MoE cells."""
+    moved = copy.deepcopy(payload)
+    for cell_id in cell_ids or (MOE_DECODE, MOE_BATCH):
+        _cell(moved, cell_id)["evidence"]["smoke"] = copy.deepcopy(V20_SMOKE)
+    return moved
+
+
 def _facts(structure):
     return lane.UnitStructuralFacts(
         qname="fixture.weight", format_name=NAME, payload_family=FAMILY,
@@ -115,7 +146,18 @@ def test_every_cell_publishes_a_derived_attribution(table):
             cell.evidence.smoke_control)
 
 
-def test_the_routed_moe_cells_name_the_control_they_were_compared_against(table):
+def test_the_routed_moe_cells_read_recorded_with_the_v20_control_retired(table):
+    """v21 (Tessera #313): the smoke was re-measured, not re-attributed."""
+    for cell_id in (MOE_DECODE, MOE_BATCH):
+        evidence = _parsed_cell(table, cell_id).evidence
+        assert evidence.smoke_status == lane.EVIDENCE_SMOKE_RECORDED
+        assert evidence.smoke_receipt == RECORDED_RECEIPT
+        assert evidence.smoke_control is None
+        assert evidence.smoke_attribution == lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED
+
+
+def test_the_v20_control_reads_as_v20_published_it(payload):
+    table = _table(_with_v20_control(payload))
     for cell_id in (MOE_DECODE, MOE_BATCH):
         evidence = _parsed_cell(table, cell_id).evidence
         assert evidence.smoke_status == lane.EVIDENCE_SMOKE_REPETITIVE
@@ -126,15 +168,14 @@ def test_the_routed_moe_cells_name_the_control_they_were_compared_against(table)
         assert evidence.smoke_control.receipt == CONTROL_RECEIPT
 
 
-def test_the_dense_cells_carry_no_control_and_read_unattributed(table):
+def test_every_installed_cell_carries_no_control_and_reads_unattributed(table):
     for cell in table.cells:
-        if cell.structure == lane.STRUCTURE_DENSE:
-            assert cell.evidence.smoke_control is None, cell.id
-            assert cell.evidence.smoke_attribution == lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED
+        assert cell.evidence.smoke_control is None, cell.id
+        assert cell.evidence.smoke_attribution == lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED
 
 
 def test_an_attribution_its_control_does_not_derive_is_refused(payload):
-    broken = copy.deepcopy(payload)
+    broken = _with_v20_control(payload)
     _cell(broken, MOE_DECODE)["evidence"]["smoke"]["attribution"] = "unattributed"
     with pytest.raises(lane.LaneEligibilityError,
                        match="the attribution is read off the control"):
@@ -153,7 +194,7 @@ def test_a_not_recorded_smoke_that_names_a_control_is_refused(payload):
     broken = copy.deepcopy(payload)
     smoke = _cell(broken, E2M1_DECODE)["evidence"]["smoke"]
     assert smoke["status"] == "not_recorded"
-    smoke["control"] = dict(_cell(payload, MOE_DECODE)["evidence"]["smoke"]["control"])
+    smoke["control"] = dict(V20_SMOKE["control"])
     smoke["attribution"] = "shared_with_reference"
     with pytest.raises(lane.LaneEligibilityError,
                        match="nothing for a reference to have matched"):
@@ -166,14 +207,14 @@ def test_a_not_recorded_smoke_that_names_a_control_is_refused(payload):
     ("receipt", "notes/moe.md", "control.receipt must be a repository path"),
 ])
 def test_a_control_this_reader_cannot_name_is_refused(payload, member, value, expect):
-    broken = copy.deepcopy(payload)
+    broken = _with_v20_control(payload)
     _cell(broken, MOE_DECODE)["evidence"]["smoke"]["control"][member] = value
     with pytest.raises(lane.LaneEligibilityError, match=expect):
         _table(broken)
 
 
 def test_a_control_with_a_field_this_reader_does_not_know_is_refused(payload):
-    broken = copy.deepcopy(payload)
+    broken = _with_v20_control(payload)
     _cell(broken, MOE_DECODE)["evidence"]["smoke"]["control"]["scope"] = "same prompt"
     with pytest.raises(lane.LaneEligibilityError, match="unknown field"):
         _table(broken)
@@ -256,6 +297,7 @@ def test_an_artifact_with_a_field_this_reader_does_not_know_is_refused(payload):
 # Older grammars keep their own fixtures
 # ---------------------------------------------------------------------------
 def test_a_v7_table_reads_with_no_artifact_and_a_v6_table_with_no_control(payload):
+    payload = _with_v20_control(payload)      # a v7 table with a control to lose
     v7 = down_convert_lane_table(payload, lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V7)
     parsed = _table(v7)
     assert parsed.schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V7
@@ -284,7 +326,16 @@ def test_a_v7_field_on_a_v6_table_is_refused(payload):
 # ---------------------------------------------------------------------------
 # The gate: what the reader does with what it now reads
 # ---------------------------------------------------------------------------
-def test_the_routed_moe_refusal_names_the_control_and_the_rule_it_did_not_apply(table):
+def test_the_routed_moe_cells_admit_on_the_recorded_smoke(table):
+    """The status-only rule, applied to what v21 publishes: nothing refuses."""
+    for cell_id in (MOE_DECODE, MOE_BATCH):
+        assert lane.cell_evidence_admits(_parsed_cell(table, cell_id)) == (True, "")
+
+
+def test_the_routed_moe_refusal_names_the_control_and_the_rule_it_did_not_apply(payload):
+    """The v20 shape, read by the same rule: refused, and the refusal says
+    it read the control and chose not to decide on it."""
+    table = _table(_with_v20_control(payload))
     for cell_id in (MOE_DECODE, MOE_BATCH):
         admitted, why = lane.cell_evidence_admits(_parsed_cell(table, cell_id))
         assert not admitted
@@ -303,32 +354,52 @@ def test_no_dense_cell_is_refused(table):
             assert lane.cell_evidence_admits(cell)[0], cell.id
 
 
-def test_the_status_alone_still_refuses_whatever_the_attribution_says(payload):
+def test_the_status_alone_decides_whatever_the_attribution_says(payload):
     """The rule this repository applies, stated as a test so a change is a review.
 
-    Tessera's v18 changelog expects a consumer to admit ``repetitive`` when
-    the attribution is ``shared_with_reference``. This reader does not, yet:
-    that admits a structure this producer has never shipped on the strength of
-    a smoke whose only recorded outcome degenerated (prismaquant #198).
+    Tessera's v18 changelog expected a consumer to admit ``repetitive`` when
+    the attribution is ``shared_with_reference``. This reader does not: that
+    would admit a structure this producer has never shipped on the strength of
+    a smoke whose only recorded outcome degenerated (prismaquant #198). The
+    status alone decides -- ``repetitive`` refuses under either attribution,
+    and ``recorded`` (what v21 publishes) admits with no attribution at all.
     """
-    moved = copy.deepcopy(payload)
-    smoke = _cell(moved, MOE_DECODE)["evidence"]["smoke"]
+    shared = _with_v20_control(payload)
+    not_shared = _with_v20_control(payload)
+    smoke = _cell(not_shared, MOE_DECODE)["evidence"]["smoke"]
     smoke["control"]["outcome"] = "different_completion"
     smoke["attribution"] = "not_shared_with_reference"
-    for fixture in (payload, moved):
+    for fixture in (shared, not_shared):
         cell = _parsed_cell(_table(fixture), MOE_DECODE)
         assert not lane.cell_evidence_admits(cell)[0]
+    assert lane.cell_evidence_admits(_parsed_cell(_table(payload), MOE_DECODE))[0]
 
 
-def test_the_export_gate_records_the_attribution_beside_the_refusal(table, payload):
+def test_the_export_gate_records_the_attribution_beside_the_refusal(payload):
     image = _cell(payload, MOE_DECODE)["runtime"]["image"]
     route = lane.resolve_unit_route(
-        _facts("routed_moe"), table, platform="sm_121", residency="resident",
+        _facts("routed_moe"), _table(_with_v20_control(payload)),
+        platform="sm_121", residency="resident",
         runtime_image=image, execution_mode="eager")
     assert route.route_status == lane.ROUTE_STATUS_UNATTESTED
     for regime in route.regimes:
         assert regime.cell_id in (MOE_DECODE, MOE_BATCH)
         assert "shared_with_reference" in regime.detail
+
+
+def test_the_routed_moe_route_resolves_backed_and_carries_its_attribution(table, payload):
+    """v21 on the export gate: the unit resolves, and provenance still says
+    what the smoke was (not) attributed to."""
+    image = _cell(payload, MOE_DECODE)["runtime"]["image"]
+    route = lane.resolve_unit_route(
+        _facts("routed_moe"), table, platform="sm_121", residency="resident",
+        runtime_image=image, execution_mode="eager")
+    assert route.route_status == lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+    assert {r.cell_id for r in route.regimes} == {MOE_DECODE, MOE_BATCH}
+    for regime in route.regimes:
+        recorded = regime.as_dict()
+        assert recorded["evidence_attribution"] == lane.EVIDENCE_ATTRIBUTION_UNATTRIBUTED
+        assert recorded["evidence_artifact"] is None
 
 
 def test_the_dense_route_carries_attribution_and_encoder_scope_into_provenance(table, payload):
@@ -353,12 +424,18 @@ def test_the_attribution_and_artifact_are_part_of_the_reviewed_answer(payload):
     """A moved control or a moved encoder scope must re-stale the pin."""
     before = contract.contract_answer(_parse(payload))
 
-    moved = copy.deepcopy(payload)
-    smoke = _cell(moved, MOE_DECODE)["evidence"]["smoke"]
-    smoke["control"]["outcome"] = "different_completion"
-    smoke["attribution"] = "not_shared_with_reference"
+    # v20's control back on the cell: the pin the v21 re-pin replaced.
+    moved = _with_v20_control(payload, MOE_DECODE)
     after = contract.contract_answer(_parse(moved))
     assert before != after and contract._answer_drift(before, after)
+
+    # and a moved control outcome/attribution on that shape moves it again.
+    moved_again = _with_v20_control(payload, MOE_DECODE)
+    smoke = _cell(moved_again, MOE_DECODE)["evidence"]["smoke"]
+    smoke["control"]["outcome"] = "different_completion"
+    smoke["attribution"] = "not_shared_with_reference"
+    later = contract.contract_answer(_parse(moved_again))
+    assert after != later and contract._answer_drift(after, later)
 
     moved = copy.deepcopy(payload)
     _cell(moved, DENSE_DECODE)["evidence"]["artifact"] = None

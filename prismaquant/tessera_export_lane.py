@@ -262,13 +262,19 @@ def require_declared_structure(model_path: str | Path) -> str:
       -- the runtime measured those routes and published a defect.
 
     The second is why this gate reads admissible cells rather than the
-    vocabulary.  Contract v17 DECLARES ``routed_moe`` and carries two
-    routed-MoE cells, both publishing ``evidence.smoke.status: "repetitive"``:
-    a greedy smoke that degenerated.  Reading the vocabulary alone would let a
-    MoE checkpoint past this gate on the strength of a structure name whose
-    every cell the runtime itself reports as generating incorrectly.  Nothing
-    here bans a structure (principle 1): when Tessera records a clean smoke the
-    refusal lifts on its own, and re-pinning that contract is the review event.
+    vocabulary.  Contract v17 DECLARED ``routed_moe`` while both its routed-MoE
+    cells published ``evidence.smoke.status: "repetitive"`` -- a greedy smoke
+    that degenerated -- so from v17 through v20 this gate refused every
+    routed-MoE unit by the cells' own evidence; v20 added a BF16-source
+    control sharing the symptom (``attribution: shared_with_reference``),
+    which this producer read and still did not admit on (prismaquant #198).
+    Reading the vocabulary alone would have let a MoE checkpoint past this
+    gate on the strength of a structure name whose every cell the runtime
+    itself reported as generating incorrectly.  Nothing here bans a structure
+    (principle 1), and v21 (the pinned commit, Tessera #313) is that clause
+    exercised: the runtime re-measured the smoke through the checkpoint's own
+    chat template, both cells read ``recorded``, and the refusal lifted with
+    no change to this gate -- re-pinning that contract was the review event.
     """
     from .lane_eligibility import cell_evidence_admits, load_eligibility_table
 

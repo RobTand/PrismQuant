@@ -106,6 +106,47 @@
 
 ### Added
 
+- **The Tessera pin moves to master `b8b1cb38` (contract v21, lane schema v8;
+  the release `e78959ed` carried v20), and the reader consumes the contract's
+  lane predicate through Tessera's own decision core** (RobTand/tessera#195,
+  #198, #264, #313; `lane_eligibility.py`, `tessera_render.py`,
+  `tessera_runtime_contract.py`, `tessera_serving_runtime_pin.py`,
+  `tessera_runtime/tessera_serving_runtime_pin.json`). Between the reviewed v17
+  answer and v21 exactly four things moved and nothing else — no family, rung,
+  route status, launch, image or version, and the same ten cell ids in the same
+  order: the lane schema (`v6` → `v8`; v7 adds a greedy smoke's `control` and
+  the `attribution` derived from it, v8 the encoder `artifact` a cell was
+  measured from); every `native_extensions[]` row gained a `lane {decoder,
+  requires}` block (v20); and the two `routed_moe` cells' `smoke.status` moved
+  `repetitive` → `recorded` (v21: Tessera re-measured the smoke through the
+  checkpoint's own chat template, receipt
+  `docs/measurements/moe-smoke-recorded-2026-09-05.md`, control retired). The
+  reader parses v7/v8 closed (`LANE_ELIGIBILITY_SCHEMA_TESSERA` is v8; the
+  scoped route receipt and the shipcard's census record gate on it), and the
+  `lane.requires` predicate — what the window-GEMV kernel reads: column rates
+  `[1,2,4]`, a 14-bit window, `window`/`channel`, no diagonals, rotation or
+  release overrides, grid arity 1 — is decided at every admission leg (menu, dev
+  pin, export) over the wire THIS producer plans at the rung
+  (`tessera_render.planned_wire_facts`) by calling
+  `tessera.serving.scheme.decide_lane_requirements`, the rule's one home; every
+  `extension::symbol` launch a cell names is bound at parse to that extension's
+  declared lane. **Admission under the re-pin:** the eight dense cells (E4M3
+  1024 resident/streamed, E2M1 896, BF16 1792, decode and batch) are admitted
+  on their own evidence exactly as at v17; the two `routed_moe` cells, refused
+  from v17 through v20 on `smoke.status: repetitive` (v20's
+  `shared_with_reference` control was read and not admitted on), are now
+  ADMITTED by the unchanged status-only rule (`cell_evidence_admits`) on
+  `recorded` — #198 option C, the review event being this pin move; whether
+  routed-MoE Tessera is promoted past the menu is still #198's open decision.
+  The lane predicate refuses nothing on the pinned table (only the two
+  streamed E4M3 cells launch through the lane and their plan is what it reads);
+  a BF16 cell that ever claimed the window-GEMV launch at 1792 (column rate 7)
+  would be refused by name. Every admission is scoped: a context-free
+  `tessera_lane_attested(name)` answers `False` under the v8 table by SCOPE, so
+  the allocator admits Tessera rungs only when the operator passes
+  `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/--tessera-residency`.
+  Dev pin, serving pin and their reviewed answer moved in one commit.
+
 - **Tessera admission is pinned to an exact commit plus the packaged contract's
   digest, and the lane reader speaks schema v6** (RobTand/tessera#176;
   `tessera_serving_runtime_pin.py`, `lane_eligibility.py`,

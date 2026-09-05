@@ -310,22 +310,22 @@ def test_the_structure_is_read_from_the_checkpoint_not_the_family(
     assert tel.model_structure(_model_dir(tmp_path, **config)) == expected
 
 
-def test_a_routed_moe_checkpoint_is_refused_by_the_contracts_own_evidence(
-        released_pin, tessera_repo, tmp_path):
-    """The refusal moved from absence to a MEASURED defect, and still refuses.
+def test_a_routed_moe_checkpoint_is_decided_by_the_contracts_own_evidence(
+        released_pin, tessera_repo, tmp_path, monkeypatch):
+    """The gate reads ADMISSIBLE cells, and admissibility is what was measured.
 
     Contract v16 declared `dense` only, so a MoE checkpoint was refused by the
-    structure vocabulary.  v17 (Tessera PR #176) DECLARES `routed_moe` and
-    carries two routed-MoE cells -- and both publish
-    ``evidence.smoke.status: "repetitive"``: the runtime ran a greedy smoke on
-    those routes and the generation degenerated.
-
-    So the gate now reads ADMISSIBLE cells rather than the vocabulary.  A
-    structure whose every cell the runtime itself reports as generating
-    incorrectly does not become exportable because the vocabulary grew a
-    word.  Promoting it is a decision on evidence and it is Rob's
-    (principle 9); what this file pins is that PrismaQuant does not make it by
-    widening a gate.
+    structure vocabulary.  v17 (Tessera PR #176) DECLARED `routed_moe` and
+    carried two routed-MoE cells publishing ``evidence.smoke.status:
+    "repetitive"`` -- a greedy smoke that degenerated -- so from v17 through
+    v20 this gate refused a MoE checkpoint on the cells' own evidence rather
+    than admitting it because the vocabulary grew a word.  v21 (Tessera #313)
+    re-measured that smoke through the checkpoint's own chat template and both
+    cells now publish ``"recorded"``; the same gate admits the checkpoint with
+    no change here.  Promoting routed-MoE past the menu is still a decision on
+    evidence and it is Rob's (principle 9, prismaquant #198); what this test
+    pins is that PrismaQuant makes neither move by widening or narrowing a
+    gate -- both halves are read off the cells.
     """
     directory = _model_dir(tmp_path, num_experts=128,
                            architectures=["Qwen3MoeForCausalLM"])
@@ -334,8 +334,23 @@ def test_a_routed_moe_checkpoint_is_refused_by_the_contracts_own_evidence(
     cells = [c for c in contract["lane_eligibility"]["cells"]
              if c["structure"] == "routed_moe"]
     assert cells, "the packaged contract no longer covers routed_moe at all"
-    assert all(c["evidence"]["smoke"]["status"] == "repetitive" for c in cells)
 
+    # The installed contract (v21): the smoke is recorded, the gate admits.
+    assert all(c["evidence"]["smoke"]["status"] == "recorded" for c in cells)
+    assert tel.require_declared_structure(directory) == "routed_moe"
+
+    # The contract v17 through v20 published: the same cells with the
+    # degenerate smoke transplanted back, and the same gate refuses -- naming
+    # the structure, the contract's own word, and whose decision it is not.
+    historical = json.loads(json.dumps(contract))
+    for cell in historical["lane_eligibility"]["cells"]:
+        if cell["structure"] == "routed_moe":
+            cell["evidence"]["smoke"]["status"] = "repetitive"
+            cell["evidence"]["smoke"]["receipt"] = (
+                "docs/measurements/tessera-lfm-campaign-2026-09-04.md")
+    historical_path = tmp_path / "runtime_contract_v20_shape.json"
+    historical_path.write_text(json.dumps(historical), encoding="utf-8")
+    monkeypatch.setattr(tel, "packaged_contract_path", lambda: historical_path)
     with pytest.raises(tel.TesseraExportLaneError) as excinfo:
         tel.require_declared_structure(directory)
     message = str(excinfo.value)
@@ -343,20 +358,6 @@ def test_a_routed_moe_checkpoint_is_refused_by_the_contracts_own_evidence(
     assert "repetitive" in message          # the contract's own word
     assert "belongs to Rob" in message      # the decision it does not make
     assert tel.main(["--model", str(directory)]) == 2
-
-    # ...and the refusal is EVIDENCE, not structure: a contract whose
-    # routed-MoE cells record a clean smoke passes this gate unchanged.
-    from prismaquant import lane_eligibility as le
-
-    real = le.cell_evidence_admits
-    tel_le = le
-    monkey = [c["id"] for c in cells]
-    tel_le.cell_evidence_admits = lambda cell: (True, "")
-    try:
-        assert tel.require_declared_structure(directory) == "routed_moe"
-    finally:
-        tel_le.cell_evidence_admits = real
-    assert monkey, "the fixture must name the cells it flipped"
 
 
 def test_a_checkpoint_with_no_config_is_refused_rather_than_assumed_dense(
