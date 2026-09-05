@@ -13,6 +13,9 @@ uniformly:
   - autoround_config()      dict AutoRound consumes via --layer_config
   - quantize_dequantize(w)  apply RTN in-place (for closed-loop MSE)
   - min_capability_sm       minimum SM arch (useful for hardware filter)
+  - static_activation_contract
+                            the served static-scale activation contract
+                            (which quantiser, which per-unit G rule), or None
 
 Users register new formats with @register_format. New hardware formats
 (e.g. a future MX variant or Ada W4A8) can be added without touching
@@ -54,6 +57,10 @@ from prismaquant.mx_formats import (
     mxfp8_e4m3_weight_qdq,
     mxfp8_ue8m0_activation_qdq,
     mxfp8_ue8m0_weight_qdq,
+)
+from prismaquant.nvfp4_activation_contract import (
+    NVFP4_SERVED_ACTIVATION_CONTRACT,
+    StaticActivationContract,
 )
 
 
@@ -121,6 +128,19 @@ class FormatSpec:
     # than quoting a floor.  Kept last to preserve the positional constructor
     # ABI.
     bits_for_shape_fn: "Callable[[tuple[int, ...]], Fraction] | None" = None
+    # The served STATIC-scale activation contract, when serving quantizes the
+    # input against a calibrated per-unit ``input_global_scale`` rather than a
+    # scale it computes from the batch (``nvfp4_activation_contract
+    # .StaticActivationContract``).  ``activation_quantize_dequantize`` above
+    # takes no G and so can only ever be the dynamic quantiser; this is the
+    # one place a consumer that holds a calibrated maximum -- the assignment-KL
+    # hooks, the production cache scorer, the campaign -- learns which served
+    # quantiser and which G rule the spec is priced under.  It is a property
+    # of the spec, not of its name: a Tessera rung routed through the NVFP4
+    # kernel carries the same contract as ``NVFP4`` with no "NVFP4" in its
+    # name (#205).  None for dynamic W8A8 (FP8, MX) and A16 rows.  Kept last
+    # to preserve the positional constructor ABI.
+    static_activation_contract: "StaticActivationContract | None" = None
 
     @property
     def act_quant_changes_input(self) -> bool:
@@ -817,8 +837,13 @@ register_format(FormatSpec(
     autoround_config=lambda: _nv_autoround(4, 16, 4),
     quantize_dequantize=_nvfp4_export_aligned_rtn,
     # activations: per-group dynamic RTN, NOT the export codec — see
-    # _nvfp4_export_aligned_rtn docstring (batch-dependence).
+    # _nvfp4_export_aligned_rtn docstring (batch-dependence).  This is the
+    # screen baseline; what the kernel actually executes -- static G plus
+    # UE4M3 block scales -- is the contract below, which a consumer holding
+    # the calibrated maximum prices through (opt-in for this row, see
+    # StaticActivationContract.measured_as_served).
     activation_quantize_dequantize=_make_rtn("fp4_e2m1", 16),
+    static_activation_contract=NVFP4_SERVED_ACTIVATION_CONTRACT,
 ))
 register_format(FormatSpec(
     name="NVFP4A16",

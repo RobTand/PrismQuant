@@ -96,13 +96,16 @@ def _maybe_clip_activations(
 def _served_nvfp4_act_qdq_enabled() -> bool:
     """Opt-in serve-faithful NVFP4 activation emulation (default OFF).
 
-    When on, NVFP4 activation quantization in the emulation hooks models
-    the SERVED two-level semantics (static input_global_scale + FP8 snap
-    of the per-16-group block scale, via
-    format_registry.nvfp4_activation_qdq_served) instead of the dynamic
-    exact-fp32-scale RTN. Closes the M18-residual/C1 measurement gap the
-    2026-07-02 audit flagged; default-off pending a served correlation
-    study (the dynamic path is the long-standing screen baseline)."""
+    When on, activation quantization in the emulation hooks for a spec whose
+    served contract is static-scale (``FormatSpec.static_activation_contract``,
+    i.e. stock NVFP4) models the SERVED two-level semantics (static
+    input_global_scale + FP8 snap of the per-16-group block scale, via the
+    contract's own oracle) instead of the dynamic exact-fp32-scale RTN.
+    Closes the M18-residual/C1 measurement gap the 2026-07-02 audit flagged;
+    default-off pending a served correlation study (the dynamic path is the
+    long-standing screen baseline).  A spec whose contract says
+    ``measured_as_served`` (a Tessera W4A4 rung) does not consult this lever:
+    the served oracle is its only measurement."""
     return os.environ.get(
         "PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES", "0") == "1"
 
@@ -115,24 +118,36 @@ def _activation_qdq(
 ) -> torch.Tensor:
     """Shared activation quantize-dequantize for the emulation hooks.
 
-    Default: act-clip to the calibrated max_abs then dynamic per-group
-    RTN (the historical screen semantics). With
-    PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES=1 and an NVFP4 act spec
-    whose calibrated max_abs is known, use the serve-faithful two-level
-    quantizer instead — NO clamp (serving does not clamp; the static
-    scale itself clips blocks above the calibration amax)."""
-    if (
-        _served_nvfp4_act_qdq_enabled()
-        and fr.canonical_format_name(act_spec.name) == "NVFP4"
-        and x.shape[-1] % 16 == 0
-    ):
+    Which quantizer a spec serves is the SPEC's answer
+    (``FormatSpec.static_activation_contract``), never a compare of its name
+    against ``"NVFP4"`` -- a Tessera rung routed through the same kernel has
+    the same contract and a different name (#205).
+
+    * No static contract (FP8/MX dynamic W8A8, or an A16 row that reached
+      the hook): act-clip to the calibrated max_abs, then the row's own
+      dynamic quantizer.
+    * Static contract, ``measured_as_served`` (Tessera W4A4): the served
+      oracle at the unit's G -- NO clamp (serving does not clamp; the static
+      scale itself clips blocks above the calibration amax) -- and a refusal
+      by name when the unit has no calibrated maximum.
+    * Static contract, screen default (stock NVFP4): the historical clip +
+      dynamic RTN, or the served oracle when
+      ``PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES=1`` and the maximum is
+      known."""
+    contract = getattr(act_spec, "static_activation_contract", None)
+    if contract is not None:
         max_abs = _activation_max_abs_lookup(activation_max_abs, param_name)
-        if max_abs is not None and max_abs > 0:
-            from prismaquant.export_native_compressed import (
-                _nvfp4_input_global_scale_from_max_abs,
-            )
-            g = _nvfp4_input_global_scale_from_max_abs(float(max_abs))
-            return fr.nvfp4_activation_qdq_served(x, g)
+        if contract.measured_as_served:
+            g = contract.require_input_global_scale(
+                max_abs, qname=param_name, consumer="assignment-KL hook")
+            return contract.quantize_dequantize(x, g)
+        if (
+            _served_nvfp4_act_qdq_enabled()
+            and x.shape[-1] % int(contract.group_size) == 0
+            and max_abs is not None and max_abs > 0
+        ):
+            g = contract.input_global_scale_from_max_abs(float(max_abs))
+            return contract.quantize_dequantize(x, g)
     x = _maybe_clip_activations(x, activation_max_abs, param_name)
     return act_spec.activation_quantize_dequantize(x)
 
@@ -885,6 +900,49 @@ class PerturbedActivationCache:
         if len(low_act) == 1:
             return next(iter(low_act.values()))
         return None
+
+    def served_activation_scale_gaps(self) -> list[str]:
+        """Names this cache would have to REFUSE in the hook, listed up front.
+
+        A member whose spec is measured under the served static-scale
+        contract (``FormatSpec.static_activation_contract.measured_as_served``,
+        a Tessera W4A4 rung) needs its calibrated maximum in this cache's
+        scale identity (``activation_max_abs`` from the production cache);
+        ``_activation_qdq`` refuses it by name otherwise.  Consumers that
+        measure (``kl_measurement.measure_assignment_kl``) ask this before the
+        first forward so the refusal names every unit at once instead of the
+        first hook the model happens to reach.  Capture-only builders, which
+        run before any maximum exists, are not asked.
+        """
+        if not self.include_activation_quant:
+            return []
+        gaps: set[str] = set()
+        for plan in self.plans:
+            members = self._packed_act_plan(plan)
+            if members is None:
+                act_spec = self._active_activation_spec(plan)
+                contract = getattr(act_spec, "static_activation_contract", None)
+                if contract is None or not contract.measured_as_served:
+                    continue
+                # The name the hook looks the scale up under: the dense
+                # ``weight`` member (``_module_input_member_name``), else
+                # every member -- without an input tensor the structural
+                # tie-break cannot run, and refusing one name too many is
+                # the safe side.
+                weight = next(
+                    (p.name for p in plan.params if p.attr == "weight"), None)
+                names = [weight] if weight is not None else plan.cache_names
+            else:
+                names = [
+                    m.name for m in members
+                    if getattr(m.spec.static_activation_contract,
+                               "measured_as_served", False)
+                ]
+            for name in names:
+                value = _activation_max_abs_lookup(self._activation_scales, name)
+                if value is None or float(value) <= 0.0:
+                    gaps.add(name)
+        return sorted(gaps)
 
     def _nvfp4_fused_param_plan(self, plan: _ModulePlan) -> _ParamPlan | None:
         if not _env_truthy("PRISMAQUANT_FUSED_KERNEL_NVFP4"):
