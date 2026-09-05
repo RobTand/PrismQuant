@@ -21,22 +21,18 @@ Three gates, and they are deliberately separate
 3. **A pinned runtime executes it.**  :func:`route_admission` -- ONE lookup,
    against the pinned serving release's own published contract (principle 14).
 
-Gate 3 is closed for every Tessera rung today
----------------------------------------------
+Gate 3 reads the current pinned runtime and serving scope
+--------------------------------------------------------
 The table that answers is **Tessera's own** packaged
-``tessera/serving/runtime_contract.json`` -- the plugin Tessera ships under
-``vllm.general_plugins`` since 2026-09-02, when Gridbook's Tessera lane was
-withdrawn (``archive/gridbook_lane_2026-09-02/``).  It publishes
-``TESSERA_E2M1_K2`` and ``TESSERA_E4M3_K1``, and it carries device-qualified
-native cells for the two receipted rungs, so the family and the rate are *not*
-what refuses.  **The pin is.**  Since 2026-09-04 ``tessera_serving_runtime_pin``
-names an exact Tessera commit and the SHA-256 of the ``runtime_contract.json``
-that commit packages; ``require_pinned_tessera_runtime`` admits only the
-Tessera whose installed contract hashes to it, and any other tree on
-``PYTHONPATH`` -- including a master that has moved past the pin -- answers
-:data:`ROUTE_STATUS_UNATTESTED`.  Moving the pin is ONE reviewed commit that
-edits the JSON and the module constants together; an edit here cannot flip it,
-and that is the point.
+``tessera/serving/runtime_contract.json``. Its native cells declare the
+families, rates and serving contexts that are qualified. Since 2026-09-04,
+``tessera_serving_runtime_pin`` names an exact Tessera commit and the SHA-256
+of the contract it packages. Matching cells can be admitted when the installed
+contract matches that digest and the requested scope; an absent cell or a
+different contract remains unattested. Reader support for a wider rate range
+does not qualify every rate for serving. Moving the pin edits the JSON and
+module constants together, including when a new producer API requires a newer
+commit with unchanged contract bytes.
 
 Which is why the ``detail`` on an unattested rung names the conjunct that
 actually refused (``tessera_render.tessera_lane_admission`` returns it beside

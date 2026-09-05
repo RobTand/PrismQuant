@@ -2841,9 +2841,9 @@ def tessera_group_composites(
     parsed (``tessera_runtime_contract.FusedModuleLicence``), read through
     ``tessera_menu.fused_module_licence`` and checked on the Tessera side
     against the loader's own ``scheme.FUSED_MODULE_FIELDS``.  It is **never** a
-    literal in this file, and ``None`` -- no contract pinned, which is
-    production, since no Tessera RELEASE tag exists -- is the absence of a
-    licence rather than a permissive default.
+    literal in this file. ``None`` means no applicable licence was supplied,
+    rather than a permissive default. Production can supply the licence from
+    the reviewed commit-and-contract pin; a release tag is not required.
     This function used to assert the licence in its own docstring ("they can
     disagree about the rate"), which is the field shape principle 14 forbids:
     no gate can read a docstring, so nothing refused when the runtime changed
