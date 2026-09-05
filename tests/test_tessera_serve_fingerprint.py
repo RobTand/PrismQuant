@@ -207,7 +207,12 @@ def test_the_extension_table_is_part_of_the_reviewed_answer():
          "when_unavailable": {
              mode: {"status": behaviour["status"],
                     "decoder": behaviour["decoder"]}
-             for mode, behaviour in sorted(row["when_unavailable"].items())}}
+             for mode, behaviour in sorted(row["when_unavailable"].items())},
+         # Contract v20: the lane's decoder binds a cell's launch to the row,
+         # and its predicate is what the lane gate decides a plan against --
+         # a row that publishes none reads ``requires: None``.
+         "lane": {"decoder": row["lane"]["decoder"],
+                  "requires": row["lane"].get("requires")}}
         for row in sorted(_published_rows(),
                           key=lambda r: r["module_name_prefix"])
     ]
@@ -224,9 +229,12 @@ def test_the_extension_table_is_part_of_the_reviewed_answer():
         == [row["source"] for row in _published_rows()]
 
     moved = _packaged_contract()
-    moved["native_extensions"] = [
-        dict(moved["native_extensions"][0], filename_glob="tessera_nvfp4_*")
-    ]
+    # Move ONE field of one row and keep the rest of the table: since contract
+    # v20 the lane table's cells launch through these rows, and a table that
+    # drops the window-GEMV row is refused at parse (a launch through an
+    # undeclared extension) before any drift can be read off it.
+    first, *rest = moved["native_extensions"]
+    moved["native_extensions"] = [dict(first, filename_glob="tessera_nvfp4_*"), *rest]
     drift = trc._answer_drift(
         trc.TESSERA_DEV_PIN_ANSWER,
         trc.contract_answer(

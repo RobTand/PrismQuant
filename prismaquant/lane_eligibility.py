@@ -71,6 +71,23 @@ Each is parsed closed at its own schema and refused by name where this
 reader does not understand it; see :func:`parse_cell_evidence` and, for
 what the reader DECIDES on, :func:`cell_evidence_admits`.
 
+The lane predicate (contract v20, Tessera #264)
+-----------------------------------------------
+A cell names the LAUNCHES it executes (``executes[].decoder``); since
+contract v20 the contract also publishes, per ``native_extensions[]`` row, a
+``lane`` block naming the decoder that extension serves and -- for the
+window-GEMV kernel -- ``requires``, the predicate a unit's WIRE must satisfy
+for the kernel to read it (column rates, window bits, body, plane, no release
+overrides, no diagonals, no rotation, no start state, a scalar grid).  The
+loader refuses a unit that fails it, so a producer that selected such a unit
+would ship bytes whose serve substitutes or refuses.  This reader parses the
+predicate closed at Tessera's own vocabulary (:func:`parse_lane_claim`) and
+:func:`cell_lane_admits` decides it for a cell -- by handing THIS producer's
+planned wire (``tessera_render.planned_wire_facts``) to Tessera's own
+decision core (``tessera.serving.scheme.decide_lane_requirements``).  The
+rule has one home and it is not in this repository; what lives here is the
+facts and the refusal.
+
 One parser, and why the vocabulary is wider than one publisher
 ---------------------------------------------------------------
 ``gridbook.lane-eligibility.v3`` was the same wire format from the retired
@@ -353,6 +370,32 @@ EVIDENCE_GRADES = frozenset({
 #: Every receipt path is repository-relative under this root. A wheel ships no
 #: docs, so this reader checks the GRAMMAR and never the file.
 EVIDENCE_RECEIPT_ROOT = "docs/measurements/"
+
+#: ``native_extensions[].lane`` (contract v20, Tessera #264): the decoder an
+#: extension serves and, optionally, ``requires`` -- the predicate a unit's
+#: wire must satisfy for that kernel to read it. The vocabulary below is
+#: transcribed from Tessera's own contract validator
+#: (``tessera.serving.contract.LANE_FIELDS`` / ``LANE_REQUIREMENT_FIELDS``)
+#: and CLOSED here: a requirement outside it is refused by name, never
+#: skipped, because a gate that skipped a published condition would call a
+#: unit selectable that the loader refuses. This is vocabulary, not the rule:
+#: the DECISION is Tessera's ``scheme.decide_lane_requirements`` and
+#: :func:`cell_lane_admits` calls it rather than restating it.
+LANE_FIELDS = frozenset({"decoder", "requires"})
+LANE_REQUIREMENT_FIELDS = (
+    "column_rates", "window_bits", "body", "plane", "release_overrides",
+    "diagonals", "rotation", "start_state", "grid_arities",
+)
+#: Non-empty ascending unique positive integer lists.
+LANE_REQUIREMENT_LISTS = frozenset({"column_rates", "window_bits", "grid_arities"})
+#: JSON booleans: whether the lane reads units that CARRY the thing.
+LANE_REQUIREMENT_CARRIES = frozenset({"release_overrides", "diagonals", "start_state"})
+#: Checkpoint-dialect spellings, exactly as ``formats[].attested_wire`` and
+#: the lane predicate publish them; Tessera's ``route_wire_spelling`` maps
+#: them onto its manifest names at decision time.
+LANE_ROTATION_STATES = frozenset({"none", "r_in_only"})
+LANE_BODIES = frozenset({"tcq", "window"})
+LANE_PLANES = frozenset({"s6b", "lut16", "channel"})
 
 #: Structural classes a unit can belong to. The two take different runtime
 #: dispatch paths and therefore different eligibility cells.
@@ -1036,6 +1079,262 @@ def cell_evidence_admits(cell: Any) -> tuple[bool, str]:
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# The lane predicate (contract v20)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class LaneClaim:
+    """One ``native_extensions[].lane`` block: what a kernel reads.
+
+    ``requires`` is ``None`` when the lane publishes no predicate of its own
+    -- its eligibility is then the route's, already published in ``formats``
+    -- and otherwise a closed mapping in the contract's own vocabulary
+    (:data:`LANE_REQUIREMENT_FIELDS`), lists kept as tuples. The distinction
+    between ``None`` and an empty block is the publisher's: an empty
+    ``requires`` is refused at parse, exactly as Tessera's validator refuses
+    it.
+    """
+
+    #: The ``module_name_prefix`` of the row this lane belongs to.
+    extension: str
+    #: The decoder name the cell's ``executes[].decoder`` spells when it
+    #: launches through this extension.
+    decoder: str
+    requires: Mapping[str, Any] | None = None
+
+    def answer(self) -> dict[str, Any]:
+        """The gate-read projection, JSON-shaped, for the reviewed answer."""
+        requires = None
+        if self.requires is not None:
+            requires = {
+                name: list(value) if isinstance(value, tuple) else value
+                for name, value in self.requires.items()
+            }
+        return {"decoder": self.decoder, "requires": requires}
+
+
+def parse_lane_claim(payload: Any, where: str, *, extension: str) -> LaneClaim:
+    """Read one ``lane`` block closed at Tessera's vocabulary, or refuse by name.
+
+    Mirrors the publisher's own validator (``tessera.serving.contract``,
+    ``_validate_lane``): required ``decoder``, optional non-empty
+    ``requires`` whose every key is a requirement this reader has learned;
+    the three list requirements non-empty, ascending, unique, positive; the
+    three carry requirements JSON booleans; ``rotation`` a non-empty unique
+    list of known states; ``body`` and ``plane`` known spellings. A block this
+    reader cannot read is a refusal of the whole table -- a lane whose
+    predicate is unreadable is a lane no gate can decide, and absent evidence
+    is not a pass.
+    """
+    if not isinstance(payload, Mapping):
+        raise LaneEligibilityError(
+            f"{where} ({extension}): lane must be a JSON object naming the "
+            "decoder the extension serves")
+    _require_keys(payload, f"{where} ({extension})", required={"decoder"},
+                  optional=LANE_FIELDS - {"decoder"})
+    decoder = payload["decoder"]
+    if not isinstance(decoder, str) or not decoder:
+        raise LaneEligibilityError(
+            f"{where}.decoder ({extension}) must be a non-empty string")
+    if "requires" not in payload:
+        return LaneClaim(extension=extension, decoder=decoder)
+    requires = payload["requires"]
+    if not isinstance(requires, Mapping):
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) must be a JSON object keyed by "
+            f"requirement name; the known names are {list(LANE_REQUIREMENT_FIELDS)}")
+    if not requires:
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) is empty. A lane with no predicate "
+            "omits the block; an empty one is a claim this reader cannot tell "
+            "from 'reads everything' and is refused")
+    unknown = sorted(set(requires) - set(LANE_REQUIREMENT_FIELDS))
+    if unknown:
+        raise LaneEligibilityError(
+            f"{where}.requires ({extension}) publishes requirement(s) {unknown} "
+            f"this reader cannot decide (it reads {list(LANE_REQUIREMENT_FIELDS)}). "
+            "A checker that skipped a published condition would select a unit "
+            "the loader refuses, so the table is refused instead: teach "
+            "lane_eligibility.LANE_REQUIREMENT_FIELDS the name once Tessera's "
+            "scheme.decide_lane_requirements decides it.")
+    parsed: dict[str, Any] = {}
+    for name in LANE_REQUIREMENT_FIELDS:
+        if name not in requires:
+            continue
+        at = f"{where}.requires.{name} ({extension})"
+        value = requires[name]
+        if name in LANE_REQUIREMENT_LISTS:
+            parsed[name] = _parse_lane_int_list(value, at)
+        elif name in LANE_REQUIREMENT_CARRIES:
+            if not isinstance(value, bool):
+                raise LaneEligibilityError(
+                    f"{at} must be a JSON boolean (does the lane read units that "
+                    f"carry this?), got {value!r}")
+            parsed[name] = value
+        elif name == "rotation":
+            if (not isinstance(value, list) or not value
+                    or len(set(value)) != len(value)):
+                raise LaneEligibilityError(
+                    f"{at} must be a non-empty list of distinct rotation states "
+                    f"{sorted(LANE_ROTATION_STATES)}, got {value!r}")
+            bad = sorted(str(v) for v in value if v not in LANE_ROTATION_STATES)
+            if bad:
+                raise LaneEligibilityError(
+                    f"{at} names rotation state(s) {bad} this reader does not "
+                    f"know; the known states are {sorted(LANE_ROTATION_STATES)}")
+            parsed[name] = tuple(str(v) for v in value)
+        elif name == "body":
+            if value not in LANE_BODIES:
+                raise LaneEligibilityError(
+                    f"{at} must be one of {sorted(LANE_BODIES)}, got {value!r}")
+            parsed[name] = str(value)
+        else:  # plane
+            if value not in LANE_PLANES:
+                raise LaneEligibilityError(
+                    f"{at} must be one of {sorted(LANE_PLANES)}, got {value!r}")
+            parsed[name] = str(value)
+    return LaneClaim(extension=extension, decoder=decoder, requires=parsed)
+
+
+def _parse_lane_int_list(value: Any, where: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise LaneEligibilityError(
+            f"{where} must be a non-empty list of positive integers, got {value!r}")
+    if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in value):
+        raise LaneEligibilityError(
+            f"{where} must name positive integers only, got {value!r}")
+    if list(value) != sorted(set(value)):
+        raise LaneEligibilityError(
+            f"{where} must be ascending and unique, got {value!r}")
+    return tuple(int(v) for v in value)
+
+
+def parse_lane_claims(native_extensions: Any, where: str) -> tuple[LaneClaim, ...]:
+    """Every ``native_extensions[].lane`` block, in table order.
+
+    Only the two fields a lane gate reads are taken from each row -- the
+    prefix that names the row and its ``lane`` -- so the rest of the row's
+    grammar stays with ``tessera_runtime_contract._parse_native_extensions``,
+    which refuses the table on the fingerprint's behalf. A row without a
+    ``lane`` is refused here: since contract v20 every row publishes one,
+    and a launch whose lane is unstated cannot be decided.
+    """
+    if (not isinstance(native_extensions, Sequence)
+            or isinstance(native_extensions, (str, bytes))):
+        raise LaneEligibilityError(f"{where} must be a JSON array")
+    claims: list[LaneClaim] = []
+    seen: set[str] = set()
+    for i, row in enumerate(native_extensions):
+        at = f"{where}[{i}]"
+        if not isinstance(row, Mapping):
+            raise LaneEligibilityError(f"{at} must be a JSON object")
+        prefix = row.get("module_name_prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise LaneEligibilityError(
+                f"{at}.module_name_prefix must be a non-empty string")
+        if prefix in seen:
+            raise LaneEligibilityError(f"{at}.module_name_prefix {prefix!r} is declared twice")
+        seen.add(prefix)
+        if "lane" not in row:
+            raise LaneEligibilityError(
+                f"{at} ({prefix}) publishes no 'lane': which decoder this "
+                "extension serves, and what a unit's wire must be for it to "
+                "read it, is unstated, so no launch through it can be decided")
+        claims.append(parse_lane_claim(row["lane"], f"{at}.lane", extension=prefix))
+    return tuple(claims)
+
+
+def lane_claim_for_cell(cell: Any, lanes: Sequence[LaneClaim]) -> LaneClaim | None:
+    """The lane whose predicate governs this cell, or ``None``.
+
+    A cell is lane-gated exactly when one of the decoders it EXECUTES is the
+    decoder a lane serves and that lane publishes a predicate. A decoder no
+    lane names (``torch_window``, ``torch_materialize_stock``) is the route's
+    own path, gated by the cell's route status and evidence alone -- the
+    contract publishes no wire predicate for it, and inventing one here would
+    be the second copy this module exists to refuse.
+    """
+    decoders = {decoder for _symbol, decoder in getattr(cell, "executes", ())}
+    for claim in lanes:
+        if claim.requires is not None and claim.decoder in decoders:
+            return claim
+    return None
+
+
+def cell_lane_admits(cell: Any, rate_q256: int | None, lanes: Sequence[LaneClaim]
+                     ) -> tuple[bool, str]:
+    """Whether the lane a cell launches through can read THIS producer's plan.
+
+    ONE predicate for every admission leg (the menu's
+    ``tessera_render.tessera_attesting_cells``, the development contract's
+    ``TesseraContract.native_cells``, the export gate's
+    :func:`resolve_unit_route`), beside :func:`cell_evidence_admits` and for
+    the same reason: a rung the menu offers and the export refuses is the
+    split-brain principle 8 exists to stop.
+
+    The rule is not here. Tessera publishes the predicate
+    (``native_extensions[].lane.requires``) and owns the decision
+    (``tessera.serving.scheme.decide_lane_requirements``, the one home its
+    loader, its byte-side report and its plan-time gate all call); this
+    function supplies the FACTS -- ``tessera_render.planned_wire_facts``, the
+    wire this producer will encode for the cell's family at this rung, read
+    off the same recipe and decoration the render encodes with -- and turns
+    the refusals into a reason that names the cell, the lane and the launch.
+    Both imports are lazy: ``planned_wire_facts`` needs the encoder, and
+    ``scheme`` pulls in ``tessera.serving.contract`` for its wire spellings
+    (the module, not its validator's dispatch tables; neither imports torch or
+    vLLM). A contract is LOADED without either -- this runs at admission.
+
+    Fail-closed at every edge: a requirement the decision core has not
+    learned RAISES (its own rule, re-raised with the lane named) rather than
+    being skipped; a family this producer cannot plan, or a cell asked
+    without a rung, is refused with the reason, never passed.
+    """
+    claim = lane_claim_for_cell(cell, lanes)
+    if claim is None:
+        return True, ""
+    cell_id = getattr(cell, "id", getattr(cell, "cell_id", "?"))
+    family = str(getattr(cell, "family", ""))
+    launches = sorted(symbol for symbol, decoder in cell.executes
+                      if decoder == claim.decoder)
+    head = (
+        f"cell {cell_id!r} launches {launches} through the "
+        f"{claim.extension!r} lane (decoder {claim.decoder!r}), whose published "
+        "predicate this producer's planned wire")
+    if rate_q256 is None:
+        return False, (
+            f"{head} cannot be decided against: the unit's rung was not read, "
+            "and the lane reads a rate set that depends on it")
+    from . import tessera_render
+    from .tessera_formats import TesseraFormatError
+
+    try:
+        facts = tessera_render.planned_wire_facts(family, int(rate_q256))
+    except TesseraFormatError as exc:
+        return False, (
+            f"{head} cannot be decided against: this producer cannot plan "
+            f"family {family!r} at rung {rate_q256} ({exc}), and a plan that "
+            "does not exist is not a plan the lane reads")
+    from tessera.serving.scheme import decide_lane_requirements
+
+    try:
+        refusals = decide_lane_requirements(claim.extension, dict(claim.requires), facts)
+    except ValueError as exc:
+        raise LaneEligibilityError(
+            f"{head} cannot be decided against: the lane publishes a "
+            f"requirement Tessera's own decision core does not decide -- {exc}"
+        ) from exc
+    if not refusals:
+        return True, ""
+    return False, (
+        f"{head} for {family} R{rate_q256} fails: "
+        + "; ".join(refusals)
+        + ". The kernel would refuse these bytes at load, so the route is not "
+        "admitted; the predicate is Tessera's, read from the contract, and "
+        "the plan is this producer's -- change the plan or re-pin, never this gate."
+    )
+
+
 @dataclass(frozen=True)
 class EligibilityCell:
     """One packaged cell: bytes, platform, regime, residency, runtime and launch.
@@ -1308,6 +1607,11 @@ class EligibilityTable:
     families: frozenset[str] = frozenset()
     trellis_families: frozenset[str] = frozenset()
     absent_reason: str = ""
+    #: The ``native_extensions[].lane`` claims of the same contract, in table
+    #: order: which decoder each extension serves and the predicate (if any)
+    #: its bytes must satisfy. Read by :func:`cell_lane_admits` at every
+    #: admission leg; ``()`` for a v3 table, whose only launches are torch's.
+    lanes: tuple[LaneClaim, ...] = ()
 
     def governs(self, family: str) -> bool:
         """Whether the pinned contract publishes a codec for this family."""
@@ -1338,6 +1642,13 @@ class EligibilityTable:
                 # Only when non-empty: a table without the key keeps a payload
                 # is unchanged by this widening.
                 payload["required_plugins"] = required_plugins
+            if self.lanes:
+                # The predicate the gate decided against, verbatim from the
+                # contract: a receipt that names the rule it was read under.
+                payload["lanes"] = [
+                    claim.answer() | {"extension": claim.extension}
+                    for claim in self.lanes
+                ]
         return payload
 
 
@@ -1597,15 +1908,20 @@ def resolve_unit_route(
     # A cell whose own published evidence refuses it is NOT dropped silently
     # into "no cell names this unit": the two are different facts and the
     # shipcard has to be able to tell them apart. Keep the refusal beside its
-    # regime so the regime route can name the cell and the reason.
+    # regime so the regime route can name the cell and the reason. The lane
+    # predicate is the same kind of fact -- a cell names this unit, and the
+    # kernel it launches through would refuse the bytes -- and lands in the
+    # same slot.
     candidates: list[EligibilityCell] = []
-    evidence_refusals: dict[str, tuple[str, str]] = {}
+    refusals: dict[str, tuple[str, str]] = {}
     for cell in matched:
         admits, why = cell_evidence_admits(cell)
         if admits:
+            admits, why = cell_lane_admits(cell, facts.rate_q256, table.lanes)
+        if admits:
             candidates.append(cell)
-        elif cell.regime not in evidence_refusals:
-            evidence_refusals[cell.regime] = (cell.id, why)
+        elif cell.regime not in refusals:
+            refusals[cell.regime] = (cell.id, why)
 
     regimes: list[RegimeRoute] = []
     for regime in table.regimes:
@@ -1617,10 +1933,11 @@ def resolve_unit_route(
                     best.route_status]:
                 best = cell
         if best is None:
-            refused = evidence_refusals.get(regime)
+            refused = refusals.get(regime)
             if refused is not None:
-                # A cell DOES name this unit here; its own evidence refuses
-                # it. Recording the cell id and the published reason is what
+                # A cell DOES name this unit here; its own evidence, or the
+                # predicate of the lane it launches through, refuses it.
+                # Recording the cell id and the published reason is what
                 # makes this reviewable -- "no cell" and "a cell that failed
                 # its smoke" are opposite facts about the runtime.
                 regimes.append(RegimeRoute(
@@ -1799,7 +2116,8 @@ def load_eligibility_table(
         )
 
     return _parse_table(
-        block, contract.get("formats", ()), version or "", commit, sha)
+        block, contract.get("formats", ()), version or "", commit, sha,
+        native_extensions=contract.get("native_extensions"))
 
 
 def load_published_formats(
@@ -1966,8 +2284,18 @@ def _published_families(formats: Any) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(families), frozenset(trellis)
 
 
-def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
-                 ) -> EligibilityTable:
+def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str,
+                 *, native_extensions: Any) -> EligibilityTable:
+    """Read a ``lane_eligibility`` block beside the ``native_extensions`` it launches through.
+
+    ``native_extensions`` is the contract's own table, or ``None`` when the
+    contract publishes none. It is a REQUIRED argument rather than a default
+    because every cell since v4 names the launches it executes, and a launch
+    through an extension is subject to that extension's published predicate:
+    a caller that forgets the table would build a table whose lane gate
+    passes everything, and this reader would rather not compile than do that.
+    A v3 table publishes no launches and reads ``()`` lanes.
+    """
     where = "runtime_contract.lane_eligibility"
     if not isinstance(block, Mapping):
         raise LaneEligibilityError(f"{where} must be a JSON object")
@@ -2067,7 +2395,44 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
     ids = [cell.id for cell in cells]
     if len(set(ids)) != len(ids):
         raise LaneEligibilityError(f"{where}.cells ids must be unique")
+
+    lanes: tuple[LaneClaim, ...] = ()
     if is_v4:
+        if native_extensions is None:
+            raise LaneEligibilityError(
+                f"runtime_contract publishes a {schema} lane table whose cells "
+                "name the launches they execute, but no 'native_extensions' "
+                "table: the lane predicates those launches are subject to "
+                "cannot be read, so no launch through an extension can be "
+                "decided. Re-materialize the contract from a release that "
+                "publishes both, never one of them.")
+        lanes = parse_lane_claims(native_extensions, "runtime_contract.native_extensions")
+        # Bind every extension launch a cell names to the lane that serves
+        # it. The lane gate keys on the DECODER (the name Tessera's census
+        # stamps and its launch table derives cells from), so a cell that
+        # launched through an extension's symbol under another decoder name
+        # would slip past the gate; that is a contract inconsistency and it
+        # is refused here, once, where the two tables meet.
+        lane_decoders = {claim.extension: claim.decoder for claim in lanes}
+        for cell in cells:
+            for symbol, decoder in cell.executes:
+                prefix, sep, _rest = symbol.partition("::")
+                if not sep:
+                    continue        # a torch/vLLM launch: the route's own path
+                if prefix not in lane_decoders:
+                    raise LaneEligibilityError(
+                        f"{where}.cells[{cell.id!r}].executes launches {symbol!r} "
+                        f"through an extension no native_extensions row "
+                        f"declares ({sorted(lane_decoders)}); what that kernel "
+                        "reads is unstated, so the launch cannot be decided")
+                if decoder != lane_decoders[prefix]:
+                    raise LaneEligibilityError(
+                        f"{where}.cells[{cell.id!r}].executes launches {symbol!r} "
+                        f"under decoder {decoder!r}, but native_extensions "
+                        f"[{prefix}].lane.decoder is {lane_decoders[prefix]!r}; a "
+                        "launch through an extension is read by that "
+                        "extension's lane, and a cell that names another "
+                        "decoder for it would escape the lane's predicate")
         scopes: dict[tuple[str, ...], str] = {}
         for cell in cells:
             for mode in cell.residency_modes:
@@ -2095,6 +2460,7 @@ def _parse_table(block: Any, formats: Any, version: str, commit: str, sha: str
         cells=cells,
         families=families,
         trellis_families=trellis_families,
+        lanes=lanes,
     )
 
 
@@ -2315,9 +2681,21 @@ __all__ = [
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_V7",
     "LANE_ELIGIBILITY_SCHEMA_TESSERA_V8",
     "LANE_ELIGIBILITY_SCHEMAS",
+    "LANE_BODIES",
+    "LANE_FIELDS",
+    "LANE_PLANES",
+    "LANE_REQUIREMENT_CARRIES",
+    "LANE_REQUIREMENT_FIELDS",
+    "LANE_REQUIREMENT_LISTS",
+    "LANE_ROTATION_STATES",
+    "LaneClaim",
     "SCOPED_LANE_SCHEMAS",
     "SmokeControl",
     "cell_evidence_admits",
+    "cell_lane_admits",
+    "lane_claim_for_cell",
+    "parse_lane_claim",
+    "parse_lane_claims",
     "derive_evidence_grade",
     "derive_smoke_attribution",
     "parse_cell_evidence",

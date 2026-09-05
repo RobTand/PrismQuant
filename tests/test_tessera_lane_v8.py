@@ -58,7 +58,7 @@ def payload():
 
 def _table(payload):
     return lane._parse_table(payload["lane_eligibility"], payload["formats"],
-                             "", "", "x")
+                             "", "", "x", native_extensions=payload["native_extensions"])
 
 
 @pytest.fixture

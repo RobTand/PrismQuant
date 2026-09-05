@@ -31,7 +31,18 @@ eight dense cells admit exactly as before, and the four dense E4M3 cells now
 carry an encoder scope into provenance — their KL was measured on a checkpoint
 built at `8070ec6…`, and a same-source `down_proj` re-encode at `3317036…`
 produced a DIFFERENT payload (lower weight SSE), which a shipcard now says
-rather than a receipt.
+rather than a receipt. **Second, the lane predicate (contract v20, Tessera
+#264).** Every `native_extensions[]` row now publishes `lane.{decoder,
+requires}`, the predicate its kernel gates on; the reader parses it closed
+(`lane_eligibility.parse_lane_claim`), binds every `extension::symbol`
+launch a cell names to that extension's lane, and at every admission leg
+(menu, dev pin, export) decides it over the wire THIS producer plans at the
+rung (`tessera_render.planned_wire_facts`) by calling Tessera's own
+`tessera.serving.scheme.decide_lane_requirements` — the rule's one home;
+nothing here restates it. Nothing on the pinned table is refused by it today
+(only the two streamed dense E4M3 cells launch through the window-GEMV lane,
+and their plan is what the lane reads); a BF16 cell claiming that launch at
+1792 (column rate 7, outside `[1,2,4]`) would be, by name.
 
 Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for **pinning Tessera by
 commit and contract digest instead of by release tag, lane-eligibility v6, and
@@ -6411,7 +6422,7 @@ the name to its payload family and rate through
 `lane_eligibility.resolve_payload_rung` against the contract that
 plugin PACKAGES — `tessera/serving/runtime_contract.json`, reached by
 `importlib.resources.files("tessera.serving")`, never repo-root arithmetic —
-and answers True only on the AND of three conjuncts, each of which fails closed
+and answers True only on the AND of five conjuncts, each of which fails closed
 alone:
 
 1. **The table admits the rung.** The contract publishes the family and carries
@@ -6450,6 +6461,46 @@ alone:
    the attribution and v8's encoder scope travel into `RegimeRoute`
    (`evidence_grade`, `evidence_attribution`, `evidence_artifact`) and into
    provenance instead (principle 12).
+5. **The lane the cell launches through can read THIS producer's plan.**
+   Since Tessera contract v20 (Tessera #264) every `native_extensions[]` row
+   publishes a `lane` block: the `decoder` name its kernel stamps and, where
+   the kernel is narrower than the route, a `requires` predicate — the
+   window-GEMV lane reads `column_rates [1,2,4]`, `window_bits [14]`, `body
+   window`, `plane channel`, no release overrides, no diagonals, rotation
+   `none`, no start state, `grid_arities [1]`; the NVFP4 lane publishes none.
+   A cell's `executes` names a lane launch only for the rungs the ATTESTED
+   wire stamp reaches, and that stamp is not this producer's plan.
+   `lane_eligibility.cell_lane_admits(cell, rung, table.lanes)` therefore
+   reads the plan off `tessera_render.planned_wire_facts(family, rung)` — the
+   rate set (`tessera.grammar.rate_set` over the family's root and cap), the
+   recipe's window width, body and plane, and the render's own decoration
+   constants (`TESSERA_PLANNED_ROTATION / _DIAGONALS / _RELEASE_OVERRIDES`,
+   the values `_encode_planned_unit` encodes with) — and hands those facts to
+   **Tessera's own decision core, `tessera.serving.scheme.decide_lane_requirements`**.
+   That function is the rule's ONE home; PrismaQuant holds the facts and the
+   refusal, never a copy of the predicate. `parse_lane_claim` reads the block
+   closed (a requirement this reader cannot decide, an unknown rotation
+   state, body or plane, a non-ascending rate list or a non-boolean carry is
+   refused by name), `_parse_table` binds every `extension::symbol` launch a
+   cell names to that extension's lane (an undeclared extension or a
+   mismatched decoder is a contract inconsistency and is refused at parse),
+   and the same gate runs at every admission leg — `tessera_attesting_cells`
+   / `tessera_lane_admission` (menu), `TesseraContract.native_cells` (dev
+   pin) and `resolve_unit_route` (export), whose refusal lands in the same
+   `RegimeRoute.detail` slot as an evidence refusal, cell id named. The lane
+   rows travel into `EligibilityTable.provenance()["lanes"]` and into the
+   reviewed dev-pin answer (`native_extensions[].lane`), so a lane that
+   widens or narrows what it reads is a re-review, not a silent widening.
+   Consequence on the pinned table today: nothing changes hands — the only
+   cells that launch through the window-GEMV lane are the two streamed dense
+   E4M3 cells at rung 1024, whose plan (`rates (4,)`, 14-bit window, WINDOW /
+   CHANNEL, arity 1, no decoration) the lane reads; every E4M3 resident,
+   BF16 and E2M1 cell launches through torch or the NVFP4 lane. The gate has
+   teeth for the row the contract already routes: the lane's `routes` names
+   `TESSERA_BF16`, and BF16's one attested rung (1792 → column rate 7) is
+   outside `column_rates [1,2,4]`, so a BF16 cell that ever claimed the
+   window-GEMV launch would be refused here by name rather than exported to a
+   kernel that cannot read it (`tests/test_tessera_lane_requires.py`).
 
 **It answers by the PIN, not by an edit and not by an absent table.** Until
 2026-09-04 the answer was False for every rung, because the pin carried PENDING

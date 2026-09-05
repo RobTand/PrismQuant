@@ -26,7 +26,8 @@ def legacy(monkeypatch, legacy_v4_contract):
     assert payload["lane_eligibility"]["schema"] == "tessera.lane-eligibility.v4"
     parsed = contract._parse(payload, commit="fixture", sha="fixture", path="fixture")
     table = lane._parse_table(payload["lane_eligibility"], payload["formats"],
-                              "fixture", "fixture", "fixture")
+                              "fixture", "fixture", "fixture",
+                              native_extensions=payload["native_extensions"])
     formats = {row["family"]: row for row in payload["formats"]}
     monkeypatch.setattr(render, "_pinned_serving_table", lambda: (table, formats))
     monkeypatch.setattr(render, "_release_pin_satisfied", lambda: True)

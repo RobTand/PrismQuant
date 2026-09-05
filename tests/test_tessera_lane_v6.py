@@ -59,7 +59,8 @@ def payload():
 @pytest.fixture
 def table(payload):
     return lane._parse_table(payload["lane_eligibility"], payload["formats"],
-                             "", "", _raw()[1])
+                             "", "", _raw()[1],
+                             native_extensions=payload["native_extensions"])
 
 
 def _parse(payload):
@@ -106,7 +107,8 @@ def test_the_installed_contract_is_read_at_its_own_schema(table, payload):
         "what a legacy table is allowed to attest")
     assert _parse(payload).lane_schema == table.schema
     v6 = down_convert_lane_table(payload, lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6)
-    assert lane._parse_table(v6["lane_eligibility"], v6["formats"], "", "", "x"
+    assert lane._parse_table(v6["lane_eligibility"], v6["formats"], "", "", "x",
+                             native_extensions=v6["native_extensions"]
                              ).schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V6
 
 
@@ -136,14 +138,16 @@ def test_a_runtime_block_missing_the_versions_is_refused(payload):
     broken = copy.deepcopy(payload)
     _cell(broken, MOE_DECODE)["runtime"].pop("vllm")
     with pytest.raises(lane.LaneEligibilityError, match="missing field"):
-        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x")
+        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x",
+                          native_extensions=broken["native_extensions"])
 
 
 def test_a_cell_with_no_evidence_block_is_refused(payload):
     broken = copy.deepcopy(payload)
     _cell(broken, MOE_DECODE).pop("evidence")
     with pytest.raises(lane.LaneEligibilityError, match="missing field"):
-        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x")
+        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x",
+                          native_extensions=broken["native_extensions"])
 
 
 def test_the_grade_is_derived_from_the_entries_never_read_as_written(payload):
@@ -151,7 +155,8 @@ def test_the_grade_is_derived_from_the_entries_never_read_as_written(payload):
     _cell(broken, MOE_BATCH)["evidence"]["grade"] = "kl_full_vocab"
     with pytest.raises(lane.LaneEligibilityError,
                        match="the grade is read off the entries"):
-        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x")
+        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x",
+                          native_extensions=broken["native_extensions"])
 
 
 def test_a_bound_scored_in_another_regime_is_another_cells_evidence(payload):
@@ -159,14 +164,16 @@ def test_a_bound_scored_in_another_regime_is_another_cells_evidence(payload):
     _cell(broken, MOE_BATCH)["evidence"]["kl"][0]["regime"] = "decode"
     with pytest.raises(lane.LaneEligibilityError,
                        match="is not the cell's regime"):
-        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x")
+        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x",
+                          native_extensions=broken["native_extensions"])
 
 
 def test_an_unknown_smoke_status_is_refused_never_read_as_passing(payload):
     broken = copy.deepcopy(payload)
     _cell(broken, MOE_DECODE)["evidence"]["smoke"]["status"] = "looked_fine"
     with pytest.raises(lane.LaneEligibilityError, match="smoke.status must be one of"):
-        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x")
+        lane._parse_table(broken["lane_eligibility"], broken["formats"], "", "", "x",
+                          native_extensions=broken["native_extensions"])
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +206,8 @@ def test_the_gate_is_evidence_not_structure(table, payload):
     for cell_id in (MOE_DECODE, MOE_BATCH):
         _cell(healed, cell_id)["evidence"]["smoke"]["status"] = "recorded"
     parsed = lane._parse_table(healed["lane_eligibility"], healed["formats"],
-                               "", "", "x")
+                               "", "", "x",
+                               native_extensions=healed["native_extensions"])
     assert all(lane.cell_evidence_admits(c)[0] for c in parsed.cells)
 
 

@@ -80,8 +80,10 @@ from .lane_eligibility import (
     CellEvidence,
     SCOPED_LANE_SCHEMAS,
     cell_evidence_admits,
+    cell_lane_admits,
     LANE_ELIGIBILITY_SCHEMA_TESSERA,
     LANE_ELIGIBILITY_SCHEMA_TESSERA_V4,
+    LaneClaim,
     LaneEligibilityError,
     ServingContext,
     QUALIFICATION_DEVICE_QUALIFIED,
@@ -89,6 +91,7 @@ from .lane_eligibility import (
     ROUTE_STATUS_BACKED_WITH_SERVE_FLAG,
     _parse_table,
     cell_matches_serving_context,
+    parse_lane_claim,
 )
 
 __all__ = [
@@ -497,6 +500,14 @@ class TesseraNativeExtension:
     #: a NAMED substitute decoder and is a different numeric object, in the
     #: other there is no serve at all.
     when_unavailable: Mapping[str, Mapping[str, Any]]
+    #: What the extension's kernel READS (contract v20): the decoder name it
+    #: stamps and, when it publishes one, the predicate a unit's wire must
+    #: satisfy for the lane to take it (``lane.requires``).  Parsed by
+    #: ``lane_eligibility.parse_lane_claim`` -- the same reader the serving
+    #: pin's table uses -- and decided by ``cell_lane_admits`` in
+    #: :meth:`TesseraContract.native_cells`, so the development contract
+    #: admits a rung on exactly the terms the pinned one does.
+    lane: LaneClaim
 
     def as_contract_row(self) -> dict:
         """The four fields a residency predicate -- and the reading of an
@@ -700,12 +711,23 @@ class TesseraContract:
             # A rung the dev menu offers and the export refuses is the
             # split-brain principle 8 exists to stop.
             and cell_evidence_admits(cell)[0]
+            # And the SAME lane predicate: the lane a cell launches through
+            # must read what this producer plans at the rung
+            # (``lane_eligibility.cell_lane_admits``, deciding
+            # ``native_extensions[].lane.requires`` over
+            # ``tessera_render.planned_wire_facts``).
+            and cell_lane_admits(cell, int(rate_q256), self.lanes)[0]
             and (not self.requires_serving_context
                  or cell_matches_serving_context(cell, serving_context))
         )
         if self.requires_serving_context and {cell.regime for cell in selected} != set(self.regimes):
             return ()
         return selected
+
+    @property
+    def lanes(self) -> tuple[LaneClaim, ...]:
+        """Every extension's lane claim, in table order, for the lane gate."""
+        return tuple(ext.lane for ext in self.native_extensions)
 
     def identity(self) -> dict:
         """The ``tessera_dev_pin`` provenance block.
@@ -823,7 +845,11 @@ def contract_answer(contract: "TesseraContract") -> dict:
     all).  Those move the fingerprint's behaviour, so they are answer.
     ``source`` and ``loaded_by`` name files and modules in the runtime's own
     tree and move nothing on this side, so they are identity and stay out,
-    exactly like ``plugin_version``.
+    exactly like ``plugin_version``.  ``lane`` (contract v20) IS answer: its
+    ``decoder`` is what binds a cell's launch to the extension, and its
+    ``requires`` is the predicate ``native_cells`` and the export gate
+    decide this producer's plan against -- a lane that widens or narrows
+    what it reads changes which rungs are admitted, and is a re-review.
 
     ``fused_module`` is here for a third (prismaquant #132): the group
     knapsack's fold reads it, so a contract that re-tightened ``q256`` to
@@ -853,6 +879,7 @@ def contract_answer(contract: "TesseraContract") -> dict:
                            "decoder": behaviour["decoder"]}
                     for mode, behaviour in sorted(ext.when_unavailable.items())
                 },
+                "lane": ext.lane.answer(),
             }
             for ext in sorted(contract.native_extensions,
                               key=lambda e: e.module_name_prefix)
@@ -1026,7 +1053,7 @@ MATCH_BASENAME_FNMATCH = "basename_fnmatch"
 
 _NATIVE_EXTENSION_MEMBERS = (
     "module_name_prefix", "filename_glob", "match", "source", "loaded_by",
-    "routes", "when_unavailable",
+    "routes", "when_unavailable", "lane",
 )
 
 
@@ -1108,6 +1135,13 @@ def _parse_native_extensions(
                 or isinstance(routes, (str, bytes)) or not routes):
             raise TesseraContractError(
                 f"{at}.routes must name at least one route that needs it")
+        # The lane block is read by the serving pin's reader, so the two
+        # contracts a producer holds -- the pinned one and this development
+        # one -- refuse the same block for the same reason, once.
+        try:
+            lane = parse_lane_claim(entry["lane"], f"{at}.lane", extension=prefix)
+        except LaneEligibilityError as exc:
+            raise TesseraContractError(str(exc)) from exc
         parsed.append(TesseraNativeExtension(
             module_name_prefix=prefix,
             filename_glob=glob,
@@ -1116,6 +1150,7 @@ def _parse_native_extensions(
             loaded_by=str(entry["loaded_by"]),
             routes=tuple(str(r) for r in routes),
             when_unavailable=behaviours,
+            lane=lane,
         ))
     return tuple(parsed)
 
@@ -1298,6 +1333,15 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             )
         attested[family] = frozenset(int(r) for r in rungs)
 
+    # The extension table is read BEFORE the lane table because the lane
+    # table's cells launch through it: its own refusals (no table, an empty
+    # one, a match rule this reader cannot apply, a lane block it cannot
+    # decide) come first and by their own names.
+    extensions = _parse_native_extensions(
+        _require(payload, "native_extensions", path),
+        where=f"{path}.native_extensions",
+    )
+
     lane = _require(payload, "lane_eligibility", path)
     if not isinstance(lane, Mapping):
         raise TesseraContractError(f"{path}.lane_eligibility must be an object")
@@ -1308,7 +1352,13 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             f"got {lane_schema!r}"
         )
     try:
-        table = _parse_table(lane, formats, "", commit, sha)
+        # The lane table is read beside the extension table it launches
+        # through (contract v20): the reader binds every extension launch a
+        # cell names to that extension's lane. The predicate itself is NOT
+        # decided here -- loading a contract imports no encoder and no
+        # serving code; admission (``native_cells``) does.
+        table = _parse_table(lane, formats, "", commit, sha,
+                             native_extensions=payload["native_extensions"])
     except LaneEligibilityError as exc:
         raise TesseraContractError(f"{path}: {exc}") from exc
     cells: list[TesseraRouteCell] = []
@@ -1341,11 +1391,6 @@ def _parse(payload: Mapping[str, Any], *, commit: str, sha: str, path: str
             runtime_torch=cell.runtime_torch,
             evidence=cell.evidence,
         ))
-
-    extensions = _parse_native_extensions(
-        _require(payload, "native_extensions", path),
-        where=f"{path}.native_extensions",
-    )
 
     tp = _require(payload, "tensor_parallel", path)
     if str(tp.get("semantics")) != "closed_world":

@@ -100,11 +100,23 @@ def fixture(tmp_path, monkeypatch, *, structure="routed_moe"):
               "qualification": "device_qualified", "requires_plugin": "tessera", "predicates": [],
               "requires_serve_flags": ["TESSERA_SERVE_MODE=resident"],
               "executes": [{"symbol": symbol.split(":", 1)[0], "decoder": decoder}],
-              "runtime": {"image": IMAGE, "execution_modes": ["eager"]}}
+              "runtime": {"image": IMAGE, "execution_modes": ["eager"],
+                          "vllm": "0.0.0+fixture", "torch": "0.0.0+fixture"},
+              # The smallest evidence block the CURRENT lane grammar (v8)
+              # reads; this fixture is about the census binding, not the
+              # evidence, and a not_recorded smoke with no control and no
+              # artifact is the honest empty value of each field.
+              "evidence": {"grade": "route_only", "kl": [],
+                           "smoke": {"status": "not_recorded", "receipt": None,
+                                     "attribution": "unattributed", "control": None},
+                           "artifact": None}}
              for regime in ("decode", "batch")]
     block = {"schema": lane.LANE_ELIGIBILITY_SCHEMA_TESSERA, "platforms": {"sm_121": {}},
              "structures": [structure], "regimes": ["decode", "batch"], "cells": cells}
-    table = lane._parse_table(block, list(formats.values()), "fixture", "fixture", "fixture")
+    # No extension launch in this fixture (torch / vLLM symbols only), so no
+    # lane row is needed for the reader to bind launches to.
+    table = lane._parse_table(block, list(formats.values()), "fixture", "fixture", "fixture",
+                              native_extensions=[])
     monkeypatch.setattr(receipt, "_current_scoped_contract", lambda: (table, formats), raising=False)
     return census, binding, build, model_dir, units
 
