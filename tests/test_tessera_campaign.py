@@ -679,6 +679,123 @@ def test_one_cost_table_carries_one_hessian_identity():
     assert got["unstamped_rows"] == 1 and got["supplied"] is None
 
 
+def test_the_guard_compares_the_required_hessian_identity_triple():
+    """Two modern identities differing in one required field must refuse.
+
+    ``tessera.export.HESSIAN_IDENTITY`` is the required roster
+    (``text_sha256`` / ``fit_tokens`` / ``fit_ids_sha256``), and every current
+    campaign row carries it. A guard that keys only the legacy
+    ``(supplied, text_sha, token_count, kwarg)`` projection collapses any
+    number of distinct modern identities to one key, so a cost table merged
+    from two different Hessian draws sails through and the DP trades rows
+    priced on different bytes (RobTand/prismaquant#195).
+    """
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    a = {"supplied": True, "text_sha256": "a" * 64,
+         "fit_ids_sha256": "b" * 64, "fit_tokens": 128}
+    b = {**a, "fit_ids_sha256": "c" * 64}
+    with pytest.raises(ValueError, match="mixes Hessian identities"):
+        assert_uniform_hessian_identity({"m.up": {
+            "TESSERA_E4M3_K1_R1024": {"hessian_identity": a},
+            "TESSERA_E4M3_K1_R1280": {"hessian_identity": b},
+        }})
+
+
+def test_equal_legacy_aliases_do_not_launder_conflicting_modern_identities():
+    """The campaign writes ``text_sha`` as an alias of ``fit_ids_sha256``.
+
+    Two tables whose aliases happen to agree while the required triple
+    disagrees are still two draws; the aliases are carried for old tables,
+    never as the comparison.
+    """
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    a = {"supplied": True, "text_sha": "alias", "token_count": 4096,
+         "kwarg": ("ldl",), "text_sha256": "a" * 64,
+         "fit_ids_sha256": "b" * 64, "fit_tokens": 4096}
+    b = {**a, "text_sha256": "d" * 64}
+    with pytest.raises(ValueError, match="mixes Hessian identities"):
+        assert_uniform_hessian_identity({"m.up": {
+            "TESSERA_E4M3_K1_R1024": {"hessian_identity": a},
+            "TESSERA_E4M3_K1_R1280": {"hessian_identity": b},
+        }})
+
+
+def test_a_partial_identity_triple_is_refused_not_collapsed_to_legacy():
+    """A row claiming part of the triple is malformed, not an old row.
+
+    Pre-triple rows carry none of the modern fields and are reported as
+    ``legacy_rows``; a row carrying some of them was written by a modern
+    campaign and lost a field, which is a defect to refuse by name rather
+    than silently downgrade to the legacy comparison.
+    """
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    partial = {"supplied": True, "text_sha256": "a" * 64,
+               "fit_ids_sha256": None, "fit_tokens": 128}
+    with pytest.raises(ValueError, match="partial"):
+        assert_uniform_hessian_identity({"m.up": {
+            "TESSERA_E4M3_K1_R1024": {"hessian_identity": partial},
+        }})
+
+
+def test_a_uniform_modern_table_returns_the_canonical_triple():
+    """The guard's answer carries the triple for allocation provenance.
+
+    ``allocator.py`` stamps the returned dict into layer_config metadata
+    (``tessera_hessian``); an export gate that must bind a Hessian capture to
+    the allocation reads the triple from there, so the guard has to return
+    it rather than only the legacy projection.
+    """
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    ident = {"supplied": True, "text_sha": "alias", "token_count": 4096,
+             "kwarg": ("ldl",), "text_sha256": "a" * 64,
+             "fit_ids_sha256": "b" * 64, "fit_tokens": 4096}
+    got = assert_uniform_hessian_identity({"m.up": {
+        "TESSERA_E4M3_K1_R1024": {"hessian_identity": dict(ident)},
+        "TESSERA_E4M3_K1_R1280": {"hessian_identity": dict(ident)},
+    }})
+    assert got["stamped_rows"] == 2 and got["legacy_rows"] == 0
+    assert got["identity_schema"] == "modern"
+    assert got["text_sha256"] == "a" * 64
+    assert got["fit_ids_sha256"] == "b" * 64
+    assert got["fit_tokens"] == 4096
+    # The legacy projection survives for old readers of the stamp.
+    assert got["supplied"] is True and got["text_sha"] == "alias"
+
+
+def test_a_legacy_only_table_is_reported_as_legacy_not_modern():
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    ident = {"supplied": True, "text_sha": "abc", "token_count": 4096,
+             "kwarg": "gram"}
+    got = assert_uniform_hessian_identity({"m.up": {
+        "TESSERA_E4M3_K1_R1024": {"hessian_identity": dict(ident)},
+    }})
+    assert got["identity_schema"] == "legacy"
+    assert got["legacy_rows"] == 1 and got["stamped_rows"] == 1
+    assert got["text_sha256"] is None and got["fit_ids_sha256"] is None
+
+
+def test_a_legacy_row_and_a_modern_row_are_two_identities():
+    """A pre-triple table merged with a modern one is refused, even when the
+    legacy aliases agree: 'no claim about the triple' and 'a matching triple'
+    are different facts (P14)."""
+    from prismaquant.tessera_menu import assert_uniform_hessian_identity
+
+    legacy = {"supplied": True, "text_sha": "abc", "token_count": 4096,
+              "kwarg": "gram"}
+    modern = {**legacy, "text_sha256": "a" * 64,
+              "fit_ids_sha256": "b" * 64, "fit_tokens": 4096}
+    with pytest.raises(ValueError, match="mixes Hessian identities"):
+        assert_uniform_hessian_identity({"m.up": {
+            "TESSERA_E4M3_K1_R1024": {"hessian_identity": legacy},
+            "TESSERA_E4M3_K1_R1280": {"hessian_identity": modern},
+        }})
+
+
 def test_the_token_sha_identifies_the_calibration_draw():
     from prismaquant.tessera_hessian import token_ids_sha256
 

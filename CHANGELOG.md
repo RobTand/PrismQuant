@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **The Tessera cost-table identity guard compares the required Hessian
+  identity triple** (#195; `tessera_menu.assert_uniform_hessian_identity`).
+  The guard keyed rows only on the legacy `(supplied, text_sha, token_count,
+  kwarg)` projection, so any number of distinct modern identities —
+  `text_sha256` / `fit_tokens` / `fit_ids_sha256`, read from
+  `tessera_hessian.HESSIAN_IDENTITY_FIELDS`, which every current campaign row
+  carries — collapsed to one key and a table merged from two Hessian draws
+  allocated as one. Modern rows now key on the triple AND the legacy aliases,
+  pre-triple rows are their own `legacy` class that never merges with a
+  modern row, a partial triple refuses by name, and the returned stamp
+  carries the canonical triple into `__prismaquant__.tessera_hessian` so
+  export can bind a capture against the allocation.
 - **The group knapsack's per-member rung licence is read from the Tessera
   contract, not from its own docstring** (#132, RobTand/tessera#37;
   `allocator_candidates.tessera_group_composites`,
