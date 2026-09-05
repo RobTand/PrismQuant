@@ -229,10 +229,23 @@ def test_legacy_flat_parser_never_discards_explicit_runtime_context():
 
 def test_scoped_card_cannot_replay_flat_legacy_receipt(tmp_path, monkeypatch):
     data = fixture(tmp_path, monkeypatch)
-    legacy = shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
-        priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
-        substitute_decoders=["fallback"])
+    # A historical flat receipt: filled where no current scoped table existed
+    # to refuse it (fill applies the same rule as verify, #214), then carried
+    # onto a scoped card.
+    with monkeypatch.context() as historical:
+        def absent():
+            raise ModuleNotFoundError("No module named 'tessera'", name="tessera")
+        historical.setattr(receipt, "_current_scoped_contract", absent)
+        legacy = shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
+            priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
+            substitute_decoders=["fallback"])
     assert shipcard._verify_route_census_record("route.census", legacy, card={"build": data[2]})
+    # Filling that same flat list where the scoped table IS current refuses
+    # by name, before any card sees it.
+    with pytest.raises(receipt.TesseraRouteReceiptError, match="cannot attest an unbound legacy flat census"):
+        shipcard.make_route_census_record(tool="legacy", model_sha="fixture",
+            priced_routes=["TESSERA_FP8"], route_records=[{"route": "TESSERA_FP8", "decoder": "native"}],
+            substitute_decoders=["fallback"])
 
 
 def test_scoped_verification_requires_independent_artifact_files(tmp_path, monkeypatch):

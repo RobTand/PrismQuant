@@ -240,6 +240,35 @@ def _current_scoped_contract():
                 load_published_formats(contract_path=path))
 
 
+#: The one rule for a flat legacy census on a box with a current runtime,
+#: applied by `shipcard.verify` and by `make_route_census_record` alike
+#: (RobTand/prismaquant#214): cells of the scoped schema attest an image,
+#: mode and residency the flat rows never recorded, so they cannot attest
+#: the rows.  Flat rows stay acceptable only where no ``tessera`` is
+#: installed to publish a current table.
+FLAT_CENSUS_REFUSAL = ("current {schema} cells cannot attest an unbound legacy "
+                       "flat census; a serve on this runtime is received as "
+                       "route_census/2 with its binding")
+
+
+def current_table_refuses_flat_census():
+    """The refusal text for an unbound flat census, or ``None`` if acceptable.
+
+    ``None`` means either no ``tessera`` is installed (a historical, unscoped
+    card does not acquire a runtime dependency) or the installed table is not
+    of the scoped schema.  A contract that is present but unreadable raises
+    (``ValueError``/``OSError``) for the caller to report -- it is not a pass.
+    """
+    from . import lane_eligibility as lane
+    try:
+        table, _formats = _current_scoped_contract()
+    except ModuleNotFoundError:
+        return None
+    if table.schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA:
+        return FLAT_CENSUS_REFUSAL.format(schema=table.schema)
+    return None
+
+
 def _declared_projections(scheme, where):
     """Decode the sidecar's explicit role rows, never guess a packed slice."""
     structure = scheme.get("structure", "dense")

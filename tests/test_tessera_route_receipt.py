@@ -314,7 +314,7 @@ def test_a_native_census_receipt_closes_the_slot(tmp_path, monkeypatch):
                 if p.startswith(f"{ROUTE_CENSUS_SLOT}:")], problems
 
 
-def test_the_current_scoped_table_refuses_a_flat_legacy_receipt_by_name(tmp_path):
+def test_the_current_scoped_table_refuses_a_flat_legacy_receipt_by_name(tmp_path, monkeypatch):
     """The same passing flat receipt, verified where the pinned runtime is
     installed: the current cells cannot attest rows that never recorded an
     image, mode or residency, and the refusal names the schema that refused
@@ -336,7 +336,11 @@ def test_the_current_scoped_table_refuses_a_flat_legacy_receipt_by_name(tmp_path
         "test needs the pinned table, not a stand-in")
     model_dir = _tessera_card(tmp_path)
     path = model_dir / "shipcard.json"
-    fill_slot(path, ROUTE_CENSUS_SLOT, _passing_census_record(model_dir))
+    # Filled where a flat receipt can still be filled (no runtime installed;
+    # fill applies the same rule, #214), then carried to a box that has one.
+    with monkeypatch.context() as standing_down:
+        _no_runtime_installed(standing_down)
+        fill_slot(path, ROUTE_CENSUS_SLOT, _passing_census_record(model_dir))
     problems = [p for p in verify(load_shipcard(path), model_dir=model_dir)
                 if p.startswith(f"{ROUTE_CENSUS_SLOT}:")]
     assert problems == [
@@ -344,6 +348,60 @@ def test_the_current_scoped_table_refuses_a_flat_legacy_receipt_by_name(tmp_path
         "cannot attest an unbound legacy flat census; a serve on this runtime "
         "is received as route_census/2 with its binding"], problems
     assert "v5" not in problems[0]
+
+
+def test_fill_applies_the_same_flat_census_rule_as_verify(tmp_path, monkeypatch):
+    """RobTand/prismaquant#214: one rule, one home.
+
+    Filling `route.census` from a flat legacy row array on a box whose pinned
+    runtime publishes the scoped table must refuse at fill time, by name, with
+    the text `verify` prints for the same rows -- a producer that says
+    `passed=True` and a verifier that then refuses on the same box are two
+    homes for one decision.  Where no `tessera` is installed the flat rows
+    stay fillable, as before.
+    """
+    from prismaquant import tessera_route_receipt as receipt
+    from prismaquant.lane_eligibility import LANE_ELIGIBILITY_SCHEMA_TESSERA
+    from prismaquant.shipcard import (
+        ROUTE_CENSUS_SLOT,
+        compute_model_sha,
+        make_route_census_record,
+    )
+    from prismaquant.shipcard_cli import main as shipcard_cli
+
+    table, _formats = receipt._current_scoped_contract()
+    assert table.schema == LANE_ELIGIBILITY_SCHEMA_TESSERA
+    model_dir = _tessera_card(tmp_path)
+    expected = (f"current {LANE_ELIGIBILITY_SCHEMA_TESSERA} cells cannot attest "
+                "an unbound legacy flat census; a serve on this runtime is "
+                "received as route_census/2 with its binding")
+
+    with pytest.raises(receipt.TesseraRouteReceiptError) as refused:
+        make_route_census_record(
+            tool="test", model_sha=compute_model_sha(model_dir),
+            priced_routes=["TESSERA_NVFP4"],
+            route_records=_native_records("TESSERA_NVFP4"),
+            substitute_decoders=_substitutes())
+    assert str(refused.value) == expected
+
+    census = tmp_path / "census.json"
+    census.write_text(json.dumps(_native_records("TESSERA_NVFP4")))
+    assert shipcard_cli([
+        "fill-route-census", str(model_dir / "shipcard.json"),
+        "--census", str(census), "--priced-route", "TESSERA_NVFP4",
+        "--substitute-decoder", _substitutes()[0], "--model-dir", str(model_dir),
+    ]) == 2
+    from prismaquant.shipcard import load_shipcard
+    assert load_shipcard(model_dir / "shipcard.json")["slots"][ROUTE_CENSUS_SLOT] is None
+
+    # The one world the flat rows are still fillable in: no runtime installed.
+    _no_runtime_installed(monkeypatch)
+    record = make_route_census_record(
+        tool="test", model_sha=compute_model_sha(model_dir),
+        priced_routes=["TESSERA_NVFP4"],
+        route_records=_native_records("TESSERA_NVFP4"),
+        substitute_decoders=_substitutes())
+    assert record["passed"] is True
 
 
 def test_fill_route_census_cli_closes_the_slot_from_files(tmp_path, monkeypatch):

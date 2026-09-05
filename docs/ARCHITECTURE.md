@@ -83,8 +83,8 @@ tessera.lane-eligibility.v8 cells cannot attest an unbound legacy flat
 census`) — the rule was on main, comparing the packaged schema to
 `LANE_ELIGIBILITY_SCHEMA_TESSERA`, and never fired while the two differed;
 its only remaining positive path is a historical card verified where no
-`tessera` is installed. `fill-route-census` still accepts a flat row array on
-a box where `verify` will then refuse it (RobTand/prismaquant#214).
+`tessera` is installed; `fill-route-census` applies the same rule at fill
+time, from the same home (RobTand/prismaquant#214).
 
 Re-stamped (2026-09-04, `claude/tessera-pin-v0.1.0`) for **pinning Tessera by
 commit and contract digest instead of by release tag, lane-eligibility v6, and
@@ -7586,7 +7586,12 @@ A scoped card, or a current table of the scoped schema
 receipt instead of inventing the missing runtime, naming the schema that
 refused; flat rows stay attestable only where no `tessera` is installed to
 publish a current table (`tests/test_tessera_route_receipt.py`). At the `1221d2a`
-pin the packaged table was v4, so that refusal never fired; it does now. "No census was ever compared" reads as `UNFILLED`. Known
+pin the packaged table was v4, so that refusal never fired; it does now. Fill
+and verify apply the same rule from one home
+(`tessera_route_receipt.current_table_refuses_flat_census`): `fill-route-census`
+/ `make_route_census_record` refuse a flat row array by name at fill time on
+the box where `verify` would refuse it, rather than stamping `passed=True`
+first (RobTand/prismaquant#214). "No census was ever compared" reads as `UNFILLED`. Known
 limit: coverage strictness is uncalibrated against a real serve (nothing has
 been served yet on this side) -- both directions refuse, and relaxing either
 needs a measured serve, not an argument.
