@@ -760,7 +760,14 @@ def test_the_seam_forwards_the_activation_source_and_nothing_else():
     real = tr._tessera_export.encode_linear
 
     def capturing(weight, **kw):
-        seen.update(kw)
+        # Record the OUTERMOST call only. The pinned encoder's first call in a
+        # process computes ``encoder_fixture_id()``, which encodes its own
+        # fixture cases through this same module-level ``encode_linear`` --
+        # so with a cold cache the recursion would overwrite ``seen`` with a
+        # fixture's kwargs, and the test passed only after another test had
+        # warmed that cache.
+        if not seen:
+            seen.update(kw)
         return real(weight, **kw)
 
     monkey = pytest.MonkeyPatch()
