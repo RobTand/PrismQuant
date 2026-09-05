@@ -424,15 +424,15 @@ def require_stack_uniform_assignment(selected: Mapping[str, str], stack_of: Mapp
     return formats
 
 
-def verify_expert_wire_record(record: Any, *, name: str, unit: Mapping[str, Any],
-                              q256: int, grid: str, wire_dir: Path) -> dict:
-    """Check a carried priced-wire receipt against the unit it claims to price.
+def check_expert_wire_receipt(record: Any, *, name: str, unit: Mapping[str, Any],
+                              q256: int, grid: str) -> dict:
+    """Check a priced-wire receipt against the unit and rung it claims, without bytes.
 
-    The producer re-verifies the receipt against the identity it recomputes
-    from the source bytes and the export's Hessian; this check refuses the
-    cheaper contradictions first, by name: a receipt for another unit, another
-    rung, another grid, another projection, or a blob that is not in the
-    campaign's wire directory with the recorded bytes.
+    The allocator applies this to the receipt of every rung it selects, so an
+    allocation never carries a receipt for another unit, another rung, another
+    grid or another projection; the export lane adds the byte check
+    (:func:`verify_expert_wire_record`) where the bytes are about to be handed
+    over.  Returns the receipt's four producer fields and nothing else.
     """
     if not isinstance(record, Mapping) or set(record) != {"file", "blob_sha256",
                                                           "blob_bytes", "identity"}:
@@ -454,7 +454,21 @@ def verify_expert_wire_record(record: Any, *, name: str, unit: Mapping[str, Any]
     file = record["file"]
     if not isinstance(file, str) or Path(file).name != file or file in {".", ".."}:
         raise ExpertProjectionError(f"{name}: priced-wire receipt file is not a local leaf")
-    path = wire_dir / file
+    return {key: record[key] for key in ("file", "blob_sha256", "blob_bytes", "identity")}
+
+
+def verify_expert_wire_record(record: Any, *, name: str, unit: Mapping[str, Any],
+                              q256: int, grid: str, wire_dir: Path) -> dict:
+    """Check a carried priced-wire receipt against the unit it claims to price.
+
+    The producer re-verifies the receipt against the identity it recomputes
+    from the source bytes and the export's Hessian; this check refuses the
+    cheaper contradictions first, by name: a receipt for another unit, another
+    rung, another grid, another projection, or a blob that is not in the
+    campaign's wire directory with the recorded bytes.
+    """
+    record = check_expert_wire_receipt(record, name=name, unit=unit, q256=q256, grid=grid)
+    path = wire_dir / record["file"]
     if path.is_symlink() or not path.is_file() or path.resolve().parent != wire_dir.resolve():
         raise ExpertProjectionError(f"{name}: priced wire {path} is not in the wire directory")
     blob = path.read_bytes()
@@ -477,6 +491,92 @@ def cached_units_manifest(source: Mapping[str, Any], records: Mapping[str, Mappi
         raise ExpertProjectionError("priced expert wires share a filename")
     return {"schema": schema, "source": dict(source),
             "units": {name: dict(record) for name, record in sorted(records.items())}}
+
+
+# ---------------------------------------------------------------------------
+# The allocation side: what the layer config carries from the cost table
+# ---------------------------------------------------------------------------
+#: Layer-config metadata keys the allocator adds beside the three carried blocks.
+STACK_FORMATS_KEY = "tessera_expert_stack_formats"
+WIRE_DIR_KEY = "tessera_expert_wire_dir"
+
+
+def allocation_expert_projection_block(payload: Mapping[str, Any],
+                                       assignment: Mapping[str, Any]) -> dict:
+    """What an allocation carries about the expert population it selected from.
+
+    A stock table (no population statement, no projection, no wires) adds no
+    keys.  A campaign table's ``population`` block travels verbatim, so the
+    allocation says which units were priced and which were omitted without a
+    reader inferring it from row keys.  When the table also carries the
+    producer's projection, every projected unit must be placed by the
+    assignment, each executed stack must be assigned one format (the producer
+    plans one rung per stack), and every Tessera rung selected for a projected
+    unit must have a receipt sealed under that unit's projection and that rung
+    -- refused by name otherwise.  The receipts of exactly the selected rungs
+    travel with the allocation (``tessera_expert_wires``), with the campaign's
+    wire directory, so the export lane hands the exporter the priced bytes and
+    nothing else.  A stack kept whole at a non-Tessera format needs no receipt;
+    the block records the format so the export lane sees the same decision.
+    """
+    from .tessera_formats import parse_tessera_format_name
+
+    provenance = payload.get("provenance") if isinstance(payload, Mapping) else None
+    if not isinstance(provenance, Mapping):
+        return {}
+    population = provenance.get(POPULATION_KEY)
+    carried = provenance.get(PROJECTION_KEY)
+    wires = payload.get(EXPERT_WIRES_KEY)
+    if population is None and carried is None and wires is None:
+        return {}
+    block: dict[str, Any] = {}
+    if population is not None:
+        if not isinstance(population, Mapping) or population.get("schema") != POPULATION_SCHEMA:
+            raise ExpertProjectionError(
+                f"cost table population block is not {POPULATION_SCHEMA}; the allocation "
+                "cannot say which population was priced")
+        block[POPULATION_KEY] = json.loads(json.dumps(population, sort_keys=True))
+    if carried is None:
+        if wires:
+            raise ExpertProjectionError(
+                "cost table carries priced expert wires but no producer projection; "
+                "the wires cannot be bound to any executed unit")
+        return block
+    _source, units, stack_of = carried_units(carried)
+    missing = sorted(set(units) - set(assignment))
+    if missing:
+        raise ExpertProjectionError(
+            f"{len(missing)} of {len(units)} projected expert units are not in the "
+            f"assignment (first: {missing[0]}); the producer executes every stack whole")
+    selected = {name: str(assignment[name]) for name in units}
+    stack_formats = require_stack_uniform_assignment(selected, stack_of, units)
+    wire_dir = provenance.get("wire_dir")
+    if not isinstance(wire_dir, str) or not wire_dir:
+        raise ExpertProjectionError(
+            "cost table names no wire_dir for its priced expert wires")
+    if not isinstance(wires, Mapping):
+        raise ExpertProjectionError(
+            "cost table carries a producer projection but no priced expert wires")
+    receipts: dict[str, dict] = {}
+    for name, fmt in sorted(selected.items()):
+        parsed = parse_tessera_format_name(fmt)
+        if parsed is None:
+            continue  # kept whole at a non-Tessera format: no wire to carry
+        family, q256 = parsed
+        per_unit = wires.get(name)
+        record = per_unit.get(fmt) if isinstance(per_unit, Mapping) else None
+        if record is None:
+            raise ExpertProjectionError(
+                f"{name}: selected {fmt} has no priced wire receipt in the cost table; "
+                "the exporter would encode bytes this allocation did not price")
+        receipts[name] = check_expert_wire_receipt(
+            record, name=name, unit=units[name], q256=int(q256),
+            grid=family.payload_grid().name)
+    block[PROJECTION_KEY] = json.loads(json.dumps(carried, sort_keys=True))
+    block[EXPERT_WIRES_KEY] = receipts
+    block[STACK_FORMATS_KEY] = dict(stack_formats)
+    block[WIRE_DIR_KEY] = wire_dir
+    return block
 
 
 def declared_stacks_from_members(members: Sequence[Any]) -> dict[str, dict[str, tuple[int, int]]]:
@@ -506,9 +606,13 @@ __all__ = [
     "PROJECTION_SCHEMA",
     "SOURCE_IDENTITY_KEYS",
     "SOURCE_LAYOUT_UNPACKED",
+    "STACK_FORMATS_KEY",
     "UNIT_IDENTITY_KEYS",
+    "WIRE_DIR_KEY",
+    "allocation_expert_projection_block",
     "bind_expert_projection",
     "cached_units_manifest",
+    "check_expert_wire_receipt",
     "carried_projection",
     "carried_units",
     "declared_stacks_from_members",

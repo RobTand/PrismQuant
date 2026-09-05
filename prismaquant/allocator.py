@@ -180,6 +180,10 @@ from .serve_dispatch_table import DispatchTableError, load_dispatch_table
 from .decision_units import block_id_from_qname
 from .layer_config import LAYER_CONFIG_META_KEY
 from .schemas import validate_cost_payload, validate_probe_payload
+from .tessera_expert_projection import (
+    ExpertProjectionError,
+    allocation_expert_projection_block,
+)
 
 
 _KNEE_DIAGNOSTIC_MIN_LOG_SPAN_DECADES = 1.0
@@ -5516,6 +5520,21 @@ def main():
             "serve_constraints": final_serve_feasibility.as_dict(),
         } if final_serve_feasibility is not None else {}),
     }
+    # What this allocation carries about the priced expert population
+    # (PrismaQuant #183): the campaign's population statement (which units
+    # were priced, which omitted), the producer's projection they were priced
+    # under, and -- for every projected unit -- the receipt of exactly the rung
+    # selected here, so the export lane hands the exporter the priced bytes
+    # and nothing else.  A selected rung the campaign never priced as a wire,
+    # or a projected unit this allocation does not place, is refused by name
+    # before the layer config is written.  Additive: a stock cost table adds
+    # no keys, and a table carrying a population but no projection carries
+    # only the population.
+    try:
+        layer_cfg[LAYER_CONFIG_META_KEY].update(
+            allocation_expert_projection_block(cost_data, assignment_expanded))
+    except ExpertProjectionError as exc:
+        raise SystemExit(f"[alloc] ERROR: expert projection: {exc}") from exc
 
     out = Path(args.layer_config)
     out.parent.mkdir(parents=True, exist_ok=True)

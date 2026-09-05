@@ -3,6 +3,32 @@
 As of: 2026-09-05 · `claude/pq-183-packed-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the allocation
+carrying the priced expert population into `__prismaquant__`** (§4.10;
+PrismaQuant #183). `allocator.main` now adds
+`tessera_expert_projection.allocation_expert_projection_block(cost_data,
+assignment_expanded)` to the layer config's metadata, after the metadata dict
+is built and before the file is written: the campaign's `population` block
+verbatim (which units were priced, which omitted), the producer's
+`tessera_expert_projection` they were priced under, `tessera_expert_wires`
+holding -- for every projected unit -- the receipt of exactly the rung
+selected here (checked by `check_expert_wire_receipt` against that unit's
+projection and that rung before it is carried), `tessera_expert_stack_formats`
+(one format per executed stack, `require_stack_uniform_assignment`) and
+`tessera_expert_wire_dir`. Refused by name before the layer config is written
+(`[alloc] ERROR: expert projection: ...`): a projected unit the assignment
+does not place, a stack whose members were given different rungs, a selected
+Tessera rung with no priced-wire receipt, a receipt sealed for another rung or
+another unit, a table with wires but no projection, a population block of
+another schema. A stack kept whole at a non-Tessera format carries no receipt
+and records the format. Additive: a stock cost table adds no keys. Gate:
+`tests/test_allocator_expert_projection.py` (drives the real `allocator.main()`;
+pre-fix: `KeyError: 'tessera_expert_projection'` on the emitted metadata and
+`Failed: DID NOT RAISE SystemExit` for the two by-name refusals). The main()
+tests need a lane table this checkout's `lane_eligibility` reads and skip by
+name against the release producer's v8 table (PrismaQuant #192); the
+block-level refusals run on every checkout.
+
 Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the campaign
 pricing the producer-projected packed population** (§4.10; PrismaQuant #183).
 `tessera_campaign.main` now keeps the population `_require_campaign_population`
@@ -5883,6 +5909,18 @@ Two properties make the numbers comparable with the rest of the menu:
   binds the projection, so a resume under another source refuses at the
   journal. What the producer cannot attest is still refused by name: a packed
   source layout, an undeclared split, a missing tool.
+
+* **The allocation carries what it selected from (PrismaQuant #183).**
+  `allocator.main` adds `allocation_expert_projection_block(cost_data,
+  assignment_expanded)` to `__prismaquant__`: the campaign's `population`
+  block verbatim, the producer's `tessera_expert_projection` it was priced
+  under, `tessera_expert_wires` holding for every projected unit the receipt
+  of exactly the rung selected (checked against that unit's projection and
+  rung), `tessera_expert_stack_formats` (one format per executed stack) and
+  `tessera_expert_wire_dir`. A projected unit the assignment does not place,
+  a stack given different rungs, or a selected rung with no priced wire is
+  refused by name before the layer config is written; a stock table adds
+  nothing.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
