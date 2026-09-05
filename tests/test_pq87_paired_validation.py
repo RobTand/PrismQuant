@@ -57,13 +57,54 @@ def test_both_model_arms_reuse_the_existing_bounded_server_configuration():
     assert "--quantization" not in control + candidate
 
 
-def test_candidate_refusal_is_an_observation_but_missing_measurement_is_not():
+def _arm_receipts(monkeypatch, *, control_texts=None, candidate_texts):
+    """The two `prismaquant.boundary_campaign_arm/1` files the driver reads back."""
+    from prismaquant import boundary_control as bc
+    from test_boundary_policy import CLEAN, _pair
+    control, candidate = _pair(monkeypatch, control_texts or (CLEAN, CLEAN), candidate_texts)
+    decision = bc.decide_no_new_failures(control, candidate)
+    return ({"measurement": control}, {"measurement": candidate, "decision": decision},
+            bc.replay_no_new_failures)
+
+
+def test_candidate_refusal_is_an_observation_but_missing_measurement_is_not(monkeypatch):
+    from test_boundary_policy import CLEAN, ZERO
     driver = _driver()
-    assert driver.completed_candidate({"decision": {"verdict": "refused"}}, 2)
-    assert driver.completed_candidate({"decision": {"verdict": "accepted"}}, 0)
-    assert not driver.completed_candidate({"decision": {"verdict": "accepted"}}, 2)
-    assert not driver.completed_candidate({}, 2)
-    assert not driver.completed_candidate({"decision": {"verdict": "inconclusive"}}, 2)
+    control, accepted, replay = _arm_receipts(monkeypatch, candidate_texts=(CLEAN, CLEAN))
+    _, refused, _ = _arm_receipts(monkeypatch, candidate_texts=(ZERO, CLEAN))
+    assert refused["decision"]["verdict"] == "refused"
+    assert driver.completed_candidate(refused, 2, control, replay)
+    assert driver.completed_candidate(accepted, 0, control, replay)
+    # The exit status and the receipt must agree; either alone is not the observation.
+    assert not driver.completed_candidate(accepted, 2, control, replay)
+    assert not driver.completed_candidate(refused, 0, control, replay)
+    assert not driver.completed_candidate({}, 2, control, replay)
+    assert not driver.completed_candidate({"measurement": accepted["measurement"]}, 0, control, replay)
+
+
+def test_stored_candidate_verdict_is_replayed_against_the_control_not_trusted(monkeypatch):
+    """`decision.verdict` in the receipt is a claim; the driver recomputes it.
+
+    The receipt is written by a subprocess the driver launched seconds earlier,
+    which is exactly why trusting the stored bit would go unnoticed: nothing
+    else between the write and the read re-derives the verdict, and the
+    offline verifier `replay_no_new_failures` otherwise has no caller outside
+    the tests (pq-190 review, side-finding 3).
+    """
+    from test_boundary_policy import CLEAN, ZERO
+    driver = _driver()
+    control, receipt, replay = _arm_receipts(monkeypatch, candidate_texts=(ZERO, CLEAN))
+    assert receipt["decision"]["verdict"] == "refused"
+    forged = copy.deepcopy(receipt)
+    forged["decision"]["verdict"] = "accepted"
+    with pytest.raises(ValueError, match="boundary decision differs from replayed paired policy"):
+        driver.completed_candidate(forged, 0, control, replay)
+    # A verdict that replays only against some other control is not this campaign's.
+    other_control, _, _ = _arm_receipts(monkeypatch, control_texts=(ZERO, ZERO),
+                                        candidate_texts=(ZERO, CLEAN))
+    assert other_control != control
+    with pytest.raises(ValueError, match="boundary decision differs from replayed paired policy"):
+        driver.completed_candidate(receipt, 2, other_control, replay)
 
 
 def test_cpu_only_pool_action_cannot_start_the_physical_controller(monkeypatch):

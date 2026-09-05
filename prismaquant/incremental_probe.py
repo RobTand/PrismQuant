@@ -561,10 +561,19 @@ def build_layer_shard_regexes(num_hidden_layers: int,
 
 
 def _detect_profile_for_shards(model_path: str):
-    try:
-        from .model_profiles.registry import detect_profile
+    """The checkpoint's profile, or `DefaultProfile` for an unknown one.
 
+    `DeadVendoredOverrideError` is not that case and is re-raised (#201): the
+    architecture IS known, its vendored modelling path is dead, and answering
+    `DefaultProfile` here would shard and probe the model against upstream
+    modelling code under a profile that promises the vendored copy.
+    """
+    from .model_profiles.registry import DeadVendoredOverrideError, detect_profile
+
+    try:
         return detect_profile(model_path)
+    except DeadVendoredOverrideError:
+        raise
     except Exception:
         from .model_profiles.default import DefaultProfile
 
