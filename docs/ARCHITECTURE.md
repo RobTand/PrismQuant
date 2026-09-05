@@ -1,7 +1,134 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq-census-v5-integration`. Stamps
+As of: 2026-09-05 · `codex/pq186-campaign-identity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq186-campaign-identity`) for **one resume
+identity, including the served A-side contract** (§4.10; merge of the
+identity-bound resume below with the priced-inputs contract stamped beneath
+it). The static NVFP4 `input_global_scale` per unit and the resolved
+`input_global_scale_policy` are scoring inputs, so the campaign checkpoint's
+journal identity binds them beside the score rows and Hessians: a checkpoint
+priced under another calibration or policy refuses at the manifest, by field,
+before a row of it is read. The per-row half of the same rule — a resumed
+W4A4 row must carry exactly this run's scale for its unit, a dynamic-route
+row must carry none — is asked inside the per-anchor identity check, beside
+the Hessian-applicability check and before the producer's wire receipt is
+verified; the separate resume-time scale gate is gone. One rule, one home,
+one refusal grammar (`checkpoint identity mismatch at
+units.<unit>.input_global_scale` / `ActivationScaleContractError` on the row).
+Gate: `tests/test_tessera_campaign_resume.py` (`input_scale`, `scale_policy`
+and pre-contract-row cases) and
+`tests/test_tessera_campaign.py::test_resume_refuses_w4a4_anchors_priced_under_another_contract`.
+
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for **identity-bound
+Tessera campaign resume** (§4.10; PrismaQuant #186). The existing cost journal
+binds the current selected weights, scoring rows even with Hessians off, actual
+Hessians, corpus/token draw, menus/scope, explicit campaign settings, resolved
+encoder configuration and both producer/package source seals. Its original
+`--checkpoint` file path is the manifest; sibling `.parts` shards hold durable
+checksummed per-unit anchors and the producer's own cached-byte receipts.
+Every resumed anchor must belong to the current unit/menu, agree with the
+producer's Hessian applicability and verify its exact wire bytes against a
+fresh producer input identity before entering the cost payload. Legacy unbound
+JSON, changed inputs, extra/missing receipts and missing/changed wire refuse;
+old anchors never acquire today's identity. This consumes the pending producer
+`tessera.cached_unit` API and does not change the release pin, admit packed
+campaigns, or establish served/GPU qualification. Gate:
+`tests/test_tessera_campaign_resume.py`.
+
+Re-stamped (2026-09-04, `codex/pq186-campaign-identity`) for the shared
+checkpoint journal's **explicit manifest pathname** (§4.10; PrismaQuant #186).
+`cost_stage_checkpoint.prepare_journal` can retain a file-oriented caller's
+manifest path while storing per-unit shards in its checkpoint directory. It
+uses the existing manifest/unit schemas, exact identity comparison, checksums,
+and durable writes; existing directory-oriented callers are unchanged. This
+adapter enables the campaign's identity-bound resume without changing its
+`--checkpoint` filename/default or introducing another checkpoint grammar.
+The campaign's intake/wire verification is a separate change, not supplied
+merely by this optional argument.
+
+Re-stamped (2026-09-05, `codex/pq183-packed-capture`) for **one campaign
+capture, dense or packed** (§4.10; merge of the packed source-unit capture
+below with the priced-inputs contract stamped beneath it). The campaign has
+one Hessian-capture accumulator: a dense Linear's pre-hook and a packed
+projection's derived routed rows land in the same three per-unit outputs
+(bounded scoring rows, the exact XᵀX, and the max|x| behind the static
+`input_global_scale`), so a packed unit feeds `hessian_capture.pt` and
+`input_scales.safetensors` by the dense path rather than by a second capture.
+Nothing packed reaches those artifacts yet: the main-entry population refusal
+below still turns a live packed population away before calibration, by name,
+until the exact cached-wire/stack-plan bridge (PrismaQuant #183) lands. Gate:
+`tests/test_tessera_campaign_packed.py` (max|x| asserted per packed unit).
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **profile-pinned
+campaign exclusions** (§4.10). The dense target walk now consults the existing
+`ModelProfile.is_pinned_name` accessor before capture/menuing. In particular,
+LFM's already-pinned router and short-convolution Linears cannot be priced as
+quantizable parameters. The profile still owns every pin; no new roster or
+default is introduced. Real main-entry regressions exercise both LFM's declared
+pins and a changed profile declaration, so the test cannot be satisfied by a
+private campaign pin list. Gate: `tests/test_tessera_campaign_pins.py`.
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for **packed
+source-unit capture** (§4.10; PrismaQuant #183). Shared routed-expert
+discovery exposes per-expert projection views using the native exporter's
+profile-owned split; it does not invent Tessera serving groups. The existing
+packed activation collector offers an optional synchronous full-row consumer,
+leaving its default reservoir behavior unchanged. Campaign capture uses the
+existing router/SwiGLU derivation on those live inputs, accumulating every
+routed row into each selected unit's own Hessian before retaining bounded
+scoring rows. An unobserved selected expert refuses; no shared-Hessian or
+weight-only fallback is introduced. The main-entry packed-population refusal
+remains in force pending the producer's exact cached-wire/stack-plan bridge
+and its measured coverage. This is CPU-tested capture plumbing, not packed
+campaign/export eligibility or a GPU/served performance claim.
+
+Re-stamped (2026-09-04, `codex/pq183-packed-campaign`) for the **campaign
+population refusal** (§4.10; PrismaQuant #183). Before calibration, the
+Tessera campaign checks the profile-declared routed target population against
+live rank-three parameters under the same explicit layer stride used by its
+dense walk. Any in-scope packed expert parameters are named and refused;
+they can no longer disappear from a dense-only cost payload. This guard does
+not implement packed activation capture or the exact cached-wire/stack-plan
+producer bridge, and it makes no packed-MoE qualification claim. Gate:
+`tests/test_tessera_campaign_packed.py` (real main-entry synthetic mixed
+dense/packed regressions, both shown failing before the refusal).
+
+Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for a **frozen sequential
+native-candidate validation plan**, not a measured result. The opt-in
+`experiments/pq87_paired_validation.py` reuses the existing bounded BF16
+instrument helpers and the paired client. A committed manifest declares
+distinct native BF16/quantized sources, screen and disjoint held-out schedules,
+both-box telemetry URLs and the deadline. It freezes both artifacts before
+startup, serves one model at a time, records the paired policy on each
+population and runs the existing small PPL check on both servers. A candidate
+refusal is retained as a completed observation; missing/incomparable evidence
+is inconclusive, never an automatic retry or a default promotion. The
+reference native NVFP4 candidate's existing shipcard is unfilled. This one
+model cannot cover the additional representative population or gold/downstream
+promotion gates. Gate: `tests/test_pq87_paired_validation.py`.
+Container cleanup uses a Docker-published exact ID and verifies both the
+PrismaBuild action label and a fresh campaign nonce before any stop/remove.
+An unused output directory does not prove Docker-name ownership; prelaunch
+failure cleans nothing, name collisions refuse, and uncertain creation stays
+inconclusive for PrismaBuild's action-owner cleanup.
+The numeric screen distinguishes a measured PPL threshold refusal from
+empty/skipped/speculative logprobs: only finite full-roster metrics with
+scored tokens are completed observations. Missing data stays inconclusive.
+
+Re-stamped (2026-09-04, `codex/pq87-paired-policy`) for the **opt-in paired
+no-new-boundary-failures decision** (§7.2; #87). The separately versioned
+`prismaquant.no_new_boundary_failures/1` policy replays both measurement
+receipts before comparing defect-kind sets on identical prompt/seed pairs at
+the BF16-derived uncensored cap. A newly broken clean pair or a new kind on
+an already-broken pair refuses; repairs never offset failures elsewhere.
+Missing, malformed, incomparable or censored control evidence is inconclusive.
+`measure_boundary_control.py candidate --decision-policy no-new-failures`
+records this optional decision and exits 2 on refusal. Offline replay
+recomputes every decision field. This adds no shipcard waiver, changes no
+production threshold and claims no quantized/held-out measurement. Gates:
+`tests/test_boundary_policy.py`.
 
 Re-stamped (2026-09-05, `codex/pq-census-v5-integration`) for **naming the
 scoped census leg dormant at the current pin** (§7.1; Tessera #126). No code
@@ -5562,6 +5689,19 @@ stopped it.
 
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
 
+Resume is an identity check, not a name match. The JSON checkpoint manifest
+uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in
+its sibling `.parts` directory. It binds actual selected weights, scoring rows,
+Hessians and calibration draw, resolved menus/scope/settings and the producer
+and PrismaQuant source seals. Each priced wire has a `tessera.cached_unit`
+receipt, verified against freshly derived producer inputs before its saved
+cost is admitted. Changed or unverifiable inputs, old identity-free anchor
+lists, absent/corrupt wire and receipt coverage mismatch refuse without
+recomputing or relabelling the old result. Output/cache paths and the wall-clock
+interruption limit are not numerical inputs; moving them is allowed only if
+the same manifest, unit journal and verified priced wire remain available.
+The producer API is required; an older producer without it refuses.
+
 > **Premise correction.** This work was briefed on the belief that Tessera's
 > "embedded rate axis" would let one deep encode per unit yield exact decodes of
 > every lower rate. It does not, on the wire: the embedded axis is a decode-time
@@ -5601,7 +5741,9 @@ Two properties make the numbers comparable with the rest of the menu:
 * **Rendering identity (§P8).** The tensor that is priced *is* the decoded wire:
   `_encode_and_render` returns `read_unit_artifact(unit.blob)`, and the blob is
   stored beside the render in the cache. Not two code paths that agree — one
-  object.
+  object. This proves the cached wire is the priced wire, not that an export
+  or serving runtime reused it; those paths owe their own exact-byte and
+  served receipts. The packed bridge remains tracked by PrismaQuant #183.
 
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
@@ -6069,12 +6211,12 @@ different rendering; the export fingerprint records the enumeration the shipped 
 so a shipped artifact names its rendering. Packed experts stamp the hook-only
 `metadata["activation_hook_scope_packed"]` (`fill_packed_expert_cache_entries` hooks the
 full visible module set and `store_qnames` narrows only storage, #145) and the union merge
-requires agreeing packed digests while tolerating dense-only shards. **One caveat remains.**
-The
-cache directory has no render-identity guard at all — resume is file-presence only — so a
-directory whose units were rendered under a narrower hook set will keep those bytes and
-silently mix them with newly rendered ones. Rebuild an assignment-scoped cache directory
-rather than resuming it across this change.
+requires agreeing packed digests while tolerating dense-only shards. Resume is now guarded
+by `render_identity.json` (#146): the base fill and packed append writers compare their
+respective identity sections before admitting file-presence reuse. A changed hook scope
+refuses and requires a fresh cache directory. A pre-guard directory can still be admitted
+on trust, but its existing shard names and count are recorded as `pre_guard_admission`;
+that history is not evidence that those old shards had a verified render identity.
 
 Render mechanisms are a registry with declared ordering semantics, not a lever string parsed in
 spelling order (`render_score.py:188-260`): each `RenderMechanismSpec` declares `operation`,
@@ -7694,7 +7836,7 @@ boundary check, regardless of its nominal defect count.
 This endpoint fix is necessary and insufficient. Physical evidence invalidated
 the current 64-token cap and a universal zero roster: healthy DSV4 still filed
 7/30 cap truncations at 64, while stock Qwen3-8B filed 10/15 even at 600. The
-pending policy is a same-session BF16 control whose cap grows until the control
+control-relative instrument uses a same-session BF16 control whose cap grows until the control
 reaches its own finishing fixed point, bounded by the declared model context
 and an explicit backstop; the quantized arm is then scored control-relative at
 that exact cap. The opt-in `boundary_control.py` instrument now specifies and
@@ -7707,9 +7849,15 @@ record raw-request A versus chat-request B at the historical initial cap,
 followed by the uncensored control budget. Relative counts are per stratum,
 without an invented significance or tolerance threshold. The budget is fit on
 this frozen schedule, so the report is a detector and must not select artifact
-calibration content. Until a physical paired measurement and a replacement
-shipping policy are approved, the old 64/zero values remain fail-closed, #87
-remains `needs-decision`, and this instrument cannot promote an artifact.
+calibration content. The optional `--decision-policy no-new-failures` applies
+the versioned paired rule chosen for #87: a new defect kind on any prompt/seed
+refuses, with no offset from repairs on other pairs. The policy replays the
+complete evidence and treats missing/incomparable/censored controls as
+inconclusive. It remains opt-in and does not fill or waive a shipping slot.
+Until matched quantized, disjoint held-out and representative-population
+validation supports a shipping-default promotion, the old 64/zero values
+remain fail-closed. The BF16-only A/B does not establish quantized-artifact
+discrimination.
 
 **Spec-decode refusal.** `_spec_decode_on` scrapes `/metrics` for
 `vllm:spec_decode`; if present the perplexity check **refuses a verdict** rather than return

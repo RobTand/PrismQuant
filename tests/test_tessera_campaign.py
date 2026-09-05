@@ -424,7 +424,8 @@ def test_resume_refuses_w4a4_anchors_priced_under_another_contract():
     import dataclasses
 
     from prismaquant.tessera_campaign import (
-        ActivationScaleContractError, _require_resumable_anchor,
+        ActivationScaleContractError, _checkpoint_anchor_identity,
+        _require_resumable_anchor,
     )
 
     old = _anchor("m.q_proj", "TESSERA_E2M1_K2", 896, 1e-3)
@@ -438,9 +439,26 @@ def test_resume_refuses_w4a4_anchors_priced_under_another_contract():
     _require_resumable_anchor(
         dataclasses.replace(old, input_global_scale=71.68),
         {"m.q_proj": 71.68})
-    # A dynamic-route row never carried a scale and resumes untouched.
-    _require_resumable_anchor(
-        _anchor("m.up", "TESSERA_E4M3_K1", 1024, 1e-3), {})
+    # A dynamic-route row never carried a scale and resumes untouched; one
+    # that does carry a scale was stamped by no producer this campaign has.
+    dynamic = _anchor("m.up", "TESSERA_E4M3_K1", 1024, 1e-3)
+    _require_resumable_anchor(dynamic, {})
+    with pytest.raises(ActivationScaleContractError,
+                       match="dynamic activation quantiser"):
+        _require_resumable_anchor(
+            dataclasses.replace(dynamic, input_global_scale=71.68), {})
+
+    # The rule's one home on the resume path is the per-anchor identity
+    # check, asked beside Hessian applicability and BEFORE the producer's
+    # wire receipt is looked at -- the same refusals, from that gate.
+    weights = {"m.q_proj": torch.zeros(2048, 1024, dtype=torch.bfloat16)}
+    menus = _menu("m.q_proj", "TESSERA_E2M1_K2", {896})
+    for row, message in ((old, "pre-served-.*contract"),
+                         (other_draw, "mixes two activation calibrations")):
+        with pytest.raises(ActivationScaleContractError, match=message):
+            _checkpoint_anchor_identity(
+                row, weights=weights, menus=menus, calibration_source=None,
+                static_scales={"m.q_proj": 71.68})
 
 
 def test_fused_siblings_share_one_static_scale():
@@ -760,7 +778,14 @@ def test_the_seam_forwards_the_activation_source_and_nothing_else():
     real = tr._tessera_export.encode_linear
 
     def capturing(weight, **kw):
-        seen.update(kw)
+        # Record the OUTERMOST call only. The pinned encoder's first call in a
+        # process computes ``encoder_fixture_id()``, which encodes its own
+        # fixture cases through this same module-level ``encode_linear`` --
+        # so with a cold cache the recursion would overwrite ``seen`` with a
+        # fixture's kwargs, and the test passed only after another test had
+        # warmed that cache.
+        if not seen:
+            seen.update(kw)
         return real(weight, **kw)
 
     monkey = pytest.MonkeyPatch()
