@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/tessera-pin-v0.1.0`. Stamps
+As of: 2026-09-05 · `codex/audit4-smoke-grammar`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/audit4-smoke-grammar`) for producer/consumer
+v9 smoke-record grammar parity (PrismaQuant #233). Before deriving admission,
+the reader delegates the entire record grammar to the pinned producer's pure
+`_evidence_smoke_record` validator. Nullable references and reference statuses
+survive parsed provenance and JSON round trips; unknown reference arms,
+nonportable instrument paths and duplicate `(prompt, form)` observations
+refuse. A missing validator is a named runtime mismatch. This changes no
+status policy, serving format, pin or GPU execution path.
 
 Re-stamped (2026-09-05, `claude/tessera-pin-v0.1.0`) for **reading the lane
 table Tessera publishes at the pinned commit** (§5.7, §9.4). Tessera released
@@ -56,23 +65,19 @@ two-homes defect #327 reports one level down — so on a v9 table the status
 and the attribution are re-derived by calling Tessera's own
 `derive_smoke_status` / `derive_smoke_attribution`, and a published value
 that disagrees with what they return is refused as a contract defect rather
-than resolved. The `interface` and `form` vocabularies are read from
-`tessera.serving.contract` for the same reason, never transcribed beside the
-parser — as are the record's and the row's own member sets
-(`EVIDENCE_SMOKE_RECORD_KEYS`, `EVIDENCE_SMOKE_ROW_KEYS`), so a member Tessera
-adds widens this reader on the re-pin that installs it. Whether a cell's word
-was DERIVED or merely asserted is likewise asked, not inferred: Tessera names
-that state `smoke_status_is_derived`, and a reader that spelled it `record is
-not None` would be restating the rule one level up from the one it refuses to
-restate. It reaches provenance, so a shipcard can tell an attested status from
-an asserted one. One refusal is mirrored rather than re-derived — a `record`
-beside a non-null v7 `control` is refused by name, as Tessera's validator
-refuses it, because two homes for one derivation is how they drift; a v9 cell
-that was re-measured records its rows and retires the control. Two shape rules
-this reader does add, both #327's finding in the grammar: a record must name a
-non-empty `instrument`, `rule` and `reference`, and its `rows` must be
-non-empty — a status derived over zero observations is the empty completion
-wearing a schema.
+than resolved. The record grammar is also owned by Tessera:
+`_parse_smoke_record` calls the pinned metadata module's
+`_evidence_smoke_record` validator before converting its result to immutable
+consumer dataclasses. This validates closed record and row members, known
+forms, interfaces and statuses, a portable repository-relative instrument
+path, a nonempty rule and nonempty rows. The reference is a known arm or
+`null`; each row's reference status must be null exactly when no reference
+arm is named. Observation identity is `(prompt, form)`, so changing an
+interface or verdict cannot manufacture a second observation of that pair.
+A record beside a non-null v7 control is refused by the same owning validator.
+The immutable pin binds this private metadata API; its absence is a named
+refusal rather than a fallback grammar. Whether a cell's status was derived
+is asked through `smoke_status_is_derived` and carried into provenance.
 
 **The pin names v22, so v9 is the CURRENT grammar, not one this reader merely
 accepts.** `LANE_ELIGIBILITY_SCHEMA_TESSERA` is `tessera.lane-eligibility.v9`,
