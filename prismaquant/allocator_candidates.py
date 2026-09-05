@@ -1866,33 +1866,27 @@ def _resolve_cost_entry(cost_rows: dict, fmt_name: str) -> tuple[dict | None, st
 
 
 def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
-    """Convert a super item's per-member UCB hedge into the independence one.
+    """Separate member hedges and retain a conservative group stderr bound.
 
-    A super item (fused-sibling group, packed serving group) prices one
-    format as the SUM of its members' ``cost_entry_predicted_dloss``. With
-    ``PRISMAQUANT_COST_UCB_Z > 0`` every member term already carries its own
-    ``z·stderr·gain``, so the sum carries a LINEAR ``z·Σ(stderr·gain)``
-    hedge — up to a √N OVER-hedge on an N-member group. The member dloss
-    estimates are independent measurements, so the stderr of the group SUM is
-    ``sqrt(Σ (stderr·gain)²)``.
+    AURA rows share probe samples, so distinct members do not establish
+    independent estimator errors. Without verified joint sample identities
+    or an explicit independence contract, the standard deviation of a sum is
+    bounded by the SUM of its scaled standard deviations. Quadrature can
+    underprice positive covariance; physical perturbation additivity does not
+    establish independence of the cost estimates.
 
-    ``member_terms`` yields ``(stats_entry, cost_entry, member_dloss, scale)``
-    where ``scale`` is every multiplicative factor already applied to that
-    member's dloss but NOT to the raw ``predicted_dloss_stderr`` in the cost
-    row — the calibrated gain and, since ultraplan P5a, the per-family
-    activation penalty. Both scale the point estimate and its stderr
-    identically, so a member whose price was penalized must have its stderr
-    penalized too or the conversion would over-subtract the linear hedge it
-    exists to undo.
+    ``member_terms`` yields ``(stats_entry, cost_entry, member_dloss, scale)``.
+    The scale includes calibrated gain and activation penalty already applied
+    to the member price. Only terms priced with a stderr hedge contribute.
+    Raw per-probe arrays alone do not establish alignment here.
 
-    Returns ``(hedge_linear, stderr_agg)``: subtract ``hedge_linear`` from the
-    member sum and add ``ucb_z * stderr_agg`` to get the independence
-    aggregate. At ``ucb_z == 0`` ``hedge_linear`` is exactly 0.0, so the
-    conversion is a bit-for-bit identity on the sum.
-
-    Both aggregation paths call this so the two constructions cannot drift.
+    Returns ``(hedge_linear, stderr_bound)``: remove the member hedges to
+    recover the base cost, and retain the conservative bound in the grouped
+    cost row for repricing. At ``ucb_z == 0`` the removed hedge is exactly
+    zero, preserving the accumulated candidate price bit for bit. Both fused
+    and packed aggregation use this same policy.
     """
-    stderr_eff_sq = 0.0
+    stderr_bound = 0.0
     hedge_linear = 0.0
     for stats_entry, cost_entry, member_dloss, gain in member_terms:
         if float(member_dloss) <= 0.0:
@@ -1917,9 +1911,9 @@ def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
             stderr = 0.0
         if stderr <= 0.0:
             continue
-        stderr_eff_sq += (stderr * float(gain)) ** 2
+        stderr_bound += abs(stderr * float(gain))
         hedge_linear += ucb_z * stderr * float(gain)
-    return hedge_linear, math.sqrt(stderr_eff_sq)
+    return hedge_linear, stderr_bound
 
 
 def reduce_continuous_menu(
@@ -2892,9 +2886,9 @@ def tessera_group_composites(
       the same numbers the DP would charge if the members were separate units,
       so a uniform-rung option prices identically to the old per-NAME
       aggregation (asserted by the caller);
-    * summing is exact only while the UCB hedge is linear. The group hedge is
-      ``z*sqrt(sum stderr^2)``, which is not additive, so this refuses at
-      ``z > 0`` rather than quietly pricing the hedge wrong.
+    * mixed-rung composites retain their existing ``z > 0`` refusal. The
+      conservative uncertainty bound on uniform groups does not establish
+      support for uncertainty repricing across this separate option path.
     """
     from .tessera_formats import (
         format_promotion_class, fused_shared_signature,
@@ -2974,12 +2968,10 @@ def tessera_group_composites(
     # classes to fold and must be untouched by this path.
     if shared_classes and float(ucb_z) > 0.0:
         raise NotImplementedError(
-            "Tessera group composites are exact by summing member costs, and "
-            "the UCB hedge z*sqrt(sum stderr^2) is not additive: at "
-            f"PRISMAQUANT_COST_UCB_Z={ucb_z} the Minkowski fold would price "
-            "the hedge as if it were linear. Set the hedge to 0 for a "
-            "Tessera group run, or extend the fold to carry sum(stderr^2) as "
-            "a third coordinate."
+            "Tessera mixed-rung group composites do not support UCB pricing: "
+            f"PRISMAQUANT_COST_UCB_Z={ucb_z}. Set the hedge to 0 for a "
+            "Tessera group run; uniform-group uncertainty support does not "
+            "enable uncertainty repricing for mixed-rung options."
         )
 
     out: list["Candidate"] = []
@@ -3194,13 +3186,9 @@ def aggregate_fused_siblings(
                     activation_pricing=activation_pricing)
                 sum_pred += member_pred
                 member_terms.append((stats[m], c, member_pred, act_penalty))
-            # Same UCB conversion as aggregate_packed_serving_groups: the
-            # LINEAR z·Σ(stderr) baked into sum_pred becomes the independence
-            # z·sqrt(Σ stderr²) (a qkv triple over-hedged at 3x linear now
-            # hedges at √3), and the aggregated stderr is stored so consumers
-            # of the aggregated cost table keep the hedge instead of silently
-            # reading stderr 0. weight_mse is derived from the UN-hedged sum
-            # so the super entry's mse is not z-contaminated.
+            # Recover the unhedged sum for weight_mse, and store the shared
+            # conservative stderr bound so grouped-table consumers preserve
+            # the uncertainty price. Shared probes do not justify quadrature.
             hedge_linear, stderr_agg = _super_item_ucb_hedge(
                 member_terms, ucb_z)
             base_pred = sum_pred - hedge_linear
@@ -3303,7 +3291,7 @@ def aggregate_fused_siblings(
             stats_ext[super_name]["_memory_bytes_by_format"][spec.name] = total_bytes
             entry_fmt = super_cost_entry_fmt.get(spec.name, spec.name)
             gain = float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
-            # gain·(base + z·stderr_agg) == gain·base + z·sqrt(Σ (stderr·gain)²)
+            # gain·(base + z·stderr_agg) == gain·base + z·Σ (stderr·gain)
             # for the single group-wide gain this path applies, i.e. exactly the
             # packed path's construction. At z == 0 this is gain·sum_pred,
             # bit-for-bit what this path produced before the hedge fix.
@@ -3679,9 +3667,9 @@ def aggregate_packed_serving_groups(
                 for m in members
             )
             # UCB hedge (PRISMAQUANT_COST_UCB_Z > 0): each member candidate
-            # was priced independently, so the sum above carries a LINEAR
-            # z·Σ(stderr·gain) hedge. Convert it to the independence
-            # aggregate and store the aggregated stderr on the super cost
+            # was priced separately, so the sum above carries a LINEAR
+            # z·Σ(stderr·gain) hedge. Preserve this conservative bound;
+            # shared probes do not justify independence. Store it on the super cost
             # entry so consumers of the aggregated cost table keep the hedge
             # instead of silently reading stderr 0. At z == 0 this is a no-op
             # and the per-format dloss stays the exact sum of member

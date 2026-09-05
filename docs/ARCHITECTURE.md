@@ -1,7 +1,14 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/two-anchor-bootstrap`. Stamps
+As of: 2026-09-05 · `codex/tessera-anchored-surface`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for correlated
+group uncertainty (PrismaQuant #236). Uniform fused/packed groups retain the
+sum of scaled standard errors as a conservative bound; shared AURA probes
+do not establish independence. Default `PRISMAQUANT_COST_UCB_Z=0` candidate
+prices are unchanged, while grouped uncertainty metadata can increase even
+at zero. The mixed-rung Tessera fold still refuses opt-in UCB pricing.
 
 Re-stamped (2026-09-05, `codex/two-anchor-bootstrap`) for campaign
 bootstrapping from two endpoints (§4.10). A requested initial count of one
@@ -6392,8 +6399,11 @@ while the family constraint itself costs 1.008x / 1.000x / 1.000x against an
 unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
 against brute force on a menu with a non-convex pocket, a uniform-rung option
 must price identically through both constructions or the aggregation refuses,
-and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
-`z*sqrt(sum stderr^2)` is not additive. Measured again on a cost table whose
+and the fold still refuses at `PRISMAQUANT_COST_UCB_Z > 0`: mixed-rung UCB
+repricing remains unsupported. Uniform fused/packed groups use a conservative
+sum of scaled standard errors (#236), since shared AURA probes do not imply
+independent estimates. This does not promote mixed-rung uncertainty support.
+Measured again on a cost table whose
 anchors were placed per group (the correct placement) the one-rung constraint
 costs **1.237x / 1.558x / 1.113x**, and at 4.0 the fold is shown to *contain*
 the unconstrained arm's own rung triple, so the family constraint there is free

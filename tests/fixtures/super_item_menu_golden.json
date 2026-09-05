@@ -1,10 +1,11 @@
 {
- "digest": "033adb45e71a51b831f5335047fa56e5fb00dc3137894a983fa0146bf456197d",
+ "digest": "851018a87a3748f6b3a3bab0f2bf91504e597bf273d20f2a267d9566566a10cd",
  "menu": [
   "NVFP4",
   "FP8_E4M3",
   "BF16"
  ],
+ "regen_reason": "PrismaQuant #236: AURA member errors share probes, so grouped UCB retains the conservative sum of scaled standard errors. z=0 candidate prices remain bit-exact; grouped stderr metadata and opt-in z>0 prices intentionally increase.",
  "scenarios": {
   "fused_hedged_gained_priced": {
    "passthrough_rows": [
@@ -23,13 +24,13 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0013679500000000002",
-       "predicted_dloss_stderr": "0.0004187997880849512",
+       "predicted_dloss_stderr": "0.00058315",
        "weight_mse": "0.001954214285714286"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.034387",
-       "predicted_dloss_stderr": "0.010527627700484096",
+       "predicted_dloss_stderr": "0.014659000000000002",
        "weight_mse": "0.04912428571428572"
       }
      },
@@ -48,7 +49,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 50724864,
-       "predicted_dloss": "0.061719483107393155",
+       "predicted_dloss": "0.069341865",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -58,7 +59,7 @@
        "bits_per_param": "8.0078125",
        "fmt": "FP8_E4M3",
        "memory_bytes": 90265600,
-       "predicted_dloss": "0.0017566117202721357",
+       "predicted_dloss": "0.001973554",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -87,13 +88,13 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0010545750000000003",
-       "predicted_dloss_stderr": "0.0003353411173715505",
+       "predicted_dloss_stderr": "0.0005123",
        "weight_mse": "0.0014061000000000004"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.026509500000000005",
-       "predicted_dloss_stderr": "0.008429675794477507",
+       "predicted_dloss_stderr": "0.012878",
        "weight_mse": "0.03534600000000001"
       }
      },
@@ -113,7 +114,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 14155776,
-       "predicted_dloss": "0.04815943684081101",
+       "predicted_dloss": "0.056366595000000005",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -123,7 +124,7 @@
        "bits_per_param": "8.0078125",
        "fmt": "FP8_E4M3",
        "memory_bytes": 25190400,
-       "predicted_dloss": "0.001370676274930447",
+       "predicted_dloss": "0.0016042620000000002",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -158,12 +159,12 @@
       },
       "FP8_E4M3": {
        "predicted_dloss": "0.001255",
-       "predicted_dloss_stderr": "0.0003842199890687626",
+       "predicted_dloss_stderr": "0.0005350000000000001",
        "weight_mse": "0.0017928571428571431"
       },
       "NVFP4": {
        "predicted_dloss": "0.0251",
-       "predicted_dloss_stderr": "0.007684399781375251",
+       "predicted_dloss_stderr": "0.010700000000000001",
        "weight_mse": "0.03585714285714286"
       }
      },
@@ -219,12 +220,12 @@
       },
       "FP8_E4M3": {
        "predicted_dloss": "0.0009675",
-       "predicted_dloss_stderr": "0.00030765240125830317",
+       "predicted_dloss_stderr": "0.00047",
        "weight_mse": "0.0012900000000000001"
       },
       "NVFP4": {
        "predicted_dloss": "0.01935",
-       "predicted_dloss_stderr": "0.006153048025166064",
+       "predicted_dloss_stderr": "0.009399999999999999",
        "weight_mse": "0.0258"
       }
      },
@@ -289,12 +290,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0020718720000000006",
-       "predicted_dloss_stderr": "0.00037297958867476926"
+       "predicted_dloss_stderr": "0.001035936"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.07279632000000003",
-       "predicted_dloss_stderr": "0.013104835381064503"
+       "predicted_dloss_stderr": "0.036398160000000006"
       }
      },
      "members": [
@@ -319,7 +320,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 7962624,
-       "predicted_dloss": "0.09245357307159678",
+       "predicted_dloss": "0.12739356000000002",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -329,7 +330,7 @@
        "bits_per_param": "8.024305555555555",
        "fmt": "FP8_E4M3",
        "memory_bytes": 14198784,
-       "predicted_dloss": "0.0026313413830121547",
+       "predicted_dloss": "0.0036257760000000007",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -357,12 +358,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.005999796000000002",
-       "predicted_dloss_stderr": "0.0007613413972719467"
+       "predicted_dloss_stderr": "0.002244528"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.21080601000000002",
-       "predicted_dloss_stderr": "0.026750133205649652"
+       "predicted_dloss_stderr": "0.07886268"
       }
      },
      "members": [
@@ -387,7 +388,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 7962624,
-       "predicted_dloss": "0.2509312098084745",
+       "predicted_dloss": "0.32910003",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -397,7 +398,7 @@
        "bits_per_param": "8.024305555555555",
        "fmt": "FP8_E4M3",
        "memory_bytes": 14198784,
-       "predicted_dloss": "0.007141808095907922",
+       "predicted_dloss": "0.009366588000000002",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -430,11 +431,11 @@
       },
       "FP8_E4M3": {
        "predicted_dloss": "0.0021600000000000005",
-       "predicted_dloss_stderr": "0.0003888444419044717"
+       "predicted_dloss_stderr": "0.0010800000000000002"
       },
       "NVFP4": {
        "predicted_dloss": "0.04320000000000001",
-       "predicted_dloss_stderr": "0.007776888838089434"
+       "predicted_dloss_stderr": "0.0216"
       }
      },
      "members": [
@@ -495,11 +496,11 @@
       },
       "FP8_E4M3": {
        "predicted_dloss": "0.006255",
-       "predicted_dloss_stderr": "0.0007937253933193773"
+       "predicted_dloss_stderr": "0.00234"
       },
       "NVFP4": {
        "predicted_dloss": "0.12510000000000002",
-       "predicted_dloss_stderr": "0.015874507866387545"
+       "predicted_dloss_stderr": "0.04680000000000001"
       }
      },
      "members": [
@@ -569,12 +570,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0006906240000000004",
-       "predicted_dloss_stderr": "0.00021533986592361395"
+       "predicted_dloss_stderr": "0.00034531200000000007"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.02426544000000001",
-       "predicted_dloss_stderr": "0.007566080234943323"
+       "predicted_dloss_stderr": "0.01213272"
       }
      },
      "members": [
@@ -593,7 +594,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 2654208,
-       "predicted_dloss": "0.03561456035241499",
+       "predicted_dloss": "0.042464520000000006",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -603,7 +604,7 @@
        "bits_per_param": "8.041666666666666",
        "fmt": "FP8_E4M3",
        "memory_bytes": 4743168,
-       "predicted_dloss": "0.0010136337988854213",
+       "predicted_dloss": "0.0012085920000000005",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -631,12 +632,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0013812480000000007",
-       "predicted_dloss_stderr": "0.00030453655890877874"
+       "predicted_dloss_stderr": "0.0006906240000000001"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.04853088000000002",
-       "predicted_dloss_stderr": "0.01070005328225986"
+       "predicted_dloss_stderr": "0.02426544"
       }
      },
      "members": [
@@ -658,7 +659,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 5308416,
-       "predicted_dloss": "0.0645809599233898",
+       "predicted_dloss": "0.08492904000000001",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -668,7 +669,7 @@
        "bits_per_param": "8.015625",
        "fmt": "FP8_E4M3",
        "memory_bytes": 9455616,
-       "predicted_dloss": "0.0018380528383631688",
+       "predicted_dloss": "0.002417184000000001",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -696,12 +697,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0019999320000000003",
-       "predicted_dloss_stderr": "0.00043956066066016424"
+       "predicted_dloss_stderr": "0.0007481760000000001"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.07026867",
-       "predicted_dloss_stderr": "0.015444196607140174"
+       "predicted_dloss_stderr": "0.02628756"
       }
      },
      "members": [
@@ -720,7 +721,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 2654208,
-       "predicted_dloss": "0.09343496491071027",
+       "predicted_dloss": "0.10970001000000001",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -730,7 +731,7 @@
        "bits_per_param": "8.041666666666666",
        "fmt": "FP8_E4M3",
        "memory_bytes": 4743168,
-       "predicted_dloss": "0.0026592729909902467",
+       "predicted_dloss": "0.0031221960000000007",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -758,12 +759,12 @@
       "FP8_E4M3": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.0039998640000000005",
-       "predicted_dloss_stderr": "0.000621632647791282"
+       "predicted_dloss_stderr": "0.001496352"
       },
       "NVFP4": {
        "activation_pricing_applied": true,
        "predicted_dloss": "0.14053734",
-       "predicted_dloss_stderr": "0.021841392301774173"
+       "predicted_dloss_stderr": "0.05257512"
       }
      },
      "members": [
@@ -785,7 +786,7 @@
        "bits_per_param": "4.5",
        "fmt": "NVFP4",
        "memory_bytes": 5308416,
-       "predicted_dloss": "0.17329942845266127",
+       "predicted_dloss": "0.21940002000000003",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
@@ -795,7 +796,7 @@
        "bits_per_param": "8.015625",
        "fmt": "FP8_E4M3",
        "memory_bytes": 9455616,
-       "predicted_dloss": "0.004932312971686923",
+       "predicted_dloss": "0.0062443920000000005",
        "serialized_identity": null,
        "serialized_sidecar_identity": null,
        "serving_lane": null
