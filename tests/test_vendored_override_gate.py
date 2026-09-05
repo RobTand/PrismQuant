@@ -527,3 +527,47 @@ def test_fisher_accumulator_does_not_swallow_the_refusal(monkeypatch):
     monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
     with pytest.raises(DeadVendoredOverrideError):
         FisherAccumulator(_qwen3_model(), [], {})
+
+
+def test_fp8_rewrite_bypass_does_not_swallow_the_refusal(tmp_path, monkeypatch):
+    """`streaming_model._bypass_hf_fp8_module_rewrite` answered `False`.
+
+    #202 listed this as a possible legitimate swallow because it returns a
+    bool. It is not one: `False` lets transformers run the FP8 module rewrite
+    on exactly the architecture whose profile would have forbidden it.
+    """
+    from prismaquant.streaming_model import _bypass_hf_fp8_module_rewrite
+
+    # The bypass question is only asked of a native-FP8 block-scaled
+    # checkpoint, so the config must carry that quantization_config.
+    path = _checkpoint(
+        tmp_path,
+        **QWEN3_CONFIG,
+        quantization_config={
+            "quant_method": "fp8", "weight_block_size": [128, 128],
+        },
+    )
+    assert _bypass_hf_fp8_module_rewrite(path) in (True, False)
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _bypass_hf_fp8_module_rewrite(path)
+
+
+def test_rotary_init_does_not_swallow_the_refusal(monkeypatch):
+    """`streaming_model._init_rotary_inplace` fell through to single-rope.
+
+    The multi-layer-type architectures that override `init_rotaries` (DSv4,
+    Gemma3) would silently get the single-rope path, so their per-layer-type
+    rotary buffers are never registered.
+    """
+    from prismaquant.streaming_model import _init_rotary_inplace
+
+    base = _qwen3_model()
+    rotary = nn.Module()
+    rotary.config = base.config
+    rotary.compute_default_rope_parameters = lambda cfg, device: (None, None)
+    base.rotary_emb = rotary
+
+    monkeypatch.setitem(vendored.OVERRIDE_ERRORS, "qwen3", "synthetic failure")
+    with pytest.raises(DeadVendoredOverrideError):
+        _init_rotary_inplace(base, "cpu", None)
