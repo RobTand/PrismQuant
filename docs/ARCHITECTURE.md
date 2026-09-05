@@ -3,6 +3,40 @@
 As of: 2026-09-05 · `claude/pq-183-packed-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the export lane
+handing the exporter the priced expert wires** (§4.10, §9.4; PrismaQuant
+#183). `require_assignment_scope` now re-binds every selected routed expert
+unit to the projection the allocation carries
+(`_carried_expert_projection`), before it resolves a single route: the unit
+must be one the producer projected, its source tensor must sit in the shard
+the producer hashed, each executed stack must be selected whole at one rung
+(agreeing with the allocator's `tessera_expert_stack_formats` stamp), and
+every selected rung's priced blob must be in the campaign's wire directory
+with its receipt's size and sha256 (`verify_expert_wire_record`). Because the
+producer's record — not a source-member dimension — attests the executed
+unit, a **predicated `routed_moe` cell now resolves** on that geometry
+instead of being refused; a selected routed unit the allocation carries no
+projection for is still refused by name, and a dense unit keeps the
+source-member refusal unchanged. `--write-cached-expert-units` then writes the
+producer's own `tessera.cached_units.v1` bundle
+(`write_cached_expert_units`, schema imported from
+`tessera.cached_unit.CACHE_SCHEMA`, never restated) into that wire directory
+and names it in the build anchor; `run-pipeline.sh` reads the path back from
+the anchor into `TESSERA_CACHED_UNIT_ARGS` and passes it to
+`export_tessera_serving.py --cached-expert-units`, so the exported
+routed-expert bytes ARE the priced bytes rather than a re-encode. A checkout
+whose tessera has no `cached_unit` API cannot bundle and refuses by name
+(PrismaQuant #192). Gate: `tests/test_tessera_export_projection.py` (pre-fix:
+`KeyError: 'expert_projection'`; the predicated case refused with
+`TesseraExportLaneError: ... cells ['routed_moe_decode', 'routed_moe_batch']
+carry predicates requiring the producer's executed-unit projection`; the six
+by-name refusals and the three receipt-damage cases `Failed: DID NOT RAISE
+TesseraExportLaneError`; the two CLI cases `SystemExit: 2` on `unrecognized
+arguments: --write-cached-expert-units`; the driver case `assert
+'--write-cached-expert-units' in ...`). 13 passed / 1 skipped at the dev pin,
+14 passed against the release producer (the bundle case needs
+`tessera.cached_unit`).
+
 Re-stamped (2026-09-05, `claude/pq-183-packed-bridge`) for **the allocation
 carrying the priced expert population into `__prismaquant__`** (§4.10;
 PrismaQuant #183). `allocator.main` now adds
@@ -5922,6 +5956,28 @@ Two properties make the numbers comparable with the rest of the menu:
   refused by name before the layer config is written; a stock table adds
   nothing.
 
+* **The export lane hands the exporter the priced bytes (PrismaQuant #183).**
+  `require_assignment_scope` re-binds the selected routed expert units to the
+  carried projection (`_carried_expert_projection`) before it resolves any
+  route: a unit the producer did not project, a source tensor in a shard the
+  producer did not hash, a partly selected or split-rung stack, a
+  `tessera_expert_stack_formats` stamp that disagrees with the selection, a
+  selected rung with no receipt, or a priced blob whose bytes are not the
+  receipt's — each refused by name (`expert projection: ...`). The producer's
+  record is what attests the executed unit here, so a **predicated
+  `routed_moe` cell resolves** on the producer's geometry rather than being
+  refused for lacking one; dense units keep the source-member refusal, which
+  is the honest state for a fused execution shape PrismaQuant cannot see.
+  `--write-cached-expert-units` writes the producer's `tessera.cached_units.v1`
+  manifest into the campaign's wire directory (`write_cached_expert_units`,
+  schema imported from `tessera.cached_unit.CACHE_SCHEMA`) and names it in the
+  build anchor; the driver reads that path back and hands it to
+  `export_tessera_serving.py --cached-expert-units`. That closes
+  `priced == written` on the routed leg: the exporter reuses the campaign's
+  blobs instead of re-encoding the source. An allocation with no routed
+  expert unit bundles nothing and the encode is byte-identical to one built
+  before this existed.
+
 Rows are written in the codebase's own currency: `output_mse` and **no**
 `predicted_dloss` field, because in this tree `output_mse` is a raw MSE while
 `predicted_dloss` is already the `½·h_trace·mse` product. Writing the MSE into
@@ -9666,7 +9722,13 @@ declares it shells out to must exist under the env var that declaration names
 exact reviewed release (`require_release_pin`). The PENDING release pin still
 refuses shipping. Runtime-scoped v5 adds an explicit validated target before
 work and selected-unit scope/source-shape admission before translation;
-passing the release pin does not bypass those gates. Cached plans must also
+passing the release pin does not bypass those gates. For a selected **routed
+expert** unit that source-shape admission is replaced by the producer's own
+projection, which the allocation carries: the unit, its source shard, its
+stack's single rung and its priced blob's bytes are all checked against the
+producer's record, and `--write-cached-expert-units` bundles exactly those
+blobs for the exporter's `--cached-expert-units` intake (§4.10, #183). Cached
+plans must also
 retain their own exact allocation-content binding, independent of the current
 shipcard build anchor.
 
