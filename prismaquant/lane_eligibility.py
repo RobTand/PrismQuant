@@ -852,19 +852,28 @@ def _tessera_contract_module():
     return _contract
 
 
-def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
+def _tessera_published(name: str, where: str) -> Any:
+    """One of Tessera's v9 names, or a refusal that says which one is missing.
+
+    A v9 table beside a runtime too old to publish the rule it is written
+    against is a mis-pin, and it has to say so by name rather than surface as
+    an ``AttributeError`` from inside a parser.
+    """
     module = _tessera_contract_module()
     try:
-        published = getattr(module, name)
+        return getattr(module, name)
     except AttributeError as exc:
         raise LaneEligibilityError(
             f"{where} needs Tessera's {name} to decide, and the installed "
             "tessera.serving.contract does not publish it: this table calls "
             f"itself {LANE_ELIGIBILITY_SCHEMA_TESSERA_V9} but the runtime "
-            "beside it is older. Re-pin, never transcribe the vocabulary here "
-            "-- a second copy is how the two halves of one contract drift."
+            "beside it is older. Re-pin, never restate the rule here -- a "
+            "second copy is how the two halves of one contract drift."
         ) from exc
-    return frozenset(published)
+
+
+def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
+    return frozenset(_tessera_published(name, where))
 
 
 def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
@@ -1148,7 +1157,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
         control = _parse_smoke_control(smoke["control"], f"{where}.smoke.control")
     if recorded_smoke:
         record = _parse_smoke_record(smoke["record"], f"{where}.smoke.record")
-        derived_status = _tessera_contract_module().derive_smoke_status(dict(smoke))
+        derived_status = _tessera_published(
+            "derive_smoke_status", f"{where}.smoke")(dict(smoke))
         if status != derived_status:
             raise LaneEligibilityError(
                 f"{where}.smoke.status is {status!r} but Tessera's own "
@@ -1185,8 +1195,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
         if recorded_smoke:
             # v9 derives the attribution from the RECORD, which is a
             # projection of rows this repository does not restate.
-            derived_attribution = _tessera_contract_module(
-                ).derive_smoke_attribution(dict(smoke))
+            derived_attribution = _tessera_published(
+                "derive_smoke_attribution", f"{where}.smoke")(dict(smoke))
             if attribution != derived_attribution:
                 raise LaneEligibilityError(
                     f"{where}.smoke.attribution is {attribution!r} but "

@@ -402,3 +402,42 @@ def test_a_repetitive_row_set_refuses_the_cell_through_the_same_predicate(
         admitted, why = lane.cell_evidence_admits(_parsed_cell(table, cell_id))
         assert not admitted
         assert lane.EVIDENCE_SMOKE_REPETITIVE in why and cell_id in why
+
+
+def test_the_export_gate_gives_a_routed_moe_unit_a_real_route_under_v9(tessera_v9):
+    """prismaquant#198's other half: the unit RESOLVES, not just the cell.
+
+    ``cell_evidence_admits`` admitting a cell is necessary and not sufficient
+    -- the export gate has to hand a routed-MoE unit an actual route, at the
+    scope those cells publish, with the cells named and provenance carrying
+    what attested it.  Asserted against the v9 table, with the expected status
+    computed from the same predicate so the two legs cannot disagree
+    (principle 8).
+    """
+    payload = _up_convert(_installed())
+    table = _table(payload)
+    image = _cell(payload, MOE_DECODE)["runtime"]["image"]
+    facts = lane.UnitStructuralFacts(
+        qname="model.layers.0.mlp.experts.gate_up_proj.weight",
+        format_name="TESSERA_E4M3_K1_R1024", payload_family="TESSERA_E4M3_K1",
+        k=None, n_sub=None, rate_q256=1024, structure="routed_moe",
+        role_split=False, in_features=1024, out_features=1024)
+    route = lane.resolve_unit_route(
+        facts, table, platform="sm_121", residency="resident",
+        runtime_image=image, execution_mode="eager")
+    admits = all(lane.cell_evidence_admits(_parsed_cell(table, cell_id))[0]
+                 for cell_id in (MOE_DECODE, MOE_BATCH))
+    assert route.route_status == (lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG
+                                  if admits else lane.ROUTE_STATUS_UNATTESTED)
+    assert admits, "the v9 table publishes a status this predicate refuses"
+    assert {r.cell_id for r in route.regimes} == {MOE_DECODE, MOE_BATCH}
+    for regime in route.regimes:
+        recorded = regime.as_dict()
+        assert recorded["evidence_attribution"] == (
+            _parsed_cell(table, regime.cell_id).evidence.smoke_attribution)
+    # and the same unit asked outside the cells' scope is unattested, so the
+    # route above is the scope's answer and not a structure-wide licence.
+    off_scope = lane.resolve_unit_route(
+        facts, table, platform="sm_121", residency="streamed",
+        runtime_image=image, execution_mode="eager")
+    assert off_scope.route_status == lane.ROUTE_STATUS_UNATTESTED
