@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import tempfile
 import threading
 import time
 import urllib.request
@@ -22,6 +24,8 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--model", type=Path, required=True)
     args = parser.parse_args()
+    for path in (args.source, args.model):
+        path.resolve().relative_to(Path("/mnt/shared"))
     args.out.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[1]
     raw = args.source_manifest.read_bytes()
@@ -43,6 +47,7 @@ def main():
     owner = uuid.uuid4().hex
     name = f"lfm-mixed-native-{owner[:12]}"
     cidfile = args.out / "container.cid"
+    local_out = Path(tempfile.mkdtemp(prefix="lfm-mixed-native-"))
     record = {"schema": "prismaquant.lfm_mixed_native_host.v1", "source_manifest_sha256": args.source_sha256,
               "tessera_commit": source["commit"], "image_reference": args.image, "image_id": image["Id"],
               "source_snapshot": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
@@ -66,12 +71,12 @@ def main():
     command = ["docker", "run", "--rm", "--pull=never", "--gpus", "all", "--name", name,
                "--cidfile", str(cidfile), "--label", f"prismaquant.mixed-native={owner}",
                "--memory=16g", "--memory-swap=16g", "--cpus=4", "--ipc=host",
-               "-v", f"{repo}:/pq:ro", "-v", f"{args.source}:/tessera:ro",
-               "-v", f"{args.model}:/model:ro", "-v", f"{args.out}:/out", "-w", "/pq",
-               "-e", "PYTHONPATH=/tessera/src:/pq", "-e", "PYTHONDONTWRITEBYTECODE=1",
+               "-v", f"{repo}:/pq:ro", "-v", "/mnt/shared:/mnt/shared:ro",
+               "-v", f"{local_out}:/out", "-w", "/pq",
+               "-e", f"PYTHONPATH={args.source}/src:/pq", "-e", "PYTHONDONTWRITEBYTECODE=1",
                "-e", "OMP_NUM_THREADS=1", "-e", "MKL_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1",
                "--entrypoint", "python3", args.image, "experiments/lfm_mixed_native_preflight.py",
-               "--model", "/model", "--out", "/out/probe", "--image", args.image,
+               "--model", str(args.model), "--out", "/out/probe", "--image", args.image,
                "--tessera-commit", source["commit"]]
     record["argv"] = command
     try:
@@ -96,6 +101,9 @@ def main():
                 ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], text=True).strip()
         record["finished_unix"] = time.time()
         (args.out / "host.json").write_text(json.dumps(record, indent=2) + "\n")
+        if (local_out / "probe").exists():
+            shutil.copytree(local_out / "probe", args.out / "probe")
+        shutil.rmtree(local_out)
     if not record["cleanup_safe"] or record["telemetry_errors"]:
         raise RuntimeError("preflight cleanup or host telemetry is incomplete")
     print(json.dumps({"passed": True, "cleanup_safe": True, "out": str(args.out)}))
