@@ -1,0 +1,46 @@
+{
+  "source_commit": "cda074a8c063a9e9ebd59bb549271c6160a91796",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=1",
+    "--timeout-s",
+    "120",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/usr/bin/python3",
+    "-m",
+    "py_compile",
+    "experiments/pq87_paired_validation.py",
+    "tests/test_pq87_paired_validation.py"
+  ],
+  "started": 1788658625.4227555,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"4c49c61c29811803864b59e7933be112a424bd959f80576d2e3f4898c3d5b2f5\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/4c49c61c29811803864b59e7933be112a424bd959f80576d2e3f4898c3d5b2f5.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/4c49c61c29811803864b59e7933be112a424bd959f80576d2e3f4898c3d5b2f5.json\", \"job_id\": null, \"published_unix\": 1788658632.1599782, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/4c49c61c29811803864b59e7933be112a424bd959f80576d2e3f4898c3d5b2f5.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/4c49c61c29811803864b59e7933be112a424bd959f80576d2e3f4898c3d5b2f5.json\"}\n",
+  "stderr": "pbrun: PINNED to sparky by --tag sparky, so no other box can claim this action.  2 other live boxes fit this demand: dl380g10, sparklina.\npbrun: queued 4c49c61c2981 tags=['sparky'] demand={'mem_gb': 1, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788658632.179639,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": " M docs/ARCHITECTURE.md\n M docs/experiments/pq87_quantized_validation.md\n M experiments/pq87_paired_validation.py\n M tests/test_pq87_paired_validation.py\n"
+}

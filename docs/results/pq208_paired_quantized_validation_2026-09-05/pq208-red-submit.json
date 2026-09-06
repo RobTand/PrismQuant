@@ -1,0 +1,52 @@
+{
+  "source_commit": "cda074a8c063a9e9ebd59bb549271c6160a91796",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--tag",
+    "x86",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=4",
+    "--timeout-s",
+    "300",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/home/rob/venvs/pb-cpu/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-ra",
+    "--tb=short",
+    "tests/test_pq87_paired_validation.py",
+    "-k",
+    "startup_budget"
+  ],
+  "started": 1788658424.99508,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"5f20e1b9601ba45b00ed22f4bbeb5382e16e6dbe9a336375768897d654b7d6ed\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/5f20e1b9601ba45b00ed22f4bbeb5382e16e6dbe9a336375768897d654b7d6ed.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/5f20e1b9601ba45b00ed22f4bbeb5382e16e6dbe9a336375768897d654b7d6ed.json\", \"job_id\": null, \"published_unix\": 1788658431.4872103, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/5f20e1b9601ba45b00ed22f4bbeb5382e16e6dbe9a336375768897d654b7d6ed.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/5f20e1b9601ba45b00ed22f4bbeb5382e16e6dbe9a336375768897d654b7d6ed.json\"}\n",
+  "stderr": "pbrun: queued 5f20e1b9601b tags=['x86'] demand={'mem_gb': 4, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788658431.5047915,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": " M tests/test_pq87_paired_validation.py\n"
+}

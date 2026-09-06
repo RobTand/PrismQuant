@@ -1,0 +1,13 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 44%]
+........................................................................ [ 89%]
+.................                                                        [100%]
+=============================== warnings summary ===============================
+../../../../dq-runs/venvs/prismaquant-cu130/lib/python3.12/site-packages/torch/jit/_script.py:365: 28 warnings
+  /home/rob/dq-runs/venvs/prismaquant-cu130/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+161 passed, 28 warnings in 7.10s

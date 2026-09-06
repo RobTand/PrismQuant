@@ -1,0 +1,19 @@
+{
+  "schema": "prismaquant.boundary_stack_contract/1",
+  "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "roles": {
+    "bf16_control": {
+      "artifact_id": "24e9b66a00b4495068efc88c4450677912057b33b27caae40d6eaf909dca06bc",
+      "resident_extensions": [
+        "sampling.so"
+      ]
+    },
+    "candidate": {
+      "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+      "resident_extensions": [
+        "sampling.so",
+        "trtllm_utils.so"
+      ]
+    }
+  }
+}

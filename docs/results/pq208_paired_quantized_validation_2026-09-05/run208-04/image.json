@@ -1,0 +1,121 @@
+{
+  "Id": "sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "RepoTags": [
+    "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+  ],
+  "RepoDigests": [
+    "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+  ],
+  "Comment": "buildkit.dockerfile.v0",
+  "Created": "2026-09-04T03:10:38.814755104-07:00",
+  "Config": {
+    "Env": [
+      "PATH=/workspace/vllm:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NVARCH=sbsa",
+      "NVIDIA_REQUIRE_CUDA=cuda>=13.0 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=575,driver<576 brand=grid,driver>=575,driver<576 brand=tesla,driver>=575,driver<576 brand=nvidia,driver>=575,driver<576 brand=quadro,driver>=575,driver<576 brand=quadrortx,driver>=575,driver<576 brand=nvidiartx,driver>=575,driver<576 brand=vapps,driver>=575,driver<576 brand=vpc,driver>=575,driver<576 brand=vcs,driver>=575,driver<576 brand=vws,driver>=575,driver<576 brand=cloudgaming,driver>=575,driver<576",
+      "NV_CUDA_CUDART_VERSION=13.0.96-1",
+      "CUDA_VERSION=13.0.2",
+      "LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
+      "NVIDIA_VISIBLE_DEVICES=all",
+      "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+      "NV_CUDA_LIB_VERSION=13.0.2-1",
+      "NV_NVTX_VERSION=13.0.85-1",
+      "NV_LIBNPP_VERSION=13.0.1.2-1",
+      "NV_LIBNPP_PACKAGE=libnpp-13-0=13.0.1.2-1",
+      "NV_LIBCUSPARSE_VERSION=12.6.3.3-1",
+      "NV_LIBCUBLAS_PACKAGE_NAME=libcublas-13-0",
+      "NV_LIBCUBLAS_VERSION=13.1.0.3-1",
+      "NV_LIBCUBLAS_PACKAGE=libcublas-13-0=13.1.0.3-1",
+      "NV_LIBNCCL_PACKAGE_NAME=libnccl2",
+      "NV_LIBNCCL_PACKAGE_VERSION=2.28.3-1",
+      "NCCL_VERSION=2.28.3-1",
+      "NV_LIBNCCL_PACKAGE=libnccl2=2.28.3-1+cuda13.0",
+      "NVIDIA_PRODUCT_NAME=CUDA",
+      "NV_CUDA_CUDART_DEV_VERSION=13.0.96-1",
+      "NV_NVML_DEV_VERSION=13.0.87-1",
+      "NV_LIBCUSPARSE_DEV_VERSION=12.6.3.3-1",
+      "NV_LIBNPP_DEV_VERSION=13.0.1.2-1",
+      "NV_LIBNPP_DEV_PACKAGE=libnpp-dev-13-0=13.0.1.2-1",
+      "NV_LIBCUBLAS_DEV_PACKAGE_NAME=libcublas-dev-13-0",
+      "NV_LIBCUBLAS_DEV_VERSION=13.1.0.3-1",
+      "NV_LIBCUBLAS_DEV_PACKAGE=libcublas-dev-13-0=13.1.0.3-1",
+      "NV_CUDA_NSIGHT_COMPUTE_VERSION=13.0.2-1",
+      "NV_CUDA_NSIGHT_COMPUTE_DEV_PACKAGE=cuda-nsight-compute-13-0=13.0.2-1",
+      "NV_LIBNCCL_DEV_PACKAGE_NAME=libnccl-dev",
+      "NV_LIBNCCL_DEV_PACKAGE_VERSION=2.28.3-1",
+      "NV_LIBNCCL_DEV_PACKAGE=libnccl-dev=2.28.3-1+cuda13.0",
+      "LIBRARY_PATH=/usr/local/cuda/lib64/stubs",
+      "MAX_JOBS=16",
+      "CMAKE_BUILD_PARALLEL_LEVEL=16",
+      "NINJAFLAGS=-j16",
+      "MAKEFLAGS=-j16",
+      "DG_JIT_USE_NVRTC=0",
+      "USE_CUDNN=1",
+      "DEBIAN_FRONTEND=noninteractive",
+      "PIP_BREAK_SYSTEM_PACKAGES=1",
+      "VLLM_BASE_DIR=/workspace/vllm",
+      "PIP_CACHE_DIR=/root/.cache/pip",
+      "UV_CACHE_DIR=/root/.cache/uv",
+      "UV_SYSTEM_PYTHON=1",
+      "UV_BREAK_SYSTEM_PACKAGES=1",
+      "UV_LINK_MODE=copy",
+      "TORCH_CUDA_ARCH_LIST=12.1a",
+      "FLASHINFER_CUDA_ARCH_LIST=12.1a",
+      "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas",
+      "TIKTOKEN_ENCODINGS_BASE=/workspace/vllm/tiktoken_encodings"
+    ],
+    "Entrypoint": [
+      "/opt/nvidia/nvidia_entrypoint.sh"
+    ],
+    "WorkingDir": "/workspace/vllm",
+    "Labels": {
+      "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+      "org.opencontainers.image.ref.name": "ubuntu",
+      "org.opencontainers.image.version": "24.04"
+    }
+  },
+  "Architecture": "arm64",
+  "Os": "linux",
+  "Size": 11701945813,
+  "RootFS": {
+    "Type": "layers",
+    "Layers": [
+      "sha256:ab34259f9ca5d315bec1b17d9f1ca272e84dedd964a8988695daf0ec3e0bbc2e",
+      "sha256:45ec5cf5eb719732dd8022c3e1499cb58dd20b47224aad19db1c2a7ba9aaaca7",
+      "sha256:1e07ba147d8b447007f54b570c25513c71b81b33e3849115838dded2ad222090",
+      "sha256:468a19d3be08446875045cd9e133ef47589431cb016896768394fe0e77766f2d",
+      "sha256:b7ec8fd7c485bbedbe64cbc5a7a810ceabb9156e95c83ba60596ddb9b4955d48",
+      "sha256:5873c5ccd3b2acb616b4611a9a72b26d341a7673ede37dcfaacf51a449635a8e",
+      "sha256:d7921946cdefb955b2ee386ef1802c67bee30b825394b24500238c79a6d768e0",
+      "sha256:87158050f5ada2dbf6dbeb2eb8044034672d440cdacb8bc1ffcfa44e974fb8f1",
+      "sha256:6ed2c8ffd8e7c0a357d733a5581bee92efcf911b58fb166de62a15186d088914",
+      "sha256:aea53703740cc4a05ff6fd8c2f116ce4b7da0358f841f81af68f428055f5b248",
+      "sha256:2285a6b274a10615c6e6f2b133e2fa72a0f83ab14365822222280a5eed87bff7",
+      "sha256:88d763e0e1cc7ef0b113d77acc01cbe30f1328eb678a60b69baf34a1746b03ad",
+      "sha256:13323cfb9cfd9fbf757dd71f616dcdaa3b7f612b0326e3d0dc636fbc9888966b",
+      "sha256:81684c3fbe7c5fea02f7e9897d04872c1e8c88813f2f594e8ca5bd873cca3ef6",
+      "sha256:1c5412441f100962604bff24a991f5b7838cb894099c762364cad09a8502a5ba",
+      "sha256:4b7710356f6105c0cc42b5142c76904f0b661e9ab9382213a201f797672531b6",
+      "sha256:2332f99cc87b0f5017bbe44f555f0c9369decae0070687d00aff2a467455bc74",
+      "sha256:59d14792ee68298ae0fcae2d473aedf72ae8b667668104ef158a198248ad1285",
+      "sha256:60694b7a6a7ea93811981dd049dbaf67e4327b84e14dd063d31e468427ac1be5",
+      "sha256:f4dec75effd6bf9f7df9adbfafd42882e861f311b8c091994327823462b3e341",
+      "sha256:90790fa5297bfa7378a2b394fa15a7240fa0780e9569920e012d1294c4d802f8"
+    ]
+  },
+  "Metadata": {
+    "LastTagTime": "2026-09-04T16:41:36.490392375Z"
+  },
+  "Descriptor": {
+    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+    "digest": "sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "size": 4735
+  },
+  "Identity": {
+    "Pull": [
+      {
+        "Repository": "docker.io/eugr/spark-vllm"
+      }
+    ]
+  }
+}

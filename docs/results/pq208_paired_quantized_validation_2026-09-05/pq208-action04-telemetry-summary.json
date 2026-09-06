@@ -1,0 +1,21 @@
+{
+  "samples": 111,
+  "first_unix": 1788661330.3102899,
+  "last_unix": 1788662440.337483,
+  "endpoints": {
+    "http://sparky:19999": {
+      "usable_samples": 111,
+      "missing_or_error": 0
+    },
+    "http://sparklina:19999": {
+      "usable_samples": 111,
+      "missing_or_error": 0
+    }
+  },
+  "gpu_power_w": {
+    "samples": 111,
+    "min": 4.71,
+    "max": 40.03,
+    "mean": 31.15063063063063
+  }
+}

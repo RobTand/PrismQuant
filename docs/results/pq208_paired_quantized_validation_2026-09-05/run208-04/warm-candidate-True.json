@@ -1,0 +1,31 @@
+{
+  "id": "cmpl-8b7cda2188b553b2",
+  "object": "text_completion",
+  "created": 1788662153,
+  "model": "run208-04",
+  "choices": [
+    {
+      "index": 0,
+      "text": " Let",
+      "logprobs": null,
+      "finish_reason": "length",
+      "stop_reason": null,
+      "token_ids": null,
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "routed_experts": null
+    }
+  ],
+  "service_tier": null,
+  "system_fingerprint": "vllm-0.28.1rc1.dev397+gfd4a15126.d20260904-1240787a",
+  "usage": {
+    "prompt_tokens": 3,
+    "total_tokens": 4,
+    "completion_tokens": 1,
+    "prompt_tokens_details": null,
+    "completion_tokens_details": null
+  },
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "metrics": null
+}

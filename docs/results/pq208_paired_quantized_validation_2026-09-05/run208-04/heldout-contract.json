@@ -1,0 +1,35 @@
+{
+  "prompts": [
+    {
+      "text": "13×7",
+      "stratum": "numeric"
+    },
+    {
+      "text": "121÷11",
+      "stratum": "numeric"
+    },
+    {
+      "text": "What do bees collect from flowers?",
+      "stratum": "terse_qa"
+    },
+    {
+      "text": "How many minutes are there in three hours?",
+      "stratum": "numeric"
+    },
+    {
+      "text": "Name the largest planet in our Solar System.",
+      "stratum": "short_recall"
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "temperature": 1.0,
+  "initial_max_tokens": 64,
+  "max_steps": 11
+}

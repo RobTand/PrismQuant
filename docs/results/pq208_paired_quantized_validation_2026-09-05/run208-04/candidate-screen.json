@@ -1,0 +1,1694 @@
+{
+  "schema": "prismaquant.boundary_campaign_arm/1",
+  "measurement": {
+    "schema": "prismaquant.boundary_control/2",
+    "scorer": "prismaquant.boundary_close_count/1",
+    "request_schema": "prismaquant.boundary_chat_request/1",
+    "response_schema": "prismaquant.boundary_chat_response/1",
+    "promptset_sha256": "9b1735adbb8f822cfcac42be30c697880c06cf5c7e6420ef59585800668c92c9",
+    "contract": {
+      "prompts": [
+        {
+          "text": "144÷12",
+          "stratum": "numeric"
+        },
+        {
+          "text": "9²",
+          "stratum": "numeric"
+        },
+        {
+          "text": "How many legs does a spider have?",
+          "stratum": "terse_qa"
+        },
+        {
+          "text": "What is 7×8?",
+          "stratum": "numeric"
+        },
+        {
+          "text": "Name the capital of France.",
+          "stratum": "short_recall"
+        }
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "temperature": 1.0,
+      "initial_max_tokens": 64,
+      "max_steps": 11
+    },
+    "binding": {
+      "campaign_id": "run208-04",
+      "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+      "artifact_content": {
+        "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+        "weight_content_manifest": {
+          "schema": "prismaquant.weight_content_manifest/1",
+          "algorithm": "sha256",
+          "files": {
+            "model.safetensors": {
+              "bytes": 870290032,
+              "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+            }
+          }
+        }
+      },
+      "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+      "serve_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+      "host_boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "model_context_tokens": 4096,
+      "prompt_tokens": [
+        14,
+        10,
+        16,
+        15,
+        14
+      ],
+      "prompt_token_ids": [
+        [
+          151644,
+          872,
+          198,
+          16,
+          19,
+          19,
+          144422,
+          16,
+          17,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          24,
+          29456,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          4340,
+          1657,
+          14201,
+          1558,
+          264,
+          34354,
+          614,
+          30,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          3838,
+          374,
+          220,
+          22,
+          17568,
+          23,
+          30,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          675,
+          279,
+          6722,
+          315,
+          9625,
+          13,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ]
+      ],
+      "producer_source_sha256": "cf0cb565d6bc2235c3a7c4c469dbd1b3a27ad226fbe100e0ab914260fd9be726",
+      "paired_stack": {
+        "schema": "prismaquant.boundary_stack_binding/1",
+        "role": "candidate",
+        "contract": {
+          "schema": "prismaquant.boundary_stack_contract/1",
+          "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+          "roles": {
+            "bf16_control": {
+              "artifact_id": "24e9b66a00b4495068efc88c4450677912057b33b27caae40d6eaf909dca06bc",
+              "resident_extensions": [
+                "sampling.so"
+              ]
+            },
+            "candidate": {
+              "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+              "resident_extensions": [
+                "sampling.so",
+                "trtllm_utils.so"
+              ]
+            }
+          }
+        },
+        "manifest": {
+          "schema": "prismaquant.serve_manifest/1",
+          "created": "2026-09-06T02:35:53.805256Z",
+          "attestation_phase": "pre",
+          "source": "server",
+          "hostname": "sparky",
+          "host_identity": {
+            "hostname": "sparky",
+            "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+            "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+            "pid_namespace": "pid:[4026533041]"
+          },
+          "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+          "model": "/models/candidate",
+          "served_model_name": "run208-04",
+          "launch_argv": [
+            "/usr/bin/python3",
+            "/usr/local/bin/vllm",
+            "serve",
+            "/models/candidate",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "run208-04",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "launch_flags": [
+            "<path>",
+            "<path>",
+            "serve",
+            "<path>",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "run208-04",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "normalized_performance_argv": [
+            "/usr/bin/python3",
+            "/usr/local/bin/vllm",
+            "serve",
+            "<arm-model>",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "<arm-model>",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "enforce_eager": true,
+          "quantization": null,
+          "kv_cache_dtype": null,
+          "speculative_config": null,
+          "package_versions": {
+            "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+            "torch": "2.13.0+cu130",
+            "flashinfer-python": "0.6.18",
+            "transformers": "5.16.1"
+          },
+          "resident_extensions": [
+            "sampling.so",
+            "trtllm_utils.so"
+          ],
+          "native_extension_status": [
+            {
+              "module_name_prefix": "tessera_nvfp4_",
+              "filename_glob": "tessera_nvfp4_*.so",
+              "match": "basename_fnmatch",
+              "resident": false,
+              "when_unavailable": {
+                "resident": {
+                  "status": "substituted",
+                  "decoder": "torch_materialize_stock"
+                },
+                "streamed": {
+                  "status": "refused",
+                  "decoder": null
+                }
+              }
+            },
+            {
+              "module_name_prefix": "tessera_window_gemv",
+              "filename_glob": "tessera_window_gemv*.so",
+              "match": "basename_fnmatch",
+              "resident": false,
+              "when_unavailable": {
+                "resident": {
+                  "status": "substituted",
+                  "decoder": "torch_window"
+                },
+                "streamed": {
+                  "status": "substituted",
+                  "decoder": "torch_window"
+                }
+              }
+            }
+          ],
+          "residency_readable": true,
+          "processes": [
+            {
+              "pid": 205,
+              "argv": [
+                "/usr/bin/python3",
+                "/usr/local/bin/vllm",
+                "serve",
+                "/models/candidate",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8187",
+                "--served-model-name",
+                "run208-04",
+                "--dtype",
+                "bfloat16",
+                "--kv-cache-memory-bytes",
+                "1073741824",
+                "--max-model-len",
+                "4096",
+                "--max-num-seqs",
+                "1",
+                "--max-num-batched-tokens",
+                "512",
+                "--enforce-eager",
+                "--generation-config",
+                "vllm",
+                "--gpu-memory-utilization",
+                "0.2"
+              ],
+              "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+              "start_time_ticks": 13310973,
+              "pid_namespace": "pid:[4026533041]",
+              "executable": "/usr/bin/python3.12",
+              "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+            },
+            {
+              "pid": 231,
+              "argv": [
+                "VLLM::EngineCore"
+              ],
+              "cmdline": "VLLM::EngineCore",
+              "start_time_ticks": 13312233,
+              "pid_namespace": "pid:[4026533041]",
+              "executable": "/usr/bin/python3.12",
+              "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+            }
+          ],
+          "server_process_environment": {
+            "schema": "prismaquant.server_process_environment/1",
+            "allowlist": [
+              "PYTHONPATH",
+              "PYTHONSAFEPATH",
+              "TESSERA_SERVE_MODE"
+            ],
+            "readable_pids": [
+              205,
+              231
+            ],
+            "unreadable_pids": [],
+            "consistent": true,
+            "values": {
+              "PYTHONSAFEPATH": "1"
+            },
+            "processes": [
+              {
+                "pid": 205,
+                "values": {
+                  "PYTHONSAFEPATH": "1"
+                },
+                "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+              },
+              {
+                "pid": 231,
+                "values": {
+                  "PYTHONSAFEPATH": "1"
+                },
+                "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+              }
+            ]
+          },
+          "pq_env": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "listener_census": {
+            "schema": "prismaquant.server_tcp_listeners/1",
+            "tables_readable": true,
+            "unreadable_pids": [],
+            "listeners": [
+              {
+                "family": "ipv4",
+                "address": "127.0.0.1",
+                "port": 8187,
+                "socket_inode": "31673055",
+                "pids": [
+                  205
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 33083,
+                "socket_inode": "31676899",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 41949,
+                "socket_inode": "31676926",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 45933,
+                "socket_inode": "31676968",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 35281,
+                "socket_inode": "31676940",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 40455,
+                "socket_inode": "31676912",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 45019,
+                "socket_inode": "31676954",
+                "pids": [
+                  231
+                ]
+              }
+            ]
+          },
+          "listener_binding": {
+            "schema": "prismaquant.server_listener_binding/1",
+            "base_url": "http://127.0.0.1:8187",
+            "launch_host": "127.0.0.1",
+            "launch_port": 8187,
+            "listeners": [
+              {
+                "family": "ipv4",
+                "address": "127.0.0.1",
+                "port": 8187,
+                "socket_inode": "31673055",
+                "pids": [
+                  205
+                ]
+              }
+            ]
+          },
+          "models_endpoint_binding": {
+            "schema": "prismaquant.server_models_endpoint_binding/1",
+            "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+            "response_object": "list",
+            "model_count": 1,
+            "model": {
+              "id": "run208-04",
+              "object": "model",
+              "owned_by": "vllm",
+              "root": "/models/candidate",
+              "max_model_len": 4096
+            }
+          },
+          "gpu_name": "NVIDIA GB10",
+          "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+          "driver_version": "595.84",
+          "compute_capability": [
+            12,
+            1
+          ],
+          "gpu_compute_capabilities": [
+            [
+              12,
+              1
+            ]
+          ],
+          "gpu_count": 1,
+          "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+          "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+          "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+        }
+      }
+    },
+    "role": "candidate",
+    "advisory_only": true,
+    "control_sha256": "2960b9b7a46117bc9019ca83905ac9b42aab35bece7922680a2dcca69ceee357",
+    "step": {
+      "max_tokens": 2048,
+      "endpoint": "/v1/chat/completions",
+      "outcomes": [
+        {
+          "prompt_index": 0,
+          "seed": 0,
+          "text": "<think>\nOkay, let's see, I need to solve 144 divided by 12. Hmm, division problems can sometimes be tricky, especially if you don't remember the steps right away. So first, maybe I should think about what 12 is in this context. 12 is a common number, and dividing by 12 is straightforward, right? Let me break it down.\n\n144 divided by 12... Well, if I divide 144 by 12, I can simplify this before doing the division. Let me see, 144 is a multiple of 12. So, maybe I can divide 144 by 12 step by step. Let's try that.\n\nFirst, maybe remove some factors. 12 is 12, and 144 divided by 12 is... Let me divide 144 by 12. 12 goes into 144. How many times? 12 goes into 12 once, so 12 * 1 = 12. Then subtract 12 from 144, remainder 132. Wait, no, that's not correct. If I divide 144 by 12, maybe I should think in terms of factors.\n\nAlternatively, maybe I can divide both numbers by 12. Let's see: 144 divided by 12 equals...\n\nWait, 12 * 12 is 144. Oh, so 144 divided by 12 is 12. That's easier. Butاو我怎么才能确认呢？好像对，因为 12乘以12确实等于144。那这样的话答案就是12。对，是不是没错呢？\n\n不过，为了更仔细地确认，我可以再用另一种方法计算。比如说，把144和12两个数分别拆分成更简单的部分。比如，144可以分成 100 + 40 + 4，而12可以分成 10 + 2。但这样拆的话可能不太方便。或者，也可以把144分成 12 * 12，这样直接得到结果就出来了，所以是12。\n\n或者，我可以考虑 144 ÷ 12 的小数部分。比如，144 ÷ 12 equals 12, which is an integer. So the result is 12. That seems correct.\n\n或者用长除法验证一下。例如，144 ÷ 12。首先，12 goes into 14 once, that's 1. Multiply 12 * 1 = 12, subtract from 14, remainder 12. Bring down the next 4, making it 12. Again, 12 goes into 12 once more, making 1. So the result is 12.1, but since both original numbers are divisible by 12, it's exactly 12.0. So yes, it's 12.\n\n看来无论如何，结果都是12，对吗？因此，144 ÷ 12等于12。应该没错吧？嗯，看来是对的。可能一开始我担心的是计算步骤，但通过不同的方法确认，结果都是相同的，所以应该没问题。\n</think>\n\n144 ÷ 12 的结果为 12。  \n**步骤：**  \n1. 144 ÷ 12 = 12 （因 12 × 12 = 144）。  \n2. 通过直接计算或验证（如长除法），结果均为 12。  \n\n**答案：12**",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 796,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 1,
+          "text": "<think>\nOkay, let's see. The problem is 144 divided by 12. Hmm, I need to compute this. First, maybe I can simplify the fraction. Both 144 and 12 have common factors. Let's check: 144 ÷ 12 is the same as 144 ÷ 12. If I divide numerator and denominator by 12, that would simplify. 144 ÷ 12 is 12, and 12 ÷ 12 is 1. So that would be 12/1, which is just 12. Wait, but maybe I should try another division approach to confirm. 12 goes into 144 how many times? Let me calculate 12 × 12 = 144. Yes, that's correct. So 144 ÷ 12 equals 12. That seems right. Maybe I can also use another method. Let's divide 144 by 12 one more time. 12 × 10 is 120, so 144 minus 120 is 24. Then, 24 divided by 12 is 2. So total division is 10 + 2 = 12. Yep, same result. I think I've checked it multiple times, and all methods point to 12. I don't think I made a mistake here. So the answer should be 12.\n</think>\n\nTo solve $144 \\div 12$, we can simplify the fraction step by step:\n\n1. Recognize that $144 \\div 12 = \\frac{144}{12}$.\n2. Divide both the numerator and the denominator by 12: \n   $$\n   \\frac{144 \\div 12}{12 \\div 12} = 12 \\div 1 = 12.\n   $$\n\nAlternatively, we can perform the division directly:\n- $12 \\times 12 = 144$, so $144 \\div 12 = 12$.\n\nThus, the result is:\n\n$$\n\\boxed{12}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 486,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 2,
+          "text": "<think>\nOkay, let's see. I need to divide 144 by 12. Hmm, 144 divided by 12. But wait, 144 divided by 12 is the same as 12 times 12, right? Because 12*10 is 120, and 12*1 is 12, so adding those together gives 132. But 12*12 is 144. Wait, maybe I should check it again. Alternatively, maybe long division?\n\nLet me try dividing 144 by 12. First, 12 goes into 14 once, with a remainder of 2. Then, bring down the 4, making 24. 12 goes into 24 twice. So, that would be 12, and then we have a remainder of 0. Because 12*12 is 144. So that means 144 divided by 12 equals 12. So, 12.\n\nBut wait, that seems straightforward, but maybe I made a mistake. Let me verify using another method. For example, if I break down 144 into smaller parts. Let's see, 12*10 is 120, 12*12 is 144. So, total division is 12. But maybe there's a trick here. No, 144 divided by 12 is just 12. Alternatively, in a fraction, that would be 12/1. Yeah, that's the same number.\n\nIs there any chance I made a calculation error? Let me do it again. 12*12. 12*10 is 120, 12*2 is 24, so 12*12 is 144. Correct. Dividing by 12, so 144/12=12. Yes, seems right. So the answer must be 12.\n\nAlternatively, if I use a calculator, 144 divided by 12 is indeed 12. So, the answer is 12.\n</think>\n\nTo solve the division problem $ 144 \\div 12 $, we can break it down into simpler steps:\n\n- Recognize that $ 144 \\div 12 = 12 $ because $ 12 \\times 12 = 144 $.\n\nAlternatively, we can perform the division using long division:\n\n1. Divide 144 by 12.  \n   - 12 goes into 14 once.  \n   - Multiply the divisor (12) by the first digit (1), and subtract from 14, giving 2. Bring down the 4 to make 24.  \n   - 12 goes into 24 twice.  \n   - Multiply 12 by 2: 24. Subtract from 24, leaving a remainder of 0.\n\nThe result of the division is:\n\n$$ 144 \\div 12 = 12 $$\n\n**Answer:** $ \\boxed{12} $",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 692,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 3,
+          "text": "<think>\nOkay, let's see. I need to divide 144 by 12. Hmm, how do I do that? Maybe I can simplify the numbers before I start. Let's think. 12 goes into 144... Let me see, if I divide both the numerator and denominator by 12, maybe that helps. 144 divided by 12 equals 12, right? And 12 divided by 12 is 1. So that would make the whole fraction 12/1, which is 12. But wait, let me check that again. Maybe I should divide 144 by 12 directly. Let's do that. 12 goes into 144... Well, 12 times 10 is 120, so subtract 120 from 144, that leaves 24. Then bring down the next digit... But wait, maybe there's a simpler way. Let me write it out as a division problem: 144 ÷ 12. How many times does 12 fit into 144? It's 12, as I thought, so that might be 12. But maybe I should do it more carefully. Let's divide 144 by 12. Let's break it down. 144 divided by 12. Let's think about what 12 × 12 is. 12 × 12 = 144. Oh, wait! That's exactly the numerator. So 144 divided by 12 equals 12. So the answer is 12. But maybe I should present it as a fraction? 144 divided by 12 can also be written as 12/1, which is 12. Yeah, that makes sense. So no matter how I approach it, the result is 12. I think that's it. Let me just verify once more. If I take 12 and multiply it by 12, I get 144. Yep, that's correct. So the answer is 12.\n</think>\n\nTo solve the division problem $ 144 \\div 12 $, we can simplify the calculation step-by-step:\n\n---\n\n**Step 1: Recognize that division can be simplified.**\n\nNotice that both the numerator (144) and the denominator (12) are divisible by 12.\n\n$$\n144 \\div 12 = 12\n$$\n\nThis simplifies the calculation, as 12 × 12 = 144.\n\n---\n\n**Step 2: Alternatively, perform the division directly.**\n\nEither method works:\n\n- **Direct division:**  \n  $$\n  144 \\div 12 = 12\n  $$\n\n- **Fractional form:**  \n  $$\n  \\frac{144}{12} = 12\n  $$\n\n---\n\n**Final Answer:**  \n$$\n\\boxed{12}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 658,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 4,
+          "text": "<think>\nOkay, so I need to divide 144 by 12. Let me think. First, maybe I can simplify this fraction. 144 divided by 12... Hmm, 12 is a number that divides into 144. Let me see... 12 goes into 144 how many times? Well, 12 times 12 is 144. That makes sense, right? So 144 divided by 12 is 12. \n\nWait, but maybe I should check this with another method. Let me try multiplying 12 by 12 again to confirm. 12 x 12 is indeed 144, so that's correct. Alternatively, maybe I can break down the numbers into smaller parts. For example, 144 is 100 + 40 + 4, and 12 is 10 + 2. But that might be more complicated than just multiplying. \n\nAlternatively, perhaps division works... Like, 144 divided by 12 is the same as moving the decimal in 144 and dividing by 12. Wait, 12 has two zeros, so moving it back, 144 is 1.44 divided by 12, but that's not quite right. Wait, moving the decimal until it's a whole number, so 144 divided by 12 is the same as 14.4 divided by 1.2, but I don't think that's simpler. \n\nEither way, I think the answer is 12. Let me just do the division step by step. 12 goes into 14 four times, remainder 0, and then 0 goes into 44, which is 3 with a remainder of 4. Wait, that doesn't make sense. If 12 goes into 14, how? 12 x 1 is 12, so that's 14 with a remainder of 2? Wait, no, if I divide 14 by 1, it's 14, but that's what you get. Maybe my steps are off. \n\nWait, actually, if I write 144 ÷ 12, I can think of it as 144 divided by 12, and dividing by 12 is the same as multiplying by 1/12, so 1/12 of 144. Let me calculate 1/12 of 144. Since 144 divided by 10 is 14.4, then 1/12 of 144 is 14.4. Wait, but that contradicts earlier thoughts. What's happening here?\n\nHold on, maybe I made a mistake here. If 1/12 of 144, then 1/12 is 14.4? But 12 x 12 is 144, so 1/12 of 144 is 12. Yes, because 1/12 of 144 is 144 divided by 12, which is 12. But if I think of 14.4, that's not correct. I think my confusion here comes from not breaking down properly. Let me explain. If I take 144 and divide by 12, and 12 goes into 144 exactly 12 times, that's 12. Alternatively, if I split 144 into 12 parts, each 12, then that's 12. So, yes, 144 divided by 12 is 12. \n\nTherefore, the answer is 12. I think that makes sense. Let me just check with a calculator. Well, I don't have one here, but I can recalculate. Let me do 144 divided by 12. 12 times 10 is 120, so 144 minus 120 is 24. Then, 12 goes into 24 exactly another 2, making a total of 122. So 122 divided by 12? No, wait, no, that's 24 divided by 12? Wait, this is confusing. \n\nWait, 144 ÷ 12. Let me think of it as 144 ÷ 12. If I divide by 4 first, 144 ÷ 4 is 36, and 12 ÷ 4 is 3, so 36 ÷ 3 is 12. Right, that's a better way. So dividing by 4 first gives me 36, then dividing by 3 gives me 12. Alternatively, if I use more straightforward division, maybe. So 12 goes into 144 exactly 12 times, so the answer is 12. \n\nI think I've confirmed it multiple ways. So I'm confident that 144 divided by 12 equals 12.\n</think>\n\nTo solve the division of 144 by 12, we begin by identifying how many times 12 fits into 144.\n\nWe perform the division step by step:\n\n$$\n144 \\div 12 = 12\n$$\n\nThis result is the same as the original number, which implies that 12 fits exactly into 144 without leaving a remainder. This can also be verified as:\n\n$$\n12 \\times 12 = 144\n$$\n\nThus, the final answer is:\n\n$$\n\\boxed{12}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 1239,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 5,
+          "text": "<think>\nOkay, let's see. The problem is 144 divided by 12. Hmm, how do I approach this? Maybe I can simplify the division before I do the actual calculation. Let's think. Both 144 and 12 have common factors. Let's see, 12 goes into 144 how many times? Well, 12 multiplied by 12 is 144. So if I divide both the numerator and denominator by 12, the result would be 144/12, which simplifies to 12. So the answer is 12. Wait, but maybe I should double-check that. Let me divide 144 by 12. 12 goes into 144 exactly 12 times. Yeah, that seems right. Alternatively, if I add 12 four times to get 144, that would be 12 times. Yeah, so the result is definitely 12. I don't think there's any mistake here. Yeah, 144 divided by 12 is 12. So the answer is 12.\n</think>\n\nTo solve $ \\frac{144}{12} $, we begin by examining the division. Both the numerator and denominator share a common factor of 12. Dividing both numbers by 12 simplifies the expression:\n\n$$\n\\frac{144 \\div 12}{12 \\div 12} = 12\n$$\n\nThis confirms that the result is:\n\n$$\n\\boxed{12}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 344,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 0,
+          "text": "<think>\nOkay, so I need to calculate 9 squared. Let me think. Squared means multiplying by itself, right? So 9 squared would be 9 times 9. Let me write that out: 9 * 9. Hmm, what's 9 times 9? I remember that 9 is 10 minus 1, so maybe I can break it down. Let's try that. 10 times 9 is 90, and then subtract 1 times 9, which is 9. So 90 minus 9 equals 81. That gives me 81. Let me verify if this is correct. Alternatively, if I think of 9 as 3 squared, that would be 3*3, so 9*9 is 3*3*3*3, which again is 81. Yeah, same result. Maybe another way? Sometimes when you multiply numbers, you can use another multiplication method. For example, grouping. 9 times 9... 9 times 10 equals 90, and then 9 times 9... no, that doesn't help. Wait, maybe I can use standard multiplication. Let's do 9 * 9. Multiplying 9 and 9, so yes, 81. Okay, I think that's right. Sometimes even if I do it step by step, it comes back to 81. So the answer should be 81. I don't see any mistakes in my calculations. Yeah, I'm confident now.\n</think>\n\nTo calculate $9^2$, we need to square the number 9. Squaring a number means multiplying it by itself:\n\n$$\n9^2 = 9 \\times 9\n$$\n\n$$\n9 \\times 9 = 81\n$$\n\nTherefore, the result is:\n\n$$\n\\boxed{81}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 398,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 1,
+          "text": "<think>\nOkay, so I have this math question here: 9 squared. Hmm, let me think. Squared means multiplying by itself, so 9*9. Let me do that multiplication. 9 times 9... Well, 9*9 is 81. Yeah, that seems right. So the answer should be 81. But wait, maybe I should check if I did that correctly. If I break it down, 9*9 is 10, but then there's another 9... No, I don't think that breakdown is necessary. Just multiply 9 and 9, which gives 81. Yeah, I think that's it. No mistakes here. Confident with that answer.\n</think>\n\n9 squared is 81.  \n\n**Answer:** 81",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 169,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 2,
+          "text": "<think>\nOkay, so I need to calculate 9 squared. Hmm, let me think. Squaring a number means multiplying it by itself. So 9 squared would be 9 times 9. Let me write that down: 9 multiplied by 9. Now, I should remember how to multiply 9 by 9. Well, I know that 9 is 10 minus 1, but maybe that's more complicated than it needs to be. Alternatively, maybe breaking it down into smaller numbers would be easier. For example, 9 times 9... 9 times 10 is 90, and then subtract 9. So 90 minus 9 equals 81. Wait, that seems right. Let me check another way. Let me do 92 times 9 divided by 10? No, that's not exactly. Maybe I can think of 9*9 as (8+1)*(8+1) ten times? No, that's overcomplicating. Alternatively, maybe just do 9*9 in my head. 9*9 is 81. Yeah, that's the answer. Let me confirm with another method. If I have 9, I can also think of 9 as (10 - 1) again. So 9*9 would be (10 - 1)*(10 - 1). Let me expand that. So 10*10 minus 10*1 minus 1*10 plus 1*1. Which is 100 - 10 - 10 + 1. That equals 100 - 20 + 1, which is 81. Yep, same result. Okay, so that seems correct. There's no mistake here. So 9 squared is definitely 81. I don't think I made any mistakes in my calculations. Maybe I can also calculate 9*9 using a calculator if I was allowed, but since I don't have a calculator here, I have to rely on my multiplication skills. All right, I think that's the answer.\n</think>\n\n9 squared is calculated as $9 \\times 9$. Performing the multiplication, we find $81$. \n\nFinal Answer: $\\boxed{81}$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 479,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 3,
+          "text": "<think>\nOkay, so I need to figure out what 9 squared is. Let me think. Squaring a number means multiplying it by itself. Right, so it should be 9 multiplied by 9. Let me write that down: 9 × 9. \n\nNow, I remember that when you multiply 9 by itself, you get 81, right? Because 9 goes into 10 something like 9, 9, 9... so 9 × 9. Let me verify this. Maybe I can break it down. Like, 9 can be 10 minus 1, so 10 × 9 is 90, then minus 1 is 89. Wait, that's 89? But that doesn't seem right. Because 9 squared is definitely 81. Hmm, maybe breaking it down into smaller parts would be better.\n\nAlternatively, I know that in math, there's a formula for the square of a binomial: (a + b)² = a² + 2ab + b². But I don't have a binomial here. Or maybe I should think of 9 as a single number, and power it. So 9⁴ is 81? No, wait. 9 squared is 3 squared times 3 squared? Hmm, 9 × 9. Yeah, so 3 × 3 × 3 × 3. Which is 3⁴. And 3⁴ is 81. Correct.\n\nSo, 9 × 9 equals 81. Therefore, the answer should be 81. Let me check it again. If I use a calculator, 9 squared is 81. Yes, that's correct. Alternatively, if I multiply 10 square, which is 100, and subtract 1×10 and 4, which is 100 - 10 - 4 = 86, which isn't 81, so that's not. Wait, no, that was for 9. 10 squared is 100. Wait, 9.5 squared is 90.25. So 9 squared is 81, which is indeed. Yeah, so I think I'm confident now that 9² is 81.\n</think>\n\nTo calculate $9^2$, we start by squaring the number:\n\n$$\n9^2 = 9 \\times 9\n$$\n\nPerforming the multiplication:\n\n$$\n9 \\times 9 = 81\n$$\n\nThus, the result is:\n\n$$\n\\boxed{81}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 558,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 4,
+          "text": "<think>\nOkay, so I need to calculate 9 squared. Hmm, I remember that squaring a number means multiplying the number by itself. So 9 squared should be 9 times 9. Let me write that down: 9 × 9. \n\nWait, what's 9 multiplied by itself? Let me do the multiplication step by step. If I think of 9 × 9, it might be easier to break it down. Like, 9 × 9. I know that 9 × 10 is 90, so maybe subtract one more? That way, 9 × 9 is 81. Let me check that. If 9 × 10 is 90, and since the multiplier is 9, subtract 1 from the ten, so 90 - 9 = 81. Yep, that seems right.\n\nAlternatively, maybe I can think of it as 9 × 9. If I consider the multiplication without breaking down, that would be straightforward. But 9 × 9 isn't another multiplication... No, that's the same thing. So I think 9 squared is definitely 81. \n\nIs there any chance I might have confused this with something else? For example, maybe a power of 9, like 9^3? But 9 squared is just 9 to the first power, right? So no, that's not the case here. The user specifically asked for \"9²\", which is 81. \n\nLet me make sure I'm not making a mistake here. If I have 9 × 9, and 9 × 9 is 81, that's correct. Sometimes when people do 9 squared, they might think of something else, but in this case, it's simple multiplication. \n\nAnother way to calculate 9 × 9: if I add 9 and 9, that's 18, then square that? Wait, 9 multiplied by 9 isn't the same as 9 + 9. Squaring a number changes it to the square of the original number, which is different from just adding. So 9 squared is not just 9 + 9. 9 + 9 is 18, and squaring that would be 324, but that's not correct. Therefore, I must have made a mistake here. \n\nWait, no. If I do 9 × 9, it's straightforward. 9 × 9 equals 81. So even though 9 + 9 is 18, that's not the same thing. There's no connection here. So 81 is correct. \n\nTherefore, after all these checks and calculations, I can confirm that 9 squared is indeed 81.\n</think>\n\nTo calculate $9^2$, we first recognize that squaring a number means multiplying the number by itself. Thus,:\n\n$$\n9^2 = 9 \\times 9\n$$\n\nPerforming the multiplication step-by-step:\n\n$$\n9 \\times 9 = 81\n$$\n\nTherefore, the result of $9^2$ is:\n\n$$\n\\boxed{81}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 665,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 5,
+          "text": "<think>\nOkay, so I need to calculate 9 squared. Let me think. Squared means multiplying the number by itself, right? So 9 times 9. Let me do that multiplication. 9 multiplied by 9. Hmm, 9 multiplied by 10 would be 90, but since it's 9, I subtract 1, so 90 minus 9, which equals 81. So 9 squared is 81. I think that's correct. Let me check again, maybe I made a mistake. 9 times 9... 9 times 9... yes, 9*9 is 81. Yeah, I'm confident now.\n</think>\n\n9² is 81. \n\n**Step-by-Step:**  \nMultiply 9 by itself:  \n$$\n9 \\times 9 = 81\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 183,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 0,
+          "text": "<think>\nOkay, the user is asking how many legs a spider has. First, I need to recall basic biology facts about insects. Spiders are arthropods, right? They have eight legs, I think. But maybe I should confirm that. Wait, some people might confuse spiders with other insects, like ants or bees, which have six legs. Yes, spiders are bipedal, so they have eight legs.\n\nBut I should think if there are any exceptions. Like, do some spiders have fewer legs? No, I think all spiders have eight exactly. This is a common knowledge point. The question is straightforward, so the answer is eight.\n\nBut maybe the user is thinking of other cases. Like, does the spider have legs related to reproduction? No, that's not relevant here. Just simple anatomy. So the answer is definitely eight legs. No need for explanation, just state it.\n</think>\n\nA spider has **eight legs**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 194,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 1,
+          "text": "<think>\nOkay, so the question is, \"How many legs does a spider have?\" Let me think. I know that spiders are arthropods, right? Their legs are usually made of chitin, which is a protein-like compound. Now, some arthropods have three times as many legs as other insects, but some don't. Wait, but what about spiders specifically? By definition, some spiders (like the genus Arachnid) use three legs, but some might have more. But how many is correct? For example, some spiders are listed as having four legs and others as two. But wait, is there a debate on this, or it's just a standard fact? Let me verify. Hmm. I think most sources state that spiders have two legs, but every time I check, I get conflicting information. Maybe I'm missing something. Oh, wait! Wait a minute! Some spiders have four legs. Do you think so? For example, look up in a book. Again, I get conflicting info. Wait, let me think again. The question is about a spider. First, what's the difference between a spider and an arachnid? Are there that many legs? What's the general consensus here? Finally, during the Spider T-shirt campaign, they would say two legs, but actually, my research says that when the movie \"Arthropod Man\" was released, it covered the modern spider legs. Additionally, I recall that in a research study, it was determined that spiders have either two or three legs. But that's conflicting. Wait, I think I'm confused here. So, what's the correct answer? Are spiders commonly cited as having two legs, or are they actually correctly determined to have four legs? Because that would make them different from other arthropods. But I have to respond. Let me check again. After a thorough search, I find that the general consensus is that moths, spiders, and other arthropods have two legs. Therefore, the answer is two.\n</think>\n\nA spider typically has **two legs**, making it one of the insects with the most legs of any arthropod. While there is some debate about legs diversity among spiders, the consensus remains that they use **two legs**. This is supported by common biological explanations and scientific research detailing spider anatomy. \n\n**Answer:** A spider has two legs.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 487,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 2,
+          "text": "<think>\nOkay, so the question is \"How many legs does a spider have?\" Hmm, I remember these types of questions are common in quizzes, and I've heard different answers before. Wait, some people might think the answer is 2, and others might say 1 or even 0. But I need to be careful here.\n\nLet me think. A spider is an arthropod, right? And arthropods are called spiders in science. But wait, spiders are also arthropods. Have I this way of thinking before? Yeah, I think the correct answer is 6 legs. So why am I confused here? Because spiders have six legs. But maybe some people make mistakes by saying 1 or 2.\n\nAlternatively, if there's a trick or a misunderstanding. For example, could it be that a spider just has six legs, but some people see only six in a picture? But that's just part of it. Also, keeping in mind that some spiders may have more legs if they have a spider web. But the spider web is one structure, not the legs. So I think the answer is definitely six legs. But I'm still a bit unsure because I've heard conflicting information in some media. Like, in some spider books, maybe they say different numbers. Or perhaps some astronauts mention 6, or in some books, they mention 2. But no, I think six is right. So the answer is six legs. But I need to make sure I'm not missing anything. No, legs are made of ones, so yeah, 6. So the final answer is six.\n</think>\n\nA spider has six legs, as it belongs to the arthropod class and exhibits six legs in general. This is a well-established fact in biological sciences. Although myths or misconceptions exist for different entities and situations, the correct answer for a spider is eight legs. The number 6 is widely recognized in scientific contexts and is accurate for spiders. There is no need to overcomplicate the question here. \n\n**Final Answer:** A spider has six legs.  \n$\\boxed{6}$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 433,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 3,
+          "text": "<think>\nOkay, the question is asking how many legs a spider has. Let me think. Spiders are a type of arthropod, right? They belong to the family of insects, which are classified in the arthropods. But I remember digging for the answer somewhere, and I think the answer is a little different.\n\nWait, sometimes people get confused between spiders and other arthropods. For instance, some might think about cockroaches or crickets as spiders. But most spiders are actually under the Araneae superfamily. Let me confirm: Araneae is one of the families of spiders, so they categorically have eight legs.\n\nBut then again, some people might divide into two taxonomic groups: Entenitidae and Araneae. But that's where I think the answer is right. The answer is eight legs. But maybe some would be different? For example, if someone thought soft ticks have eight legs, but that's not necessarily the case.\n\nI think the answer is definitely eight. So, seven legs? Wait, no, the question says \"a spider,\" and I think the correct number is eight. So, the answer is eight.\n</think>\n\nA spider typically has eight legs, a classification in the Araneae superfamily of spiders. This number is well-established in scientific classification and taxonomy. While some might divide spiders into two families (Entenitidae and Araneae) and consider overlapping species, the most accurate and widely accepted answer is that a spider has **eight legs**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 315,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 4,
+          "text": "<think>\nOkay, the question is asking how many legs a spider has. Let me think. I know that spiders are arthropods, which means they have six legs. Spiders are in different orders like Araneidae (which I think is big spiders with a few legs, but maybe I'm wrong) and also there are species that are small and have different numbers of legs. For example, a spider mentioned here might have a different number of legs. I think all spiders have six legs. So, the answer should be six.\n</think>\n\nA spider has six legs.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 119,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 5,
+          "text": "<think>\nOkay, the user is asking how many legs a spider has, which is a common question. But I need to think about this carefully. Spiders are spiders, right? And regardless of their classification, they all have six legs. But wait, there's a trick here. In some cases, people might confuse spiders with other insects, like mosquitoes. But the main point here is about the spider as a species. So for each spider, the answer is six legs. But perhaps the user is looking for a different answer, like maybe for species. Like,鳙鱼 or something? No, that's a different category. Spiders are a taxonomic class for about 26 families – that's a lot more than just spiders. But the main answer here is that they have six legs. So, the answer is six. But wait, maybe the user is from a specific country where the term is used differently. But I think the standard answer is six. Let me check another source. Yeah, six legs are the correct answer. So the answer is six. No one has a different number here. So I should just state that.\n</think>\n\nA spider has **six legs**. \n\nEach spider belongs to the family **Arundelionidae**, and this classification applies to the entire group. While the spider is a member of a larger family (about 26 families), it is categorized as a species within that family. The anatomical fact is that all spineless insects have six legs, regardless of family. Therefore, the answer is **six legs**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 323,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 0,
+          "text": "<think>\nAlright, so I need to figure out what 7 multiplied by 8 equals. Hmm, okay, let's break this down. I remember that multiplication is like adding the same number multiple times. So 7 times 8... That should be a similar concept to 8 times 7. But wait, I'm not sure if that's the way it's being approached. Maybe I should think in terms of what 8 divided by 7 is? No, that doesn't make sense because division isn't subtraction here. Let me try another approach.\n\nLet me start by using the standard multiplication method. So, multiplying 7 by 8. Let's write them out vertically. Multiply 8 by 7. Well, 8 times 7 is 56. So 8 goes in the ones place, and 7 goes in the 56 place. But wait, since we're doing multiplication, the result should be written properly. However, since 8 is one number and 7 is another, maybe I should think about it as adding 8 once, then 8 again, and so on up to 7 times? Let's see, 8 is added to itself how many times? The number of times 8 is added to itself is the same as the number we're multiplying. So 8 plus 8 + 8 + 8 + 8 + 8 + 8. That adds up to 8 multiplied by 7. So that's 56. Therefore, 7×8=56. \n\nWait a second, does that make sense? Let me check with a smaller number. Suppose if 7×8=56, then 7×9 would be 56+8=64? Yeah, that's right, because each time we add an extra 8. So 7+8=15, and then 15+8=23, and 23+8=31, 31+8=39, 39+8=47, 47+8=55, and 55+8=63. Correct. But why not go back to calculating it without breaking it down?\n\nAlternatively, maybe I can think of 7×8 as 7×(5+3). So 7×5 is 35 and 7×3 is 21. Now, 35+21=56. That also gives me the same answer. So, that confirms it again. All methods seem to lead to 56. \n\nIs there another way to verify this? Well, maybe using fractions. Let's see, 7×8 can also be viewed as 4×8 + 3×8? No, that doesn't seem right. Alternatively, 7×8 = (since 7 divided by 1 is 7) times 8. But maybe that's circular. \n\nWait a second, perhaps I can think of 8 as 7 + 1, so 7×8 = 7×(7 + 1) = 7×7 + 7×1 = 49 + 7 = 56. That's another way, which again gives the same answer. \n\nSo all these different approaches—using distributive property, breaking down into smaller parts, and even breaking it down into fractions—lead me back to the same result of 56. Therefore, it must be correct. I think I'm confident now that 7 multiplied by 8 equals 56.\n</think>\n\nTo find the value of $ 7 \\times 8 $:\n\n1. **Multiplication Breakdown:**  \n   Recognizing that multiplication is a process of adding the same number multiple times, 7 times 8 can be thought of as:\n   $$\n   8 + 8 + 8 + 8 + 8 + 8 + 8 = 56\n   $$\n\n2. **Alternative Method:**  \n   Alternatively, you can break down the multiplication into smaller steps:\n   $$\n   7 \\times 8 = (7 \\times 5) + (7 \\times 3)\n   $$\n   $$\n   7 \\times 5 = 35 \\quad \\text{and} \\quad 7 \\times 3 = 21\n   $$\n   Adding these results gives:\n   $$\n   35 + 21 = 56\n   $$\n\n3. **Vertical Multiplication:**  \n   Writing the multiplication vertically:\n   $$\n   \\begin{array}{c}\n     08 \\\\\n     \\times 7 \\\\\n     \\hline\n     56 \\\\\n   \\end{array}\n   $$\n   This confirms the result.\n\n4. **Fractional Representation:**  \n   Another approach is:\n   $$\n   7 \\times 8 = \\frac{49}{1} \\quad \\text{(since $ 7 \\times 8 = 56 $, which can be written as $ \\frac{49}{1} $ as a fraction)}\n   $$\n\nAll methods consistently lead to the result **56**. Therefore, the value of $ 7 \\times 8 $ is:\n\n$$\n\\boxed{56}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 1110,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 1,
+          "text": "<think>\nOkay, so I need to figure out what 7 multiplied by 8 is. Let me think... So, 7 times 8... Hmm, multiplication is like adding the number eight several times. Let's see, 7 times 8... If I break it down, maybe that's easier? Let me try multiplying 7 by 3 first because I remember that 8 can be 3 times 2. So, 7 times 8 is 7 times 3 times 2... Or maybe I can just multiply 7 by 8 directly? I don't know, but sometimes breaking down the multiplication helps.\n\nAlternatively, maybe I can think of numbers... For example, 7 is 6 + 1, and 8 is 7 + 1. So, multiplying them would be (6 + 1)(7 + 1). Let's expand this using the distributive property. That would be 6*7 + 6*1 + 1*7 + 1*1. Let's compute each term: 6*7 is 42, 6*1 is 6, 1*7 is 7, and 1*1 is 1. Adding those together: 42 + 6 + 7 + 1. Let me add those step by step. 42 + 6 is 48, then 48 + 7 is 55, and 55 + 1 is 56. So, 42 plus 6 is 48, plus 7 is 55, plus 1 is 56. Therefore, 7*8 equals 56.\n\nWait, let me check if there's another way to do this. Maybe using multiplication algorithms. Let's do 7 multiplied by 8. Since 8 is a multiple of 2 and 4, perhaps I can do 7*8 = 7*2*4. That would be 42*4. 42*4... Well, 40*4 is 160, plus 2*4 is 8, so total is 168. Wait, that gives me 168, which is different from 56. Did I make a mistake here?\n\nHold on, maybe I confused the order. If I do 7*8, placing it as 7*2*4, that's 7*(2*4). Which is 7*8, right? So 7*2 is 14, times 4 is 56. So 42*4 is 168? Wait, no! Wait, 2*4 is 8, so 7*8 is indeed 56. So 7*(2*4) equals 56. So, my earlier calculation was wrong. I must have tried 7*8 as 7*2*4 instead of 7*8 directly, which is correct. Therefore, 7*8 is 56.\n\nLet me verify it with a calculator. Just to be certain. If I multiply 7 by 8, 7*8 equals 56. So yes, that's correct. So the answer is 56.\n</think>\n\nTo solve the problem $7 \\times 8$, we can approach it systematically:\n\n1. **Multiplication Interpretation**: $7 \\times 8$ represents the product of two whole numbers. This is straightforward multiplication.\n\n2. **Breaking Down the Calculation**: While 8 can also be decomposed into smaller integers (e.g., 2 × 4), the multiplication remains consistent. We can also verify it using the distributive property:\n   $$\n   (6 + 1)(7 + 1) = 6 \\cdot 7 + 6 \\cdot 1 + 1 \\cdot 7 + 1 \\cdot 1 = 42 + 6 + 7 + 1 = 56\n   $$\n\n3. **Alternative Method**: Alternatively, since 8 can be considered as $8 = 7 + 1$, we can also write:\n   $$\n   7 \\times 8 = 7 \\times (7 + 1) = 49 + 7 = 56\n   $$\n\n4. **Conclusion**: Using all possible methods—direct multiplication, distributive property, or visual decomposition—each confirms that the result is:\n\n$$\n\\boxed{56}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 944,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 2,
+          "text": "<think>\nOkay, so I need to figure out what 7 multiplied by 8 is. Hmm, let me think. First, I remember that multiplication is like doing the same operation multiple times. For 7 and 8, maybe I can break it down into simpler parts. Like, perhaps 7 is 5 plus 2, and 8 is 6 plus 2. If I do 5 times 6 and then 2 times 2, that should work. Let me check that. 5 times 6 is 30, and 2 times 2 is 4. So 30 plus 4 equals 34. That seems right. But maybe there's another way to approach it. Wait, 7 multiplied by 8... If I just multiply them straight, 7×8=56? Oh, I see, maybe I made a mistake with breaking it down. Let me verify again. 7×8... 7 and 8, 7 times 8 is 56. But if I try 7 times 8, maybe I can use some other method. Like division? Wait, is there a property of multiplication that allows me to simplify this faster? Like, if both numbers are multiples of 8, but 7 isn't. Hmm. Alternatively, multiplying decimal numbers... No, that doesn't help here. Alternatively, could I think of 8 as 7 + 1, then 7×8 would be 7×(7+1) = 7×7 + 7×1 = 49 + 7 = 56. Same result! Okay, so either way, whether you break it down or just multiply directly, you get 56. Let me make sure I didn't make any calculation errors. 56 is the correct result. Yes, so 7 multiplied by 8 is 56.\n</think>\n\nTo solve the problem $ 7 \\times 8 $, we can interpret the multiplication as breaking down the numbers into simpler parts and applying multiplication rules:\n\n1. $ 8 = 7 + 1 $\n2. Therefore, $ 7 \\times 8 = 7 \\times (7 + 1) = 7 \\times 7 + 7 \\times 1 = 49 + 7 = 56 $\n\nAlternatively, multiplying directly:\n\n$$\n7 \\times 8 = 56\n$$\n\nBoth approaches confirm that the result is $ 56 $. \n\n$$\n\\boxed{56}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 531,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 3,
+          "text": "<think>\nOkay, so I need to figure out what 7 times 8 is. Let me think. First, I remember that multiplication is basically adding the same number several times. So 7 times 8 should be the same as adding 7 eight times. Let me write that out to visualize it.\n\nIf I start with 7, and add it eight more times, it should be something like 7 + 7 + 7 + 7 + 7 + 7 + 7 + 7. Let me count that. That's 8 times 7, so that's 56. Wait, is that right? Let me verify. Let's do it another way. 7 multiplied by 8... Maybe I can break down the multiplication. 8 is 8, so 7 times 8 is the same as 7 times (5 + 3), which is 7*5 + 7*3. Calculating each part, 7*5 is 35 and 7*3 is 21. Then adding those together gives 35 + 21. Hmm, 35 plus 21... Let me add those. 35 + 20 is 55, plus 1 is 56. Yeah, same result. So that's 56. \n\nAlternatively, maybe I can think of it as 8 boxes instead of individual units. So 7 multiplied by 8 boxes... Each box is 1 unit. So if you have 8 boxes total, each containing 7 units, the total would be... Well, 7 boxes would be 7 units, so 8 boxes would be 8 units, but since you have 7 units in each, it's 7 multiplied by 8... Or maybe I'm mixing something. Wait, no. If it's 7 added eight times, but 7 added eight times is the same as 8*7. So yeah, 8 times 7. \n\nAlternatively, I can think of 8 as 10 minus 2. So 7*8 would be 7*(10 - 2). That would be 7*10 minus 7*2. Which is 70 minus 14. Let me calculate that. 70 minus 14 is 56. Same answer again. \n\nI think I know it's 56. Alternatively, maybe I can use the standard multiplication algorithm. Let's do that. \n\nMultiplying 7 and 8:\n\nThe product of two numbers is found by multiplying them. So 7*8. Let's write the multiplication steps. \n\nBut since 7 is a one-digit number, multiplying by 8 is straightforward. So 7*8 equals... Well, 7*8 is 56. \n\nIs there any chance I might have made a miscalculation here? Let me verify using another method. Suppose 7*8. If you think about it in terms of pieces: 8 circles, each with 7 dots. Wait, no. That's not the same. If we think of 8 as two numbers, 8*7. Maybe breaking it down further. \n\nAlternatively, 7*8 is 7*2*4. Because 2 and 4 are factors of 8. Then 7*2 is 14, and 14*4 is 56. Oh, same answer again. \n\nWait, another way: 7 times 8... Let's think of it as 7*8 = (7+6+1). But that seems more complicated. Not sure. \n\nAlternatively, maybe convert 8 into 8/1. But again, seems redundant. \n\nI think all methods lead me to 56. So the answer should be 56.\n</think>\n\nTo solve the expression $7 \\times 8$, we can approach it through several methods, all of which yield the same result:\n\n---\n\n### Method 1: **Repeated Addition**\n\nThis method involves adding the number 7 eight times:\n\n$$\n7 + 7 + 7 + 7 + 7 + 7 + 7 + 7 = 56\n$$\n\n### Method 2: **Breaking Down the Multiplication**\n\nWe can also break 8 into smaller parts and use multiplication as a group operation:\n\n$$\n7 \\times 8 = 7 \\times (5 + 3) = 7 \\times 5 + 7 \\times 3\n$$\n\n$$\n= 35 + 21 = 56\n$$\n\n### Method 3: **Using Patterns and Algebras**\n\nAlternatively, we can express 8 as a multiple of 2 and then multiply:\n\n$$\n7 \\times 8 = 7 \\times 2 \\times 4 = 14 \\times 4 = 56\n$$\n\nAll methods ultimately lead to:\n\n$$\n\\boxed{56}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 1044,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 4,
+          "text": "<think>\nOkay, let me just think about this question: What is 7 multiplied by 8? Hmm, so I guess 7 times 8. I remember from school that multiplying two numbers means you add them together multiple times. Like, if you have 7 and 8, you could think of 7 and 8 as 8 ones, and then multiply them... Wait, maybe it's a better way to think. Let me break it down. 7 times 8... If I take 8 and break it down into two, 8 is 1 plus 7. Then 7 times 8 would be 7 multiplied by 1 plus 7 multiplied by 7. That would be 7 plus 49, which is 56. Is that right? Let me check again. So maybe another way: 7 times 8 is 56. Yeah, that makes sense. Alternatively, if I do the multiplication directly, 7×8. If I do 7×8, I can do it in parts. For example, 7×2 is 14, 7×4 is 28, 7×8 is 56. So that's correct. No, wait, that's not right. 7×8 is actually 56, because 7×8 is 56. Okay, I think that's the answer.\n</think>\n\n7 × 8 is equal to 56. \n\n**Answer:** 56",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 313,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 5,
+          "text": "<think>\nOkay, I need to figure out what 7 multiplied by 8 is. Let me think. So, 7 times 8... Hmm, multiplication is the same as adding 7 to itself 8 times. Let me verify that. Yes, because 7 + 7 + 7 + 7 + 7 + 7 + 7 + 7... Wait, that's 8 times 7. So, 8 times 7 equals 56. Let me check that again. If I break it down, 7×8 can be 7×(1+8) which is 7×1 + 7×8... That's 7 + 56... Wait, that seems confusing. No, I think I made an error here. Let me try another way. Maybe think in terms of how many units there are in 8. For example, if there are 8 apples, and each apple is 7, then total amount is 7×8. Alternatively, if I take 8×7, even if it's a multiplication, but that's the same thing. So, 7 multiplied by 8 is 56. Let me do an example with smaller numbers to check. For example, 1×8 is 8. 2×8 is 16. 3×8 is 24. Let's see, 3×8 is 24. If I do 4×8, 32. So, each time you multiply by 8, you multiply by 10, then divide by 2? Wait, no, 4×5 is 20, which is 8×4? Wait, 8 is 2×4. So, 7×8 is 7×(2×4) = 14×4 = 56. Yeah, same answer. Let me think if there's a different way to calculate. Maybe factor both numbers. 7 and 8, but those are both prime numbers: 7 is prime, 8 is 7+1. Not sure if that helps. Alternatively, use multiplication tables. Let me try to multiply 7 and 8. 7×8. Well, 7×8 is straightforward. Maybe I can convert them into digits. 7 is one digit, 8 is another. Multiplying them... Let me do the math. If I take 7×8, it's like 7 going on the outsides of 8. Let me think: 70×80 would be... No, that's like 5600. But since they are 7 and 8, it's 56. Correct. Wait, but 7×8 is 56. So, yes, answer is 56. I think I can confirm this with another example. Let's say 1×8 is 8, 2×8 is 16, 3×8 is 24. So, 3×8 is 24. So, 3×8 is 24. That matches. Hence, 7×8 is 56. I don't see any mistakes in the reasoning. It seems simple, but multiplying two numbers together is a basic arithmetic operation. So, the answer should be 56.\n</think>\n\nTo find the result of multiplying $7 \\times 8$, we can approach it using fundamental arithmetic principles and methods:\n\n1. **Multiplication of Two Numbers**:\n   - The expression $7 \\times 8$ is a straightforward multiplication of 7 and 8.\n   - Multiplying 7 by itself 8 times gives the result $7 + 7 + 7 + 7 + 7 + 7 + 7 + 7 = 56$.\n\n2. **Breaking Down the Multiplication**:\n   - Alternative approaches include recognizing that $7 \\times 8 = 7 \\times (2 \\times 4) = (7 \\times 2) \\times 4 = 14 \\times 4 = 56$.\n   - This method confirms the result through different decomposition strategies.\n\n3. **Verification**:\n   - Checking smaller increments such as $3 \\times 8 = 24$ confirms the result works as $7 \\times 8 = 56$.\n\n**Conclusion**:\n\n$$\n7 \\times 8 = \\boxed{56}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 935,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 0,
+          "text": "<think>\nOkay, the user is asking for the capital of France. Let me think. France is a country in North America. I know that the capital is Lyon. Let me confirm that. Yes, Lyon is the capital, and it's a city in the eastern part of the country. I can't think of any other cities that would be the capital here. So, the answer should be Lyon. I shouldn't make any mistakes here, but I need to make sure the details are correct.\n</think>\n\nThe capital of France is **Lyon**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 114,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 1,
+          "text": "<think>\nOkay, let's see. The user is asking for the capital of France. I remember that France is a country in Europe, so its capital is usually Paris. But wait, I should make sure not to confuse it with other capitals. Like, sometimes some countries have different capital cities, like London for England. So no, Paris is definitely correct here. Let me think if there's any other city that comes to mind. Hmm, Ankara for example is in Turkey, so that's not relevant. Then there's turmoil, but I think that's a country in Africa. So I'm pretty sure the answer is Paris. Let me just verify once more, maybe it's a bit confusing for some students. Yes, I'll go with Paris as the capital.\n</think>\n\nThe capital of France is **Paris**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 168,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 2,
+          "text": "<think>\nOkay, the user is asking to name the capital of France. Let me think. France's capital is Paris. I remember that from school, too. But wait, I should make sure not to make a mistake. Maybe there's something more to it? Like sometimes people confuse other countries? No, Paris is definitely the capital. Oh, right, the capital is also called the capital of France. I don't need to explain that again. Just confirm once more. Yeah, Paris is correct.\n</think>\n\nThe capital of France is **Paris**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 115,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 3,
+          "text": "<think>\nOkay, the user is asking for the capital of France. I know that France's capital is Paris. Let me confirm. Yes, it's definitely Paris. No need for a marathon search here. Just state it clearly.\n</think>\n\nThe capital of France is **Paris**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 59,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 4,
+          "text": "<think>\nOkay, the user asked for the capital of France. Let me think. France's capital is Paris, right? Yeah, that's the city I remember. I should confirm if there's any trick here. Maybe they're mixing up other countries? For example, in some context, but Paris is definitely the capital. Oh, and what about other cities, like Bordeaux or Lyon? Their names might be the same as some other countries. Wait, but the user just wants the capital, so Paris is the answer. I need to make sure I'm not confusing with another capital city in the same country.\n</think>\n\nThe capital of France is **Paris**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 136,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 5,
+          "text": "<think>\nOkay, the user is asking me to name the capital of France. Let me think. I know that France's capital is Paris. But wait, are there any other places that might be considered the capital? Hmm, sometimes there's confusion with other countries. However, I'm pretty sure Paris is the correct answer here. I should make sure to state that it is, and maybe add a brief explanation to clarify any possible confusion.\n</think>\n\nThe capital of France is **Paris**. It is the central government of the nation and holds a vital role in the country's governance.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 120,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        }
+      ],
+      "n_generations": 30,
+      "n_defects": 0,
+      "defects_by_kind": {
+        "zero_tag": 0,
+        "think_stutter": 0,
+        "cap_truncation": 0
+      }
+    }
+  },
+  "legacy_raw": null,
+  "comparison": {
+    "schema": "prismaquant.boundary_comparison/1",
+    "advisory_only": true,
+    "control_sha256": "2960b9b7a46117bc9019ca83905ac9b42aab35bece7922680a2dcca69ceee357",
+    "candidate_sha256": "499d8d15408b9a285fb0235509dd8685597e058fecb18d61a61ea0987cab9b7d",
+    "max_tokens": 2048,
+    "strata": {
+      "numeric": {
+        "control_defects": 0,
+        "candidate_defects": 0,
+        "n_generations_per_arm": 18,
+        "delta_defects": 0
+      },
+      "terse_qa": {
+        "control_defects": 0,
+        "candidate_defects": 0,
+        "n_generations_per_arm": 6,
+        "delta_defects": 0
+      },
+      "short_recall": {
+        "control_defects": 0,
+        "candidate_defects": 0,
+        "n_generations_per_arm": 6,
+        "delta_defects": 0
+      }
+    }
+  },
+  "started_unix": 1788662153.8107219,
+  "finished_unix": 1788662292.4771967,
+  "serve_pre": {
+    "schema": "prismaquant.serve_manifest/1",
+    "created": "2026-09-06T02:35:53.805256Z",
+    "attestation_phase": "pre",
+    "source": "server",
+    "hostname": "sparky",
+    "host_identity": {
+      "hostname": "sparky",
+      "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+      "pid_namespace": "pid:[4026533041]"
+    },
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "model": "/models/candidate",
+    "served_model_name": "run208-04",
+    "launch_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "/models/candidate",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "launch_flags": [
+      "<path>",
+      "<path>",
+      "serve",
+      "<path>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "normalized_performance_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "<arm-model>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "<arm-model>",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "enforce_eager": true,
+    "quantization": null,
+    "kv_cache_dtype": null,
+    "speculative_config": null,
+    "package_versions": {
+      "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+      "torch": "2.13.0+cu130",
+      "flashinfer-python": "0.6.18",
+      "transformers": "5.16.1"
+    },
+    "resident_extensions": [
+      "sampling.so",
+      "trtllm_utils.so"
+    ],
+    "native_extension_status": [
+      {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_materialize_stock"
+          },
+          "streamed": {
+            "status": "refused",
+            "decoder": null
+          }
+        }
+      },
+      {
+        "module_name_prefix": "tessera_window_gemv",
+        "filename_glob": "tessera_window_gemv*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          },
+          "streamed": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          }
+        }
+      }
+    ],
+    "residency_readable": true,
+    "processes": [
+      {
+        "pid": 205,
+        "argv": [
+          "/usr/bin/python3",
+          "/usr/local/bin/vllm",
+          "serve",
+          "/models/candidate",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+        "start_time_ticks": 13310973,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+      },
+      {
+        "pid": 231,
+        "argv": [
+          "VLLM::EngineCore"
+        ],
+        "cmdline": "VLLM::EngineCore",
+        "start_time_ticks": 13312233,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+      }
+    ],
+    "server_process_environment": {
+      "schema": "prismaquant.server_process_environment/1",
+      "allowlist": [
+        "PYTHONPATH",
+        "PYTHONSAFEPATH",
+        "TESSERA_SERVE_MODE"
+      ],
+      "readable_pids": [
+        205,
+        231
+      ],
+      "unreadable_pids": [],
+      "consistent": true,
+      "values": {
+        "PYTHONSAFEPATH": "1"
+      },
+      "processes": [
+        {
+          "pid": 205,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        },
+        {
+          "pid": 231,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        }
+      ]
+    },
+    "pq_env": {
+      "PYTHONSAFEPATH": "1"
+    },
+    "listener_census": {
+      "schema": "prismaquant.server_tcp_listeners/1",
+      "tables_readable": true,
+      "unreadable_pids": [],
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 33083,
+          "socket_inode": "31676899",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 41949,
+          "socket_inode": "31676926",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 45933,
+          "socket_inode": "31676968",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 35281,
+          "socket_inode": "31676940",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 40455,
+          "socket_inode": "31676912",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 45019,
+          "socket_inode": "31676954",
+          "pids": [
+            231
+          ]
+        }
+      ]
+    },
+    "listener_binding": {
+      "schema": "prismaquant.server_listener_binding/1",
+      "base_url": "http://127.0.0.1:8187",
+      "launch_host": "127.0.0.1",
+      "launch_port": 8187,
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        }
+      ]
+    },
+    "models_endpoint_binding": {
+      "schema": "prismaquant.server_models_endpoint_binding/1",
+      "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+      "response_object": "list",
+      "model_count": 1,
+      "model": {
+        "id": "run208-04",
+        "object": "model",
+        "owned_by": "vllm",
+        "root": "/models/candidate",
+        "max_model_len": 4096
+      }
+    },
+    "gpu_name": "NVIDIA GB10",
+    "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+    "driver_version": "595.84",
+    "compute_capability": [
+      12,
+      1
+    ],
+    "gpu_compute_capabilities": [
+      [
+        12,
+        1
+      ]
+    ],
+    "gpu_count": 1,
+    "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+    "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+    "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+  },
+  "serve_post": {
+    "schema": "prismaquant.serve_manifest/1",
+    "created": "2026-09-06T02:38:12.508981Z",
+    "attestation_phase": "post",
+    "source": "server",
+    "hostname": "sparky",
+    "host_identity": {
+      "hostname": "sparky",
+      "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+      "pid_namespace": "pid:[4026533041]"
+    },
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "model": "/models/candidate",
+    "served_model_name": "run208-04",
+    "launch_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "/models/candidate",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "launch_flags": [
+      "<path>",
+      "<path>",
+      "serve",
+      "<path>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "normalized_performance_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "<arm-model>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "<arm-model>",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "enforce_eager": true,
+    "quantization": null,
+    "kv_cache_dtype": null,
+    "speculative_config": null,
+    "package_versions": {
+      "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+      "torch": "2.13.0+cu130",
+      "flashinfer-python": "0.6.18",
+      "transformers": "5.16.1"
+    },
+    "resident_extensions": [
+      "sampling.so",
+      "trtllm_utils.so"
+    ],
+    "native_extension_status": [
+      {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_materialize_stock"
+          },
+          "streamed": {
+            "status": "refused",
+            "decoder": null
+          }
+        }
+      },
+      {
+        "module_name_prefix": "tessera_window_gemv",
+        "filename_glob": "tessera_window_gemv*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          },
+          "streamed": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          }
+        }
+      }
+    ],
+    "residency_readable": true,
+    "processes": [
+      {
+        "pid": 205,
+        "argv": [
+          "/usr/bin/python3",
+          "/usr/local/bin/vllm",
+          "serve",
+          "/models/candidate",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+        "start_time_ticks": 13310973,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+      },
+      {
+        "pid": 231,
+        "argv": [
+          "VLLM::EngineCore"
+        ],
+        "cmdline": "VLLM::EngineCore",
+        "start_time_ticks": 13312233,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+      }
+    ],
+    "server_process_environment": {
+      "schema": "prismaquant.server_process_environment/1",
+      "allowlist": [
+        "PYTHONPATH",
+        "PYTHONSAFEPATH",
+        "TESSERA_SERVE_MODE"
+      ],
+      "readable_pids": [
+        205,
+        231
+      ],
+      "unreadable_pids": [],
+      "consistent": true,
+      "values": {
+        "PYTHONSAFEPATH": "1"
+      },
+      "processes": [
+        {
+          "pid": 205,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        },
+        {
+          "pid": 231,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        }
+      ]
+    },
+    "pq_env": {
+      "PYTHONSAFEPATH": "1"
+    },
+    "listener_census": {
+      "schema": "prismaquant.server_tcp_listeners/1",
+      "tables_readable": true,
+      "unreadable_pids": [],
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 33083,
+          "socket_inode": "31676899",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 41949,
+          "socket_inode": "31676926",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 45933,
+          "socket_inode": "31676968",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 35281,
+          "socket_inode": "31676940",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 40455,
+          "socket_inode": "31676912",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 45019,
+          "socket_inode": "31676954",
+          "pids": [
+            231
+          ]
+        }
+      ]
+    },
+    "listener_binding": {
+      "schema": "prismaquant.server_listener_binding/1",
+      "base_url": "http://127.0.0.1:8187",
+      "launch_host": "127.0.0.1",
+      "launch_port": 8187,
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        }
+      ]
+    },
+    "models_endpoint_binding": {
+      "schema": "prismaquant.server_models_endpoint_binding/1",
+      "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+      "response_object": "list",
+      "model_count": 1,
+      "model": {
+        "id": "run208-04",
+        "object": "model",
+        "owned_by": "vllm",
+        "root": "/models/candidate",
+        "max_model_len": 4096
+      }
+    },
+    "gpu_name": "NVIDIA GB10",
+    "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+    "driver_version": "595.84",
+    "compute_capability": [
+      12,
+      1
+    ],
+    "gpu_compute_capabilities": [
+      [
+        12,
+        1
+      ]
+    ],
+    "gpu_count": 1,
+    "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+    "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+    "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+  },
+  "artifact_pre": {
+    "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+    "weight_content_manifest": {
+      "schema": "prismaquant.weight_content_manifest/1",
+      "algorithm": "sha256",
+      "files": {
+        "model.safetensors": {
+          "bytes": 870290032,
+          "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+        }
+      }
+    }
+  },
+  "artifact_post": {
+    "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+    "weight_content_manifest": {
+      "schema": "prismaquant.weight_content_manifest/1",
+      "algorithm": "sha256",
+      "files": {
+        "model.safetensors": {
+          "bytes": 870290032,
+          "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+        }
+      }
+    }
+  },
+  "weight_stats_pre": {
+    "schema": "prismaquant.weight_stat_attestation/1",
+    "files": {
+      "model.safetensors": {
+        "bytes": 870290032,
+        "mtime_ns": 1788368078980335183,
+        "ctime_ns": 1788661330309667492
+      }
+    }
+  },
+  "weight_stats_post": {
+    "schema": "prismaquant.weight_stat_attestation/1",
+    "files": {
+      "model.safetensors": {
+        "bytes": 870290032,
+        "mtime_ns": 1788368078980335183,
+        "ctime_ns": 1788661330309667492
+      }
+    }
+  },
+  "source_sha256": {
+    "prismaquant/boundary_control.py": "631be3c0bd6420bdb2e86e76034754d396b9976a7f9ca8a305249c776b41ae71",
+    "prismaquant/validate_quantized_model.py": "e24c0645401fe81d5e4918fe818cf03afd17e11fa710aa4d03f27e3af8796a20",
+    "prismaquant/shipcard.py": "fa95b97b9fb878aac54c7076e962c4f502e97bec864e9536519dc373dfa8ebaa",
+    "tools/measure_boundary_control.py": "42dda7ef463777e69377e5888129d3ed87ddccfb0bbc48dd9b693536ada70afa",
+    "tools/serve_fingerprint.py": "35b3d5d86a3862388fc5e16b2bdb3f15cf344a7b8e51964f2e3c02630d0165a6",
+    "tools/prismaquant_source_bootstrap.py": "b571e52aa7586213781b8798c9f1f330ceed0e4b226fdb98ec9d128cc54230cb",
+    "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json": "1ad9432babf4146f9dd1be8dc2e98ed6e86a5d4a9d4953d69fe233ce1cb35b5a"
+  },
+  "decision": {
+    "schema": "prismaquant.boundary_decision/1",
+    "policy": "prismaquant.no_new_boundary_failures/1",
+    "advisory_only": true,
+    "verdict": "accepted",
+    "reason": "no new defect kind on any matched prompt/seed pair",
+    "control_sha256": "2960b9b7a46117bc9019ca83905ac9b42aab35bece7922680a2dcca69ceee357",
+    "candidate_sha256": "499d8d15408b9a285fb0235509dd8685597e058fecb18d61a61ea0987cab9b7d",
+    "pair_count": 30,
+    "max_tokens": 2048,
+    "newly_broken_pairs": 0,
+    "new_defect_kind_pairs": 0,
+    "violations": []
+  }
+}
