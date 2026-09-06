@@ -1017,6 +1017,89 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
                 )
 
 
+@pytest.mark.parametrize(
+    "second_stat, expected",
+    [
+        ("42 Z", "gone"),
+        (FileNotFoundError(), "gone"),
+        (ProcessLookupError(), "gone"),
+        ("42 S", "mismatch"),
+        ("43 S", "mismatch"),
+        ("43 Z", "mismatch"),
+        (PermissionError(), "mismatch"),
+        (OSError("stat I/O failed"), "mismatch"),
+        ("malformed", "mismatch"),
+        ("invalid S", "mismatch"),
+    ],
+    ids=[
+        "zombie", "missing", "esrch", "live-owner-mismatch", "pid-reused",
+        "pid-reused-zombie", "permission-denied", "io-error", "malformed",
+        "invalid-ticks",
+    ],
+)
+@pytest.mark.parametrize("owner_read_error", [False, True], ids=["empty-env", "env-error"])
+def test_owned_process_state_rechecks_exit_after_failed_owner_read(
+    monkeypatch, second_stat, expected, owner_read_error
+):
+    # Force the exact exit window: stat reports our live helper, then environ
+    # loses its owner as the helper exits. No scheduling or sleep is involved.
+    snapshots = iter(["42 S", second_stat])
+
+    def read_stat(path, **kwargs):
+        assert str(path) == "/proc/424242/stat"
+        value = next(snapshots)
+        if isinstance(value, OSError):
+            raise value
+        if value == "malformed":
+            return value
+        ticks, state = value.split()
+        return "424242 (helper) " + " ".join([state] + ["0"] * 18 + [ticks])
+
+    def read_environ(path):
+        assert str(path) == "/proc/424242/environ"
+        if owner_read_error:
+            raise ProcessLookupError()
+        return b""
+
+    monkeypatch.setattr(Path, "read_text", read_stat)
+    monkeypatch.setattr(Path, "read_bytes", read_environ)
+    assert campaign._owned_process_state(424242, 42, "owner") == expected
+
+
+@pytest.mark.parametrize("owner_matches, expected", [(True, "owned"), (False, "mismatch")])
+def test_owned_process_state_live_identity(monkeypatch, owner_matches, expected):
+    monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (42, "S"))
+    monkeypatch.setattr(campaign, "_proc_has_owner", lambda *a: owner_matches)
+    assert campaign._owned_process_state(424242, 42, "owner") == expected
+
+
+@pytest.mark.parametrize("state", ["S", "Z"])
+def test_recorded_process_pid_reuse_is_never_owned_or_killed(monkeypatch, state):
+    monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (43, state))
+    monkeypatch.setattr(
+        campaign, "_proc_has_owner",
+        lambda *a: pytest.fail("a reused PID must not be checked for ownership"),
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *a: pytest.fail("a reused PID must not be killed")
+    )
+    assert campaign._owned_process_state(424242, 42, "owner") == "mismatch"
+    assert not campaign._terminate_recorded_owned_process(424242, 42, "owner")
+
+
+@pytest.mark.parametrize("error", [PermissionError(), OSError("stat I/O failed")])
+def test_recorded_process_unreadable_stat_is_never_killed(monkeypatch, error):
+    def read_stat(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(Path, "read_text", read_stat)
+    monkeypatch.setattr(
+        os, "killpg", lambda *a: pytest.fail("unreadable identity must not be killed")
+    )
+    assert campaign._owned_process_state(424242, 42, "owner") == "mismatch"
+    assert not campaign._terminate_recorded_owned_process(424242, 42, "owner")
+
+
 def test_ambiguous_recorded_pid_fails_closed_without_killing_it(tmp_path):
     receipt_path = tmp_path / "never.json"
     receipt = _receipt(receipt_path, "never")
