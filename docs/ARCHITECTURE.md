@@ -3,6 +3,15 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for measured runtime price
+inputs (`measured_runtime_prices`, #237). The optional versioned table binds
+an independently supplied workload context and cost-payload digest to exact
+whole-operator recipes, repeated GPU timing samples and their raw receipts.
+It accounts separately for serialized bytes, terminal residency, activation
+and scratch peaks, and fixed resources. Operator medians remain proposal
+prices; they do not certify end-to-end TTFT/decode quantiles. No runtime
+measurement table or serving promotion ships with this contract.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for the optional runtime
 frontier preservation contract (#237). Candidate construction and fused
 Tessera folding accept `preserve_runtime_frontier=True`: byte/loss dominance
