@@ -54,6 +54,7 @@ from prismaquant.production_weight_cache import (
     _canonical_rendered_weight_tensor,
     _cb_cache_tensor_identity,
     _fused_sibling_leaf_mapping_from_profile,
+    _formats_need_static_activation_max,
     _render_base_format,
     _render_score_record,
     _render_score_record_key,
@@ -334,17 +335,18 @@ def _render_dense_layer(
         for f in fmts
     }
     needs_nvfp4 = "NVFP4" in render_base_fmts
+    needs_static_activation_max = _formats_need_static_activation_max(render_base_fmts)
+    joint_scope = (
+        dict(joint_scale_modules)
+        if joint_scale_modules is not None
+        else qname_to_module
+    )
 
     # Joint fused-sibling NVFP4 global (max across q/k/v or gate/up). Restricted
     # to this layer's non-BF16 dense qnames; siblings are co-resident. The
     # synthetic all-NVFP4 assignment matches the resident derivation.
     joint_globals: dict[str, torch.Tensor] = {}
     if needs_nvfp4:
-        joint_scope = (
-            dict(joint_scale_modules)
-            if joint_scale_modules is not None
-            else qname_to_module
-        )
         joint_globals = _compute_nvfp4_joint_global(
             model,
             {q: "NVFP4" for q in joint_scope},
@@ -352,11 +354,13 @@ def _render_dense_layer(
         )
 
     # Per-Linear calibrated max_abs, unified (max) across fused sibling groups
-    # — reproduces the resident block; the value drives only the export
-    # activation scale (metadata), never the rendered weight.
-    if needs_nvfp4:
+    # — the resolved static activation contract owns this requirement, even
+    # when no native NVFP4 weight is requested (#262). A transient request may
+    # render one sibling at a time; calibrate the complete planned layer scope
+    # so its scale identity does not depend on request order or batching.
+    if needs_static_activation_max:
         per_qname_max_abs: dict[str, float] = {}
-        for qname in qname_to_module:
+        for qname in joint_scope:
             canonical = resolve_cost_target_name(qname, act_index, profile)
             if canonical not in act_index:
                 continue
