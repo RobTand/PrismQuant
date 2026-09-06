@@ -51,6 +51,29 @@ from tessera.manifest import BodyKind
 REFERENCE_SHAPE = (4096, 4096)
 
 
+def _render_seam_weight(name, recipe=None):
+    """A complete rate superblock and two trellis histories, on the real wire.
+
+    These integration checks compare producer seams, not large-matrix
+    throughput. Keep the default window width and real encoder, but derive a
+    bounded tensor from the column schedule and state history they exercise.
+    Two histories reach beyond the pinned-zero prefix; arity expands trellis
+    positions into whole output-row tuples.
+    """
+    from tessera.export import DEFAULT_CODE
+
+    family, rung = parse_tessera_format_name(name)
+    wire = tessera_wire_recipe(family, rung) if recipe is None else recipe
+    columns = SUPERBLOCK_WEIGHTS
+    history = DEFAULT_CODE.memory
+    if BodyKind(wire.body) is BodyKind.WINDOW:
+        slowest_rate = min(family.column_schedule(rung, columns, recipe=wire))
+        history = max(history, (wire.window_bits + slowest_rate - 1) // slowest_rate)
+    rows = 2 * history * family.arity
+    generator = torch.Generator().manual_seed(0)
+    return torch.randn(rows, columns, generator=generator, dtype=torch.float32) * 0.02
+
+
 def _forest_bpp(spec, rung, shape, wire=None):
     """What a TCQ unit's forest costs per position at ``shape``.
 
@@ -751,9 +774,8 @@ def test_a_rung_that_renders_can_still_be_unwritable():
         tessera_rung_is_serialisable,
     )
 
-    torch.manual_seed(0)
-    weight = torch.randn(64, 512) * 0.02
-    assert render_tessera_weight(weight, "TESSERA_E4M3_K1_R1024").shape == (64, 512)
+    weight = _render_seam_weight("TESSERA_E4M3_K1_R1024")
+    assert render_tessera_weight(weight, "TESSERA_E4M3_K1_R1024").shape == weight.shape
     assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is True
     assert tessera_rung_is_serialisable("TESSERA_E2M1_K2_R896") is True
 
@@ -769,7 +791,7 @@ def test_a_rung_that_renders_can_still_be_unwritable():
         clear_serialisable_cache()
         # Still renders -- if it stopped, this would pass for the wrong reason.
         assert render_tessera_weight(
-            weight, "TESSERA_E4M3_K1_R1024").shape == (64, 512)
+            weight, "TESSERA_E4M3_K1_R1024").shape == weight.shape
         assert tessera_rung_is_serialisable("TESSERA_E4M3_K1_R1024") is False
     # Both levels again on the way out: the verdict cached under the patched
     # registry is the one the next test in this file would otherwise read.
@@ -1495,8 +1517,7 @@ def test_the_render_leg_and_the_exporter_are_one_rendering(label, name, recipe_a
     family, rung = parse_tessera_format_name(name)
     recipe = None if recipe_args is None else recipe_from_wire_names(*recipe_args)
 
-    torch.manual_seed(0)
-    weight = torch.randn(64, 512, dtype=torch.float32) * 0.02
+    weight = _render_seam_weight(name, recipe)
 
     rendered = render_tessera_weight(weight, name, recipe=recipe)
 
