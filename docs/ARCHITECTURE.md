@@ -11,7 +11,9 @@ arrays retain an explicitly unverified diagnostic. Assignment comparisons
 declare additive unary loss or the quadratic of summed signed projections;
 unchanged units remain in the latter's cross terms. Empirical probe uncertainty
 conditional on fixed calibration and caller-supplied held-out sequence
-uncertainty stay separate. The existing additivity report CLI exposes the
+uncertainty stay separate. Measured KL must be finite, and its supplied standard
+error must be finite and nonnegative; finite negative sample KL estimates remain
+valid. The existing additivity report CLI exposes the
 comparison without allocator refinement or serving admission. Gates:
 `tests/test_joint_aura_assignment_diagnostics.py`,
 `tests/test_aura_additivity_identity.py`. See

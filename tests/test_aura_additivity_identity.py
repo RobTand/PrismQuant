@@ -20,6 +20,24 @@ def _payload(a, b):
 ASSIGNMENT = {UNIT_A: "FP8_E4M3", UNIT_B: "FP8_E4M3"}
 
 
+@pytest.mark.parametrize("measured,stderr", [
+    (0.1, -0.1), (0.1, float("nan")), (0.1, float("inf")),
+    (float("nan"), 0.1), (float("inf"), 0.1),
+])
+def test_gate_refuses_invalid_measured_uncertainty(measured, stderr):
+    a, b = _row(UNIT_A, [1, 2, 3]), _row(UNIT_B, [3, 2, 1])
+    with pytest.raises(ValueError, match="measured"):
+        additivity_gate(_payload(a, b), ASSIGNMENT, measured,
+                        measured_kl_stderr=stderr)
+
+
+def test_gate_retains_finite_negative_kl_estimates():
+    a, b = _row(UNIT_A, [1, 2, 3]), _row(UNIT_B, [3, 2, 1])
+    result = additivity_gate(_payload(a, b), ASSIGNMENT, -0.1,
+                             measured_kl_stderr=0.25)
+    assert result["measured_kl"] == -0.1
+
+
 @pytest.mark.parametrize("field", ["seed_base", "calibration_sha256", "producer_source_sha256"])
 def test_equal_length_joint_rows_from_different_measurements_refuse(field):
     a, b = _row(UNIT_A, [1, 2, 3]), _row(UNIT_B, [3, 2, 1])

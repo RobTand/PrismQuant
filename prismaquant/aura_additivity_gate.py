@@ -42,6 +42,12 @@ def additivity_gate(
     Uncovered members (assignment entries with no cost row) are LISTED, never
     silently dropped — a large uncovered set invalidates the comparison.
     """
+    measured_kl = float(measured_kl)
+    measured_kl_stderr = float(measured_kl_stderr)
+    if not math.isfinite(measured_kl):
+        raise ValueError("measured KL estimate must be finite")
+    if not math.isfinite(measured_kl_stderr) or measured_kl_stderr < 0:
+        raise ValueError("measured KL standard error must be finite and nonnegative")
     costs = cost_payload["costs"]
     covered: list[tuple[str, str]] = []
     uncovered: list[str] = []
@@ -105,7 +111,7 @@ def additivity_gate(
         stderr_method = "independence_assumed"
 
     residual = float(measured_kl) - predicted_sum
-    denom = math.sqrt(predicted_stderr ** 2 + float(measured_kl_stderr) ** 2)
+    denom = math.hypot(predicted_stderr, measured_kl_stderr)
     z = residual / denom if denom > 0 else float("inf") if residual else 0.0
 
     return {

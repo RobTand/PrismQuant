@@ -72,6 +72,8 @@ not proof of alignment. Without arrays the independence estimate is labeled
 `independence_assumed`, not a covariance lower bound. Old bare-list screen
 receipts remain unverified by this identity contract.
 
+Measured KL must be finite; a finite negative sample estimate is allowed.
+Its supplied standard error must be finite and nonnegative.
 The existing `measured_kl_stderr` is caller-supplied held-out sequence
 uncertainty and stays separate from the probe standard error. The residual
 z-score is descriptive and assumes independent probe and sequence errors;

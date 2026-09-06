@@ -52,3 +52,26 @@ probe and supplied sequence standard errors. Historical bare-list screens
 remain unverified by this identity contract. These results do not qualify
 background-dependent unary ordering, sparse-anchor generalization, runtime
 admission, or positive quality gains; #237 remains open.
+
+## Integration review, 2026-09-06
+
+Rebased onto main `3cb0d35933c614c61df79be25d478ebf7d43e859`, retaining
+the preparation and row-count provenance stamps. Review found the existing
+gate accepted NaN/infinite measured KL and negative/nonfinite supplied standard
+errors. Five new cases failed before the guard; the finite negative sample-KL
+control passed. RED action
+`3849fc643867792bc014b89de2b248bf773404e5136c73c7ab3a4db28fba226c`
+returned 1: five failed, one passed, 13 deselected.
+
+After finite-domain validation and overflow-resistant `math.hypot` combination,
+`tests/test_aura_additivity_identity.py` and `tests/test_aura_cost.py` passed
+40 tests, no skips, in 6.52 seconds using two xdist workers, two CPUs and
+4 GiB total on PB-selected Sparky, CUDA hidden and native threads bounded to one.
+GREEN action
+`3b99832b56d056196d0d01f109f9f3072a9dc0e4af686d6e0d20eaf2b76146a5`
+returned 0 with complete scope cleanup and no OOM. Receipt SHA256
+`402bbfe73506fbed0aa0cbf5abbda56079f0a6f60fccbf68988589c90cae83c7`
+binds the actual 651-byte test log, independently read and rehashed as
+`35a2267abef3a135aa893f629b640c69e7b78a905e51ba26c781566adbe6da87`.
+The final three agent-produced GREEN payloads above were also independently
+read and rehashed during integration. Original failure records are retained.
