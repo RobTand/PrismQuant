@@ -369,3 +369,11 @@ original run or requiring an agent between phases.
 this transport and refusal contract. Fixture success does not qualify actual
 Hessian numerics, exporter output, or serving behavior; those gates run in the
 admitted continuation with the actual image, model and sealed campaign.
+
+Attempt 06 passed the actual shared preflight and constructed the validated
+96-wire bundle, then failed while querying Git inside the producer image.
+The continuation now consumes the existing host source receipt: the host
+resolves the admitted snapshot before container launch, and the producer
+requires its schema, full snapshot ID, prior campaign snapshot and phase input
+manifest binding before any copied output or export. Missing or malformed
+identity refuses; the producer image and numerical environment stay unchanged.

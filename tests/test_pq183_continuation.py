@@ -73,6 +73,12 @@ class ContinuationTests(unittest.TestCase):
         self.args = types.SimpleNamespace(campaign_input=self.root, out=self.out,
                     campaign_input_manifest=self.seal, campaign_input_manifest_sha256=self.ns["sha"](self.seal),
                     model=Path("/model"))
+        self.host_source = "b" * 40
+        (self.out / "host-status.json").write_text(json.dumps({
+            "schema": "prismaquant.pq183-host-observation.v1", "source_snapshot": self.host_source,
+            "campaign_source_snapshot": "a" * 40,
+            "phases": {"continue-export": {
+                "campaign_input_manifest_sha256": self.args.campaign_input_manifest_sha256}}}))
 
     def dump(self, name, data):
         (self.root / name).write_text(json.dumps(data))
@@ -135,6 +141,28 @@ class ContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside its input"):
             self.ns["verify_campaign_inputs"](self.args)
 
+    def test_missing_host_receipt_fails_before_producer_work(self):
+        (self.out / "host-status.json").unlink()
+        with patch.dict(self.g, producer_preflight=lambda _: self.fail("must refuse before producer work")):
+            with self.assertRaises(FileNotFoundError):
+                self.ns["continue_export"](self.args)
+        self.assertFalse((self.out / "cost.pkl").exists())
+
+    def test_malformed_or_misbound_host_identity_fails_before_producer_work(self):
+        path = self.out / "host-status.json"
+        original = path.read_text()
+        for field, value in (("source_snapshot", ""), ("source_snapshot", "b" * 39),
+                             ("source_snapshot", None), ("schema", "wrong"),
+                             ("campaign_source_snapshot", "c" * 40), ("phases", {})):
+            with self.subTest(field=field, value=value):
+                receipt = json.loads(original)
+                receipt[field] = value
+                path.write_text(json.dumps(receipt))
+                with patch.dict(self.g, producer_preflight=lambda _: self.fail("must refuse before producer work")):
+                    with self.assertRaisesRegex(ValueError, "host source receipt"):
+                        self.ns["continue_export"](self.args)
+                self.assertFalse((self.out / "cost.pkl").exists())
+
     def test_missing_cost_in_seal_refuses_before_unpickle(self):
         manifest = json.loads(self.seal.read_text())
         del manifest["files"]["cost.pkl"]
@@ -174,10 +202,13 @@ class ContinuationTests(unittest.TestCase):
         with patch.dict("sys.modules", {"prismaquant.tessera_export_lane": fake_lane,
                                         "prismaquant.tessera_serving_scope": fake_scope}), patch.dict(
                 self.g, producer_preflight=lambda _: None, campaign=forbidden, allocate=forbidden,
-                export_from_build=exported):
+                export_from_build=exported), patch.object(
+                    self.g["subprocess"], "check_output", side_effect=FileNotFoundError("git absent in producer")):
             self.ns["continue_export"](self.args)
         self.assertEqual(events, ["shared-preflight", "bundle", "export"])
         self.assertEqual(before, self.ns["verify_campaign_inputs"](self.args))
+        self.assertEqual(json.loads((self.out / "continuation.json").read_text())[
+            "continuation_source_snapshot"], self.host_source)
 
 
 if __name__ == "__main__":

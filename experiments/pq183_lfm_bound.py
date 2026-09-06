@@ -383,6 +383,16 @@ def seal_campaign(args):
 def continue_export(args):
     """Export existing prices and bytes; never call the campaign or allocator."""
     manifest = verify_campaign_inputs(args)
+    # The host resolves the admitted PQ snapshot before launching this image,
+    # which intentionally has no Git dependency. Bind its receipt to this phase.
+    host_receipt = read(args.out / "host-status.json")
+    source_snapshot = host_receipt.get("source_snapshot")
+    require(host_receipt.get("schema") == "prismaquant.pq183-host-observation.v1"
+            and isinstance(source_snapshot, str) and re.fullmatch(r"[0-9a-f]{40}", source_snapshot)
+            and host_receipt.get("campaign_source_snapshot") == manifest["campaign_source_snapshot"]
+            and host_receipt.get("phases", {}).get("continue-export", {}).get(
+                "campaign_input_manifest_sha256") == args.campaign_input_manifest_sha256,
+            "continuation host source receipt is absent, malformed or bound to different inputs")
     producer_preflight(args)
     for name in ("cost.pkl", "layer_config.json", "recipe.json"):
         destination = args.out / name
@@ -416,8 +426,7 @@ def continue_export(args):
     write(args.out / "continuation.json", {
         "input_manifest_sha256": args.campaign_input_manifest_sha256,
         "campaign_source_snapshot": manifest["campaign_source_snapshot"],
-        "continuation_source_snapshot": subprocess.check_output(["git", "rev-parse", "HEAD"],
-                                                                cwd=REPO, text=True).strip(),
+        "continuation_source_snapshot": source_snapshot,
         "assignment_unchanged": True, "cost_unchanged": True, "priced_wire_copies": 96,
         "original_input_root": str(args.campaign_input), "original_inputs_mounted_read_only": True,
         "reallocated": False, "requantized": False})
