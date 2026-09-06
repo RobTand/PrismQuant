@@ -1,7 +1,96 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/cluster-recovery-delivery`. Stamps
+As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the joint probe-count
+contract: joint harvesting and row admission require at least two probes.
+One sample cannot estimate sampling variance and must not publish a zero
+standard error as if it established certainty. The default remains 16;
+legacy weight-only harvesting is unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the current-model
+qualification result of joint AURA. The Qwen3-0.6B three-unit fixed-teacher
+screen verifies the residual projection, but establishes no selection
+quality gain: both estimators choose the same assignment, joint neighboring
+rankings are slightly worse, and selected NLL regresses against the
+selected-unit uniform controls. This remains research; actual served
+operator timings, end-to-end SLOs and broader quality gates are still open
+in #237. Evidence: `docs/measurements/pq237-joint-aura-screen-2026-09-05.md`.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for unambiguous measured
+operator binding. Runtime-mode fused aggregation keeps one canonical
+choice for a uniform per-NAME option and its already verified composite
+twin; all distinct member recipes remain. Measured cost intake hashes and
+parses the same owned bytes, so an in-place rewrite cannot verify different
+prices from those admitted. Both integration corrections have regression
+tests. Legacy candidate reduction and cost loading are unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for allocator CLI wiring
+of joint quality and measured runtime search (#237). `--measured-runtime-table`
+and `--measured-runtime-context` reuse the prefill/decode/device budget flags,
+preserve unpruned alternatives, bind source/calibration and operator recipes,
+and recheck the expanded assignment including fixed auxiliary resources.
+Legacy relative dispatch inputs are separate. Unsupported shared sidecars,
+changed promotion and missing measurements refuse. Final artifacts and
+Pareto seeds explicitly identify research operator-sum predictions without
+p95 or end-to-end certification. The default allocator path is unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA's resolved
+activation projection groups. Static served QDQ identity names the shared
+static owner and its actual no-preclip policy. Compatible candidates share
+one activation projection even when unused dynamic registry callables
+differ. Group resolution occurs outside the output-gradient hook. Tests
+also cover transient anchor consumption and complete signed checkpoint
+replay. No activation quantizer, format default or serving gate changes.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA allocator
+currency admission (#237). Complete joint rows are validated before generic
+MSE/weight/exactness branches and consumed directly, with no scalar Fisher,
+calibrated gain or activation transfer. One table must share a joint
+calibration/probe identity and bind each operator to its unit/format key;
+malformed or mixed-currency rows refuse. Optional UCB uses the measured probe
+standard error once, and grouped uncertainty does not reapply a family
+activation penalty. Legacy tables keep their existing pricing branches.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for opt-in streamed joint
+AURA (`compute_aura_cost_streamed(..., joint_activation=True)` and
+`aura_cost --streaming --joint-activation`, #237). The existing resident
+render/cache path supplies full weight and activation perturbations. Output
+cotangents project their signed weight, activation and mixed terms; repeated
+invocations sum before one square. Complete BF16 controls, aligned probe
+components and source/render/activation/arithmetic identities persist through
+checkpoint replay. This is a research quadratic price, not a new served
+quality result. See `docs/design/joint_aura_runtime_allocation.md`.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the opt-in discrete
+`allocator_solver.solve_runtime_frontier` (#237). Its declared additive
+model keeps nondominated bytes, quality and prefill time, with optional
+decode and separate terminal-residency/activation/scratch coordinates. It
+uses exact integer byte charges and retains nonconvex choices. Finite state
+and transition limits refuse rather than return incomplete allocations.
+The legacy solver is unchanged; timing provenance, nonadditive artifact
+overheads, serving-group composition and end-to-end validation remain
+caller responsibilities. Exactness here describes this supplied resource
+model, not a claim of global model-quality or served-latency optimality.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for measured runtime price
+inputs (`measured_runtime_prices`, #237). The optional versioned table binds
+an independently supplied workload context and cost-payload digest to exact
+whole-operator recipes, repeated GPU timing samples and their raw receipts.
+It accounts separately for serialized bytes, terminal residency, activation
+and scratch peaks, and fixed resources. Operator medians remain proposal
+prices; they do not certify end-to-end TTFT/decode quantiles. No runtime
+measurement table or serving promotion ships with this contract.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the optional runtime
+frontier preservation contract (#237). Candidate construction and fused
+Tessera folding accept `preserve_runtime_frontier=True`: byte/loss dominance
+and DP-bin collapse are deferred until whole-operator timings are attached.
+The fold keeps every licensed coherent member recipe under its existing
+explicit combination cap; it refuses excess work instead of truncating the
+menu. Defaults retain the previous byte/loss reductions. This plumbing does
+not supply timing measurements or establish an end-to-end SLO.
 
 Re-stamped (2026-09-05, `codex/cluster-recovery-delivery`) for coordinator
 recovery across helper exit (PrismaQuant #239). A failed owner-environment
@@ -4826,10 +4915,11 @@ remains a post-export shipcard gate
 **Residual CB-family activation blindness (reported; terminal shortcut gated).** Every rung of `nvfp4_cb` and
 `fp8_cb` has `act_quant_changes_input = True`, and an anchored table carries no measured
 `output_mse`, so P5a has no calibration sample and `penalty_for` already returns exactly 1.0 —
-skipping it is a provenance statement, not a number change. Two facts bound the exposure. The
-activation path is **constant across K within each CB family**, so the blindness cannot reorder
-rungs *inside* a family; it can only shift the `nvfp4_cb`-vs-`fp8_cb` family-choice margin. And
-AURA's validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
+skipping it is a provenance statement, not a number change. The activation operator can be
+constant across K while its joint residual still varies with the rendered weight: activation/weight
+cross terms can reorder rungs within a family. The optional joint path above measures those
+terms; legacy anchored weight-only rows retain this limitation.
+AURA's historical validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
 `h_trace × output_mse` — a baseline that *did* carry the A side, since `measure_quant_cost`
 applies `activation_quantize_dequantize(X)` — on menus already mixing W4A4 NVFP4, W8A8 FP8 and
 BF16, i.e. the same family-choice margin. This is carried exactly like the route-flip limitation

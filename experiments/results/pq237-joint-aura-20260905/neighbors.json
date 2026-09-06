@@ -1,0 +1,1541 @@
+[
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0002849595621228218,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 7.320847362279892e-05,
+    "joint_additive_difference": 0.00017413225208924837,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.00048633944243192673,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0005335286259651184,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0032712407410144806,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0037856539711356163,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.00035816803574562073,
+    "joint_additive_difference": -3.0208295775619592e-05,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0005094921216368675,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0010044006630778313,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003690561279654503,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003509843721985817,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.00027941353619098663,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0006263712421059608,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003076464869081974,
+    "joint_additive_difference": 0.002242299270556924,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0032351557165384293,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.000261806882917881,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.00013371743261814117,
+    "joint_additive_difference": 0.00017413225208924837,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 4.718918353319168e-05,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003656577318906784,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220209e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.00384681299328804,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.00012808945029973984,
+    "joint_additive_difference": -3.0208295775619592e-05,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0004949085414409637,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.004052308388054371,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220209e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.00401582196354866,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0003469577059149742,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003792557865381241,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003806624561548233,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.00018591247498989105,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.00016605108976364136,
+    "joint_additive_difference": 0.00017413225208924837,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003956741653382778,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.004140093922615051,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -1.9861385226249695e-05,
+    "joint_additive_difference": -3.0208295775619592e-05,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003780357539653778,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.004053020849823952,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.003874349407851696,
+    "joint_additive_difference": 0.0022422992705569246,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.540484780220198e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0036152275279164314,
+    "joint_additive_difference": 0.00268438277941359,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0003342869163247619,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.00013436097651720047,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.00012156739830970764,
+    "joint_additive_difference": 0.00017413225208924793,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0008716760203242302,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093357487e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.001219029538333416,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0005144132301211357,
+    "joint_additive_difference": 0.00044208350885666537,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0002559283748269081,
+    "joint_additive_difference": -3.0208295775620026e-05,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0008712392300367355,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093357487e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0010941969230771065,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": -0.0001807175576686859,
+    "joint_additive_difference": 0.00044208350885666537,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0009955065324902534,
+    "joint_additive_difference": 0.0011850328631192095,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0014242557808756828,
+    "joint_additive_difference": 0.0014868763689971332,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.00015869084745645523,
+    "joint_additive_difference": 0.0004420835088566658,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 0.0001339241862297058,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 2.263113856315613e-06,
+    "joint_additive_difference": 0.00017413225208924815,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -5.4233697213979795e-06,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0003473535180091858,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170112e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0001902356743812561,
+    "joint_additive_difference": 0.00044208350885666537,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225598,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0001316610723733902,
+    "joint_additive_difference": -3.020829577561981e-05,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -4.322809249886997e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.00022295769304037094,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170112e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": -3.64864245057106e-05,
+    "joint_additive_difference": 0.0004420835088566655,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225598,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0004287492483854294,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 1.4066696166992188e-05,
+    "joint_additive_difference": 0.0004420835088566655,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 9.52836126089096e-06,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 8.36588442325592e-05,
+    "joint_additive_difference": 0.00017413225208924815,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.0001833522692322731,
+    "joint_additive_difference": 0.0004420835088566655,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 7.413048297166824e-05,
+    "joint_additive_difference": -3.020829577561981e-05,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": 0.00027266331017017365,
+    "joint_additive_difference": 0.0004420835088566655,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.0.mlp.down_proj",
+    "heldout_kl_difference": -0.0002591218799352646,
+    "joint_additive_difference": 0.0004420835088566656,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 0.0002988820685225599,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0005607698112726212,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0004772897809743881,
+    "joint_additive_difference": 0.00017413225208924837,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0005474984645843506,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0008879685774445534,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 8.348003029823303e-05,
+    "joint_additive_difference": -3.0208295775619592e-05,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0010154703631997108,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.001547577790915966,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0008508823812007904,
+    "joint_additive_difference": 0.0011850328631192093,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 1.2453126093356403e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.001006443053483963,
+    "joint_additive_difference": 0.001486876368997133,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E2M1_K1_R768"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.673882191103687e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -9.27979126572609e-05,
+    "joint_additive_difference": 0.00020434054786486807,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": false
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0001739058643579483,
+    "joint_additive_difference": 0.00017413225208924826,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0003404701128602028,
+    "joint_additive_difference": 0.00030184350587792385,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -8.110795170068741e-05,
+    "joint_additive_difference": -3.020829577561981e-05,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0005321074277162552,
+    "joint_additive_difference": 0.00030184350587792374,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.7.mlp.down_proj",
+    "heldout_kl_difference": 0.0001555606722831726,
+    "joint_additive_difference": 0.00030184350587792385,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_E4M3_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 7.549350930170123e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": 9.88394021987915e-05,
+    "joint_additive_difference": 0.00020434054786486796,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": 3.7804722777471994e-05,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.0003588153049349785,
+    "joint_additive_difference": 0.00017413225208924826,
+    "joint_order_correct": false,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E2M1_K1_R768",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": true,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -5.423369721397871e-06,
+    "weight_order_correct": true
+  },
+  {
+    "changed_unit": "model.layers.21.mlp.down_proj",
+    "heldout_kl_difference": -0.00045765470713377,
+    "joint_additive_difference": -3.02082957756197e-05,
+    "joint_order_correct": true,
+    "left": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "pricing_crossover": false,
+    "right": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "weight_additive_difference": -4.3228092498869865e-05,
+    "weight_order_correct": true
+  }
+]
