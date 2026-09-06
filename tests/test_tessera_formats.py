@@ -69,7 +69,7 @@ def _render_seam_weight(name, recipe=None):
     if BodyKind(wire.body) is BodyKind.WINDOW:
         slowest_rate = min(family.column_schedule(rung, columns, recipe=wire))
         history = max(history, (wire.window_bits + slowest_rate - 1) // slowest_rate)
-    rows = 2 * history * family.arity
+    rows = 2 * history * wire.span * family.arity
     generator = torch.Generator().manual_seed(0)
     return torch.randn(rows, columns, generator=generator, dtype=torch.float32) * 0.02
 
