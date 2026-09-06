@@ -1,7 +1,10 @@
 # #87 paired quantized validation plan
 
-Prepared before serving; no result is claimed. The policy implementation is
-recorded in `docs/results/pq87_paired_policy_2026-09-04.md`.
+Initial plan prepared before serving. The completed
+[#208 result](../results/pq208_paired_quantized_validation_2026-09-05.md)
+records an accepted screen, a refused held-out population and two passing
+small PPL screens. The policy implementation is recorded in
+`docs/results/pq87_paired_policy_2026-09-04.md`.
 
 The committed `experiments/pq87_validation_manifest.json` selects Qwen3-0.6B:
 shared BF16 source from the #113 input freeze and the existing native NVFP4

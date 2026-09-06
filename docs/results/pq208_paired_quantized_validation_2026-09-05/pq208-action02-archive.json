@@ -1,0 +1,75 @@
+{
+  "source": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-02",
+  "archive": "/mnt/shared/tessera-runs/measurement-208-183-2026-09-05/run208-02",
+  "top_level_evidence": [
+    {
+      "path": "campaign.json",
+      "bytes": 20822,
+      "sha256": "d550bb6f795a34c054c147123d8200a000295791119ccd8ba39bfbc78612f755"
+    },
+    {
+      "path": "container.cid",
+      "bytes": 64,
+      "sha256": "318d5ec3d8c395ea4e345924e023789ee6029bd23d1661be7fee5bf7d895c8bd"
+    },
+    {
+      "path": "container.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "heldout-contract.json",
+      "bytes": 578,
+      "sha256": "53bf7abe1107f314633501a79293abf14062965d1ac38ebe1ceead89888913e2"
+    },
+    {
+      "path": "image.json",
+      "bytes": 7491,
+      "sha256": "3f92e831b8d51d8c394ddb056c9ecd180a03050094c7ad5de23c86ede57ebf64"
+    },
+    {
+      "path": "inside-status.json",
+      "bytes": 730,
+      "sha256": "2bfe6f81d1e1edb7e3f8ef4b4ccf875bbd94eb61f6644183309e9e2634eab663"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 1868,
+      "sha256": "8098f282d1fb7d790636c2710064c043e4e89b258a786075d1ecf4e35f9d4ef6"
+    },
+    {
+      "path": "prelaunch-candidate.json",
+      "bytes": 782,
+      "sha256": "5eef4d3ea16f6cd57bd0acf4a9a6a51461b8ef1a648cfa2e20a7d91c7b3d126a"
+    },
+    {
+      "path": "prelaunch-control.json",
+      "bytes": 784,
+      "sha256": "d94cf5bf6979ed99e71938004209a1771ad14e2596645f04099c10a6696125ec"
+    },
+    {
+      "path": "process-io.jsonl",
+      "bytes": 8763,
+      "sha256": "e7f7cae50cd16cda7904cc65a23766f233c3a18efc75dd7846574667d626cb5e"
+    },
+    {
+      "path": "screen-contract.json",
+      "bytes": 529,
+      "sha256": "b44061f91be47e363912285e775d47045f4e124afbe383e2a15be3f3f0ee4d44"
+    },
+    {
+      "path": "server-control.log",
+      "bytes": 18278,
+      "sha256": "f9a210f67d14ae9ce6d34e6c1f2e79f3a7b6c41eabbe0f41acc0d24ccefa0674"
+    },
+    {
+      "path": "telemetry.jsonl",
+      "bytes": 7194976,
+      "sha256": "2b09eeca234b717f631ba3394923e761bd394535237446524753afd24b7fac2a"
+    }
+  ],
+  "excluded_ephemeral": [
+    "vllm-cache/modelinfos/vllm-model_executor-models-qwen3-Qwen3ForCausalLM.json (root-owned unreadable cache; retained locally)",
+    "tmp/* Unix domain sockets (not regular evidence files; retained locally)"
+  ]
+}

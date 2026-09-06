@@ -1,0 +1,1766 @@
+{
+  "schema": "prismaquant.boundary_campaign_arm/1",
+  "measurement": {
+    "schema": "prismaquant.boundary_control/2",
+    "scorer": "prismaquant.boundary_close_count/1",
+    "request_schema": "prismaquant.boundary_chat_request/1",
+    "response_schema": "prismaquant.boundary_chat_response/1",
+    "promptset_sha256": "ae93134e19de1991daf6b89ca98cf6718ca55258feb5a2212487435a6975a4b9",
+    "contract": {
+      "prompts": [
+        {
+          "text": "13×7",
+          "stratum": "numeric"
+        },
+        {
+          "text": "121÷11",
+          "stratum": "numeric"
+        },
+        {
+          "text": "What do bees collect from flowers?",
+          "stratum": "terse_qa"
+        },
+        {
+          "text": "How many minutes are there in three hours?",
+          "stratum": "numeric"
+        },
+        {
+          "text": "Name the largest planet in our Solar System.",
+          "stratum": "short_recall"
+        }
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "temperature": 1.0,
+      "initial_max_tokens": 64,
+      "max_steps": 11
+    },
+    "binding": {
+      "campaign_id": "run208-04",
+      "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+      "artifact_content": {
+        "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+        "weight_content_manifest": {
+          "schema": "prismaquant.weight_content_manifest/1",
+          "algorithm": "sha256",
+          "files": {
+            "model.safetensors": {
+              "bytes": 870290032,
+              "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+            }
+          }
+        }
+      },
+      "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+      "serve_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+      "host_boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "model_context_tokens": 4096,
+      "prompt_tokens": [
+        12,
+        14,
+        15,
+        17,
+        17
+      ],
+      "prompt_token_ids": [
+        [
+          151644,
+          872,
+          198,
+          16,
+          18,
+          17568,
+          22,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          16,
+          17,
+          16,
+          144422,
+          16,
+          16,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          3838,
+          653,
+          39458,
+          6530,
+          504,
+          19281,
+          30,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          4340,
+          1657,
+          4420,
+          525,
+          1052,
+          304,
+          2326,
+          4115,
+          30,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ],
+        [
+          151644,
+          872,
+          198,
+          675,
+          279,
+          7772,
+          11580,
+          304,
+          1039,
+          24446,
+          739,
+          13,
+          151645,
+          198,
+          151644,
+          77091,
+          198
+        ]
+      ],
+      "producer_source_sha256": "cf0cb565d6bc2235c3a7c4c469dbd1b3a27ad226fbe100e0ab914260fd9be726",
+      "paired_stack": {
+        "schema": "prismaquant.boundary_stack_binding/1",
+        "role": "candidate",
+        "contract": {
+          "schema": "prismaquant.boundary_stack_contract/1",
+          "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+          "roles": {
+            "bf16_control": {
+              "artifact_id": "24e9b66a00b4495068efc88c4450677912057b33b27caae40d6eaf909dca06bc",
+              "resident_extensions": [
+                "sampling.so"
+              ]
+            },
+            "candidate": {
+              "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+              "resident_extensions": [
+                "sampling.so",
+                "trtllm_utils.so"
+              ]
+            }
+          }
+        },
+        "manifest": {
+          "schema": "prismaquant.serve_manifest/1",
+          "created": "2026-09-06T02:38:13.476380Z",
+          "attestation_phase": "pre",
+          "source": "server",
+          "hostname": "sparky",
+          "host_identity": {
+            "hostname": "sparky",
+            "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+            "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+            "pid_namespace": "pid:[4026533041]"
+          },
+          "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+          "model": "/models/candidate",
+          "served_model_name": "run208-04",
+          "launch_argv": [
+            "/usr/bin/python3",
+            "/usr/local/bin/vllm",
+            "serve",
+            "/models/candidate",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "run208-04",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "launch_flags": [
+            "<path>",
+            "<path>",
+            "serve",
+            "<path>",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "run208-04",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "normalized_performance_argv": [
+            "/usr/bin/python3",
+            "/usr/local/bin/vllm",
+            "serve",
+            "<arm-model>",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8187",
+            "--served-model-name",
+            "<arm-model>",
+            "--dtype",
+            "bfloat16",
+            "--kv-cache-memory-bytes",
+            "1073741824",
+            "--max-model-len",
+            "4096",
+            "--max-num-seqs",
+            "1",
+            "--max-num-batched-tokens",
+            "512",
+            "--enforce-eager",
+            "--generation-config",
+            "vllm",
+            "--gpu-memory-utilization",
+            "0.2"
+          ],
+          "enforce_eager": true,
+          "quantization": null,
+          "kv_cache_dtype": null,
+          "speculative_config": null,
+          "package_versions": {
+            "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+            "torch": "2.13.0+cu130",
+            "flashinfer-python": "0.6.18",
+            "transformers": "5.16.1"
+          },
+          "resident_extensions": [
+            "sampling.so",
+            "trtllm_utils.so"
+          ],
+          "native_extension_status": [
+            {
+              "module_name_prefix": "tessera_nvfp4_",
+              "filename_glob": "tessera_nvfp4_*.so",
+              "match": "basename_fnmatch",
+              "resident": false,
+              "when_unavailable": {
+                "resident": {
+                  "status": "substituted",
+                  "decoder": "torch_materialize_stock"
+                },
+                "streamed": {
+                  "status": "refused",
+                  "decoder": null
+                }
+              }
+            },
+            {
+              "module_name_prefix": "tessera_window_gemv",
+              "filename_glob": "tessera_window_gemv*.so",
+              "match": "basename_fnmatch",
+              "resident": false,
+              "when_unavailable": {
+                "resident": {
+                  "status": "substituted",
+                  "decoder": "torch_window"
+                },
+                "streamed": {
+                  "status": "substituted",
+                  "decoder": "torch_window"
+                }
+              }
+            }
+          ],
+          "residency_readable": true,
+          "processes": [
+            {
+              "pid": 205,
+              "argv": [
+                "/usr/bin/python3",
+                "/usr/local/bin/vllm",
+                "serve",
+                "/models/candidate",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8187",
+                "--served-model-name",
+                "run208-04",
+                "--dtype",
+                "bfloat16",
+                "--kv-cache-memory-bytes",
+                "1073741824",
+                "--max-model-len",
+                "4096",
+                "--max-num-seqs",
+                "1",
+                "--max-num-batched-tokens",
+                "512",
+                "--enforce-eager",
+                "--generation-config",
+                "vllm",
+                "--gpu-memory-utilization",
+                "0.2"
+              ],
+              "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+              "start_time_ticks": 13310973,
+              "pid_namespace": "pid:[4026533041]",
+              "executable": "/usr/bin/python3.12",
+              "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+            },
+            {
+              "pid": 231,
+              "argv": [
+                "VLLM::EngineCore"
+              ],
+              "cmdline": "VLLM::EngineCore",
+              "start_time_ticks": 13312233,
+              "pid_namespace": "pid:[4026533041]",
+              "executable": "/usr/bin/python3.12",
+              "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+            }
+          ],
+          "server_process_environment": {
+            "schema": "prismaquant.server_process_environment/1",
+            "allowlist": [
+              "PYTHONPATH",
+              "PYTHONSAFEPATH",
+              "TESSERA_SERVE_MODE"
+            ],
+            "readable_pids": [
+              205,
+              231
+            ],
+            "unreadable_pids": [],
+            "consistent": true,
+            "values": {
+              "PYTHONSAFEPATH": "1"
+            },
+            "processes": [
+              {
+                "pid": 205,
+                "values": {
+                  "PYTHONSAFEPATH": "1"
+                },
+                "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+              },
+              {
+                "pid": 231,
+                "values": {
+                  "PYTHONSAFEPATH": "1"
+                },
+                "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+              }
+            ]
+          },
+          "pq_env": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "listener_census": {
+            "schema": "prismaquant.server_tcp_listeners/1",
+            "tables_readable": true,
+            "unreadable_pids": [],
+            "listeners": [
+              {
+                "family": "ipv4",
+                "address": "127.0.0.1",
+                "port": 8187,
+                "socket_inode": "31673055",
+                "pids": [
+                  205
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 33083,
+                "socket_inode": "31676899",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 41949,
+                "socket_inode": "31676926",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+                "port": 45933,
+                "socket_inode": "31676968",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 35281,
+                "socket_inode": "31676940",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 40455,
+                "socket_inode": "31676912",
+                "pids": [
+                  231
+                ]
+              },
+              {
+                "family": "ipv6",
+                "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+                "port": 45019,
+                "socket_inode": "31676954",
+                "pids": [
+                  231
+                ]
+              }
+            ]
+          },
+          "listener_binding": {
+            "schema": "prismaquant.server_listener_binding/1",
+            "base_url": "http://127.0.0.1:8187",
+            "launch_host": "127.0.0.1",
+            "launch_port": 8187,
+            "listeners": [
+              {
+                "family": "ipv4",
+                "address": "127.0.0.1",
+                "port": 8187,
+                "socket_inode": "31673055",
+                "pids": [
+                  205
+                ]
+              }
+            ]
+          },
+          "models_endpoint_binding": {
+            "schema": "prismaquant.server_models_endpoint_binding/1",
+            "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+            "response_object": "list",
+            "model_count": 1,
+            "model": {
+              "id": "run208-04",
+              "object": "model",
+              "owned_by": "vllm",
+              "root": "/models/candidate",
+              "max_model_len": 4096
+            }
+          },
+          "gpu_name": "NVIDIA GB10",
+          "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+          "driver_version": "595.84",
+          "compute_capability": [
+            12,
+            1
+          ],
+          "gpu_compute_capabilities": [
+            [
+              12,
+              1
+            ]
+          ],
+          "gpu_count": 1,
+          "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+          "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+          "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+        }
+      }
+    },
+    "role": "candidate",
+    "advisory_only": true,
+    "control_sha256": "5915a390f37687b3962478aa2501c88cf2980ec44fa07361d528d2c31a4c1f08",
+    "step": {
+      "max_tokens": 1024,
+      "endpoint": "/v1/chat/completions",
+      "outcomes": [
+        {
+          "prompt_index": 0,
+          "seed": 0,
+          "text": "<think>\nOkay, let's see. I need to calculate 13 multiplied by 7. Hmm, right? Let me start by recalling multiplication. 13 is the same as 10 plus 3, so maybe I can break it down into easier steps. If I multiply 10 by 7, that should give me 70, and then I have to do 3 times 7, which is 21. Then add those two results together: 70 plus 21 equals... 91. Let me check that again. 10 x 7 is 70, and 3 x 7 is 21. Yes, 70 + 21 is 91. Alternatively, if I just multiply 13 by 7 directly, I should get the same answer. Let me do that as well to confirm. 13 x 7. Well, 10 x 7 is 70, and 3 x 7 is 21, so again 91. Okay, that seems right. Maybe there's a way to multiply using distributive property? Let's try that again. So 13 x 7 = (10 + 3) x 7. Using FOIL, which is multiplying the two binomials. So 10 x 7 is 70, and 3 x 7 is 21. Yep, that gives me 91. I don't think I made any mistakes here. Both methods lead to 91. So the answer should be 91.\n</think>\n\nTo calculate $13 \\times 7$, we can break the multiplication into smaller steps for clarity:\n\n1. **Break 13 into 10 + 3**:  \n   $13 = 10 + 3$\n\n2. **Multiply 10 by 7**:  \n   $10 \\times 7 = 70$\n\n3. **Multiply 3 by 7**:  \n   $3 \\times 7 = 21$\n\n4. **Add the results**:  \n   $70 + 21 = 91$\n\nAlternatively, using the distributive property:\n$$\n13 \\times 7 = (10 + 3) \\times 7 = 10 \\times 7 + 3 \\times 7 = 70 + 21 = 91\n$$\n\n**Final Answer:**  \n$$\n13 \\times 7 = \\boxed{91}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 536,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 1,
+          "text": "<think>\nOkay, let's see. I need to calculate 13 multiplied by 7. Hmm, 13 times 7. Let me think. Well, 13 is the same as 10 plus 3. Maybe breaking it down would help. If I do 10 multiplied by 7 and then add 3 multiplied by 7, that should give me the total. \n\nSo, 10 multiplied by 7 is 70. Then 3 multiplied by 7 is 21. Adding those two together, 70 plus 21 equals 91. Wait, is that right? Let me check another way. Maybe multiplying 13 directly. 13 times 7... Hmm, 10 goes into 13 once and then 3. So, 13×7 is the same as 7×13. Let me do that multiplication. \n\nAlternatively, I can use the standard multiplication method. Let's align 13 and 7:\n\n```\n   13\n×    7\n------\n```\n\nStarting from the right, multiply 7 by 3, getting 21. Then carry over a 2. Then multiply 7 by 1 and add 2 (since 10 is carried over), which gives 10 + 2 = 12. Wait, that's 52? Wait, no, hold on. Wait, 10 is carried over, so 7*1 is 7 and plus 2 is 9? I think I'm mixing up the addition. Let me correct that. \n\nSo, 13 multiplied by 7. Let's write it correctly:\n\nFirst, multiply 7 by 3: 21. Write 1 and carry over 2. Then multiply 7 by 1 and add the carried over 2: 7 + 2 = 9. So, the result is 59? Wait, no, where did 59 come from? Because 13×7 is like 1×7 + 3×7, which is 7 + 21 = 28? That doesn't match. Wait, there's some confusion here.\n\nOh, because when you multiply 13×7, it's equal to 1×7 + 3×7, and 1×7 is 7, so 7 + 21 is 28? Or when you multiply 13×7 as 10×7 + 3×7 = 70 + 21 = 91? Which is what I had initially. But then when I thought of breaking into 10×7 + 3×7, that equals 91. So that seems correct. But then when I thought of writing the multiplication steps, I got confused. So maybe my initial calculation was wrong. Let me verify again.\n\nAlternatively, 13×7. Let me do 13×7. Multiply 13 by 7: 13×7. Let's do it on paper.\n\nFirst, multiply 7 by 3 to get 21. Write 1 and carry over 2. Then multiply 7 by 1 (the 10 from 13) and add the carried over 2, which is 7 + 2 = 9. So, the result is 59? But that conflicts with the other way, where it's 28. Wait, this is confusing. What's the correct result?\n\nWait, 13×7. Let me do 7×10 + 7×3. Yes, 70 + 21 = 91. So then why does the book say 59? No, maybe when I multiplied 13 times 7 as 10 times 7 plus 3 times 7, I forgot to consider the multiplication for 10. Wait, 10×7 is 70, yes. 3×7 is 21. 70 + 21 is 91. So that's correct. So where did 59 come from in my mental calculation? Probably a miscalculation.\n\nAlternatively, maybe I confused 13×7 as 1×7 + 3×7? But 1×7 is 7. 3×7 is 21. 7 + 21 is 28. But 13×7 is 91. So that's conflicting. There must be something wrong here.\n\nWait, perhaps I misread the multiplication. Maybe it's 13*7? Yes. Let me check with another method. Let's use the standard algorithm for 13*7:\n\nStep 1: Multiply 7 by 3. Multiply 7 by 3: 21.",
+          "response_mode": "content",
+          "finish_reason": "length",
+          "completion_tokens": 1024,
+          "score": {
+            "think_tag_count": 0,
+            "defects": [
+              "zero_tag",
+              "cap_truncation"
+            ]
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 2,
+          "text": "<think>\nOkay, let's see. The question is 13 multiplied by 7. Hmm, so I need to calculate 13 × 7. Let me think. First, I remember that when multiplying, you can break it down. 13 is the same as 10 + 3. So maybe I can do 10 × 7 and 3 × 7 separately and then add those results together.\n\nAlright, 10 × 7. Well, 10 times 7 equals 70. Let me confirm that. Yeah, if you think of 10 as 1 group and 7 more groups, it's the same as 70. Then, 3 × 7. That's a smaller number. 3 times 7. Let's do 3 times 7 again just to make sure. 3 × 7 equals 21. Okay, so that part is 21.\n\nNow, adding 70 and 21. Let me add those numbers. 70 + 21. Let's break it down. 70 + 20 is 90, and then add 1 more, so it's 91. So the total is 91. Is that right? Let me check another way. Maybe using another method. Wait, 7 times 13. Alternatively, could I do 13 × 7. Let me try multiplying 13 by 7 in another form. Since 13 is 7 + 6, 13 × 7 is 7 × 7 + 6 × 7. That would be 49 + 42. Wait, 49 plus 42. 49 + 40 is 89, plus 2 is 91. Yep, same result. So that's correct. So 91 is the answer. Let me just wrap it up to make sure I didn't make a mistake. So, 13 multiplied by 7 equals 91. Yes, I think that's the right answer.\n</think>\n\nTo solve $13 \\times 7$, we can break the multiplication into simpler steps for clarity:\n\n1. Recognize that $13 = 10 + 3$.  \n   This allows us to split the multiplication.\n\n2. Calculate the sum of $10 \\times 7 + 3 \\times 7$:\n   - $10 \\times 7 = 70$  \n   - $3 \\times 7 = 21$  \n   - Add these results: $70 + 21 = 91$\n\n3. Alternatively, another way is to note that $13 \\times 7 = (7 + 6) \\times 7 = 49 + 42 = 91$.\n\nFinal result:  \n**91**\n\n$$\n\\boxed{91}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 621,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 3,
+          "text": "<think>\nOkay, let's see, the question is 13 multiplied by 7. Hmm, 13 is a two-digit number, and 7 is a single-digit number. Multiplying two numbers, right? So, I need to do 13 × 7. Let me think. Maybe break it down? Like 10 × 7 is 70, and then 3 × 7 is 21. Adding those together would be 70 + 21 equals 91. Wait, is that correct? Let me check another way. Maybe converting 13 to 12 + 1 or something. 12 × 7 is 84, plus 1 × 7 is 7, so 84 + 7 is 91. Yeah, same result. Let me do the multiplication step-by-step. 13 × 7. Multiply 7 by 3 first, which is 21, then 7 multiplied by 10, which is 70. Add them together? 21 + 70 equals 91. That seems right. No, maybe I should use the standard multiplication method for 13 × 7. Let's see, 13 × 7. Put it vertically:\n\n   13\n   × 7\n   -----\n     91\n\nWait, that seems too easy. Because 13 × 7 is 91, right? So, the answer is 91. But let me confirm again. Maybe I can use another approach. Let's think in terms of factors. 13 is prime, so maybe we can't simplify further? 12 is 2×6, 13 is prime. 13 × 7? If I do 12 × 7 = 84 and 4 × 7 = 28, adding them gives 112? No, that doesn't make sense. Wait, no, that's not. Wait, 13 is 12 +1. So 12×7 is 84, and 1×7 is 7, so 84 + 7 is 91. Yes. So, 91 is correct. I think that's it. No mistakes here.\n\nWait, maybe I can check using a calculator? Well, if I don't have one, but I can try. Let me really think. 10 × 7 is 70, 3 × 7 is 21, 70 + 21 = 91. Yep. All the steps point to 91. So, I think 13 multiplied by 7 is 91. No, I don't think I made a mistake here. Maybe the answer is just 91.\n</think>\n\nTo solve $13 \\times 7$, we can break it down:\n\n$$\n13 \\times 7 = (10 + 3) \\times 7 = 10 \\times 7 + 3 \\times 7 = 70 + 21 = 91\n$$\n\nThus, the result is:\n\n$$\n\\boxed{91}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 682,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 4,
+          "text": "<think>\nOkay, so I need to calculate 13 multiplied by 7. Let me think... Hmm, 13 times 7... Let me get this straight. 10 times 7 is 70, and then 3 times 7 is 21. Adding those together... 70 plus 21... That should be 91. Wait, but maybe there's a better way to do this multiplication. Let me verify. If I split 13 into 10 plus 3, then 10 times 7 is 70, and 3 times 7 is 21. So 70 plus 21... 70 plus 20 is 90, plus 1 more is 91. Yep, that checks out. So 13 multiplied by 7 equals 91. I think that's it. No mistakes here? Let me try multiplying 13 by 7 in a different way. If I do 7 * 10, that's 70, then add 7 * 3, which is 21. 70 + 21... 70 + 20 = 90, plus 1 is 91. Yeah, same result. Okay, I'm confident now that 13 times 7 is indeed 91.\n</think>\n\nTo calculate $13 \\times 7$:\n\n1. Break down $13$ into $10 + 3$:\n   $$\n   13 \\times 7 = (10 + 3) \\times 7\n   $$\n\n2. Multiply each component:\n   $$\n   10 \\times 7 = 70 \\\\\n   3 \\times 7 = 21\n   $$\n\n3. Add the results:\n   $$\n   70 + 21 = 91\n   $$\n\n**Final Answer:** $13 \\times 7 = \\boxed{91}$.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 428,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 0,
+          "seed": 5,
+          "text": "<think>\nOkay, so I need to solve 13 multiplied by 7. Let me think. Hmm, multiplication... right, 13 times 7. Maybe I should break it down into smaller parts to make it easier. Like, 13 is 10 plus 3, right? So, if I do 10 multiplied by 7, that should be 70. Then I have to add 3 multiplied by 7. What's 3 times 7? That's 21. So 70 plus 21 equals... 91? Wait, is that correct? Let me check another way. Maybe do 7 times 13... That's the same as 7 times 10 plus 7 times 3, which is 70 plus 21 again. Yeah, same result. So 91. Let me also multiply 13 and 7 using a calculator. If I do 13 × 7, the result is indeed 91. Let me just make sure I didn't make any mistakes in the steps. Breaking it down into 10 + 3, multiplying each term separately, and adding gives 70 + 21. Yep, 91. So I think the answer is correct. 13×7 equals 91.\n</think>\n\nTo calculate $13 \\times 7$, we can break it down using the distributive property:\n\n$$\n13 \\times 7 = (10 + 3) \\times 7 = 10 \\times 7 + 3 \\times 7 = 70 + 21 = 91\n$$\n\nAnother way to verify is using the standard multiplication:\n\n$$\n\\begin{array}{l}\n\\quad 13 \\\\\n\\times \\quad 7 \\\\\n\\hline\n91 \\\\\n\\end{array}\n$$\n\nThus, the result is:\n\n$$\n\\boxed{91}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 416,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 0,
+          "text": "<think>\nOkay, let's see, I need to solve 121 divided by 11. Hmm, 121 divided by 11... Let me think. First, maybe I can simplify this fraction. Is 121 a multiple of 11? Let me check. 11 times 10 is 110, and 11 times 11 is 121. Yeah, exactly! So 121 divided by 11 is just 11. But wait, maybe I should do the division step by step to be sure. Let's divide 121 by 11.\n\nAnother way to think about it: 11 goes into 12 once, with a remainder of 1. Then, after the decimal, add a zero, making it 12. 11 goes into 12 once again, and that’s 1. Multiply 11 by 1 to get 11, subtract that from 12, and you get 1. So far, we have 11.0... Then, bringing down a zero makes it 12 again. Hmm, so the decimal repeats, which would be 11.0... So yeah, the result is 11. Therefore, 121 divided by 11 is 11. \n\nI guess that's it. I don't see any mistakes here. Both methods confirm that 121 divided by 11 equals 11. So the answer should be 11.\n</think>\n\nTo solve the division $ \\frac{121}{11} $:\n\n1. **Simplify the fraction**:  \n   121 is divisible by 11, and $ 11 \\times 11 = 121 $.  \n   Therefore, $ \\frac{121}{11} = 11 $.\n\n2. **Verification**:  \n   Performing the division step-by-step confirms the result:\n   - $ 121 \\div 11 = 11 $.\n\nThus, the final result is:\n\n$$\n\\boxed{11}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 458,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 1,
+          "text": "<think>\nOkay, let's try to solve 121 divided by 11. Hmm, 121 divided by 11. Well, 11 times 10 is 110, so if I subtract 110 from 121, that leaves 11. So that means 121 divided by 11 is 10 with some remainder of 1. But wait, maybe I should do it properly to make sure.\n\nAlternatively, maybe I can simplify the fraction. Let's see, 121 is 11 times 11. Because 11 times 11 equals 121. Oh, so 121 divided by 11 is 11. So that would be 11. But why did I think 121 divided by 11 is 10? Because 10 times 11 is 110, but that's a different problem. So the correct quotient is 11. Because 11 multiplied by 11 is 121.\n\nLet me verify with another method. If I take 121 and divide by 11, I can break down 121 into smaller parts. For example, 11 goes into 12 once, with a remainder of 1. Then, for the next digit, I have 1 and 1, so 12 divided by 11. So that would be 1 and a remainder of 1. Then I do the same again. Adding those together, I get 10 and a remainder of 1. Therefore, 121 divided by 11 is 10 with a remainder of 1. But then why do I think that it's 11?\n\nWait, maybe I made a mistake here. If 121 divided by 11 is 10 with remainder 1, that would be 10.1. But 10.1 times 11 is 111.1, which isn't 121. So I must have done something wrong. Let me check again.\n\nOriginal problem: 121 divided by 11. Let's divide both numbers by 11. So 121 divided by 11. Since 11 times 10 is 110, as I thought before, and 121 - 110 is 11, so that's 10 and 11 divided by 11. So that would be 10 with 1 leftover. But then why does 12 divided by 11 give a decimal?\n\nWait, so maybe I confused myself. Let me think again. 11 x 10 = 110, and 121 - 110 = 11. So adding the quotient and the leftover, it's 10 and 11. So 121/11 is 10. So why does it come out with a remainder? Maybe because I should be dividing 121 by 11 both times?\n\nAlternatively, maybe I'm making a mistake in the calculation. Let me use another approach. Let's write 121 ÷ 11. Since 11 x 10 = 110, and 121 - 110 = 11, so total is 10 + 11/11. Simplifying 11/11, that's 1. So 10 + 1 = 11. Oh! So this is correct. So even though my first step was 10 with remainder 1, the correct answer is 11. So maybe I confused dividing the remainder with adding it to the quotient.\n\nSo, the correct answer is 11. That's because 11 multiplied by 11 equals 121. So yes, 121 divided by 11 is 11. Either way, simplifying both numbers gives a quotient of 11, so that's correct.\n</think>\n\nTo solve the division problem $ \\frac{121}{11} $, we note that 121 can be expressed as $ 11 \\times 11 $:\n\n$$\n121 \\div 11 = 11\n$$\n\nThis result is derived because $ 11 \\times 11 = 121 $, which means when you divide 121 by 11, the quotient is exactly 11 with no remainder. \n\nAnother way to verify is by breaking down the division step-by-step:\n- $ 121 \\div 11 = 10 \\text{ with a remainder of } 1 $, but since",
+          "response_mode": "content",
+          "finish_reason": "length",
+          "completion_tokens": 1024,
+          "score": {
+            "think_tag_count": 1,
+            "defects": [
+              "cap_truncation"
+            ]
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 2,
+          "text": "<think>\nOkay, let's see. I need to divide 121 by 11. Hmm, 121 divided by 11. But wait, 11 is a small number, and 121 is a multiple of 11. Let me check: 11 times 10 is 110, and 11 times 11 is 121. So, 121 divided by 11 should be 11. But wait, maybe I should verify this calculation step by step to make sure I don't make a mistake.\n\nLet me write it out: 121 ÷ 11. Since 121 is 11×11, the division should just be 11. So, 121 divided by 11 equals 11. But just to be thorough, maybe I can do it using another method. For example, if I consider dividing 121 by 11, which is the same as dividing 11 by 11, so 121 divided by 11 is 11. Yeah, that seems right.\n\nAlternatively, if I did long division initially, maybe I should try that. Let's try dividing 121 by 11.\n\nDividing 121 by 11:\n\n11 goes into 12 once, remainder 1. Bring down the 1 to make 11. Then, 11 goes into 11 once, remainder 0. So that's two numbers in a row: 11. So the result is 11 with no remainder. So yeah, that confirms it again.\n\nIs there any chance that 121 could be divided differently? Wait, 11 times 11 is indeed 121, so no, that's the correct result. Maybe if I made an error in multiplying or adding? Let me check again. 11 × 10 = 110, 11 × 1 = 11, so total 110 + 11 = 121. Yep, that's correct.\n\nHmm, seems straightforward. Maybe I should also consider if there's a remainder. If not, the problem is solved. Since both numbers are divisible, no remainder. So the answer is 11. Alright, I think that's it.\n</think>\n\nTo solve the division problem $ 121 \\div 11 $, we recognize that $ 11 \\times 11 = 121 $, indicating that 121 is a multiple of 11.\n\nThis means:\n\n$$\n121 \\div 11 = 11\n$$\n\nTo confirm, we can perform the division step by step:\n\n1. Divide $ 121 \\div 11 $. Since 11 is less than 121, we start with the first digit.\n2. $ 11 $ fits into $ 12 $ once, leaving a remainder of $ 1 $.\n3. Bring down the next digit $ 1 $, making $ 11 $. Adding again gives us $ 11 $, which is a complete quotient.\n4. The result, with no remainder, is:\n\n$$\n121 \\div 11 = \\boxed{11}\n$$\n\nTherefore, the final answer is correct.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 723,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 3,
+          "text": "<think>\nOkay, let's see. I need to divide 121 by 11. Hmm, how can I do that? Maybe I should break it down? Let me think. 11 goes into 12 once with a remainder. So, 11 goes into 12 once, and then the remainder is 1. Then, the next part is 10 divided by 11? Wait, but that's less than 11. So maybe I should write that as 1 and then carry over to the next digit?\n\nWait, but maybe there's a simpler way. Let me try performing the division step by step. Let's consider dividing 121 by 11. Let's see:\n\n11 goes into 12 once. So, that's 1. Then, subtract 11 from 12, which leaves 1. But then, there's another digit? Let me count. It is two digits: 12 and 1. Wait, maybe I should consider dividing 121 by 11 as 121 divided by 11. So, 11 × 11 is 121. So, 121 ÷ 11 is 11. Wait, that can't be right? Because 121 ÷ 11 equals 11. Let me check that again. Let's do it another way. If 11 × 11 is 121, then 121 ÷ 11 is indeed 11. Therefore, the answer is 11.\n\nBut maybe I should verify it without just multiplying? Let me divide 121 by 11. Let's break it into smaller parts. 121 divided by 11. Let's see:\n\nFirst, 11 × 10 is 110. Then, 121 minus 110 is 11. So, that leaves a remainder of 11. Then, since 11 is exactly equal to the divisor, that means the quotient is 10 with a remainder of 11. Wait, that contradicts the previous conclusion. So, either I did something wrong here or there's an understanding mistake.\n\nWait, no, because 11 × 12 is 132. Which is greater than 121. Therefore, the division is not exact. So, this contradicts my initial thought. What's going on here? Let me think again. Maybe breaking down 121 into 11 multiplied by 11 is correct. So, 11 × 11 equals 121. Therefore, 121 ÷ 11 is 11. But how can subtracting gives me an extra 11? That must mean I made an error in my second calculation.\n\nWait, let me try again. Let me use another method. Suppose I want to divide 121 by 11. Let me divide 121 by 11. First, 11 goes into 12 once, as before. Subtract 11 from 12, we get 1. Now, we bring down the next digit 1, making it 11. Now, 11 divided by 11 is 1, so the quotient is 11 at that step. Then, subtract 11 again. Wait, so actually, there's another 11, but that would make the total quotient 11 with a remainder. But that contradicts the multiplication. Therefore, there must be something wrong here.\n\nHold on. If I have 121 divided by 11, and I multiply 11 times 11, I get 121. Therefore, the result must be exactly 11. But in my division, when I subtract, I get a remainder. So, either I made a mistake in my calculation or there's another misunderstanding. Let me check with actual numbers.\n\nLet me write it out:\n\n121 ÷ 11.\n\nStart with the first digit: 1. But 11 is too small, so I have to consider 12 ÷ 11. That's 1 with a remainder. Then, write 1 and bring down the next 1, making 11. Then divide 11 by 11, which is 1. So, the quotient is 11. Then, subtract 11 from 12, so the remainder is 1. However, in multiplication, 11 × 11 is 121. Therefore, there's a discrepancy here. So, where is the mistake?\n\nWait, the division algorithm says that when you divide 121 by 11, you get a quotient of",
+          "response_mode": "content",
+          "finish_reason": "length",
+          "completion_tokens": 1024,
+          "score": {
+            "think_tag_count": 0,
+            "defects": [
+              "zero_tag",
+              "cap_truncation"
+            ]
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 4,
+          "text": "<think>\nOkay, so I need to divide 121 by 11. Let me think. First, maybe I can simplify this fraction. 121 divided by 11... Hmm, 121 is a multiple of 11 because 11 times 11 is 121. Yeah, so 121 divided by 11 is just 11. Let me check. If I do the division, 11 goes into 12 once, with a remainder of 1, so 121 divided by 11 is 11 with a remainder of 1. But that doesn't seem right because 11*11 is 121, so there should be no remainder. I must have messed up something here. Let me try doing it again. Let me divide 121 by 11. Let's break it down. 11 into 121. 11 goes into 12 once. Multiply 11 by 1 gives 11. Subtract 11 from 12, which leaves a remainder of 1. Now bring down the 1 to make it 11 again. Now, 11 into 11 is 1, so multiply 11 by 1 and add that to the remainder, which gets zero. So altogether, the division is 11 with a remainder of 1. But that seems conflicting because 121 is exactly 11*11. Maybe I made a mistake in arithmetic here. Wait, 11*11 is indeed 121. Let me confirm with another method. Let's multiply 11 by 10, which is 110, and add 11, which gives 121. So 11*10 + 11 = 121. Therefore, 121 divided by 11 is 10. So there's a remainder of 1? No, wait, that doesn't make sense. If I divide 121 by 11, the result should not have a remainder 1. Let me try using decimal division. Let me divide 121 by 11. Put it as 1.21 ÷ 1.1. Let me see how that works. 1.1 goes into 1.2 once. Multiply 1.1*1 = 1.1. Subtract 1.1 from 1.2 gives 0.1. Bring down the next digit, which is 1, making 1.1 again. This repeats. So the division would be 10 with a remainder of 1, but that contradicts the fact that 121 is exactly divisible by 11. Either there's a miscalculation here, or maybe I'm misunderstanding the problem. Wait, perhaps the question is not 121 divided by 11, but 121 divided by 11 as a decimal? Let me check with actual calculation. 121 ÷ 11. Let's compute this on paper. 11 goes into 12 once. Then 12 - 11 is 1. Bring down 1 to make it 11 again. 11 goes into 11 once. So far, 11. Bring down the 1, making it 11 again. This continues. So the decimal is 10. Something truncated? Wait, if we're doing 121 ÷ 11, it's 11, because 11*11 is 121. But if I approach it as division, not decimal approximation, it's 11. But when I subtract 11 from 121, I get 1. That suggests there's a remainder. Wait, no, 121 minus 11*11 is zero, so there's no remainder. But how does writing the division know that? In division, you divide the numerator by the denominator in whole numbers, so if 121 is divisible by 11, the result is 11, with no remainder. But when I did the decimal division, I was getting 10.1... That must have been a mistake. Let me try again. 121 divided by 11. Let's do it step by step. 11 into 121. First, 1.1*1 = 1.1. Subtract 1.1 from 12, which gives 11. Then we have 1 remaining. Bring down the next 1? Wait, actually, when dividing, after the decimal point, after the first 1 and 1, we have 11 again. So this",
+          "response_mode": "content",
+          "finish_reason": "length",
+          "completion_tokens": 1024,
+          "score": {
+            "think_tag_count": 0,
+            "defects": [
+              "zero_tag",
+              "cap_truncation"
+            ]
+          }
+        },
+        {
+          "prompt_index": 1,
+          "seed": 5,
+          "text": "<think>\nOkay, let's see. The problem is 121 divided by 11. Hmm, how do I approach this? Maybe I can simplify the fraction before I divide. Let me think. 121 is the numerator and 11 is the denominator. If I can divide 121 by 11, it might be easier. Wait, 11 multiplied by 11 is 121. Yes, because 11 times 10 is 110, and 11 added to that is 121. So 11 times 11 equals 121. That makes sense. So 121 divided by 11 is 11. So the answer should be 11. Let me double-check that. If I take 121 and divide it by 11, the result should indeed be 11. Yeah, I think that's right. No mistakes here. Alright, I can write 11 as the result.\n</think>\n\nTo solve the division problem $ \\frac{121}{11} $, we notice that 11 is a factor of 121. Specifically, $ 11 \\times 11 = 121 $. This implies:\n\n$$\n\\frac{121}{11} = 11\n$$\n\nThus, the result is:\n\n$$\n\\boxed{11}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 307,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 0,
+          "text": "<think>\nOkay, the user is asking what bees collect from flowers. Let me think. Bees collect nectar, right? So nectar is what they use for energy. But wait, maybe they also collect other things like pollen or flowers in a different part. Some tourists might realize they also collect pollen, but I don't think that's the main part. Let me check some external sources. Oh, yeah, according to studies, some honeybees gather nectar and pollen at different times. But the core answer is nectar. Should I mention pollen as well? I think the difference is that nectar is from the rose and some flowers, while pollen is from different flowers. Hmm, maybe mention both but keep it simple. Also, maybe note that bees use honey as a key part. I need to make sure the answer is clear and covers the main point.\n</think>\n\nBees collect **nectar** from flowers. Nectar is the primary energy source they use, which they transfer to honey when they collect it. While some bees also collect **pollen** from flowers, this is a different substance and is not the main energy source. Flowers in the bees' habitat often have both nectar and pollen, and most bees would select the flower that has the most nectar for the best energy.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 268,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 1,
+          "text": "<think>\nOkay, the user is asking what bees collect from flowers. Let me start by recalling what I know. Bees are renowned for gathering nectar, which is a sweet substance from flowers. It's a big productivity source for them. But I need to make sure I explain that there's also other things they collect, like pollen, which is more on the other side of the tree. Wait, some people think pollen is better. Maybe I should clarify that nectar is the main benefit, but pollen relates to other parts.\n\nFirst, I should mention nectar, because that's their main food source. People often confuse it with pollen, but it's a different aspect. I should explain their way of gathering it, such as gathering on the flower's surface. Also, maybe I can point out that bees use specific methods like using certain bees to collect nectar from different flowers. For example, the eusocial bees rely on other bees to collect. That's an important detail.\n\nI should describe their body structure, like the mouthparts that extract the nectar. And maybe the temperature of the nectar, as they use any part of their body to do so. Also, mention that not all flowers are nectar, and certain flowers are known during the day or night. It's bedtime, which is different from daytime.\n\nWait, I need to check if there are any other elements or information I might be missing. For example, after getting the nectar, do they make it to the hive? Yes, that's a positive aspect. But I should also note that some flowers provide additional proteins in the pollen, which can be useful for them. \n\nI should also use examples, like a specific flower, maybe poppies, which are known for their nectar. But that might be too specific. Maybe a general example. Also, maybe mention that some plants have thistle flowers, which are not sweet. That's another point to include.\n\nIs there a cultural or historical context related to this? Maybe not necessary, as the question is straightforward. The user might just want a concise answer on what they collect, but I should make sure to cover both nectar and pollen, perhaps with a brief explanation of their use in different kinds of flowers.\n</think>\n\nBees collect nectar from flowers, which serves as a primary food source for their culture. Nectar is the key sugar substance they extract from flowers, leading to their colony and placing them in the process. While bees do also collect pollen – a doubleigest impurity in honey – pollen is associated more with the leaf surfaces and portioned flowers.\n\nPeople sometimes mistakenly associate nectar to pollen, but this is incorrect. The main focus is on nectar, which is vital for the colony, especially during evaporation and flight times at night. For instance, certain flowers produce nectar during the day or at night, and the bees use their specialized organs to do so. \n\nAlso, the process leads to exudation and the eventual formation of honey from the nectar's sugar content. Some plants may provide additional proteins in the pollen, making the processing brighter and offering a blend of taste, including a healthier option with pollen.\n\nAs for the tools used, the bees use oral structures to draw the nectar, and other methods (like walking the flower's surface or leaving the pollen on petals) are also employed. The combination is highly productive and a fundamental aspect of bee society for sustenance.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 703,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 2,
+          "text": "<think>\nOkay, so I'm curious about what bees collect from flowers. Let me think. I know that bees are pollinators, and they need to gather pollen from flowers to reproduce. But how exactly do they do that? \n\nHmm, I think they collect pollen using their hairy bodies, right? It sounds like the sweat on their skin? Or maybe the nectar they collect? I remember some tips from previous knowledge. For example, when they sting flowers, they produce honey, which is a sticky substance that can carry pollen. \n\nWait, but the question is specifically about what they collect from flowers. So maybe the pollen is their main focus. But why the confusion between nectar and pollen? I think both are present in flowers, but the pollen comes from the female part, pollen sac, and nectar from the male part. So they collect the pollen to transfer to other flowers, pollinating them. But maybe the answer is that they collect pollen, which is the sticky substance they use to pollinate. \n\nI should verify if there's any other detail I'm missing. Maybe their wings have a special structure? Or do they carry other things like honey? But the question is about what they collect. So the main point is that they collect pollen to transfer to other flowers. I think that's accurate. They don't carry the nectar; the pollen is the primary substance they collect. Yeah, I'm confident now.\n</think>\n\nBees collect pollen from flowers to transfer it to other flowers during their pollination process. This pollen is primarily found in the female flowers (the \"peach\" or \"peachbush\" part) of the plant, and it is carried by the bees' collecting apparatus. Additionally, bees collect nectar, which is a sticky substance that they use to create honey, which helps store the pollen and nectar. The bees use their bodies to extract the nectar and pollen, with their hairy bodies (pollination hairs) playing a key role in the process. \n\nIn summary, bees collect **pollen** from flowers, which they use to further pollinate other flowers, and **nectar** to create food sources. The process is a classic example of how insects use their organs to interact with the environment for survival and reproduction.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 465,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 3,
+          "text": "<think>\nOkay, so the question is asking what bees collect from flowers. Let me think. I know that bees can be collecting pollen from flowers. But what exactly do they collect? The pollen is from the flowers, but I should make sure. Do they collect anything else? Maybe not. Wait, maybe the answer includes more than just the pollen. Like maybe honeycomb or some other stuff. Wait, the answer should be simple. The answer is pollen. Or maybe honey is different. Let me check. Yes, pollen is the stuff that bees collect from the flowers. To get honey, they need to process the pollen. So the answer is pollination, but in simpler terms, it's pollen. I think that's it.\n</think>\n\nBees collect **pollen** from flowers, which is the essential component for producing honey. The process involves gathering the pollen and using it to build honeycombs.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 186,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 4,
+          "text": "<think>\nOkay, the user is asking what bees collect from flowers. Let me think about this. Bees, especially hymenoptera like pollen-tracting bees (st) and syrphids (k), collecting nectar from flowers. That's a basic question, but maybe there's more to it. I should mention what they collect, which is nectar, and the purpose, which is to pass it to others. Also, include the bee's special part, which is the pollen tube. Then, mention serophagus and digestive system, and maybe parts they can't pollinate, like the staminate, or how they pass pollen through comb (frayout). Add focus on their role as pollinators. Make sure to explain nectar, pollen, and terroir, but keep it simple without complex terms. Check for accuracy here, perhaps clarify what terroir refers to if needed. That's it.\n</think>\n\nBees, particularly hymenoptera like **hymenoptera** (such as syrpingens or sponglys) and **pollinators**, collect **nectar** from flowers. Their primary task is to **pass** the nectar to others, which is vital for pollination. Here's how they do it:\n\n1. **Nectar Collection**: Bees collect liquid from flowers, which is sweet and repelled by ants. This nectar is used to **transfer** to others, such as **pollination** of nearby flowers.\n\n2. **Majestic Pollination System**: \n   - The **pollen tube** (a tubular part of the bee's body) carries **pollen** from the stigma of a flower to the **stamaters** (beats of the male tube) to **prodigate** to other flowers.\n   - The **hand** (webbed part) transfers the pollen from the **stamaters** to the **stigmas** of other flowers.\n\n3. **Role of the Terroir**: \n   - The **terroir** (a term like floral density or region) affects the capacity of a flower to produce nectar or the quality of the pollen berries. This broader context makes what flowers produce so important to the bee's actions.\n\nIn conclusion, bees get nectar, use their tube to transfer pollen, and their actions help pollinate flowers, sharing the flower's resources.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 499,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 2,
+          "seed": 5,
+          "text": "<think>\nOkay, I need to figure out what bees collect from flowers. Let me think. I know that some flowers produce nectar, which is a sweet compound. Right, nectar is a sticky substance that bees use to navigate and foraging. But I should make sure to explain that it's from the flowers, not the pollen. Wait, maybe mosquitoes also collect nectar. Hmm, but the question specifically refers to flowers. So I should mention that nectar is what bees collect from flowers, but I should clarify that pollen is another compound they use. Then, I can add that pollen is more complicated and also vibrate if it's a honeyed flower. But I need to keep it concise and accurate. Let me check if there's any other information I might be missing. Oh, I think that's it. Just a simple explanation.\n</think>\n\nBees collect **nectar** from flowers, which is a sweet, sticky substance produced by the flowers. Nectar helps them navigate by vibrating the air and provides energy for their flight. While pollen is another compound, it is also used for food and foraging. In some flowers, ornamental (honeyed) blossoms may emit a humming sound when pollinated, a phenomenon known as \"honeybuzzing.\"",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 262,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 0,
+          "text": "<think>\nOkay, so I need to figure out how many minutes are in three hours. Let me think. First, I remember that hours are broken down into minutes. So one hour has 60 minutes, right? So if I have three hours, that would be 60 minutes multiplied by 3. Let me write that down.\n\nSo, 60 minutes/hour * 3 hours = ??? minutes. Let me do that multiplication. 60*3 is 180. So that would mean there are 180 minutes in three hours.\n\nWait, let me check this again. If I have three hours, each hour is 60 minutes, then multiplying gives 60*3. Yeah, 60*1 is 60, so 60*2 is 120, 60*3 is 180. Yep, that seems right. \n\nIs there another way to verify this? Maybe convert hours to seconds first? But that seems more complicated. If I did that, 60 minutes per hour is 60*60 seconds, which is 3600 seconds. Then multiply by three hours. Wait, no, that's incorrect. Because 3 hours is 3*60 minutes, not hours. So 3*60*60 seconds? That would be 3*60*60, which is 3*3600 = 10800 seconds. But minutes aren't in seconds, so maybe this approach isn't helpful. I think the initial method is better.\n\nAlternatively, maybe break down the three hours into minutes. Since each hour is 60 minutes, multiplying 3 hours by 60 minutes gives 180 minutes. Yep, that's the same number. So, 180 minutes in three hours. \n\nI think that's correct. I don't see any mistakes in my reasoning. Maybe if I have, say, one hour is 60 minutes, three hours would be 2 hours and a half minutes, but that seems more confusing. Wait, that's breaking down into seconds. Wait, no. If three hours is 3*60 minutes, then 3*60 is 180. So yes, 180 minutes. If you instead thought of three hours being 3*3600 seconds, that would be 10800 seconds, which is a lot of minutes. But in minutes, it's 180. So yeah, that makes sense. \n\nNo, I think I'm confident now. Therefore, the answer should be 180 minutes.\n</think>\n\nTo determine how many minutes are in three hours, we can break the problem down as follows:\n\n- **1 hour = 60 minutes**\n\n- So, for **three hours**, the total number of minutes is:\n\n$$\n60 \\, \\text{minutes/hour} \\times 3 \\, \\text{hours} = 180 \\, \\text{minutes}\n$$\n\n---\n\nTherefore, the number of minutes in three hours is:\n\n$$\n\\boxed{180} \\text{ minutes} \\quad \\text{or} \\quad \\boxed{180} \\text{ minutes} \\quad \\text{hours}.\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 699,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 1,
+          "text": "<think>\nOkay, so I need to figure out how many minutes are in three hours. Let me think. First, what is an hour? I think an hour is 60 minutes. So if I have three hours, that should be multiplying 3 by 60. Let me write that down: 3 times 60 equals... well, 60 times 3 is 180. Hmm, so does that mean there are 180 minutes in three hours? Let me double-check. If one hour is 60 minutes, then three hours would be 60 x 3. Yeah, 60 plus another 60 is 120, plus another 60 is 180. Okay, that seems right. Maybe I can think of it as breaking down the hours. For example, three hours can be considered as 30 minutes plus 30 minutes so far? No, wait, that would be 60 minutes each, so 3 hours would be 60 x 3. Let me visualize: first hour is 60 minutes, second hour is another 60, third hour another 60. So total is 60 + 60 + 60. That adds up to 180. Yes, I think that's correct. Maybe I should also convert the hours into seconds or something else to confirm. But converting hours to minutes would make it simpler. For example, 3 hours is 180 minutes. Alternatively, if I do 1 hour is 1 hour, which is 60 minutes, then 3 hours is 3 x 60 minutes. Yep, same result. I don't see any mistakes here. Maybe there's another way to calculate it. Suppose I take 60 minutes per hour and do 60 times 3. 60 times 2 is 120, and adding another 60 gives 180. All methods lead to 180. So, I'm confident that three hours have 180 minutes.\n</think>\n\nTo determine how many minutes are in three hours, we start by recognizing that **one hour equals 60 minutes**.\n\nThus, the total number of minutes in three hours can be calculated as:\n\n$$\n3 \\text{ hours} \\times 60 \\text{ minutes/hour} = 180 \\text{ minutes}\n$$\n\n$$\n\\boxed{180}\n$$\n\nIn conclusion, there are **180 minutes** in three hours.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 539,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 2,
+          "text": "<think>\nOkay, so the question is asking: How many minutes are there in three hours? Hmm, let's think. I know that one hour is 60 minutes, right? So if I have three hours, that would be 3 multiplied by 60. Let me do that math. 3 times 60... Well, 60 goes into 3... 3 times 60 is 180. So that should be 180 minutes. Wait, but maybe I should check if there's some trick here. Like, sometimes people confuse hours and minutes. For example, if you think three hours, but in minutes, maybe they make it 3*(60 minutes)? That's exactly the same as 180. Alternatively, maybe there's something about the countries or just school stuff. But I think no, the units are straightforward. So yeah, three hours is 180 minutes. I think that's correct.\n\n**Final Answer**\nThere are \\boxed{180} minutes in three hours.\n</think>\n\nTo determine how many minutes are in **three hours**, we can break the problem down step by step:\n\n- **One hour = 60 minutes**.\n- Therefore, **three hours = 3 times 60 minutes**.\n\n$$\n3 \\times 60 = 180\n$$\n\nThis means:\n\n$$\n\\text{There are } \\boxed{180} \\text{ minutes in three hours.}",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 313,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 3,
+          "text": "<think>\nOkay, so I need to figure out how many minutes are in three hours. Hmm, let's see. First, I know that hours are divided into minutes. So, if I have three hours, I should figure out how many minutes that is in total. \n\nWait, maybe I should start by converting the time from hours to minutes. Since one hour is 60 minutes, three hours would be... 60 minutes per hour. So, multiplying 60 by 3. Let me do that calculation: 60 multiplied by 3. Hmm, 60 times 3. 60 times 1 is 60, and then 60 times 2 is 120. So, 60 plus another 60 is 120? Or is it 60 + 60 + 60? Yes, that's right. So, 60 + 60 is 120, then 120 + 60 is 180. Wait, no, that can't be. Wait, no, maybe I'm making a mistake here. Let me think again. Three hours is 3 * 60 minutes. So, 3 * 60. Let me compute 3*60. 3*60 is 180. Yeah, so 180 minutes. So, there are 180 minutes in three hours.\n\nWait, is that right? Let me verify. If you have three hours, like three numbers of 60 minutes each. Let's say 60 minutes, then two more hours would be another 60, so total 120. When I have three hours, it's 180 minutes? Wait, but 120 minutes is two hours? Wait, no, 120 minutes is two hours? Let me check. 60 minutes is one hour, 120 minutes is two hours. So, yes, three hours is 180 minutes. Therefore, the answer should be 180. \n\nBut let me think again. Maybe there's another way to break it down. Let's say each hour is 60 minutes, so three hours would be 3 * 60 = 180. And that's the same as 3 multiplied by 60. So, yeah, 3 * 60 is definitely 180. \n\nIs there any chance I could be confusing hours with something else? For example, breaking down 3 hours into minutes, but maybe not. For instance, 3 hours divided by 60 minutes would be 0.5 hours, but that doesn't make sense. Hmm. No, maybe that's not the case. \n\nSo, I think I'm confident now. The total minutes in three hours are 180.\n</think>\n\nTo determine how many minutes are in three hours:\n\n1. Each hour is equal to 60 minutes.\n2. Therefore, for 3 hours, we calculate $ 3 \\times 60 $.\n\n   This results in $ 3 \\times 60 = 180 $.\n\nHence, there are:\n\n$$\n\\boxed{180} \\text{ minutes in three hours.}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 696,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 4,
+          "text": "<think>\nOkay, so the question is, how many minutes are there in three hours? Hmm, let me think. Maybe I should convert hours to minutes directly. Since one hour is 60 minutes, then three hours would be 60 minutes times three. Let me verify that. So, 60 multiplied by 3. Let's do the math: 60 times 3 equals... well, 60 times 2 is 120, plus another 60, so 120 + 60 = 180. So that should be 180 minutes. \n\nWait, but maybe I should check it another way. If I break down three hours into minutes, like three hours = 3*60 minutes. Yeah, that's the same as 180. No units here, right? So that makes sense. There's also the time factor, but since the answer is minutes, it should be straightforward. \n\nI don't think there's any trick to this question. All the steps lead to 180. Let me just think if there's a possibility of misunderstanding. For example, does the question mean in how many hours, or how many minutes? But no, it's a direct question. So, three hours translated into minutes is 180. \n\nYep, I think that's it. 180 minutes in three hours.\n</think>\n\nTo determine how many minutes are in three hours, we can convert hours to minutes directly.\n\nEach hour consists of 60 minutes, so:\n\n$$\n3 \\text{ hours} \\times 60 \\text{ minutes/hour} = 180 \\text{ minutes}\n$$\n\nThis result is consistent and logical, as there are no additional units or complexities involved. \n\nThus, the number of minutes in three hours is:\n\n$$\n\\boxed{180}\n$$",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 397,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 3,
+          "seed": 5,
+          "text": "<think>\nOkay, so the question is, how many minutes are there in three hours? Let me think. At first, I wonder, is three hours the same as three hours, regardless of any conversion? Maybe I need to break it down. Let me recall basic time conversion. \n\nI remember that 1 hour is 60 minutes, so if there's three hours, it should be 3 multiplied by 60. Let me do that calculation: 3 * 60 equals 180. So that would be 180 minutes. \n\nBut wait, maybe I should verify this another way? Like, if one hour makes 60 minutes, then adding three hours would actually be 60 minutes for the first hour plus 60 for the second hour plus another 60. So, yes, 60 + 60 + 60 equals 180. \n\nAlternatively, maybe I can think of it in terms of calendar days. Like, a whole day is 24 hours, but since the question is about three hours, it's not the day, just three of them. But since 1 hour is 60 minutes, 24 hours would be 24 * 60 minutes, and three hours would be 3 * 60, which again 180. \n\nHmm, that seems consistent. Let me check if there's any possible mistake here. For example, sometimes people confuse hours and minutes, but since the problem is in minutes, and three hours is already given in hours, converting to minutes is straightforward. \n\nAnother angle: Suppose instead of three hours, it's three seconds. But no, that's different. If it was three hours, then converting to minutes gives 180. Alternatively, if someone added three extra minutes, but that's irrelevant. \n\nWait, let me clarify. How is the time expressed? If it's three hours, yes. So 3 hours equals 3*60=180 minutes. So the answer is 180 minutes. \n\nI don't think I'm missing anything here. Maybe there's a trick question? No, the question seems straightforward. Maybe a student who thinks there's some mistake and calculates 3*60 differently? But no, 3*60 is 180. \n\nAlternatively, maybe in different units, but since hours are exactly 60 minutes, multiplying 3 hours by 60 gives minutes. \n\nYes, I think this is correct. There's no ambiguity here. So the answer must be 180 minutes.\n\n**Final Answer**\nThere are \\boxed{180} minutes in three hours.\n</think>\n\nTo determine how many minutes are in three hours, we first recognize that **one hour** is equal to **60 minutes**.\n\nThus, for three hours, the total number of minutes can be calculated as follows:\n\n$$\n3 \\text{ hours} \\times 60 \\text{ minutes/hour} = 180 \\text{ minutes}\n$$\n\nThis conversion aligns with basic time unit calculations. Each hour is defined as 60 minutes, and multiplying 3 hours by this unit yields **180 minutes**.\n\n---\n\n**Final Answer**\nThere are $\\boxed{180}$ minutes in three hours.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 694,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 0,
+          "text": "<think>\nOkay, so I need to name the largest planet in our solar system. Let me think. I remember that planets are spheres around stars, but the sun is a star, not a planet. The planets orbit the sun, right? So the largest one is Jupiter, I think. Wait, are there any smaller planets that are bigger than Jupiter?\n\nWait, Jupiter is the largest in the solar system. Let me confirm. Venus is the second largest, then Earth, Mars, and then Jupiter. No, getchar I think Jupiter is the largest one. Yes, I think that's right. So the answer should be Jupiter.\n</think>\n\nThe largest planet in our Solar System is **Jupiter**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 144,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 1,
+          "text": "<think>\nOkay, the user is asking which is the largest planet in our solar system. Let me think. I remember the major planets in order are Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune. But wait, some have different sizes.\n\nSo, Mercury is very close to Earth, and is the smallest. Venus is the next, then Earth. By orbital distances, they go up to about 295 million kilometers (about 5.1 seconds in space) for Earth, but I think that's Mars. So, Neptune is the largest. The distance is about 30.7 astronomical units, which is it's size compared to others. Let me verify. Yes, Jupiter is the largest in terms of volume after starting from the inner planets. So, Jupiter. The answer is Jupiter.\n</think>\n\nThe largest planet in our Solar System is Jupiter. It forms the largest known planet, larger in size than the other planets in the order: Mercury, Venus, Earth, Mars, and is home to the most massive moons.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 218,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 2,
+          "text": "<think>\nOkay, so the user is asking which planet is the largest in our Solar System. Let me think. First, I remember that our solar system has eight planets, right? Mercury, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto. But I have to mention Pluto, maybe? Or maybe they are considered part of the inner planets. Wait, the answer options probably don't include Pluto because it's called a dwarf planet.\n\nNow, the sizes of planets. I think Earth is the largest in the order of the planets. Let me compare sizes. Mercury is the smallest, then Earth. Jupiter is the second largest, right? Once you get to Saturn, it's more than that. So maybe Jupiter is the largest. But I thought Jupiter was big. Wait, do all planetary sizes matter? Earth is compared to the Moon, which is a larger body. So if the question is about public understanding, maybe the largest size is Jupiter.\n\nWait, but I'm a bit confused. Let me check my knowledge again. The order is Mercury, Venus, Earth, Mars, Jupiter, Saturn, and there's Neptune. So if we consider the largest, it's Jupiter. Saturn is the next largest. So the answer is Jupiter?\n</think>\n\nThe largest planet in our Solar System is **Jupiter**. It is known for its massive size and distinctive features, including the four moons and Jupiter's great moon, Ganymede. While it is renowned for its size and traits, Jupiter stands out as the most extensive planet in the system.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 319,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 3,
+          "text": "<think>\nOkay, so I need to name the largest planet in our Solar System. Let me think. I know that Earth is the fourth planet, but it's not a planet. The first planet is Mercury, the second is Venus, the third is Mars, then Jupiter, right? Oh, right! For the planets in order, they are Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune. Virial seems to be the largest... Wait, maybe not. Let me check. Oh, Jupiter is the largest among the gas giants in the Sun. So the answer is Jupiter.\n</think>\n\nThe largest planet in our Solar System is **Jupiter**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 140,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 4,
+          "text": "<think>\nOkay, the user is asking me to name the largest planet in our Solar System. Let me think. First, I need to recall the order of planets from the Sun. The outermost one would be Neptune. Wait, does that sound right? Neptune is the largest, right? I think so. But maybe there are others. Let me confirm. Oh, there's also Saturn. Wait, what's the order. The sequence is Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune. Yes, Neptune comes after Saturn. So the largest planet would be Neptune. That makes sense. I don't think the answer is Mars or something else. Yeah, I think Neptune is correct.\n</think>\n\nThe largest planet in our Solar System is **Neptune**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 162,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        },
+        {
+          "prompt_index": 4,
+          "seed": 5,
+          "text": "<think>\nOkay, so the user is asking me to name the largest planet in our solar system. Let me think. First, I remember that there are eight planets in the solar system, right? The ones we know are Earth, Mars, Jupiter, Saturn, etc. Wait, which one is the largest? I think we have to list them in order of their size. Hmm.\n\nLet me recall: outer planets are typically larger. The question is whether the largest planet is in our Solar System or another system. Wait, no, the problem states \"our Solar System,\" so they are all in that. So the order from largest to smallest is Jupiter, Saturn, Uranus, Neptune, Pluto, etc. But this time, the planets in order by their distance from the Sun, but I'm not sure. Let me check. For instance, Jupiter is a gas giant, so maybe it's the largest. Most importantly, the largest one in the solar system. Yes, Jupiter is definitely the largest. So the answer is Jupiter. Let me make sure there isn't a planet I'm missing. Yes, that's all. The answer should be Jupiter.\n</think>\n\nThe largest planet in our Solar System is **Jupiter**.",
+          "response_mode": "content",
+          "finish_reason": "stop",
+          "completion_tokens": 251,
+          "score": {
+            "think_tag_count": 1,
+            "defects": []
+          }
+        }
+      ],
+      "n_generations": 30,
+      "n_defects": 4,
+      "defects_by_kind": {
+        "zero_tag": 3,
+        "think_stutter": 0,
+        "cap_truncation": 4
+      }
+    }
+  },
+  "legacy_raw": null,
+  "comparison": {
+    "schema": "prismaquant.boundary_comparison/1",
+    "advisory_only": true,
+    "control_sha256": "5915a390f37687b3962478aa2501c88cf2980ec44fa07361d528d2c31a4c1f08",
+    "candidate_sha256": "a40adab17347abaeaed8a669f2e69f2b7f45797b260090bb8a9b116862abb7dd",
+    "max_tokens": 1024,
+    "strata": {
+      "numeric": {
+        "control_defects": 0,
+        "candidate_defects": 4,
+        "n_generations_per_arm": 18,
+        "delta_defects": 4
+      },
+      "terse_qa": {
+        "control_defects": 0,
+        "candidate_defects": 0,
+        "n_generations_per_arm": 6,
+        "delta_defects": 0
+      },
+      "short_recall": {
+        "control_defects": 0,
+        "candidate_defects": 0,
+        "n_generations_per_arm": 6,
+        "delta_defects": 0
+      }
+    }
+  },
+  "started_unix": 1788662293.4816008,
+  "finished_unix": 1788662443.0347846,
+  "serve_pre": {
+    "schema": "prismaquant.serve_manifest/1",
+    "created": "2026-09-06T02:38:13.476380Z",
+    "attestation_phase": "pre",
+    "source": "server",
+    "hostname": "sparky",
+    "host_identity": {
+      "hostname": "sparky",
+      "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+      "pid_namespace": "pid:[4026533041]"
+    },
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "model": "/models/candidate",
+    "served_model_name": "run208-04",
+    "launch_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "/models/candidate",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "launch_flags": [
+      "<path>",
+      "<path>",
+      "serve",
+      "<path>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "normalized_performance_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "<arm-model>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "<arm-model>",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "enforce_eager": true,
+    "quantization": null,
+    "kv_cache_dtype": null,
+    "speculative_config": null,
+    "package_versions": {
+      "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+      "torch": "2.13.0+cu130",
+      "flashinfer-python": "0.6.18",
+      "transformers": "5.16.1"
+    },
+    "resident_extensions": [
+      "sampling.so",
+      "trtllm_utils.so"
+    ],
+    "native_extension_status": [
+      {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_materialize_stock"
+          },
+          "streamed": {
+            "status": "refused",
+            "decoder": null
+          }
+        }
+      },
+      {
+        "module_name_prefix": "tessera_window_gemv",
+        "filename_glob": "tessera_window_gemv*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          },
+          "streamed": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          }
+        }
+      }
+    ],
+    "residency_readable": true,
+    "processes": [
+      {
+        "pid": 205,
+        "argv": [
+          "/usr/bin/python3",
+          "/usr/local/bin/vllm",
+          "serve",
+          "/models/candidate",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+        "start_time_ticks": 13310973,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+      },
+      {
+        "pid": 231,
+        "argv": [
+          "VLLM::EngineCore"
+        ],
+        "cmdline": "VLLM::EngineCore",
+        "start_time_ticks": 13312233,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+      }
+    ],
+    "server_process_environment": {
+      "schema": "prismaquant.server_process_environment/1",
+      "allowlist": [
+        "PYTHONPATH",
+        "PYTHONSAFEPATH",
+        "TESSERA_SERVE_MODE"
+      ],
+      "readable_pids": [
+        205,
+        231
+      ],
+      "unreadable_pids": [],
+      "consistent": true,
+      "values": {
+        "PYTHONSAFEPATH": "1"
+      },
+      "processes": [
+        {
+          "pid": 205,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        },
+        {
+          "pid": 231,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        }
+      ]
+    },
+    "pq_env": {
+      "PYTHONSAFEPATH": "1"
+    },
+    "listener_census": {
+      "schema": "prismaquant.server_tcp_listeners/1",
+      "tables_readable": true,
+      "unreadable_pids": [],
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 33083,
+          "socket_inode": "31676899",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 41949,
+          "socket_inode": "31676926",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 45933,
+          "socket_inode": "31676968",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 35281,
+          "socket_inode": "31676940",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 40455,
+          "socket_inode": "31676912",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 45019,
+          "socket_inode": "31676954",
+          "pids": [
+            231
+          ]
+        }
+      ]
+    },
+    "listener_binding": {
+      "schema": "prismaquant.server_listener_binding/1",
+      "base_url": "http://127.0.0.1:8187",
+      "launch_host": "127.0.0.1",
+      "launch_port": 8187,
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        }
+      ]
+    },
+    "models_endpoint_binding": {
+      "schema": "prismaquant.server_models_endpoint_binding/1",
+      "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+      "response_object": "list",
+      "model_count": 1,
+      "model": {
+        "id": "run208-04",
+        "object": "model",
+        "owned_by": "vllm",
+        "root": "/models/candidate",
+        "max_model_len": 4096
+      }
+    },
+    "gpu_name": "NVIDIA GB10",
+    "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+    "driver_version": "595.84",
+    "compute_capability": [
+      12,
+      1
+    ],
+    "gpu_compute_capabilities": [
+      [
+        12,
+        1
+      ]
+    ],
+    "gpu_count": 1,
+    "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+    "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+    "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+  },
+  "serve_post": {
+    "schema": "prismaquant.serve_manifest/1",
+    "created": "2026-09-06T02:40:43.065539Z",
+    "attestation_phase": "post",
+    "source": "server",
+    "hostname": "sparky",
+    "host_identity": {
+      "hostname": "sparky",
+      "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+      "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+      "pid_namespace": "pid:[4026533041]"
+    },
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "model": "/models/candidate",
+    "served_model_name": "run208-04",
+    "launch_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "/models/candidate",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "launch_flags": [
+      "<path>",
+      "<path>",
+      "serve",
+      "<path>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "run208-04",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "normalized_performance_argv": [
+      "/usr/bin/python3",
+      "/usr/local/bin/vllm",
+      "serve",
+      "<arm-model>",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8187",
+      "--served-model-name",
+      "<arm-model>",
+      "--dtype",
+      "bfloat16",
+      "--kv-cache-memory-bytes",
+      "1073741824",
+      "--max-model-len",
+      "4096",
+      "--max-num-seqs",
+      "1",
+      "--max-num-batched-tokens",
+      "512",
+      "--enforce-eager",
+      "--generation-config",
+      "vllm",
+      "--gpu-memory-utilization",
+      "0.2"
+    ],
+    "enforce_eager": true,
+    "quantization": null,
+    "kv_cache_dtype": null,
+    "speculative_config": null,
+    "package_versions": {
+      "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+      "torch": "2.13.0+cu130",
+      "flashinfer-python": "0.6.18",
+      "transformers": "5.16.1"
+    },
+    "resident_extensions": [
+      "sampling.so",
+      "trtllm_utils.so"
+    ],
+    "native_extension_status": [
+      {
+        "module_name_prefix": "tessera_nvfp4_",
+        "filename_glob": "tessera_nvfp4_*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_materialize_stock"
+          },
+          "streamed": {
+            "status": "refused",
+            "decoder": null
+          }
+        }
+      },
+      {
+        "module_name_prefix": "tessera_window_gemv",
+        "filename_glob": "tessera_window_gemv*.so",
+        "match": "basename_fnmatch",
+        "resident": false,
+        "when_unavailable": {
+          "resident": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          },
+          "streamed": {
+            "status": "substituted",
+            "decoder": "torch_window"
+          }
+        }
+      }
+    ],
+    "residency_readable": true,
+    "processes": [
+      {
+        "pid": 205,
+        "argv": [
+          "/usr/bin/python3",
+          "/usr/local/bin/vllm",
+          "serve",
+          "/models/candidate",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/candidate --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+        "start_time_ticks": 13310973,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "b7f7ca5c0380ce7bfefc3aa0abfc436d21f7de8909354544678a17db9ec61267"
+      },
+      {
+        "pid": 231,
+        "argv": [
+          "VLLM::EngineCore"
+        ],
+        "cmdline": "VLLM::EngineCore",
+        "start_time_ticks": 13312233,
+        "pid_namespace": "pid:[4026533041]",
+        "executable": "/usr/bin/python3.12",
+        "identity_sha256": "41e3876bc09364be544146b354f30d0fa9286f267bb78cccd8badfea258e28c8"
+      }
+    ],
+    "server_process_environment": {
+      "schema": "prismaquant.server_process_environment/1",
+      "allowlist": [
+        "PYTHONPATH",
+        "PYTHONSAFEPATH",
+        "TESSERA_SERVE_MODE"
+      ],
+      "readable_pids": [
+        205,
+        231
+      ],
+      "unreadable_pids": [],
+      "consistent": true,
+      "values": {
+        "PYTHONSAFEPATH": "1"
+      },
+      "processes": [
+        {
+          "pid": 205,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        },
+        {
+          "pid": 231,
+          "values": {
+            "PYTHONSAFEPATH": "1"
+          },
+          "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+        }
+      ]
+    },
+    "pq_env": {
+      "PYTHONSAFEPATH": "1"
+    },
+    "listener_census": {
+      "schema": "prismaquant.server_tcp_listeners/1",
+      "tables_readable": true,
+      "unreadable_pids": [],
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 33083,
+          "socket_inode": "31676899",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 41949,
+          "socket_inode": "31676926",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+          "port": 45933,
+          "socket_inode": "31676968",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 35281,
+          "socket_inode": "31676940",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 40455,
+          "socket_inode": "31676912",
+          "pids": [
+            231
+          ]
+        },
+        {
+          "family": "ipv6",
+          "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+          "port": 45019,
+          "socket_inode": "31676954",
+          "pids": [
+            231
+          ]
+        }
+      ]
+    },
+    "listener_binding": {
+      "schema": "prismaquant.server_listener_binding/1",
+      "base_url": "http://127.0.0.1:8187",
+      "launch_host": "127.0.0.1",
+      "launch_port": 8187,
+      "listeners": [
+        {
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 8187,
+          "socket_inode": "31673055",
+          "pids": [
+            205
+          ]
+        }
+      ]
+    },
+    "models_endpoint_binding": {
+      "schema": "prismaquant.server_models_endpoint_binding/1",
+      "canonical_identity_sha256": "5169e1af2cb8ffb296af90d71f0f43795e613672db93bf54f505bf5c675c8841",
+      "response_object": "list",
+      "model_count": 1,
+      "model": {
+        "id": "run208-04",
+        "object": "model",
+        "owned_by": "vllm",
+        "root": "/models/candidate",
+        "max_model_len": 4096
+      }
+    },
+    "gpu_name": "NVIDIA GB10",
+    "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+    "driver_version": "595.84",
+    "compute_capability": [
+      12,
+      1
+    ],
+    "gpu_compute_capabilities": [
+      [
+        12,
+        1
+      ]
+    ],
+    "gpu_count": 1,
+    "serve_session_id": "108d96f06123ebb42180162e81fffa937b0c256d86a312a74e099281569726c9",
+    "performance_stack_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+    "serve_fingerprint": "47d5de6095ba1c9e3be655dcbc8c1b356ca0d90faafa4f2e36b7e6564ac02155"
+  },
+  "artifact_pre": {
+    "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+    "weight_content_manifest": {
+      "schema": "prismaquant.weight_content_manifest/1",
+      "algorithm": "sha256",
+      "files": {
+        "model.safetensors": {
+          "bytes": 870290032,
+          "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+        }
+      }
+    }
+  },
+  "artifact_post": {
+    "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+    "weight_content_manifest": {
+      "schema": "prismaquant.weight_content_manifest/1",
+      "algorithm": "sha256",
+      "files": {
+        "model.safetensors": {
+          "bytes": 870290032,
+          "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+        }
+      }
+    }
+  },
+  "weight_stats_pre": {
+    "schema": "prismaquant.weight_stat_attestation/1",
+    "files": {
+      "model.safetensors": {
+        "bytes": 870290032,
+        "mtime_ns": 1788368078980335183,
+        "ctime_ns": 1788661330309667492
+      }
+    }
+  },
+  "weight_stats_post": {
+    "schema": "prismaquant.weight_stat_attestation/1",
+    "files": {
+      "model.safetensors": {
+        "bytes": 870290032,
+        "mtime_ns": 1788368078980335183,
+        "ctime_ns": 1788661330309667492
+      }
+    }
+  },
+  "source_sha256": {
+    "prismaquant/boundary_control.py": "631be3c0bd6420bdb2e86e76034754d396b9976a7f9ca8a305249c776b41ae71",
+    "prismaquant/validate_quantized_model.py": "e24c0645401fe81d5e4918fe818cf03afd17e11fa710aa4d03f27e3af8796a20",
+    "prismaquant/shipcard.py": "fa95b97b9fb878aac54c7076e962c4f502e97bec864e9536519dc373dfa8ebaa",
+    "tools/measure_boundary_control.py": "42dda7ef463777e69377e5888129d3ed87ddccfb0bbc48dd9b693536ada70afa",
+    "tools/serve_fingerprint.py": "35b3d5d86a3862388fc5e16b2bdb3f15cf344a7b8e51964f2e3c02630d0165a6",
+    "tools/prismaquant_source_bootstrap.py": "b571e52aa7586213781b8798c9f1f330ceed0e4b226fdb98ec9d128cc54230cb",
+    "prismaquant/tessera_runtime/tessera_serving_runtime_pin.json": "1ad9432babf4146f9dd1be8dc2e98ed6e86a5d4a9d4953d69fe233ce1cb35b5a"
+  },
+  "decision": {
+    "schema": "prismaquant.boundary_decision/1",
+    "policy": "prismaquant.no_new_boundary_failures/1",
+    "advisory_only": true,
+    "verdict": "refused",
+    "reason": "candidate introduced new defects on matched prompt/seed pairs",
+    "control_sha256": "5915a390f37687b3962478aa2501c88cf2980ec44fa07361d528d2c31a4c1f08",
+    "candidate_sha256": "a40adab17347abaeaed8a669f2e69f2b7f45797b260090bb8a9b116862abb7dd",
+    "pair_count": 30,
+    "max_tokens": 1024,
+    "newly_broken_pairs": 4,
+    "new_defect_kind_pairs": 0,
+    "violations": [
+      {
+        "prompt_index": 0,
+        "seed": 1,
+        "stratum": "numeric",
+        "control_defects": [],
+        "candidate_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ],
+        "new_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ]
+      },
+      {
+        "prompt_index": 1,
+        "seed": 1,
+        "stratum": "numeric",
+        "control_defects": [],
+        "candidate_defects": [
+          "cap_truncation"
+        ],
+        "new_defects": [
+          "cap_truncation"
+        ]
+      },
+      {
+        "prompt_index": 1,
+        "seed": 3,
+        "stratum": "numeric",
+        "control_defects": [],
+        "candidate_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ],
+        "new_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ]
+      },
+      {
+        "prompt_index": 1,
+        "seed": 4,
+        "stratum": "numeric",
+        "control_defects": [],
+        "candidate_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ],
+        "new_defects": [
+          "cap_truncation",
+          "zero_tag"
+        ]
+      }
+    ]
+  }
+}

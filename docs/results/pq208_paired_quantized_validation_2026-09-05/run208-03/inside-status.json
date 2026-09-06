@@ -1,0 +1,111 @@
+{
+  "status": "inconclusive",
+  "advisory_only": true,
+  "started": 1788658713.3630571,
+  "phases": {
+    "control": {
+      "argv": [
+        "vllm",
+        "serve",
+        "/models/control",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8187",
+        "--served-model-name",
+        "run208-03",
+        "--dtype",
+        "bfloat16",
+        "--kv-cache-memory-bytes",
+        "1073741824",
+        "--max-model-len",
+        "4096",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "512",
+        "--enforce-eager",
+        "--generation-config",
+        "vllm",
+        "--gpu-memory-utilization",
+        "0.2"
+      ],
+      "screen": {
+        "returncode": 0,
+        "decision": null,
+        "ppl": null
+      },
+      "heldout": {
+        "returncode": 0,
+        "decision": null,
+        "ppl": null
+      },
+      "ppl": {
+        "returncode": 0,
+        "decision": null,
+        "ppl": {
+          "name": "perplexity",
+          "passed": true,
+          "detail": "OK",
+          "metrics": {
+            "perplexity": 11.164634991734285,
+            "mean_nll_per_tok": 2.4127511925709118,
+            "p99_nll_per_tok": 3.316376398656649,
+            "max_nll_per_tok": 3.3357807611838717,
+            "per_prompt_avg_nll": [
+              1.4501271767864072,
+              1.5071945540362504,
+              1.9408573475856152,
+              1.971062740286865,
+              2.2876968378784346,
+              2.390662697059881,
+              2.6081818141747357,
+              2.851346011126512,
+              2.8639758550937082,
+              3.019920255914211,
+              3.159377465481844,
+              3.3357807611838717
+            ],
+            "n_tokens": 583,
+            "spec_decode_detected": false
+          }
+        }
+      }
+    },
+    "candidate": {
+      "argv": [
+        "vllm",
+        "serve",
+        "/models/candidate",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8187",
+        "--served-model-name",
+        "run208-03",
+        "--dtype",
+        "bfloat16",
+        "--kv-cache-memory-bytes",
+        "1073741824",
+        "--max-model-len",
+        "4096",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "512",
+        "--enforce-eager",
+        "--generation-config",
+        "vllm",
+        "--gpu-memory-utilization",
+        "0.2"
+      ],
+      "screen": {
+        "returncode": 1,
+        "decision": null,
+        "ppl": null
+      }
+    }
+  },
+  "error": "RuntimeError('candidate/screen did not produce a complete comparable observation')",
+  "finished": 1788659536.6921308
+}

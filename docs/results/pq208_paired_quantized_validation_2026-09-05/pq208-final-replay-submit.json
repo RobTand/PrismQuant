@@ -1,0 +1,46 @@
+{
+  "source_commit": "4888f033133bcb3f22416af37ef5400d8ccb29eb",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--tag",
+    "gb10",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=4",
+    "--timeout-s",
+    "120",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
+    "-c",
+    "import json,hashlib\nfrom pathlib import Path\nfrom prismaquant import boundary_control as bc\nfrom experiments.pq87_paired_validation import require_ppl_measurement\nroot=Path(\"/mnt/shared/tessera-runs/measurement-208-183-2026-09-05/run208-04\")\ndef read(name): return json.loads((root/name).read_text())\ncampaign=read(\"campaign.json\")\nassert campaign[\"status\"]==\"completed\" and campaign[\"cleanup\"][\"safe\"] is True\nresult={\"campaign_sha256\":hashlib.sha256((root/\"campaign.json\").read_bytes()).hexdigest(),\"populations\":{},\"ppl\":{}}\nfor population in (\"screen\",\"heldout\"):\n control=read(\"control-\"+population+\".json\")[\"measurement\"]\n raw=read(\"candidate-\"+population+\".json\")\n candidate=raw[\"measurement\"]\n decision=bc.replay_no_new_failures(raw[\"decision\"],control,candidate)\n result[\"populations\"][population]={\"cap\":bc.replay_control(control),\"decision\":decision,\"control_fingerprint\":control[\"binding\"][\"serve_fingerprint\"],\"candidate_fingerprint\":candidate[\"binding\"][\"serve_fingerprint\"]}\nfor role in (\"control\",\"candidate\"):\n raw=read(role+\"-ppl-result.json\")\n from prismaquant.validate_quantized_model import CheckResult,EVAL_PROMPTS\n require_ppl_measurement(CheckResult(**raw),len(EVAL_PROMPTS))\n result[\"ppl\"][role]=raw\nprint(json.dumps(result,sort_keys=True))\n"
+  ],
+  "started": 1788662528.5356014,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"0e88c1a7c7bbd30404f063e33a127e69b4f8a10f7120a47e6c7590038d28ab21\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/0e88c1a7c7bbd30404f063e33a127e69b4f8a10f7120a47e6c7590038d28ab21.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/0e88c1a7c7bbd30404f063e33a127e69b4f8a10f7120a47e6c7590038d28ab21.json\", \"job_id\": null, \"published_unix\": 1788662535.1257536, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/0e88c1a7c7bbd30404f063e33a127e69b4f8a10f7120a47e6c7590038d28ab21.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/0e88c1a7c7bbd30404f063e33a127e69b4f8a10f7120a47e6c7590038d28ab21.json\"}\n",
+  "stderr": "pbrun: queued 0e88c1a7c7bb tags=['gb10'] demand={'mem_gb': 4, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788662535.1454303,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": ""
+}

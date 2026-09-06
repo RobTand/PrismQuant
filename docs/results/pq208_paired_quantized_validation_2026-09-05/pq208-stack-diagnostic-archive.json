@@ -1,0 +1,112 @@
+{
+  "source": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/stack208-01",
+  "archive": "/mnt/shared/tessera-runs/measurement-208-183-2026-09-05/stack208-01",
+  "exclusions": [
+    "tmp",
+    "triton",
+    "inductor",
+    "vllm-cache"
+  ],
+  "verified_top_level_files": [
+    {
+      "name": "campaign.json",
+      "bytes": 21801,
+      "sha256": "f349389bdccbba92b8e7a13e2d46a8aa71c629844166b124209876e3feff7fa7"
+    },
+    {
+      "name": "candidate-stack-preflight.json",
+      "bytes": 8546,
+      "sha256": "6a095ff299ab43b846ef111180aa6ac148bcb891d88e881da509f5565067fa09"
+    },
+    {
+      "name": "container.cid",
+      "bytes": 64,
+      "sha256": "fa03639c7861c96e8dd52e16aca07abef787f231bb1918feb99ee95a2f7287e0"
+    },
+    {
+      "name": "container.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "control-stack-preflight.json",
+      "bytes": 8499,
+      "sha256": "1ca2137c78e61d420045b948dfd60217b64468f93c4a5783245d94647f8eb650"
+    },
+    {
+      "name": "heldout-contract.json",
+      "bytes": 578,
+      "sha256": "53bf7abe1107f314633501a79293abf14062965d1ac38ebe1ceead89888913e2"
+    },
+    {
+      "name": "image.json",
+      "bytes": 7491,
+      "sha256": "3f92e831b8d51d8c394ddb056c9ecd180a03050094c7ad5de23c86ede57ebf64"
+    },
+    {
+      "name": "inside-status.json",
+      "bytes": 1514,
+      "sha256": "40cd2c7be96fa3702a21defd51110de86e98bf11b93e774ac918241846acfccb"
+    },
+    {
+      "name": "manifest.json",
+      "bytes": 1868,
+      "sha256": "8098f282d1fb7d790636c2710064c043e4e89b258a786075d1ecf4e35f9d4ef6"
+    },
+    {
+      "name": "prelaunch-candidate.json",
+      "bytes": 781,
+      "sha256": "648b5464ae244aeb871acd9c58b24db21f69f7909098bf9ba309e30c8645c674"
+    },
+    {
+      "name": "prelaunch-control.json",
+      "bytes": 784,
+      "sha256": "dfb2cf92a189106618c77da936f14cd3ae32fbcd5d25607b67f492f6afe8cdea"
+    },
+    {
+      "name": "process-io.jsonl",
+      "bytes": 33440,
+      "sha256": "5ee25816bc5cc69ff575cd2b09e2a4dfa9dc4599e6d65c3f302842a1021ea7ce"
+    },
+    {
+      "name": "screen-contract.json",
+      "bytes": 529,
+      "sha256": "b44061f91be47e363912285e775d47045f4e124afbe383e2a15be3f3f0ee4d44"
+    },
+    {
+      "name": "server-candidate.log",
+      "bytes": 19646,
+      "sha256": "77e35eb43b7ea47187d84e6bcc10b198051ba746ef616ec5492a7b8347c00a50"
+    },
+    {
+      "name": "server-control.log",
+      "bytes": 17332,
+      "sha256": "9ba6924054e7e18f7be21c7a60f3369535f4d1bd306f6a34b9de4615d196787f"
+    },
+    {
+      "name": "telemetry.jsonl",
+      "bytes": 21639677,
+      "sha256": "d16ada453928faea97b1b868bc892fa6cace06517e07bf2e9fce32b485096a45"
+    },
+    {
+      "name": "warm-candidate-False.json",
+      "bytes": 959,
+      "sha256": "7845e366dca54fb9cb1712c967749176900cd0b03522d5f474f0e3394b823c55"
+    },
+    {
+      "name": "warm-candidate-True.json",
+      "bytes": 739,
+      "sha256": "9bb0dec0be1ab8490af2af7c70c065543baf694a9d2c3c344099fd6aaa5e77e3"
+    },
+    {
+      "name": "warm-control-False.json",
+      "bytes": 959,
+      "sha256": "053479463753f375ee3c50fad607baa5dca5fa3e6f496cd0f5087867974921d3"
+    },
+    {
+      "name": "warm-control-True.json",
+      "bytes": 740,
+      "sha256": "f4dbcffc3cceb899644ddb2dd942f3390c3376f7a77aa8a8dbb83007a9f756aa"
+    }
+  ]
+}
