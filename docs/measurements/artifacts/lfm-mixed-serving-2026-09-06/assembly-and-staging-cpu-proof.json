@@ -1,0 +1,115 @@
+{
+  "schema": "prismaquant.lfm-mixed-serving-cpu-proof.v1",
+  "tested_parent": "e0c17c6b",
+  "total_passed": 37,
+  "skips": 0,
+  "subtests_passed": 8,
+  "files": [
+    {
+      "tests": [
+        "tests/test_lfm_mixed_serving.py"
+      ],
+      "action_key": "52e5391924e47eb517d535db0e91ebcc825836cc2d8a27dac9e4763833301cf5",
+      "summary": "13 passed, 14 warnings, 6 subtests passed in 3.18s",
+      "receipt_sha256": "dc7f9e7d3e4314d73e0d1b84a2c707b4562593b3a3007db4920495ff7d203336",
+      "result": {
+        "bytes": 555,
+        "sha256": "aa9aa53c6bcdc45b3cfe89787fc3e6331f7e369aa01ed8b84ec7fa4410ea255b"
+      },
+      "terminal_sha256": "6b582d1ce86d9bbf4f5e20b748140d5bee71ecd157d0b514410394e4feea47ae",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_lfm_mixed_assembly_stdout.py"
+      ],
+      "action_key": "0450c5de3507a47e941cf7eefcbe3641e913ffec402b9f3deeff6b6b075d9f6d",
+      "summary": "3 passed, 14 warnings, 2 subtests passed in 2.99s",
+      "receipt_sha256": "2c811d90b3581bf3564e75b516cea99662ad1b75d29b64913841b947624caca1",
+      "result": {
+        "bytes": 566,
+        "sha256": "1d02f057e1d3167aa6256a4561a6d640cba1bc1c917c2a39a8f9b887957f674c"
+      },
+      "terminal_sha256": "c59045e06c08c78e15c2536d3bb03c636b8290540bdd7c2c4cb280923627c71d",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_lfm_mixed_source_run.py"
+      ],
+      "action_key": "51ccccb519c2dfb8de55df280c9514c875da7c745c2c825d6f9d51bcb00c8b50",
+      "summary": "2 passed, 14 warnings in 3.19s",
+      "receipt_sha256": "68b13df2c634d6ddceefd9825a75c9863c69f955a76bb820e0cae7447ce8a4ea",
+      "result": {
+        "bytes": 544,
+        "sha256": "62bafe9dc661e4c2075edbbe4b2d8382564e252300500a7c57b361733ccf705a"
+      },
+      "terminal_sha256": "e2c2fa72cbadc6757f3835f7586d22ead23b6895ec3b3a7f65f0c589c151f17b",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_architecture_doc.py"
+      ],
+      "action_key": "7449b04d6d870fd409d0ec4a6e0a3dd7b98beeb705dcb4ddd3fc9d50249102a6",
+      "summary": "13 passed, 14 warnings in 3.12s",
+      "receipt_sha256": "dbabd8c2b079b0bb1685b94fd308b2e1c90c54cc8f9079fe167dd1041353a7b8",
+      "result": {
+        "bytes": 541,
+        "sha256": "cfd7d6cb453d8e8534905bec735da970543b614de28eae8fbc440624e5d833da"
+      },
+      "terminal_sha256": "875257d557115a3f05a9e615cfeefbd5fd4c28a268f367ab1f6e6b7e6924f324",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_docs_staleness.py"
+      ],
+      "action_key": "dde7b4417a26e9989b57168b3d743b8b81ce6bd82c850c9b7bd411fa166409e4",
+      "summary": "6 passed, 14 warnings in 2.90s",
+      "receipt_sha256": "ac3c45c4c37f4cf98e8093efef91934cdffdb58fd2c04ea49c440cede06f23f2",
+      "result": {
+        "bytes": 538,
+        "sha256": "5e01ca1b19801be8d1cbf8f67d5a9cfec3088d0406a44099774fc0df531674fd"
+      },
+      "terminal_sha256": "9b3d39662826723262de941239cc771b371257fb575eadbbbd1971423a36cbab",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    }
+  ],
+  "regression_red": {
+    "action_key": "529e79dd4fee5252b413c0310e35dbffa755aff65f7aa5bd13c2d217c01996ca",
+    "returncode": 1,
+    "reason": "actual-shaped stdout fails old bare-JSON reader with JSONDecodeError",
+    "cleanup_complete": true
+  }
+}

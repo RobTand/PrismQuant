@@ -1,0 +1,69 @@
+{
+  "schema": "prismaquant.lfm-mixed-serving-cpu-proof.v1",
+  "tested_parent": "1635302f",
+  "files": [
+    {
+      "tests": [
+        "tests/test_lfm_mixed_serving.py"
+      ],
+      "action_key": "9db4b3ba9b6d5860f4166eef19165c21186d42a020ebc7e280e643a73942a14d",
+      "summary": "13 passed, 14 warnings, 6 subtests passed in 3.22s",
+      "receipt_sha256": "d793f0ae111e857b6a79b1ba14ff7268991321022194db233363bbc4352f2b29",
+      "result": {
+        "bytes": 555,
+        "sha256": "9f2b3d185235d7aeeadbc7eb8910cc04716490dba937d0d64b05766dfef2dd75"
+      },
+      "terminal_sha256": "0706485b8aaf6d98a1eb55b546165ec703a8e54630a7ffff0bf776d783f81ac1",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 2,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_architecture_doc.py"
+      ],
+      "action_key": "333ad20634da655ab702a66fbc4877e2eb4318935e3f3e9b6b7860bcaf6595c5",
+      "summary": "13 passed, 14 warnings in 2.96s",
+      "receipt_sha256": "3bd89b9344fc4691b724568e28794bfe4a5983e04c86abde2b023ad7fa6af1ec",
+      "result": {
+        "bytes": 541,
+        "sha256": "c4abeef7345fc06869c31c5e9fd879db38a7d7ea54d83b0317bdcfa33a055b62"
+      },
+      "terminal_sha256": "ca833255e3f39382f3c04126422b76e44c886c95a772d6fd1485ed4dfabfd54d",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 2,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    },
+    {
+      "tests": [
+        "tests/test_docs_staleness.py"
+      ],
+      "action_key": "cf886c4e7b35a6acfb80bdfe2d5ce8cc9a54ba58084beab436ca3fc7ec756339",
+      "summary": "6 passed, 14 warnings in 5.00s",
+      "receipt_sha256": "8c5d4ba0320fd843bb3ad8796906ff54b784425089b746ae25030ef44503cda4",
+      "result": {
+        "bytes": 538,
+        "sha256": "8a1b660a61ad3f954304005214fde6295d80bd7621cf76b4e968c1028adb4fff"
+      },
+      "terminal_sha256": "08f31743e760f93d65c75647e02672c100898ac81d060201eb0e843aa5133a2f",
+      "cleanup_complete": true,
+      "actual_payload_rehashed": true,
+      "resources": {
+        "cpu": 2,
+        "mem_gb": 4
+      },
+      "worker_host": "sparky"
+    }
+  ],
+  "total_passed": 32,
+  "skips": 0,
+  "subtests_passed": 6
+}
