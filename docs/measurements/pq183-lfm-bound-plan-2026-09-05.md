@@ -253,3 +253,37 @@ passed CPU PB action
 (sparky, exit 0, no skips, dependency fixtures, no GPU). Its terminal/CAS payload
 was inspected at
 `/mnt/shared/prismabuild-fleet/cas/blobs/5a/5a76cd9d7c45e6e695f2f3d624dbb41bb5bfaf93ef4fc9793026f00c930823cc`.
+
+## Qualified execution plan after dependency repair
+
+The producer image values in the initial plan above are superseded for the next
+actual attempt by the qualified derivative
+`sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0`.
+Pass that exact value to `--producer-image`. Its canonical Config hash is
+`fda47b55fb7105c93e8a0bf99cd633191c198e4033719957734d065a635de31e`;
+RootFS hash is
+`df0f8207331bd466df86322a178e14501f707f7b765e820a60e7ce9f28d51d71`.
+The host runner verifies these values before launching the producer.
+
+The image contains the calibrated corpus cache at `/opt/pq183-hf-cache`. Both
+producer phases explicitly set that `HF_HOME`, `HF_HUB_OFFLINE=1`, and
+`HF_DATASETS_OFFLINE=1`; they keep fresh task output for weights, activations,
+compiler products, and receipts. The existing calibration implementation and
+draw are unchanged. Offline Docker qualification with networking disabled
+matched the online corpus SHA and all eight token-sample SHAs exactly.
+
+Relative to the original image, existing effective package versions changed
+only for fsspec (2026.7.0 to 2026.6.0) and huggingface-hub (1.28.0 to 1.10.2).
+Added packages are datasets5.0.1, multiprocess0.70.19, pandas3.0.5, pyarrow25.0.1,
+and xxhash4.0.1. Torch2.13.0+cu130, Transformers5.15.1, NumPy2.2.6,
+safetensors0.8.0, accelerate1.14.0, and the existing CUDA/native packages are
+unchanged. The coordinator independently compared effective inventories,
+image components, online/offline sample hashes, and the actual successful
+PrismaBuild CAS result.
+
+See `pq183-lfm-bound-results-2026-09-05.md` for the failed first GPU attempt,
+negative environment qualifications, final image recipe, and exact receipts.
+The next source combines merged main90f37e00 (including #230/#242/#243/#245)
+with this opt-in runner and dependency preflight; its actual full commit and
+PB snapshot will be recorded at admission. Complete GPU campaign/export/serve
+acceptance remains pending until those outputs exist.

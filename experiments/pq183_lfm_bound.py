@@ -27,9 +27,9 @@ import uuid
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 IMAGE = "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
-PRODUCER_IMAGE = "sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88"
-PRODUCER_CONFIG_SHA = "83d0dcabcd3b6d259e9dea48bb67b5bf36108e22d03a7abb2209d73a2adc9e53"
-PRODUCER_ROOTFS_SHA = "d97ec6de925255c82642f99bc250a3e5a554002583b276aa8eacfd15166c7592"
+PRODUCER_IMAGE = "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0"
+PRODUCER_CONFIG_SHA = "fda47b55fb7105c93e8a0bf99cd633191c198e4033719957734d065a635de31e"
+PRODUCER_ROOTFS_SHA = "df0f8207331bd466df86322a178e14501f707f7b765e820a60e7ce9f28d51d71"
 TESSERA_COMMIT = "ba582d476a3b6db9057ebd1385dc52926f171451"
 STACK = "model.layers.12.feed_forward.experts"
 EXPECTED_UNITS = {f"{STACK}.{expert}.{role}" for expert in range(32)
@@ -571,7 +571,8 @@ def host(args):
                 "-e", "MAX_JOBS=4", "-e", "CMAKE_BUILD_PARALLEL_LEVEL=4",
                 "-e", "NINJAFLAGS=-j4", "-e", "MAKEFLAGS=-j4",
                 "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONNOUSERSITE=1",
-                "-e", f"HF_HOME={args.out / 'hf-cache'}", "-e", f"TORCH_EXTENSIONS_DIR={args.out / 'ext'}",
+                "-e", "HF_HOME=/opt/pq183-hf-cache", "-e", "HF_HUB_OFFLINE=1",
+                "-e", "HF_DATASETS_OFFLINE=1", "-e", f"TORCH_EXTENSIONS_DIR={args.out / 'ext'}",
                 "-e", f"TRITON_CACHE_DIR={args.out / 'triton'}", "--entrypoint", "python3",
                 args.producer_image, str(Path(__file__).resolve()), stage,
                 "--model", str(args.model), "--out", str(args.out),
@@ -608,7 +609,7 @@ def host(args):
             else:
                 require(image in inspected.get("RepoDigests", []), "serving runtime digest mismatch")
             write(args.out / ("producer-image.json" if image == args.producer_image else "serving-image.json"), inspected)
-        for directory in ("census", "ext", "vllm-cache", "triton", "hf-cache"):
+        for directory in ("census", "ext", "vllm-cache", "triton"):
             (args.out / directory).mkdir()
         # Host tools must import the pinned tree without mutating its seal.
         os.environ.update(PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1",
