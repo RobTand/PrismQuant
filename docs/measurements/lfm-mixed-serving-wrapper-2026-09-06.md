@@ -88,3 +88,35 @@ to publish the completed local result after owned-container cleanup. The archive
 preserves file bytes and records their hashes, sizes and actual worker host;
 existing kernel/vLLM compilation caches stay task-local. Existing destinations
 refuse. No source/model placement or distribution is performed by the wrapper.
+
+## CPU validation and final portable source — 2026-09-06
+
+Published `pbtest.py` selected three actions for the three supplied test files;
+all32 tests passed,zero skips,with6 additional successful subtests. Its bounded
+default was2CPU/4GiB per action,with native threads2; all were CPU-only on the
+qualified interpreter. The actual13 wrapper fixtures include changed assembly
+bytes, source closure, wrong scales/source/image, incomplete population,
+expected-strict-refusal isolation, arbitrary environment redaction, foreign
+container cleanup refusal, exact-ID cleanup, real CLI preflight returning before
+Docker, and copied-result byte verification. Architecture/staleness contributed
+19 tests. Each action emitted14 existing torch deprecation warnings.
+
+The tested source parent was1635302f; the subsequent edit only adds the
+preflight/archive architecture wording and this evidence. No numerical or
+serving source changed after the passing run. All three terminal exits and
+cleanup records were checked; all three actual CAS payloads were read and
+rehashed. [cpu-proof.json](artifacts/lfm-mixed-serving-2026-09-06/cpu-proof.json)
+records each action, source test file, exact receipt/result hashes and resource
+scope. Full private terminals and actual payloads remain under
+`/home/rob/tessera-runs/mixed-lfm-237-2026-09-06/mixed-serve-evidence`.
+The earlier11-fixture and19-doc checks also passed; two stale draft submissions
+were withdrawn through the published client, preserving their receipts.
+
+The completed portable encoder root is
+`/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906`.
+Its adjacent `tessera-7018fa2222925416b4c88cc8b6afab834dcac906-source-manifest.json`
+covers1,029files and has verified SHA256
+`81dbf9c1ee123b5bdd8bdf3b09f2705b414e5070f70ee40e5779bbaa935f545c`.
+Use these exact values for the encoder arguments above. The actual completed
+assembly CAS result and its SHA remain inputs supplied after PB assembly;
+none are invented in this source delivery.
