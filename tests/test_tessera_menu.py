@@ -139,7 +139,29 @@ def test_e4m3_arity_2_is_refused_by_tessera_not_by_us():
 # Gate 2: shape, and the tensor-parallel shard of it
 # ---------------------------------------------------------------------------
 
-def test_shard_granularity_matches_a_real_encoded_unit():
+SHARD_ENCODE_CASES = [
+    ("TESSERA_E2M1_K1", 512, (64, 512), "LUT", "TCQ"),
+    ("TESSERA_E2M1_K1", 448, (64, 512), "LUT", "TCQ"),
+    ("TESSERA_E2M1_K2", 896, (64, 512), "LUT", "TCQ"),
+    ("TESSERA_E2M1_K2", 700, (64, 512), "LUT", "WINDOW"),
+    ("TESSERA_E4M3_K1", 1024, (64, 512), "CHANNEL", "WINDOW"),
+    ("TESSERA_E4M3_K1", 1023, (64, 512), "CHANNEL", "WINDOW"),
+    ("TESSERA_E4M3_K1", 900, (64, 512), "CHANNEL", "WINDOW"),
+]
+
+
+def test_shard_encode_cases_cover_both_planes_and_bodies():
+    assert {case[3] for case in SHARD_ENCODE_CASES} == {"LUT", "CHANNEL"}
+    assert {case[4] for case in SHARD_ENCODE_CASES} == {"TCQ", "WINDOW"}
+
+
+@pytest.mark.parametrize(
+    "case_index,family_name,rung,shape,plane,body",
+    [(index, *case) for index, case in enumerate(SHARD_ENCODE_CASES)],
+    ids=[f"{family}-R{rung}" for family, rung, *_ in SHARD_ENCODE_CASES],
+)
+def test_shard_granularity_matches_a_real_encoded_unit(
+        case_index, family_name, rung, shape, plane, body):
     """The menu's granularity is Tessera's own, on a unit Tessera encoded.
 
     ``tessera_menu`` cannot encode 3000 rungs to ask where they cut, so it
@@ -155,8 +177,8 @@ def test_shard_granularity_matches_a_real_encoded_unit():
     serialisable family resolves to an S6b plane under ``wire_recipe``
     (E2M1_K1 and E2M1_K2 are LUT16 throughout, E4M3_K1 is CHANNEL
     throughout), so an S6b arm here would pin a wire nothing writes.
-    Both bodies do occur -- the E2M1x2 cap is TCQ, everything below it
-    is the window body.
+    Both bodies do occur: E2M1x1 and the E2M1x2 cap use TCQ; the
+    lower E2M1x2 rung and E4M3 cases use the window body.
     """
     from tessera.export import encode_linear_planes
     from tessera.layout import shard_granularity as tessera_granularity
@@ -165,36 +187,23 @@ def test_shard_granularity_matches_a_real_encoded_unit():
 
     from prismaquant.tessera_formats import get_tessera_family
 
-    seen_planes = set()
-    seen_bodies = set()
-    cases = [
-        ("TESSERA_E2M1_K1", 512, (64, 512)),
-        ("TESSERA_E2M1_K1", 448, (64, 512)),
-        ("TESSERA_E2M1_K2", 896, (64, 512)),
-        ("TESSERA_E2M1_K2", 700, (64, 512)),
-        ("TESSERA_E4M3_K1", 1024, (64, 512)),
-        ("TESSERA_E4M3_K1", 1023, (64, 512)),
-        ("TESSERA_E4M3_K1", 900, (64, 512)),
-    ]
-    generator = torch.Generator().manual_seed(0)
-    for family_name, rung, shape in cases:
-        spec = get_tessera_family(family_name)
-        weight = torch.randn(shape, generator=generator, dtype=torch.float32)
-        _exported, unit, _forests = encode_linear_planes(
-            weight, grid=spec.payload_grid(), q256=rung,
-            name=f"{family_name}_R{rung}", verify=False,
-        )
-        seen_planes.add(int(unit.scale_plane))
-        seen_bodies.add(int(unit.body))
-        theirs = tessera_granularity(unit, tm.SUPERBLOCK_WEIGHTS, spec.arity)
-        ours = tm.tessera_shard_granularity(family_name, rung, shape)
-        assert ours == tuple(int(x) for x in theirs), (family_name, rung, ours, theirs)
     from tessera.manifest import BodyKind, ScalePlaneKind
 
-    assert seen_planes == {int(ScalePlaneKind.LUT), int(ScalePlaneKind.CHANNEL)}, (
-        f"planes exercised: {sorted(seen_planes)}")
-    assert seen_bodies == {int(BodyKind.TCQ), int(BodyKind.WINDOW)}, (
-        f"bodies exercised: {sorted(seen_bodies)}")
+    # Preserve the seven original tensors while scheduling each encode separately.
+    generator = torch.Generator().manual_seed(0)
+    for previous in SHARD_ENCODE_CASES[:case_index]:
+        torch.randn(previous[2], generator=generator, dtype=torch.float32)
+    spec = get_tessera_family(family_name)
+    weight = torch.randn(shape, generator=generator, dtype=torch.float32)
+    _exported, unit, _forests = encode_linear_planes(
+        weight, grid=spec.payload_grid(), q256=rung,
+        name=f"{family_name}_R{rung}", verify=False,
+    )
+    assert int(unit.scale_plane) == int(getattr(ScalePlaneKind, plane))
+    assert int(unit.body) == int(getattr(BodyKind, body))
+    theirs = tessera_granularity(unit, tm.SUPERBLOCK_WEIGHTS, spec.arity)
+    ours = tm.tessera_shard_granularity(family_name, rung, shape)
+    assert ours == tuple(int(x) for x in theirs), (family_name, rung, ours, theirs)
 
 
 def test_a_mixed_schedule_raises_the_column_granularity_to_the_superblock():
