@@ -46,7 +46,8 @@ def activation_identity(spec, activation_max_abs: Mapping, qname: str) -> dict:
         static_scale = contract.require_input_global_scale(
             maximum, qname=qname, consumer="joint AURA",
         )
-    quantizer = spec.activation_quantize_dequantize
+    quantizer = (contract.quantize_dequantize if static_scale is not None
+                 else spec.activation_quantize_dequantize)
     return {
         "schema": "prismaquant.joint_aura.activation.v1",
         "quantizes_input": bool(changes),
@@ -61,7 +62,7 @@ def activation_identity(spec, activation_max_abs: Mapping, qname: str) -> dict:
         } if contract is not None else None),
         "activation_max_abs": float(maximum) if maximum is not None else None,
         "input_global_scale": static_scale,
-        "clip_enabled": bool(changes and env_truthy("PRISMAQUANT_PROD_ACT_SCALES", default=True)),
+        "clip_enabled": bool(changes and static_scale is None and env_truthy("PRISMAQUANT_PROD_ACT_SCALES", default=True)),
         "served_scales_enabled": served,
     }
 
@@ -110,6 +111,7 @@ class SignedJointProjectionLease:
         self.handles = []
         self.active = False
         self.terms = {}
+        self.groups = {}
         self.telemetry = {"qdq_calls": 0, "operator_gemms": 0, "persistent_cache_entries": 0}
         if len({id(mod) for mod in self.modules.values()}) != len(self.modules):
             raise ValueError("joint AURA refuses aliased Linear modules")
@@ -123,6 +125,20 @@ class SignedJointProjectionLease:
                 delta = self.deltas[(name, fmt)]
                 if delta.device != module.weight.device or delta.shape != module.weight.shape:
                     raise RuntimeError(f"joint AURA dW residency/shape differs for {name}@{fmt}")
+            grouped = {}
+            for fmt, spec in self.specs[name].items():
+                receipt = activation_identity(spec, self.activation_max_abs, name)
+                if receipt["input_global_scale"] is not None:
+                    if module.weight.shape[1] % spec.static_activation_contract.group_size:
+                        raise ValueError(f"joint AURA static activation group geometry differs for {name}")
+                    # A static served contract owns QDQ; different dynamic
+                    # registry lambdas are never executed on this path.
+                    callable_key = 0
+                else:
+                    callable_key = id(spec.activation_quantize_dequantize)
+                group = (identity_sha256(receipt), callable_key)
+                grouped.setdefault(group, (spec, []))[1].append(fmt)
+            self.groups[name] = tuple(grouped.values())
 
     def __enter__(self):
         if self.handles:
@@ -164,14 +180,7 @@ class SignedJointProjectionLease:
                 x2 = x.reshape(-1, x.shape[-1]).float()
                 g2 = gradient.reshape(-1, gradient.shape[-1]).float()
                 gw = g2.T @ x2
-                grouped = {}
-                for fmt, spec in self.specs[name].items():
-                    receipt = activation_identity(spec, self.activation_max_abs, name)
-                    # Callable object identity prevents distinct closures with
-                    # the same qualname from accidentally sharing their QDQ.
-                    group = (identity_sha256(receipt), id(spec.activation_quantize_dequantize))
-                    grouped.setdefault(group, (spec, []))[1].append(fmt)
-                for spec, formats in grouped.values():
+                for spec, formats in self.groups[name]:
                     d_operator = None
                     activation = torch.zeros((), device=x.device)
                     if spec.act_quant_changes_input:

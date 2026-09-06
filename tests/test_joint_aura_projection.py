@@ -16,6 +16,42 @@ from prismaquant.format_registry import FormatSpec
 from prismaquant.joint_aura import SignedJointProjectionLease
 
 
+def test_static_served_qdq_owner_is_shared_and_never_preclips(monkeypatch):
+    from dataclasses import replace
+    from prismaquant.format_registry import get_format
+    from prismaquant.joint_aura import activation_identity
+    from prismaquant.nvfp4_activation_contract import NVFP4_SERVED_ACTIVATION_CONTRACT
+    monkeypatch.setenv("PRISMAQUANT_PROD_ACT_SCALES", "1")
+    monkeypatch.setenv("PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES", "0")
+    contract = replace(NVFP4_SERVED_ACTIVATION_CONTRACT, measured_as_served=True)
+    def forbidden_dynamic(x):
+        raise AssertionError("served static path must use its shared owner")
+    spec_a = replace(get_format("NVFP4"), name="static_a", static_activation_contract=contract,
+                     activation_quantize_dequantize=forbidden_dynamic)
+    spec_b = replace(spec_a, name="static_b", activation_quantize_dequantize=lambda x: x * 0)
+    torch.manual_seed(510)
+    weight = torch.randn(3, 16)
+    x = torch.randn(2, 16) * 2
+    gradient = torch.randn(2, 3)
+    delta = torch.randn_like(weight) * 0.1
+    module = _linear(weight)
+    maximum = {"unit": 1.0}
+    receipt = activation_identity(spec_a, maximum, "unit")
+    assert receipt["clip_enabled"] is False
+    assert receipt["input_global_scale"] == contract.input_global_scale_from_max_abs(1.0)
+    qx = contract.quantize_dequantize(x, receipt["input_global_scale"])
+    with SignedJointProjectionLease({"unit": module}, {"unit": {"static_a": spec_a, "static_b": spec_b}},
+                                    {("unit", "static_a"): delta, ("unit", "static_b"): delta * 2},
+                                    activation_max_abs=maximum) as lease:
+        lease.begin_probe()
+        module(x).backward(gradient)
+        result = lease.finish_probe()
+        assert lease.telemetry["qdq_calls"] == 1
+        assert lease.telemetry["operator_gemms"] == 1
+    _assert_projection(result[("unit", "static_a")], _oracle(weight, delta, x, qx, gradient))
+    _assert_projection(result[("unit", "static_b")], _oracle(weight, delta * 2, x, qx, gradient))
+
+
 def _spec(
     name: str,
     quantizer: Callable[[torch.Tensor], torch.Tensor],

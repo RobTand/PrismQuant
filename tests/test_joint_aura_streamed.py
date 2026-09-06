@@ -186,3 +186,55 @@ def test_joint_row_refuses_second_scalar_or_activation_application(mutation):
     mutation(row)
     with pytest.raises(ValueError, match="joint AURA"):
         validate_joint_aura_entry(row)
+
+
+def test_joint_resume_refuses_changed_source_closure(tmp_path, monkeypatch):
+    monkeypatch.setattr(aura, "_checkpoint_git_commit", lambda: "1" * 40)
+    monkeypatch.setattr(aura, "_aura_source_sha256", lambda: "2" * 64)
+    _, _, runner, cache = _fixture()
+    _run(runner, cache, checkpoint_dir=tmp_path)
+    monkeypatch.setattr(aura, "_aura_source_sha256", lambda: "3" * 64)
+    _, context, runner, cache = _fixture()
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        _run(runner, cache, checkpoint_dir=tmp_path, resume=True)
+    assert context.install_calls == 0
+
+
+def test_joint_transient_anchor_renderer_is_consumed_and_resumed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from test_streamed_cost_checkpoints import _ExactAnchorRenderer
+    monkeypatch.setattr(aura, "_checkpoint_git_commit", lambda: "1" * 40)
+    _, _, runner, _ = _fixture()
+    plan = {f"model.layers.{i}.proj": ("FP8_E4M3",) for i in range(2)}
+    class TransientRenderer(_ExactAnchorRenderer):
+        def __init__(self):
+            super().__init__(plan)
+            self.cache = SimpleNamespace(activation_max_abs={name: 1.0 for name in plan})
+
+        def render_layer_transient(self, *, layer, modules, formats_by_qname, consume_render, consumer_identity):
+            assert consumer_identity["storage_dtype"] == "torch.float32"
+            pairs = []
+            for name, formats in formats_by_qname.items():
+                for fmt in formats:
+                    weight = modules[name].weight.detach()
+                    result = consume_render(qname=name, fmt=fmt, reference_weight=weight,
+                                            rendered_weight=weight + 0.03125, render_score={})
+                    assert result["storage_dtype"] == "torch.float32"
+                    pairs.append((name, fmt))
+                    self.render_count += 1
+            return pairs
+    def run(runner, renderer, resume):
+        return aura.compute_aura_cost_streamed(
+            runner, torch.tensor([[1, 2, 3, 4]]), ["FP8_E4M3", "BF16"],
+            n_probes=2, min_free_gib=0, joint_activation=True,
+            anchor_renderer=renderer, checkpoint_dir=tmp_path, resume=resume,
+            formats_by_qname={name: (*formats, "BF16") for name, formats in plan.items()},
+            model_identity=_model_identity("joint-source"),
+        )
+    first = run(runner, TransientRenderer(), False)
+    _, context, runner, _ = _fixture()
+    renderer = TransientRenderer()
+    second = run(runner, renderer, True)
+    assert first["costs"] == second["costs"]
+    assert context.install_calls == 0
+    assert renderer.render_count == 0

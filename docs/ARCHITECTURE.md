@@ -3,6 +3,14 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA's resolved
+activation projection groups. Static served QDQ identity names the shared
+static owner and its actual no-preclip policy. Compatible candidates share
+one activation projection even when unused dynamic registry callables
+differ. Group resolution occurs outside the output-gradient hook. Tests
+also cover transient anchor consumption and complete signed checkpoint
+replay. No activation quantizer, format default or serving gate changes.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA allocator
 currency admission (#237). Complete joint rows are validated before generic
 MSE/weight/exactness branches and consumed directly, with no scalar Fisher,
