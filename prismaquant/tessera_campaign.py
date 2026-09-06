@@ -745,7 +745,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None):
     """One model forward per batch, for dense and declared packed projections.
 
-    Returns ``(rows, hessians, token_counts, max_abs)``.
+    Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
+    observed input row, including when Hessians and retained scoring rows are
+    disabled; they are calibration provenance, not a Hessian-computation flag.
 
     Three different things come out of the same hook, and they have different
     row budgets on purpose:
@@ -803,6 +805,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             routed_seen[name] += int(flat.shape[0])
         amax[name] = max(
             amax[name], float(flat.abs().amax().float().item()))
+        seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
             f32 = flat.to(dtype=torch.float32)
@@ -811,7 +814,6 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                 hess[name] = gram
             else:
                 hess[name] += gram
-            seen[name] += int(f32.shape[0])
         room = max_rows - kept[name]
         if room <= 0:
             return

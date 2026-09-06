@@ -3,6 +3,14 @@
 As of: 2026-09-05 · `codex/pq183-tessera-reader`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-06, `codex/tessera-row-count-255`) for truthful calibration
+row counts without Hessians (#255). The shared Tessera campaign collector
+counts all observed dense or routed input rows independently of the Hessian
+flag and scoring-row cap. Disabling H retains an empty Hessian result; it no
+longer reports zero observed rows after a real static-scale capture. Existing
+H-mode Gram accumulation and row counts are unchanged. Gate:
+`tests/test_tessera_capture_row_counts.py` (actual CPU torch tensors).
+
 Re-stamped (2026-09-05, `codex/pq183-tessera-reader`) for saved Tessera
 campaign assignment intake (#183). The shared torch-free layer-config reader
 accepts a Tessera rung name as a shorthand string as well as the existing
