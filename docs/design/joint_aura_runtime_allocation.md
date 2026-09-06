@@ -33,7 +33,8 @@ and AQUA activation transfer must not be applied again. Joint and weight-only
 or output-MSE rows cannot share a joint allocation table. BF16 controls carry
 complete measured zero rows rather than an unobserved zero placeholder.
 
-Common probes enable paired differences. Their conditional sampling error is
+Joint rows require at least two probes; one draw cannot estimate sampling
+variance. Common probes enable paired differences. Their conditional sampling error is
 not uncertainty over new calibration data or evidence of generalization.
 The additive sum of local quadratic prices is still a model approximation;
 it does not establish the quality of every joint assignment.

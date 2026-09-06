@@ -1888,6 +1888,8 @@ def compute_aura_cost_streamed(
     if joint_activation:
         if production_cache is None and anchor_renderer is None:
             raise ValueError("joint AURA requires production-rendered weights")
+        if type(n_probes) is not int or n_probes < 2:
+            raise ValueError("joint AURA requires at least two probes for sampling uncertainty")
         if model_identity is None:
             raise ValueError("joint AURA requires exact model_identity for its cotangents")
         # Rounding dW to BF16 drops part of the requested local residual.

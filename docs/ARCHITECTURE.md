@@ -3,6 +3,12 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for the joint probe-count
+contract: joint harvesting and row admission require at least two probes.
+One sample cannot estimate sampling variance and must not publish a zero
+standard error as if it established certainty. The default remains 16;
+legacy weight-only harvesting is unchanged.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for the current-model
 qualification result of joint AURA. The Qwen3-0.6B three-unit fixed-teacher
 screen verifies the residual projection, but establishes no selection

@@ -95,3 +95,14 @@ def test_group_uncertainty_does_not_reapply_activation_penalty(measured_payload)
         [({}, row, row["predicted_dloss"], 1000.0)], 2.0)
     assert bound == row["predicted_dloss_stderr"]
     assert linear == 2.0 * bound
+
+
+def test_single_probe_cannot_claim_zero_sampling_uncertainty(measured_payload):
+    _, row = _first(measured_payload)
+    probe = copy.deepcopy(row["probe_identity"])
+    probe["n_probes"] = 1
+    operator = copy.deepcopy(row["joint_operator_identity"])
+    operator["probe_identity_sha256"] = identity_sha256(probe)
+    with pytest.raises(ValueError, match="at least two probes"):
+        make_joint_aura_entry(operator_identity=operator, probe_identity=probe,
+            signed_components=row["signed_components_per_probe"][:1])

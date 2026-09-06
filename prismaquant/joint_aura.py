@@ -230,6 +230,12 @@ def validate_joint_aura_entry(entry: Mapping) -> bool:
               "joint_operator_identity" in entry or "joint_operator_identity_sha256" in entry)
     if not claims:
         return False
+    # A single draw provides no estimate of sampling variance. Refuse it
+    # instead of publishing a zero standard error that looks like certainty.
+    if (not isinstance(entry.get("probe_identity"), Mapping)
+            or type(entry["probe_identity"].get("n_probes")) is not int
+            or entry["probe_identity"]["n_probes"] < 2):
+        raise ValueError("joint AURA requires at least two probes for sampling uncertainty")
     expected = {"cost_source": "joint_aura", "cost_currency": JOINT_CURRENCY,
                 "fisher_application_count": 1, "activation_quantization_included": True,
                 "output_mse_measured": False}
