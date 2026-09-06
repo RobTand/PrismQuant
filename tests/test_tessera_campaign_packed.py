@@ -327,10 +327,9 @@ def _bridge_main_fixture(monkeypatch, tmp_path, *, perturb=None):
     """main() with a real capture, projection, encode and receipt; no route scoring.
 
     ``_measure_anchor`` is replaced by the producer's real encode without its
-    served-route admission, and by name: on this branch the campaign cannot
-    score a rung against either producer checkout (the pinned Tessera lacks
-    ``tessera.cached_unit``; the release publishes lane eligibility v8, which
-    PrismaQuant #192 admits).  Everything the bridge adds -- the population
+    served-route admission: this CPU fixture exercises the bridge, while
+    runtime-scoped GPU pricing requires its own measurement. Everything the
+    bridge adds -- the population
     gate, the producer request, the binding, the source-byte check, the real
     Tessera bytes under ``unit_input_identity`` receipts and the payload's
     population/projection/wire blocks -- runs for real.

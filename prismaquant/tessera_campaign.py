@@ -42,9 +42,9 @@ The render is not ``render_tessera_weight``'s reconstruction; it is
 ``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
 cache entry holds the wire beside the dequantised render. Checkpoint resume
 verifies those bytes against their producer input receipt. That proves the
-cached wire is the priced wire; export reuse and served qualification still
-owe their own receipts. The packed producer-plan/cached-wire bridge remains
-the separate work tracked by PrismaQuant #183 (principle 8).
+cached wire is the priced wire. The packed producer-plan/cached-wire bridge
+carries those receipts through allocation and export; actual export/serve
+qualification remains the measurement tracked by PrismaQuant #183.
 
 What this stage does NOT do
 ---------------------------
@@ -772,11 +772,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     so there is one notion of "what the campaign captured" for either
     population, and ``write_export_inputs`` has one input to write.  The
     score-row cap never caps routed rows before the Hessian or the maximum.
-    This capture API does not open the main-entry packed-population/export
-    gate: :func:`_require_campaign_population` still refuses a live packed
-    population before calibration, so nothing here reaches a cost payload or
-    the export inputs until the producer's projection bridge exists
-    (PrismaQuant #183).
+    The main-entry gate requires profile-declared projections and the
+    producer's planning tool before calibration. The campaign later binds
+    that producer projection to these live views before pricing the units
+    and carrying their wire receipts into export (PrismaQuant #183).
     """
     import torch
 
