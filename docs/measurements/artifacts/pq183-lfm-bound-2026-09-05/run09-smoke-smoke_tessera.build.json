@@ -1,0 +1,46 @@
+{
+  "build_fingerprint": "1473ade26775c434eb5aba280c800f263ec16770cfc9af4efe6571c23366df17",
+  "complete": true,
+  "identity": {
+    "aot": {},
+    "compiled_forward": false,
+    "dispatch": {
+      "custom_ops": [
+        "all"
+      ],
+      "ir_op_priority": {
+        "fused_add_rms_norm": [
+          "vllm_c",
+          "native"
+        ],
+        "rms_norm": [
+          "vllm_c",
+          "native"
+        ]
+      }
+    },
+    "eager": true,
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "image_digest": "sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "inductor_deterministic": false,
+    "serve_mode": "resident",
+    "vllm_version": "0.28.1rc1.dev397+gfd4a15126.d20260904"
+  },
+  "provenance": {
+    "aot_keys_loaded": [],
+    "aot_keys_saved": [],
+    "artifact_path": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/exported",
+    "backbone": {},
+    "cache_root": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/vllm-cache",
+    "dispatch_requested": null,
+    "enforce_eager": true,
+    "fresh_compiles": 0,
+    "image_local_id": "sha256:44426342348a2fb1ae1191e09e5d4e19ab1231ab6dbdf0e17e8192bfdbeff025",
+    "produced_at_utc": "2026-09-06T04:23:16+00:00",
+    "reload_failures": [],
+    "serve_log": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/smoke/serve_tessera.log",
+    "serve_log_read": true,
+    "serve_log_sha256": "c5b6dc30dcff395393f27c3ec583be119044d7952aab6ffa7be52602c69f3a67"
+  },
+  "schema": "tessera.serve_build_identity/2"
+}

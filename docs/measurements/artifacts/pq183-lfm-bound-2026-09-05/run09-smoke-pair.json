@@ -1,0 +1,498 @@
+{
+  "arms": [
+    "bf16",
+    "tessera"
+  ],
+  "contract_record": {
+    "derived": {
+      "attribution": "shared_with_reference",
+      "status": "recorded"
+    },
+    "record": {
+      "instrument": "experiments/moe_greedy_smoke.py",
+      "reference": "bf16_source",
+      "rows": [
+        {
+          "form": "campaign",
+          "interface": "raw_completion",
+          "prompt": "P0",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "campaign",
+          "interface": "raw_completion",
+          "prompt": "P1",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "campaign",
+          "interface": "raw_completion",
+          "prompt": "P2",
+          "reference_status": "repetitive",
+          "status": "recorded"
+        },
+        {
+          "form": "campaign",
+          "interface": "raw_completion",
+          "prompt": "P3",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "campaign",
+          "interface": "chat_template",
+          "prompt": "P4",
+          "reference_status": "recorded",
+          "status": "recorded"
+        },
+        {
+          "form": "campaign",
+          "interface": "chat_template",
+          "prompt": "P5",
+          "reference_status": "recorded",
+          "status": "recorded"
+        },
+        {
+          "form": "campaign",
+          "interface": "chat_template",
+          "prompt": "P6",
+          "reference_status": "recorded",
+          "status": "recorded"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "raw_completion",
+          "prompt": "P0",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "raw_completion",
+          "prompt": "P1",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "raw_completion",
+          "prompt": "P2",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "raw_completion",
+          "prompt": "P3",
+          "reference_status": "repetitive",
+          "status": "repetitive"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "chat_template",
+          "prompt": "P4",
+          "reference_status": "recorded",
+          "status": "recorded"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "chat_template",
+          "prompt": "P5",
+          "reference_status": "recorded",
+          "status": "recorded"
+        },
+        {
+          "form": "pure_greedy",
+          "interface": "chat_template",
+          "prompt": "P6",
+          "reference_status": "recorded",
+          "status": "recorded"
+        }
+      ],
+      "rule": "repetitive iff the completion ends in a cycle: some period p with 2p <= L has a p-periodic suffix holding >= 2 full periods (s >= 2p), whatever its share of the completion; not_recorded iff the completion is empty (L = 0), which is no completion for a verdict to be true of; recorded otherwise; tokens are the artifact tokenizer's canonical encoding of the returned text"
+    }
+  },
+  "positive_record": [
+    "P4",
+    "P5",
+    "P6",
+    "P4",
+    "P5",
+    "P6"
+  ],
+  "prompts_sha256": "1d280c010c23d156493e89d015afaad04cf94f434b3f4f60e6e797a0adb88375",
+  "rows": [
+    {
+      "bf16": {
+        "completion": " France is France is France is France is France is France is France is France is",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 2,
+        "periodic_suffix": 16,
+        "status": "repetitive",
+        "tokens": 16
+      },
+      "both_recorded": false,
+      "form": "campaign",
+      "id": "P0",
+      "identical_completion": false,
+      "interface": "raw_completion",
+      "max_tokens": 16,
+      "tessera": {
+        "completion": " the capital of France is the capital de France is la capital de France is la",
+        "coverage": 0.625,
+        "finish_reason": "length",
+        "period": 5,
+        "periodic_suffix": 10,
+        "status": "repetitive",
+        "tokens": 16
+      }
+    },
+    {
+      "bf16": {
+        "completion": " the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 10,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "campaign",
+      "id": "P1",
+      "identical_completion": true,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": " the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the interior and the coast, and the cities of the",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 10,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": " the cell's membrane.\"\n\n** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **",
+        "coverage": 0.890625,
+        "finish_reason": "length",
+        "period": 1,
+        "periodic_suffix": 57,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "campaign",
+      "id": "P2",
+      "identical_completion": false,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": " the cell's DNA.\"\n\nThus we have enough evidence.\n\nNow we can answer: \"We have sufficient evidence to conclude that carbon dioxide is reduced into sugars, and that this process is stored in the cell's DNA.\"\n\nThus final answer.\n</think>\n\n**Answer:**  \nWe have sufficient evidence to conclude that carbon dioxide",
+        "coverage": 0.0,
+        "finish_reason": "length",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": ". The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks.",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 7,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "campaign",
+      "id": "P3",
+      "identical_completion": true,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": ". The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks.",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 7,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nThe user asks: \"In two or three sentences, explain why the Rhine mattered to the trade of the cities along its banks, and name two of those cities.\"\n\nWe need to produce 2-3 sentences total? It says \"In two or three sentences\". So we can do either 2 sentences or 3 sentences. Must include explanation why the Rhine mattered to trade of the cities along its banks, and name two of those cities.\n\nThus something like: \"The Rhine provided a navigable waterway that linked inland producers with major European markets, allowing cities along its banks to export goods such as grain, wine, and manufactured products efficiently. Notable trading cities on the river include Cologne and Basel.\" That's one sentence? Actually it's two clauses but could be considered one sentence. We need two or three sentences. Could do:\n\n\"The Rhine served as a vital commercial artery, enabling cities along its banks to transport bulk commodities and connect to broader European trade networks, which spurred economic growth and urban prosperity. Prominent examples of such cities are Cologne and Basel.\" That's two sentences. That includes explanation and names two cities. That satisfies requirement.\n\nThus answer: Two sentences. Provide that.\n</think>\nThe Rhine served as a vital commercial artery, allowing cities along its banks to move bulk goods and link inland producers with major European markets, thereby boosting trade and urban prosperity. Prominent examples of such cities are Cologne and Basel.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 292
+      },
+      "both_recorded": true,
+      "form": "campaign",
+      "id": "P4",
+      "identical_completion": true,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nThe user asks: \"In two or three sentences, explain why the Rhine mattered to the trade of the cities along its banks, and name two of those cities.\"\n\nWe need to produce 2-3 sentences total? It says \"In two or three sentences\". So we can do either 2 sentences or 3 sentences. Must include explanation why the Rhine mattered to trade of the cities along its banks, and name two of those cities.\n\nThus something like: \"The Rhine provided a navigable waterway that linked inland producers with major European markets, allowing cities along its banks to export goods such as grain, wine, and manufactured products efficiently. Notable trading cities on the river include Cologne and Basel.\" That's one sentence? Actually it's two clauses but could be considered one sentence. We need two or three sentences. Could do:\n\n\"The Rhine served as a vital commercial artery, enabling cities along its banks to transport bulk commodities and connect to broader European trade networks, which spurred economic growth and urban prosperity. Prominent examples of such cities are Cologne and Basel.\" That's two sentences. That includes explanation and names two cities. That satisfies requirement.\n\nThus answer: Two sentences. Provide that.\n</think>\nThe Rhine served as a vital commercial artery, allowing cities along its banks to move bulk goods and link inland producers with major European markets, thereby boosting trade and urban prosperity. Prominent examples of such cities are Cologne and Basel.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 292
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nThe user asks: \"In a short paragraph, explain where the energy that photosynthesis captures from light ends up, and what the oxygen it releases comes from.\"\n\nWe need to produce a short paragraph (maybe 2-3 sentences) explaining where the captured light energy goes (e.g., into chemical energy stored in ATP and NADPH, which then drive carbon fixation via Calvin cycle to produce glucose). And also state that the oxygen released comes from water molecules split during photolysis.\n\nThus answer: The captured photon energy is converted into chemical energy in the form of ATP and NADPH, which power the synthesis of carbohydrates; the O2 released originates from the splitting of water (photolysis) in the thylakoid lumen. Provide concise paragraph.\n\nMake sure no disallowed content. It's straightforward.\n\nWe should not add extra fluff. Provide one paragraph.\n\nLet's craft:\n\n\"The light\u2011energy absorbed by chlorophyll is first transformed into the high\u2011energy carriers ATP and NADPH, which then supply the energy needed for the Calvin\u2011Benson cycle to fix CO\u2082 into sugars; the molecular oxygen expelled as a by\u2011product comes exclusively from the water molecules that are split during the photochemical reactions of photosystem\u202fII.\" That works.\n\nThat's a single paragraph. Done.\n</think>\nThe light\u2011energy captured by chlorophyll is first converted into the high\u2011energy carriers ATP and NADPH, which then provide the energy required for the Calvin\u2011Benson cycle to fix CO\u2082 into sugars; the molecular oxygen released as a by\u2011product comes exclusively from the water molecules that are split during the photochemical reactions of photosystem\u202fII.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 335
+      },
+      "both_recorded": true,
+      "form": "campaign",
+      "id": "P5",
+      "identical_completion": false,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nThe user asks: \"In a short paragraph, explain where the energy that photosynthesis captures from light ends up, and what the oxygen it releases comes from.\"\n\nWe need to produce a short paragraph (maybe 2-3 sentences) explaining where the captured light energy goes (e.g., into chemical energy stored in ATP and NADPH, then used to fix CO2 into glucose), and what the oxygen released originates from (the water molecules split during photolysis). So answer: The captured photon energy is converted into chemical energy carriers ATP and NADPH, which drive the Calvin cycle to synthesize carbohydrates; the O2 released comes from the splitting of H2O, specifically the oxygen atoms originally bound in water molecules.\n\nThus produce a concise paragraph. No extra formatting. Provide answer.\n</think>\nThe light energy absorbed by chlorophyll is first transformed into the high\u2011energy molecules ATP and NADPH, which then power the Calvin cycle to convert carbon dioxide into carbohydrate molecules such as glucose; this chemical energy ultimately stores the captured photons. The oxygen released as a by\u2011product is not derived from the plant\u2019s own water but comes directly from the water molecules that are split during the photolysis step, providing the oxygen atoms that end up in O\u2082.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 252
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nWe need to answer: Briefly describe what happened to the first transatlantic telegraph cable of 1858, and how the 1866 cable differed from it.\n\nWe should provide a concise description. The first transatlantic telegraph cable was laid in 1858, but it failed after a few weeks due to technical problems, corrosion, and perhaps damage during laying. It was abandoned after about three months. Then the second attempt in 1865-66 succeeded, with improvements: better insulation (gutta-percha), stronger cable design, better ship handling, longer length, etc. Also the 1866 cable used improved materials, more protective layers, and had repeaters? Actually repeaters came later; the 1866 cable used gutta-percha insulation and a copper core, and the cable was thicker and had better protection against water and mechanical damage. Also the 1866 cable was laid by the SS Great Eastern, and it lasted longer.\n\nThus answer: The 1858 cable was laid in August 1858, transmitted messages for a few weeks before failing due to insulation breakdown and mechanical stress; it was left on the ocean floor. The 1866 cable, after many attempts, was successfully laid and operated, using a more robust construction, better insulation, and a stronger steel wire core, and was able to transmit messages reliably for decades.\n\nWe need to be brief. Possibly 2-3 sentences each? Or a short paragraph. Provide both events and differences.\n\nLet's craft:\n\n\"The first transatlantic telegraph cable, completed in August\u202f1858, worked for only a few weeks before its insulation deteriorated and the line succumbed to mechanical stress, after which it was abandoned on the seabed. The 1866 cable, after numerous failures, was finally laid successfully by the SS\u202fGreat Eastern; it employed a thicker, better\u2011insulated gutta\u2011percha sheath, stronger steel wires, and improved splicing techniques, allowing continuous service.\"\n\nThat is concise. That covers what happened and differences. That should satisfy.\n</think>\nThe first transatlantic telegraph cable, finished in August\u202f1858, managed only a few weeks of service before its insulation failed and the line broke under mechanical stress, after which it was left on the ocean floor. The 1866 cable, after many earlier attempts, was finally laid successfully by the SS\u202fGreat\u202fEastern; it used a thicker, better\u2011insulated gutta\u2011percha sheath, stronger steel",
+        "coverage": 0.0,
+        "finish_reason": "length",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 512
+      },
+      "both_recorded": true,
+      "form": "campaign",
+      "id": "P6",
+      "identical_completion": false,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nWe need to answer: Briefly describe what happened to the first transatlantic telegraph cable of 1858, and how the 1866 cable differed from it.\n\nWe should provide a concise description. The first transatlantic telegraph cable was laid in 1858 (the Atlantic Telegraph Cable). It failed after a few weeks due to technical problems, ice damage, and poor insulation; it was abandoned after about three months. In 1866, a second cable was successfully laid, using better materials, improved insulation, better splicing, and a stronger ship (HMS Agamemnon) and used a more reliable method (e.g., using gutta-percha, later rubber). Also, the 1866 cable had a thicker copper sheath, better protection against seawater, and was laid with less breakage. Also, the 1866 cable was the first to operate continuously for many years, whereas the 1858 cable only worked for a short time before failing.\n\nThus we can say: The 1858 cable was laid in August 1858, transmitted messages but soon stopped working because of insulation failures, corrosion, and mechanical stress; it was decommissioned after a few weeks. The 1866 cable was more robust, used improved gutta-percha insulation, had a stronger core, and was repaired and re-launched, allowing reliable communication.\n\nWe need to be brief. Possibly a paragraph or two. Provide key points: failure cause (insulation breakdown, sea water ingress, breakage), short lifespan; differences: better insulation, thicker copper, better splicing, use of iron wire armor, larger diameter, better testing, longer duration.\n\nLet's produce a succinct answer.\n</think>\n**What happened to the 1858 cable**  \nThe first trans\u2011Atlantic telegraph cable was laid in August\u202f1858 and initially succeeded in sending a few messages. Within weeks however it stopped working. The failure was caused mainly by inadequate insulation (gutta\u2011percha that deteriorated quickly under the ocean\u2019s pressure), rapid corrosion of the copper sheaths, and mechanical stresses from the ocean and the ship\u2019s motion. After only a few weeks the cable could no longer carry a reliable signal and was abandoned.\n\n**How the 1866 cable differed**  \nThe 1866 attempt used far superior materials and techniques: a thicker, better\u2011protected copper core wrapped in multiple layers of gutta\u2011percha (later replaced by rubber), a stronger iron\u2011wire armour",
+        "coverage": 0.0,
+        "finish_reason": "length",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 512
+      }
+    },
+    {
+      "bf16": {
+        "completion": " France is France is France is France is France is France is France is France is",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 2,
+        "periodic_suffix": 16,
+        "status": "repetitive",
+        "tokens": 16
+      },
+      "both_recorded": false,
+      "form": "pure_greedy",
+      "id": "P0",
+      "identical_completion": true,
+      "interface": "raw_completion",
+      "max_tokens": 16,
+      "tessera": {
+        "completion": " France is France is France is France is France is France is France is France is",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 2,
+        "periodic_suffix": 16,
+        "status": "repetitive",
+        "tokens": 16
+      }
+    },
+    {
+      "bf16": {
+        "completion": " the cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its",
+        "coverage": 0.984375,
+        "finish_reason": "length",
+        "period": 6,
+        "periodic_suffix": 63,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "pure_greedy",
+      "id": "P1",
+      "identical_completion": true,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": " the cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its banks. The cities along its",
+        "coverage": 0.984375,
+        "finish_reason": "length",
+        "period": 6,
+        "periodic_suffix": 63,
+        "status": "repetitive",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": " the chloroplasts. The process is a fundamental part of the chloroplasts, and that chemical energy is stored in the chloroplasts. The process is a fundamental part of the chloroplasts, and that chemical energy is stored in the chloroplasts. The process is a fundamental part of the chloroplasts",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 24,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "pure_greedy",
+      "id": "P2",
+      "identical_completion": false,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": " the chloroplasts. The captured energy is used to reduce carbon dioxide into sugars, and that chemical energy is stored in the chloroplasts. The captured energy is used to reduce carbon dioxide into sugars, and that chemical energy is stored in the chloroplasts. The captured energy is used to reduce carbon dioxide into sugars",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 24,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": ". The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks.",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 7,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      },
+      "both_recorded": false,
+      "form": "pure_greedy",
+      "id": "P3",
+      "identical_completion": true,
+      "interface": "raw_completion",
+      "max_tokens": 64,
+      "tessera": {
+        "completion": ". The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks. The line went silent within weeks.",
+        "coverage": 1.0,
+        "finish_reason": "length",
+        "period": 7,
+        "periodic_suffix": 64,
+        "status": "repetitive",
+        "tokens": 64
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nThe user asks: \"In two or three sentences, explain why the Rhine mattered to the trade of the cities along its banks, and name two of those cities.\"\n\nWe need to produce 2-3 sentences. Must explain why the Rhine mattered to trade of the cities along its banks, and name two of those cities. We need to pick two cities along the Rhine, e.g., Cologne (K\u00f6ln) and Basel, or Strasbourg and Mainz, or D\u00fcsseldorf and Cologne, or Cologne and Mainz. Provide explanation: the Rhine was a major transportation route, linking interior Europe to the North Sea, facilitating movement of goods, linking major commercial centers, enabling exchange of goods like wine, grain, timber, etc. So we can say: The Rhine provided a navigable waterway that linked inland producers with maritime trade, making cities along its banks wealthy and strategic. Two cities: Cologne and Basel. That would be one sentence? Actually we need two or three sentences. Could be: \"The Rhine served as a vital trade artery, allowing inland producers to ship bulk goods to the North Sea and connecting major commercial hubs across Europe.\" That's one sentence. Then: \"Cities such as Cologne and Basel thrived as key ports and market centers because of this access.\" That's second sentence. That's two sentences, includes both explanation and naming two cities. That satisfies. Provide that.\n\nThus answer: \"The Rhine served as a vital trade artery, allowing inland producers to ship bulk goods to the North Sea and linking major commercial hubs across Europe. Cities such as Cologne and Basel thrived as key ports and market centers because of this access.\" That's two sentences. That works.\n\nWe must not add extra commentary. Provide that.\n</think>\nThe Rhine served as a vital trade artery, allowing inland producers to ship bulk goods to the North Sea and linking major commercial hubs across Europe. Cities such as Cologne and Basel thrived as key ports and market centers because of this access.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 402
+      },
+      "both_recorded": true,
+      "form": "pure_greedy",
+      "id": "P4",
+      "identical_completion": false,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nThe user asks: \"In two or three sentences, explain why the Rhine mattered to the trade of the cities along its banks, and name two of those cities.\"\n\nWe need to produce 2-3 sentences. Must explain why the Rhine mattered to trade, and name two cities along its banks. Likely referencing historical context: The Rhine was a major trade route in Europe, connecting the North Sea to the Alps, facilitating commerce between the Holy Roman Empire, France, Switzerland, etc. Cities like Cologne (K\u00f6ln) and Basel, or Strasbourg and Mainz. So we can say: The Rhine provided a navigable waterway linking the North Sea to the interior, enabling the transport of goods such as grain, wine, and luxury items, which boosted the economies of the cities that grew along its banks. Two cities: Cologne and Basel (or Strasbourg and Mainz). Provide in 2-3 sentences.\n\nWe need to ensure we name two cities. So: \"The Rhine mattered because it offered a direct, navigable trade route that linked the North Sea with the Alpine regions, allowing cities along its banks to import and export goods efficiently and attract merchants. Notable trading cities on its banks include Cologne and Basel.\" That's two sentences. That satisfies the request.\n\nThus answer: \"The Rhine mattered because it offered a direct, navigable trade route that linked the North Sea with the Alpine regions, allowing cities along its banks to import and export goods efficiently and attract merchants. Notable trading cities on its banks include Cologne and Basel.\" That's two sentences. That works.\n\nWe must not add extra commentary. Provide that.\n</think>\nThe Rhine mattered because it offered a direct, navigable trade route that linked the North Sea with the Alpine regions, allowing cities along its banks to import and export goods efficiently and attract merchants. Notable trading cities on its banks include Cologne and Basel.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 389
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nThe user asks: \"In a short paragraph, explain where the energy that photosynthesis captures from light ends up, and what the oxygen it releases comes from.\"\n\nWe need to produce a short paragraph that explains: where the captured light energy ends up (e.g., in chemical energy of ATP and NADPH, then used to fix CO2 into glucose, etc.) and what the oxygen released comes from (the water molecules split during photolysis, specifically the oxygen atoms originate from the water, not from CO2). So answer: The energy captured from light is converted into chemical energy stored in ATP and NADPH, which then drive the Calvin cycle to produce glucose. The oxygen released comes from the splitting of water (photolysis) in the thylakoid lumen, where water molecules are oxidized, releasing O2, protons, and electrons. So a concise paragraph.\n\nWe must ensure no disallowed content. It's straightforward. Provide a short paragraph. No extra formatting. Provide answer.\n\nThus:\n\n\"The light energy captured by chlorophyll is first transformed into the high\u2011energy molecules ATP and NADPH, which then power the Calvin\u2011Benson cycle to fix CO\u2082 into carbohydrate molecules such as glucose; the oxygen that is expelled during photosynthesis originates from the water molecules that are split in the thylakoid lumen (photolysis), where the electrons, protons, and electrons are taken from H\u2082O, not from carbon dioxide.\"\n\nThat's a short paragraph. That works.\n\nWe should ensure it's a single paragraph. Provide that.\n</think>\nThe light energy captured by chlorophyll is first converted into the high\u2011energy molecules ATP and NADPH, which then drive the Calvin\u2011Benson cycle to fix CO\u2082 into carbohydrate compounds such as glucose; the oxygen released during photosynthesis comes from the water molecules that are split in the thylakoid lumen (photolysis), where the electrons, protons, and electrons are taken from H\u2082O, not from carbon dioxide.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 400
+      },
+      "both_recorded": true,
+      "form": "pure_greedy",
+      "id": "P5",
+      "identical_completion": false,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nThe user asks: \"In a short paragraph, explain where the energy that photosynthesis captures from light ends up, and what the oxygen it releases comes from.\"\n\nWe need to produce a short paragraph that explains: where the captured light energy ends up (e.g., in chemical energy of ATP and NADPH, which then drive carbon fixation to produce glucose; also the energy is stored in the bonds of carbohydrates). And what the oxygen released comes from (the water molecules split during photolysis, specifically the oxygen atoms originate from the water that is split in the thylakoid lumen). So answer: The light energy is converted into chemical energy in the form of ATP and NADPH, which are then used in the Calvin cycle to synthesize glucose; the oxygen released comes from the splitting of water (H2O) in the photosystem II reaction center. Provide a concise paragraph.\n\nWe must ensure no disallowed content. It's straightforward. Provide a short paragraph. No extra formatting. Provide answer.\n\nThus:\n\n\"The light energy captured by chlorophyll is first converted into the high\u2011energy molecules ATP and NADPH, which store the photon energy in chemical form; these carriers then power the Calvin\u2011Benson cycle where the energy is used to fix CO\u2082 into glucose. The oxygen that is released as a by\u2011product of photosynthesis originates from the water molecules that are split during the photolysis step of photosystem\u202fII, where the electrons replace those lost by chlorophyll and the resulting O\u2082 is expelled.\"\n\nThat's a short paragraph. That works.\n</think>\nThe light energy captured by chlorophyll is first transformed into the high\u2011energy molecules ATP and NADPH, which store the photon energy in chemical form; these carriers then power the Calvin\u2011Benson cycle where the energy is used to fix CO\u2082 into glucose. The oxygen that is released as a by\u2011product of photosynthesis originates from the water molecules that are split during the photolysis step of photosystem\u202fII, where the electrons replace those lost by chlorophyll and the resulting O\u2082 is expelled.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 417
+      }
+    },
+    {
+      "bf16": {
+        "completion": "<think>\nWe need to answer: Briefly describe what happened to the first transatlantic telegraph cable of 1858, and how the 1866 cable differed from it.\n\nWe need to provide a concise description. No extra formatting unless asked. The user didn't request any special formatting. So we should give a brief paragraph or two, describing the 1858 cable: it was laid in 1858, transmitted messages, but failed after a few weeks due to technical problems, corrosion, and a storm, and was abandoned. Then the 1866 cable was successful, with better insulation, stronger construction, repeaters, and was laid again, and it worked continuously. Also mention differences: the 1866 cable used gutta-percha insulation, had a more robust design, used better ships, had repeaters, and was laid with a better route, and the 1858 cable used crude insulation, had a shorter lifespan, and was not as reliable. Also mention that the 1866 cable was the first to provide reliable transatlantic communication.\n\nWe should keep it brief. Possibly 2-3 sentences? The user said \"Briefly describe\". So maybe a short paragraph of 3-4 sentences. Let's do that.\n\nWe must not add extra commentary. Provide answer.\n\nCheck for any disallowed content. No. Provide answer.\n\nThus:\n\n\"The first transatlantic telegraph cable, laid in 1858, succeeded in sending a message across the Atlantic but failed after only a few weeks due to insulation failures, corrosion, and a severe storm, and was soon abandoned. The 1866 cable, by contrast, used superior gutta\u2011percha insulation, a stronger cable design, and repeater stations, allowing it to operate continuously and become the first reliable transatlantic line.\"\n\nThat is concise. That works.\n</think>\nThe first transatlantic telegraph cable, laid in 1858, managed to transmit a few messages before failing after only a few weeks because of poor insulation, corrosion, and a damaging storm, leading to its rapid abandonment. The 1866 cable differed markedly: it employed superior gutta\u2011percha insulation, a sturdier construction, and repeater stations, enabling uninterrupted service and establishing the first reliable transatlantic communication link.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 468
+      },
+      "both_recorded": true,
+      "form": "pure_greedy",
+      "id": "P6",
+      "identical_completion": false,
+      "interface": "chat_template",
+      "max_tokens": 512,
+      "tessera": {
+        "completion": "<think>\nWe need to answer: Briefly describe what happened to the first transatlantic telegraph cable of 1858, and how the 1866 cable differed from it.\n\nWe need to provide a concise description. No extra formatting unless asked. The user didn't request any special formatting. So we should give a brief paragraph or two. Provide description: The 1858 cable was laid in 1858, worked for a few weeks, then failed due to technical problems, corrosion, and a storm, and was abandoned. The 1866 cable was successful, used better insulation, stronger construction, repeated attempts, and was the first to provide reliable communication. Also mention differences: 1866 cable used gutta-percha insulation, better materials, multiple conductors, and was laid by a different ship, etc.\n\nWe need to be brief. Possibly 2-3 sentences? The instruction: \"Briefly describe what happened to the first transatlantic telegraph cable of 1858, and how the 1866 cable differed from it.\" So we can combine both in a short paragraph.\n\nThus answer: The 1858 cable was laid in August 1858, transmitted messages for a few weeks before failing due to insulation breakdown and a storm, and was left in the ocean. The 1866 cable, by contrast, used improved gutta\u2011percha insulation, a stronger cable design, and was laid with a purpose\u2011built vessel, resulting in a durable, reliable line that could carry messages continuously.\n\nThat is concise. No markdown. Provide that.\n</think>\nThe first transatlantic telegraph cable, laid in August\u202f1858, worked for only a few weeks before it failed \u2014 its insulation deteriorated and a storm damaged it, after which it was abandoned in the sea. The 1866 cable differed by employing superior gutta\u2011percha insulation, a stronger construction, and a purpose\u2011built vessel, producing a durable line that could transmit messages reliably and continuously.",
+        "coverage": 0.0,
+        "finish_reason": "stop",
+        "period": 0,
+        "periodic_suffix": 0,
+        "status": "recorded",
+        "tokens": 404
+      }
+    }
+  ],
+  "rule": "repetitive iff the completion ends in a cycle: some period p with 2p <= L has a p-periodic suffix holding >= 2 full periods (s >= 2p), whatever its share of the completion; not_recorded iff the completion is empty (L = 0), which is no completion for a verdict to be true of; recorded otherwise; tokens are the artifact tokenizer's canonical encoding of the returned text",
+  "rule_at_run": [
+    "repetitive iff the completion ends in a cycle: some period p with 2p <= L has a p-periodic suffix holding >= 2 full periods (s >= 2p), whatever its share of the completion; not_recorded iff the completion is empty (L = 0), which is no completion for a verdict to be true of; recorded otherwise; tokens are the artifact tokenizer's canonical encoding of the returned text"
+  ],
+  "schema": "tessera.moe-greedy-smoke-pair/2",
+  "tokenizer_json_sha256": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41"
+}

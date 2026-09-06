@@ -1,0 +1,227 @@
+{
+  "cell_launch_agreement": {
+    "agrees": true,
+    "platform": "sm_121",
+    "runtime": {
+      "execution_mode": "eager",
+      "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+    },
+    "schema": "tessera.cell-launch-agreement.by-structure/1",
+    "structures": {
+      "routed_moe": {
+        "agrees": true,
+        "phases": {
+          "decode": {
+            "cells": {
+              "tessera_e4m3_k1_routed_moe_sm121_decode_resident": 1
+            },
+            "covered_by_cell": 1,
+            "modules": 1,
+            "regime": "decode",
+            "unattested": 0,
+            "unsupported_records": 0
+          },
+          "prefill": {
+            "cells": {
+              "tessera_e4m3_k1_routed_moe_sm121_batch_resident": 1
+            },
+            "covered_by_cell": 1,
+            "modules": 1,
+            "regime": "batch",
+            "unattested": 0,
+            "unsupported_records": 0
+          }
+        },
+        "platform": "sm_121",
+        "runtime": {
+          "execution_mode": "eager",
+          "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+        },
+        "schema": "tessera.cell-launch-agreement/3",
+        "structure": "routed_moe"
+      }
+    }
+  },
+  "checkpoint": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/exported",
+  "checkpoint_sidecars": {
+    "config.json": "592d25f3fe0431f3f7c1024f2fba376ec58f650c0d697c0f1c8df2db05717c10",
+    "tessera_serving_manifest.json": "891837d8d566032e49debd4ccdc50c3c814d28db2b8b58d266934e73c031f409"
+  },
+  "compiled": false,
+  "declared_families": {
+    "TESSERA_FP8": 1
+  },
+  "declared_name_mapping": {
+    "model.layers.13.feed_forward.experts": "model.layers.13.feed_forward.experts"
+  },
+  "declared_names_mapped_to_module_space": true,
+  "device": {
+    "capability": [
+      12,
+      1
+    ],
+    "name": "NVIDIA GB10"
+  },
+  "elapsed_s": 90.9,
+  "env": {
+    "TESSERA_SERVE_MODE": "resident",
+    "VLLM_DISABLED_KERNELS": null
+  },
+  "generated_text": " and the decode shape. The receipt names",
+  "histogram": {
+    "decode": {
+      "other_route_modules": 0,
+      "regime": "decode",
+      "routes": [
+        {
+          "contract": "fp8_per_token_dynamic",
+          "decoder": "torch_materialize_stock",
+          "kind": "moe",
+          "modules": 1,
+          "policy": "TESSERA_FP8:resident",
+          "state": "served",
+          "symbol": "vllm.fused_moe.modular_kernel:TRITON"
+        }
+      ],
+      "shapes": [
+        "M1:N3584:K2048"
+      ],
+      "tessera_modules": 1,
+      "tessera_modules_by_family": {
+        "TESSERA_FP8": 1
+      }
+    },
+    "prefill": {
+      "other_route_modules": 0,
+      "regime": "batch",
+      "routes": [
+        {
+          "contract": "fp8_per_token_dynamic",
+          "decoder": "torch_materialize_stock",
+          "kind": "moe",
+          "modules": 1,
+          "policy": "TESSERA_FP8:resident",
+          "state": "served",
+          "symbol": "vllm.fused_moe.modular_kernel:TRITON"
+        }
+      ],
+      "shapes": [
+        "M64:N3584:K2048"
+      ],
+      "tessera_modules": 1,
+      "tessera_modules_by_family": {
+        "TESSERA_FP8": 1
+      }
+    }
+  },
+  "lane_engagement": {
+    "all_required_engaged": null,
+    "declared_by_artifact": [],
+    "engaged_modules_max": {},
+    "phases": {
+      "decode": {
+        "decoders": {
+          "torch_materialize_stock": 1
+        },
+        "engaged_modules": {},
+        "lane_refusals": {},
+        "tessera_modules": 1,
+        "unengaged_required_lanes": []
+      },
+      "prefill": {
+        "decoders": {
+          "torch_materialize_stock": 1
+        },
+        "engaged_modules": {},
+        "lane_refusals": {},
+        "tessera_modules": 1,
+        "unengaged_required_lanes": []
+      }
+    },
+    "required_decoders": {},
+    "required_lanes": [],
+    "schema": "tessera.lane-engagement/1"
+  },
+  "lane_refusals": {},
+  "problems": [],
+  "prompt_tokens": 64,
+  "quant_method": "tessera",
+  "record_owner": {
+    "decode": {
+      "model.layers.13.feed_forward.experts.routed_experts": "model.layers.13.feed_forward.experts"
+    },
+    "prefill": {
+      "model.layers.13.feed_forward.experts.routed_experts": "model.layers.13.feed_forward.experts"
+    }
+  },
+  "records": {
+    "decode": {
+      "model.layers.13.feed_forward.experts.routed_experts": {
+        "contract": "fp8_per_token_dynamic",
+        "decoder": "torch_materialize_stock",
+        "kind": "moe",
+        "policy": "TESSERA_FP8:resident",
+        "reason": null,
+        "shape": "M1:N3584:K2048",
+        "state": "served",
+        "symbol": "vllm.fused_moe.modular_kernel:TRITON",
+        "tile_m": 0
+      }
+    },
+    "prefill": {
+      "model.layers.13.feed_forward.experts.routed_experts": {
+        "contract": "fp8_per_token_dynamic",
+        "decoder": "torch_materialize_stock",
+        "kind": "moe",
+        "policy": "TESSERA_FP8:resident",
+        "reason": null,
+        "shape": "M64:N3584:K2048",
+        "state": "served",
+        "symbol": "vllm.fused_moe.modular_kernel:TRITON",
+        "tile_m": 0
+      }
+    }
+  },
+  "runtime": {
+    "execution_mode": "eager",
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+  },
+  "runtime_image_declaration": {
+    "env": [
+      "TESSERA_CENSUS_RUNTIME_IMAGE",
+      "TESSERA_CENSUS_RUNTIME_IMAGE_DECLARATION"
+    ],
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "record": {
+      "fix": null,
+      "gated": true,
+      "local_id": "sha256:44426342348a2fb1ae1191e09e5d4e19ab1231ab6dbdf0e17e8192bfdbeff025",
+      "pinned": "vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14",
+      "present": true,
+      "reason": "explicit_digest",
+      "refused": false,
+      "repo_digests": [
+        "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+      ],
+      "requested": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+      "requested_tag": null,
+      "required": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+      "resolved_digest": "sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+      "resolved_reference": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+      "schema": "tessera.runtime_image/1"
+    },
+    "schema": "tessera.runtime-image-declaration/1",
+    "source": "launcher_repo_digests"
+  },
+  "schema": "tessera.serving.route_census/2",
+  "tessera_config_groups": 1,
+  "verdict": "served",
+  "versions": {
+    "python": "3.12.3",
+    "tessera": "0.1.0",
+    "tessera_commit": "ba582d476a3b6db9057ebd1385dc52926f171451",
+    "tessera_serving": "0.1.0",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904"
+  }
+}

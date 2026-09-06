@@ -1,0 +1,24 @@
+{
+  "first_unix": 1788667897.881795,
+  "gpu_power_w_sampled": {
+    "count": 67,
+    "max": 59.63,
+    "median": 11.84,
+    "min": 4.2
+  },
+  "host_cpu_busy_fraction_between_endpoints": 0.06728232373358688,
+  "host_cpu_note": "Host-wide /proc/stat endpoint delta, excluding idle and iowait; not action attribution or GPU saturation.",
+  "host_samples": 67,
+  "last_unix": 1788668619.380595,
+  "minimum_host_mem_available_kib": 72367444,
+  "netdata_nonempty_samples": {
+    "http://sparklina:19999": 67,
+    "http://sparky:19999": 67
+  },
+  "records": 334,
+  "schema": "prismaquant.pq183-telemetry-summary.v1",
+  "scope_claim": "Bounded observation only; no speed, saturation, quality or energy-efficiency claim.",
+  "source": "run183-09/telemetry.jsonl",
+  "source_bytes": 125586882,
+  "source_sha256": "97646e5b3979b021a04f7b696745a2f09805f5ba192013132d29d0446240704d"
+}

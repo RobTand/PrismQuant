@@ -598,3 +598,153 @@ binds a 221-byte payload, SHA-256
 Fresh continuation 09 keeps the existing deterministic graph and original
 priced cache, repeating only cached export and the remaining validation.
 Acceptance 4 still requires actual census and paired serving.
+
+
+## Attempt 09: bounded priced-to-served handoff completed
+
+On 2026-09-06, the unchanged 96-unit campaign from attempt 05 completed its
+cached export, attested resident census, paired greedy smoke and final artifact
+check. This supplies acceptance 4's bounded actual measurement. It does not
+promote the format, certify model quality or performance, establish allocator
+optimality, or fix the ordinary pipeline's producer-plan translator.
+
+PB action `b25114fe9341bf4408a83e6a17aa5f2511c08cb5a17bc2ac210b8a49d4b823f9`
+ran reviewed parent `0abb3fdda73bf3b5ef7dea1c48fe2924650f1993`, snapshot
+`6ff54346b9223fc6c4c2a0ac676dacee823c91b6`, bundle SHA-256
+`77612e9438bfdd7ef2e000653882b675ced04aca17fbdfdab00956d8047cfb29`.
+The source includes the coverage correction delivered by PR 243, parent-bias
+routing correction delivered by PR 247 and shared format-reader correction
+delivered by PR 249. Producer image 47dd, serving target EUGR 0afec, complete
+Tessera source ba582d47 and the 106-file campaign input seal
+`99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819`
+remain the identities recorded above. No calibration, quantization or allocation
+was repeated; original cost, assignment and recipe bytes remain unchanged.
+Every continuation phase verified the original consumed input seal again.
+
+The frozen calibration remains WikiText train, 32 sequences of 512 tokens,
+seed 0 and at most 512 activation rows per unit. Layer 13 was chosen before
+quantization by the documented lowest-eligible-layer criterion. All 32 experts
+were observed, with a minimum of 13 routed rows; that is population coverage,
+not full-rank Hessian evidence. The measured scope is exactly 96 projections
+in one whole routed stack. The original assignment retains 2,104 other body
+matrix units as BF16. Its population separately reports three in-scope dense
+units without admitted priced rows, 27 omitted dense targets, 42 omitted packed
+tensor targets and 36 pinned components. Packed tensor targets and expanded
+per-expert matrix units use different counting scopes. None is silently counted
+as measured. The producer-owned serving plan contains the selected stack,
+66 explicit ordinary BF16 tensors and 21 explicit BF16 stacks, with 22 classified
+routers retained implicitly as BF16.
+
+### Exact bytes and direct-export provenance
+
+The post-export and post-serve audit passed all **96 units**. The priced
+self-describing blobs total **178,161,760 bytes** and equal the embedded exported
+blobs byte-for-byte and by SHA-256. Their fused containers total
+**178,164,864 bytes**. Over the 352,321,536 selected quantizable parameters,
+these are respectively 4.0454355875651045 and 4.045506068638393 bits per
+parameter. They exclude immutable and retained BF16 regions; they are not
+whole-model bpp figures. The producer's narrower wire accounting and resident
+mode totals remain distinct, as recorded for attempt 08.
+
+The final `exported/model.safetensors` contains 2,302 tensors and
+16,409,528,112 bytes. Its actual SHA-256 is
+`4924daacfcd4e2779fa4a673abcb38a2fbfa0c41f85df74c4bda495d5d0573c1`,
+identical to attempt 08. The direct-finalization origin records mode 0600 to
+0644 and identical before/after byte hashes. Only newly written attempt-09
+shards were made readable; original attempts 05 and 08 remain unchanged.
+The general producer handoff defect is tracked in
+[Tessera #366](https://github.com/RobTand/tessera/issues/366).
+
+The transparent direct-manifest supplement binds the actual producer image
+separately from the serving target, validates actual source/plan/command/build
+and priced input identities, and preserves the original direct manifest outside
+the checkpoint. The actual augmented manifest is the one sealed, read and
+hashed by census. No partition, merge, alternate verification manifest or
+Tessera-source modification was introduced. Final artifact-seal SHA-256 is
+`e059d31dacc7a9d77b40479395d2fe50b0b69c02b1f5666fe91f52e9d70692ca`.
+
+### Actual serving observations and limits
+
+The route census returned `served`; the unchanged ts5 gate returned `passed`
+with `require_attested=true`, resident mode and 96 expected projection units.
+It observed one `TESSERA_FP8` routed-MoE owner in both prefill and decode,
+`vllm.fused_moe.modular_kernel:TRITON`, contract `fp8_per_token_dynamic`, decoder
+`torch_materialize_stock`. Recorded shapes were M64:N3584:K2048 for prefill
+and M1:N3584:K2048 for decode. This is an actual owner/topology observation,
+not a throughput comparison or proof of saturation.
+
+Both serving arms have complete build identities in the pinned EUGR image,
+vLLM `0.28.1rc1.dev397+gfd4a15126.d20260904`, with eager execution and no compiled
+forward. BF16 build fingerprint:
+`a9742a32bee8db4f31c90a0e7941127e76df9dfcf10ecef9998356cfefbd2bcd`.
+Tessera resident build fingerprint:
+`1473ade26775c434eb5aba280c800f263ec16770cfc9af4efe6571c23366df17`.
+The paired instrument used the same seven prompts in campaign and pure-greedy
+forms, 14 completions per arm. BF16 recorded eight repetitive and six recorded
+completions; Tessera recorded seven repetitive and seven recorded completions.
+All six chat-template observations per arm were recorded. The remaining raw
+completion repetition is explicitly retained. The existing paired contract
+returns `recorded`, attribution `shared_with_reference`; this is not a claim
+that all outputs are non-repetitive or that quantization improved quality.
+
+The final `artifact-after.json` reports `accepted=true`, `unchanged=true`,
+`smoke_status=recorded` and `quality_promotion_claimed=false`. It binds the
+actual census-check SHA-256
+`70aa3ac2602d5948a3c3d0935186d8a9d9b20278e0e8efcb3d1cf4e210e12a69`
+and paired-smoke SHA-256
+`76b9e48ab77cc0b05b52d588f56bd09578cccb34a07b181c38362c355e9e773b`.
+The before/after source and artifact identities passed around serving.
+
+### Terminal, telemetry and retained deliverable
+
+All six host phases exited zero. The final PB action exited zero after
+731.19 seconds, with cleanup complete, no OOM, no monitor errors and all five
+exact owned containers safely absent. Its 4-CPU, 64-GiB exclusive physical-GPU
+reservation preserved PB affinity `[5,6,7,8]` and one native thread per worker.
+PB scope telemetry records 776.00 CPU seconds and peak accounted memory
+24,325,054,464 bytes. This is PB's scope accounting; independent host memory
+telemetry is retained separately and is not equated to that peak.
+
+Both hosts supplied 67 nonempty Netdata samples. The retained 125,586,882-byte
+telemetry stream has SHA-256
+`97646e5b3979b021a04f7b696745a2f09805f5ba192013132d29d0446240704d`.
+Its 67 sampled GPU power observations range from 4.2 to 59.63 W, median
+11.84 W; host-wide CPU endpoint busy fraction excluding idle and iowait is
+0.06728. These describe the sequential export/census/smoke/check observation,
+including startup and waits, and do not establish GPU saturation or efficiency.
+The original campaign profile and cold-start follow-up remain
+[Tessera #364](https://github.com/RobTand/tessera/issues/364).
+
+The successful CAS receipt is
+`0470d6d7deae7366f806e1011ba46e7a06f240cc08532c274877543ebfe635ef`.
+Its actual 119-byte payload was read and independently rehashed to
+`2dc64b2bd1694fe9b42e7f11f20e13e1651e8f0e57eb8afa8d2a30d0bd07946f`;
+it records observed output and safe cleanup. The full terminal remains under
+`pq183-evidence/` with the action key as filename. Its Git publication copy
+redacts PB scope tokens before staging; the publication roster retains both
+original and public byte hashes.
+
+The accessible retained deliverable is
+`/mnt/shared/tessera-measurements/prismaquant-183-2026-09-05/run183-09/`.
+It contains the exported checkpoint, 96 cached wire blobs, original and augmented
+manifests, plan/provenance, raw census and paired-smoke records, serving build
+identities, logs and both-host telemetry. All 159 copied files were independently
+size/hash checked, including the full 16-GB checkpoint; the adjacent
+`run183-09-archive-roster.json` records them. Compiled `ext/`, `triton/` and
+`vllm-cache/` directories were excluded from this copy and remain in the original
+remote output. Original attempts and immutable inputs remain archived.
+
+The bounded, reviewable Git evidence is indexed by
+[publication-roster.json](artifacts/pq183-lfm-bound-2026-09-05/publication-roster.json),
+including full 96-unit wire audit, population recipe, routing histogram,
+attested census, both served build identities, paired smoke, terminal/CAS,
+source/artifact seals and telemetry summary. Binary caches and checkpoint
+weights remain outside Git. Earlier negative attempts retain their actual
+failure disposition; no successful CAS is claimed for them.
+
+The ordinary PrismaQuant pipeline still uses the dense-only translator. This
+experiment's producer-owned plan bridge is bounded to the validated selected
+stack; general producer/reader integration remains
+[Tessera #363](https://github.com/RobTand/tessera/issues/363). The separate Tessera
+owner handles upstream repairs without changing this measurement's ba582d47
+pin. No further numerical run is required to support this bounded observation.

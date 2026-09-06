@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47/experiments/export_tessera_serving.py",
+    "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/exported",
+    "--plan-json",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/plan.json",
+    "--priced-inputs",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/build.json",
+    "--priced-inputs-sha256",
+    "30a5f79e71abfbf3d9e68822a3b3022ec5150a30e13a8fbbf234da065c6af05d",
+    "--hessian",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/cache/hessian_capture.pt",
+    "--cached-expert-units",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-09/cached-expert-units/cached_expert_units.json",
+    "--device",
+    "cuda"
+  ],
+  "ended_unix": 1788668005.3742774,
+  "exit_code": 0,
+  "started_unix": 1788667905.4262683
+}

@@ -1,0 +1,12 @@
+{
+  "assignment_unchanged": true,
+  "campaign_source_snapshot": "07a9771e57e6442bc6ae2ed5de16b40f4e4adb68",
+  "continuation_source_snapshot": "6ff54346b9223fc6c4c2a0ac676dacee823c91b6",
+  "cost_unchanged": true,
+  "input_manifest_sha256": "99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819",
+  "original_input_root": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05",
+  "original_inputs_mounted_read_only": true,
+  "priced_wire_copies": 96,
+  "reallocated": false,
+  "requantized": false
+}
