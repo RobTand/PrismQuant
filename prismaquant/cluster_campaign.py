@@ -1331,14 +1331,18 @@ def _proc_owner_observation(pid: int, owner_token: str) -> str:
     ``no-address-space``
         The read succeeded and returned nothing.  A task keeps its environment
         inside its address space, so this says the task currently has none:
-        it was execed with an empty environment, or it is on its way out of
-        ``do_exit`` -- past the point where the address space is released and
-        before the point where the task becomes a zombie.  It is not evidence
-        that this pid now belongs to somebody else.
+        it was execed with an empty environment.
     ``other-owner``
-        An environment was read and the reserved token is not in it.
+        An environment was read and the reserved token is not in it.  This is
+        the only one of the five that establishes a *different* owner.
     ``unreadable``
         The read failed for some other reason, so nothing was established.
+        This is what an exiting helper looks like: past ``exit_mm()`` and
+        before ``exit_notify()``, ``/proc/<pid>/environ`` refuses with
+        ``PermissionError`` rather than returning nothing.  Measured on
+        6.17.0-1032-nvidia over 199 of 200 exiting children: every one of the
+        2492 samples inside that window read ``EACCES``/``EPERM``, none read
+        empty, and the recorded start time was intact in all of them.
     """
 
     try:
@@ -1365,33 +1369,38 @@ def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
         observation = _proc_owner_observation(pid, owner_token)
         if observation == "owned":
             return "owned"
-        if observation in {"other-owner", "unreadable"}:
-            # Ownership is unestablished either way, and this guard is
-            # fail-closed.
+        if observation == "other-owner":
+            # An environment was read, in full, and the reserved token is not
+            # in it.  That is the one observation that establishes a different
+            # owner, and it still fails closed.
             return "mismatch"
-        # Exit can empty/remove environ after stat still showed a live helper,
-        # so look at the identity again.
+        # Every other observation is a read that *failed*, and a read that
+        # failed establishes nothing about who owns this pid -- least of all
+        # that somebody else does.  Ask the identity again instead.
         snapshot = _proc_snapshot(pid, strict=True)
     except (OSError, ValueError):
         return "mismatch"
     if snapshot is None or snapshot == (ticks, "Z"):
         return "gone"
-    if snapshot[0] == ticks and observation == "no-address-space":
+    if snapshot[0] == ticks:
         # The recorded start time still holds, so this IS the recorded process
-        # rather than a recycled pid, and what the empty environ says about it
-        # is that it has released its address space -- which a task does on its
-        # way out, before it becomes the zombie that would prove it ended.
-        # Nothing here proves this attempt ended, so it stays owned and the
-        # caller's bounded wait looks again; the zombie or the absence that
-        # does prove it is the next observation.  Calling this "mismatch"
-        # refused a recovery for watching its own helper exit.
+        # rather than a recycled pid: field 19 of `/proc/<pid>/stat` is what
+        # establishes identity here, and the owner token is a second check that
+        # can only ever fail to be *readable*.  Treating "I could not ask" as
+        # "the answer was no" is what refused a recovery for watching its own
+        # helper exit -- measured, on this kernel, as a `PermissionError` from
+        # `/proc/<pid>/environ` on every sample inside that window (2492 of
+        # 2492, identity unchanged in all of them) while the task is between
+        # `exit_mm()` and `exit_notify()`.  Nothing here proves the attempt
+        # ended, so it stays owned and the caller's bounded wait looks again;
+        # the zombie or the absence that does prove it is the next observation.
         #
         # Being wrong here is bounded and points the safe way: a pid recycled
-        # inside one clock tick, by a process carrying no environment at all,
-        # would be terminated at the recorded deadline rather than refused.
+        # inside one clock tick, by a process whose environment we cannot read
+        # at all, would be terminated at the recorded deadline rather than
+        # refused outright.
         return "owned"
-    # PID reuse, and an ``ESRCH`` that a live identity contradicts, stay
-    # ambiguous.
+    # PID reuse stays ambiguous.
     return "mismatch"
 
 

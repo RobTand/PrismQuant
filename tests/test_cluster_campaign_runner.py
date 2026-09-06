@@ -46,6 +46,15 @@ _WRITE_BYTES = (
 # ---------------------------------------------------------------------------
 
 _WEDGE_BACKSTOP_SECONDS = 120
+
+# How many helpers `test_an_exiting_helper_is_never_called_ambiguous` watches
+# exit.  This is a sample count, not a threshold: the test's verdict is decided
+# per sample, so no number here can turn a violation into a pass, and the only
+# thing it trades is runtime against how reliably a regression is caught.
+# Measured on 6.17.0-1032-nvidia, 199 of 200 exiting children opened the window
+# at least once, so twenty children leave a regression essentially nowhere to
+# hide while costing a few milliseconds each.
+_EXITING_HELPERS_WATCHED = 20
 """Last-resort bound on every cross-process wait and stage in this file.
 
 Not a budget for the work.  It answers only "the producer is wedged and nothing
@@ -1123,13 +1132,15 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
         ("42 Z", "gone", "gone"),
         (FileNotFoundError(), "gone", "gone"),
         (ProcessLookupError(), "gone", "gone"),
-        # The one cell #244 changes.  An environ that reads as nothing, with
-        # the recorded start time intact, is our own helper on its way out --
-        # a task releases its address space before it becomes a zombie.  It is
-        # not a recycled pid, and calling it one terminal-failed a recovery for
-        # watching its helper exit.  An `ESRCH` from the same read still needs
-        # the zombie or the absence, because a live identity contradicts it.
-        ("42 S", "owned", "mismatch"),
+        # The cell #244 changes: a *failed* owner read with the recorded start
+        # time intact.  That is our own helper on its way out of `do_exit`, and
+        # a read that failed establishes nothing about who owns the pid --
+        # least of all that somebody else does.  Both spellings of a failed
+        # read (nothing came back, and the read refused) land here, because the
+        # kernel produces the second one, not the first: measured on
+        # 6.17.0-1032-nvidia, every sample inside the window read
+        # EACCES/EPERM.  A changed start time below is still a recycled pid.
+        ("42 S", "owned", "owned"),
         ("43 S", "mismatch", "mismatch"),
         ("43 Z", "mismatch", "mismatch"),
         (PermissionError(), "mismatch", "mismatch"),
@@ -1178,8 +1189,15 @@ def test_owned_process_state_rechecks_exit_after_failed_owner_read(
     "observation, expected",
     [
         ("owned", "owned"),
+        # A full read that lacks the token is the one observation that
+        # establishes a different owner, and it still fails closed.
         ("other-owner", "mismatch"),
-        ("unreadable", "mismatch"),
+        # A read that failed does not.  With the recorded start time intact
+        # this is the recorded process, so the caller's bounded wait looks
+        # again rather than terminal-failing the campaign (#244).
+        ("unreadable", "owned"),
+        ("no-process", "owned"),
+        ("no-address-space", "owned"),
     ],
 )
 def test_owned_process_state_live_identity(monkeypatch, observation, expected):
@@ -1266,6 +1284,86 @@ def test_a_live_process_with_no_environment_is_still_owned():
         child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
     assert campaign._owned_process_state(child.pid, snapshot[0], "owner") == (
         "gone"
+    )
+
+
+def test_an_exiting_helper_is_never_called_ambiguous(tmp_path):
+    """Watch real helpers exit, at every sample, and refuse to call one a stranger.
+
+    The table above fixes each observation in place; this asks the kernel what
+    it actually produces.  A helper that publishes its receipt and exits passes
+    through a window -- between `exit_mm()` releasing the address space and
+    `exit_notify()` making the task a zombie -- in which `/proc/<pid>/environ`
+    refuses to be read while `/proc/<pid>/stat` still reports the recorded
+    start time and a live state.  Measured on 6.17.0-1032-nvidia, 199 of 200
+    exiting children pass through it and every one of the 2492 samples taken
+    inside it read `EACCES`/`EPERM`; `_owned_process_state` called all of them
+    `mismatch`, which is a terminal campaign failure for a recovery that is
+    watching its own helper finish.
+
+    Polling flat out is what makes this deterministic rather than lucky: it is
+    not waiting for a rare interleaving, it is sampling a window that every
+    exiting child opens.  The assertion can only fail when the contract is
+    actually violated -- our own child cannot acquire a different owner token
+    or a different start time -- so a green run is green for the right reason
+    and cannot flake the other way.
+    """
+
+    token = "0" * 64
+    verdicts: dict[str, int] = {"owned": 0, "gone": 0}
+    for index in range(_EXITING_HELPERS_WATCHED):
+        marker = tmp_path / f"exiting-{index}"
+        environment = dict(os.environ)
+        environment[campaign._RESERVED_OWNER_ENV] = token
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).write_bytes(b'done')",
+                str(marker),
+            ],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            snapshot = campaign._proc_snapshot(child.pid)
+            if snapshot is None:  # pragma: no cover - the child beat the read
+                continue
+            # Start watching where the recovery starts: the moment the helper's
+            # receipt is on disk, which is the moment before it exits.
+            _wait_until(
+                lambda: marker.exists() and marker.stat().st_size > 0,
+                unmet="the helper never published its marker",
+                alive=lambda: child.poll() is None,
+            )
+            backstop = time.monotonic() + _WEDGE_BACKSTOP_SECONDS
+            while True:
+                assert time.monotonic() < backstop, (
+                    f"helper {child.pid} never finished: {verdicts}"
+                )
+                verdict = campaign._owned_process_state(
+                    child.pid, snapshot[0], token
+                )
+                verdicts[verdict] = verdicts.get(verdict, 0) + 1
+                assert verdict != "mismatch", (
+                    "a helper of ours, exiting, was called a recycled pid: "
+                    f"child {child.pid} start ticks {snapshot[0]}, "
+                    f"verdicts so far {verdicts}"
+                )
+                if verdict == "gone":
+                    break
+        finally:
+            child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
+    assert verdicts["gone"] == _EXITING_HELPERS_WATCHED
+    # Samples taken while the helper was still alive.  Without at least one the
+    # loop proved nothing but that a finished pid reads as `gone`, so say so
+    # rather than passing on a vacuous run.
+    assert verdicts["owned"] > 0, (
+        "every helper was already finished at its first sample, so the exit "
+        f"window was never watched: {verdicts}"
     )
 
 

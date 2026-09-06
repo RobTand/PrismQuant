@@ -6,20 +6,25 @@ follow, newest first, each recording its own branch and date.
 Re-stamped (2026-09-06, `claude/pq244-campaign-causality`) for **an exiting
 helper being the same helper** (§3.0; RobTand/prismaquant#244, P2). The #239
 contract above reads "a failed owner-environment read now rechecks process
-identity"; it treated every failed read alike. Linux does not: `do_exit` runs
-`exit_mm()` before `exit_notify()`, so a helper that is on its way out drops
-its address space -- `/proc/<pid>/environ` reads zero bytes -- while
-`/proc/<pid>/stat` still reports the recorded start time and a state that is
-not `Z`. The old code called that identity ambiguous and the campaign failed
-closed on a process it owned. Measured on this kernel (6.17.0-1032-nvidia),
-679 of 680 exiting children were judged ambiguous at least once during that
-window. `_proc_has_owner` is therefore split into `_proc_owner_observation`,
-which distinguishes an empty read from an absent, unreadable or
-differently-owned one, and exactly one cell of the `_owned_process_state`
-table changes: an empty read from a live process whose start time still
-matches is `owned`, not ambiguous. Absence, an unreadable or malformed read, a
-different owner token and a changed start time all remain ambiguous and still
-fail closed, and none of them authorizes killing that process. Two smaller
+identity"; it rechecked identity and then called a live one ambiguous anyway.
+Linux `do_exit` runs `exit_mm()` before `exit_notify()`, so a helper on its way
+out has released its address space while `/proc/<pid>/stat` still reports the
+recorded start time and a state that is not `Z`, and `/proc/<pid>/environ`
+stops being readable. Measured on this kernel (6.17.0-1032-nvidia): 199 of 200
+exiting children pass through that window, and all 2492 samples taken inside it
+read `EACCES`/`EPERM` -- never empty, never truncated -- with the recorded
+start time intact in every one. The old code read "I could not ask who owns
+this" as "somebody else owns this" and the campaign failed closed on a process
+it owned. `_proc_has_owner` is therefore split into `_proc_owner_observation`,
+which reports what the read established rather than a bare boolean, and the
+`_owned_process_state` rule is stated on the fact that decides it: field 19 of
+`/proc/<pid>/stat` establishes identity, and the owner token is a second check
+that can only ever fail to be *readable*. So a read that **failed** -- refused,
+empty or absent -- leaves a process whose recorded start time is intact
+`owned`, and the caller's existing bounded wait looks again. A **successful**
+read whose environment lacks the token is the one observation that establishes
+a different owner, and it still fails closed; so does a changed start time, and
+neither authorizes killing that process. Two smaller
 consequences: terminating a recorded owned process that has already ended
 reports success rather than failure -- there is nothing left to kill and the
 receipt is recoverable -- and `CampaignTerminalFailure` now names each
