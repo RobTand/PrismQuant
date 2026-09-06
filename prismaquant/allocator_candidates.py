@@ -1922,6 +1922,7 @@ def reduce_continuous_menu(
     *,
     bit_precision: float | None = None,
     report: dict | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> dict[str, list[Candidate]]:
     """Shrink a continuous per-unit menu without changing the DP's answer.
 
@@ -1949,6 +1950,18 @@ def reduce_continuous_menu(
     Tessera rung on the menu is byte-identical to one built before this
     function existed.
     """
+    # Until whole-operator measurements are attached, no byte/loss comparison
+    # can prove runtime dominance. The measured solver owns that reduction.
+    if preserve_runtime_frontier:
+        if report is not None:
+            report.update({
+                "runtime_frontier_preserved": True,
+                "reduction": "deferred_to_measured_runtime_solver",
+                "bit_precision": None,
+                "units": len(candidates),
+                "rungs_menu": sum(map(len, candidates.values())),
+            })
+        return {name: list(rows) for name, rows in candidates.items()}
     from .tessera_formats import format_promotion_class
     from .tessera_menu import collapse_to_dp_bins, prune_dominated
 
@@ -2072,6 +2085,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      bit_precision: float | None = None,
                      tessera_menu_report: dict | None = None,
                      context_by_unit: Mapping[str, ServingContext] | None = None,
+                     preserve_runtime_frontier: bool = False,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -2382,6 +2396,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
         stats,
         bit_precision=bit_precision,
         report=tessera_menu_report,
+        preserve_runtime_frontier=preserve_runtime_frontier,
     )
     return out
 
@@ -2827,6 +2842,7 @@ def tessera_group_composites(
     licence,
     ucb_z: float = 0.0,
     report: dict | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> list["Candidate"]:
     """The group's exact knapsack, over the fields the CONTRACT frees (#132).
 
@@ -2974,17 +2990,25 @@ def tessera_group_composites(
             "enable uncertainty repricing for mixed-rung options."
         )
 
+    # A fused runtime measurement prices the complete member recipe. Without
+    # that measurement even an intermediate byte/loss-dominated combination
+    # may be uniquely fastest. Preserve all coherent combinations, with the
+    # existing explicit memory guard, until the runtime solver can price them.
+    reduce_rows = (
+        (lambda rows: sorted(rows, key=lambda row: (row[0], row[1], row[2])))
+        if preserve_runtime_frontier else _pareto_frontier
+    )
     out: list["Candidate"] = []
     index = 0
     for cell in sorted(shared_classes):
         family, signature = cell
         frontier = [
             (bytes_, cost, (fmt,))
-            for bytes_, cost, fmt in _pareto_frontier(by_member[0][cell])
+            for bytes_, cost, fmt in reduce_rows(by_member[0][cell])
         ]
         sizes = [len(frontier)]
         for cells in by_member[1:]:
-            member_rows = _pareto_frontier(cells[cell])
+            member_rows = reduce_rows(cells[cell])
             pairs = len(frontier) * len(member_rows)
             if pairs > _GROUP_FOLD_MAX_PAIRS:
                 raise AssertionError(
@@ -2996,7 +3020,7 @@ def tessera_group_composites(
                     "menu first (reduce_continuous_menu) -- truncating here "
                     "would make an exact construction silently approximate."
                 )
-            frontier = _pareto_frontier([
+            frontier = reduce_rows([
                 (a_bytes + b_bytes, a_cost + b_cost, a_fmts + (b_fmt,))
                 for a_bytes, a_cost, a_fmts in frontier
                 for b_bytes, b_cost, b_fmt in member_rows
@@ -3020,6 +3044,8 @@ def tessera_group_composites(
                 "member_menu": [len(c[cell]) for c in by_member],
                 "fold_frontier": sizes,
                 "options": len(frontier),
+                **({"runtime_frontier_preserved": True}
+                   if preserve_runtime_frontier else {}),
             }
     if report is not None:
         report["__licence__"] = _fused_licence_stamp(
@@ -3043,6 +3069,7 @@ def aggregate_fused_siblings(
     profile,
     calibrated_gains: dict[str, float] | None = None,
     activation_pricing: ActivationFairPricing | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> tuple[dict, dict, dict]:
     """Aggregate fused siblings into single DP items.
 
@@ -3362,7 +3389,8 @@ def aggregate_fused_siblings(
         composites = (
             tessera_group_composites(
                 members, candidates, n_params, licence=fused_licence,
-                ucb_z=ucb_z, report=group_report)
+                ucb_z=ucb_z, report=group_report,
+                preserve_runtime_frontier=preserve_runtime_frontier)
             if fold_enabled and columns_reason is None else []
         )
         if columns_reason is not None:
@@ -3563,6 +3591,7 @@ def aggregate_packed_serving_groups(
     profile,
     calibrated_gains: dict[str, float] | None = None,
     activation_pricing: ActivationFairPricing | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> tuple[dict, dict, dict]:
     """Aggregate packed-MoE serving groups into single DP decision units.
 

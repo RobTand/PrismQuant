@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/cluster-recovery-delivery`. Stamps
+As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the optional runtime
+frontier preservation contract (#237). Candidate construction and fused
+Tessera folding accept `preserve_runtime_frontier=True`: byte/loss dominance
+and DP-bin collapse are deferred until whole-operator timings are attached.
+The fold keeps every licensed coherent member recipe under its existing
+explicit combination cap; it refuses excess work instead of truncating the
+menu. Defaults retain the previous byte/loss reductions. This plumbing does
+not supply timing measurements or establish an end-to-end SLO.
 
 Re-stamped (2026-09-05, `codex/cluster-recovery-delivery`) for coordinator
 recovery across helper exit (PrismaQuant #239). A failed owner-environment
