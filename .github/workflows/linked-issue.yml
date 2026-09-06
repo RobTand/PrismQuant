@@ -1,0 +1,39 @@
+name: Linked issue policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+# The workflow is loaded from the default branch and only reads PR metadata.
+# It checks out the trusted base commit so the validator is never sourced from
+# the pull request head. No repository code or contributor-supplied command is
+# executed.
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: linked-issue-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: publish linked-issue policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted base policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Evaluate and publish check on pull request head
+        uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9.0.0
+        with:
+          script: |
+            const policy = require("./.github/scripts/linked_issue.cjs");
+            await policy.run({ github, context, core });

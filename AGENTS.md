@@ -4,6 +4,15 @@ These rules are mandatory for coding agents working in this repository.
 Before implementing new functionality, read this file,
 `docs/design/design_guidelines.md`, and `docs/ARCHITECTURE.md`.
 
+## Repository change delivery
+
+Every change to `main` must start with an issue in this repository and arrive
+through a pull request. Never push commits directly to `main`. Put a supported
+closing reference such as `Closes #123` in the pull request description so
+GitHub links the issue through its native closing-issue relationship. A plain
+mention, a pull request number, a nonexistent number, or an issue in another
+repository does not satisfy the required `linked issue` check.
+
 ## Core Principles
 
 1. **GPU-bound by default.** Production probes, cache fills, recache,
