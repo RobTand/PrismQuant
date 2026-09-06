@@ -96,6 +96,49 @@ def test_linear_attn_child_layer_idx_config_resolves():
     assert _layer_attention_type(layer) == "linear_attention"
 
 
+def _lfm_cfg():
+    # LFM2.5's schedule: a short-convolution mixer on most layers, GQA on the
+    # rest. `_compute_attention_mask` already keys its dict on these strings.
+    cfg = PreTrainedConfig()
+    cfg.is_causal = True
+    cfg.layer_types = ["conv", "full_attention"]
+    cfg._attn_implementation = "eager"
+    return cfg
+
+
+def test_conv_mixer_child_names_an_lfm_layer():
+    # RobTand/prismaquant#276: Lfm2MoeDecoderLayer carries no layer_type and
+    # no attention module on a conv layer -- only `self.conv`, which holds
+    # the layer_idx and the config the generic fallback needs.
+    layer = nn.Module()
+    layer.conv = nn.Module()
+    layer.conv.layer_idx = 0
+    layer.conv.config = _lfm_cfg()
+    assert _layer_attention_type(layer) == "conv"
+
+
+def test_lfm_conv_and_attention_layers_get_different_mask_entries():
+    # The whole point of naming the layer: the conv layer must receive the
+    # recurrent padding entry and the attention layer the dense causal one.
+    cfg = _lfm_cfg()
+    conv_layer = _RecorderLayer()
+    conv_layer.conv = nn.Module()
+    conv_layer.conv.layer_idx = 0
+    conv_layer.conv.config = cfg
+    attn_layer = _RecorderLayer()
+    attn_layer.self_attn = nn.Module()
+    attn_layer.self_attn.layer_idx = 1
+    attn_layer.self_attn.config = cfg
+    masks = {"full_attention": torch.zeros(1, 1, 2, 2), "conv": torch.ones(1, 2)}
+    hidden = torch.zeros(1, 2, 4)
+    _call_layer(conv_layer, hidden, position_embeddings=None,
+                attention_mask=masks, position_ids=None)
+    _call_layer(attn_layer, hidden, position_embeddings=None,
+                attention_mask=masks, position_ids=None)
+    assert conv_layer.received_mask is masks["conv"]
+    assert attn_layer.received_mask is masks["full_attention"]
+
+
 def test_unknown_self_attn_layer_fails_closed():
     # A layer whose type cannot be resolved must stay unresolved (None) and
     # make _call_layer raise — never silently assume full_attention.
