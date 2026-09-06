@@ -96,6 +96,9 @@ from pathlib import Path
 from . import format_registry as fr
 from .tessera_menu import (
     expand_menu_tokens_report,
+    menu_mode,
+    menu_width_report,
+    partition_attested,
     surrogate_selection_caveat,
 )
 from .allocator_solver import (
@@ -2561,19 +2564,17 @@ def main():
     tessera_menu_widths: dict = {}
     if priced_tessera:
         kept = [n for n in fmt_names if n.startswith("TESSERA_")]
+        # The count is the admission predicate's, not the caller's: an
+        # explicitly named rung stays on the menu so the eligibility gate can
+        # refuse it out loud, and it is not "attested" until then (#278).
+        admitted, explicit_unattested = partition_attested(
+            kept, **({"context_by_unit": tessera_context_by_unit}
+                     if tessera_context_by_unit is not None else {}))
+        widths, line = menu_width_report(
+            priced_tessera, admitted, unattested, explicit_unattested, menu_mode())
         if kept:
-            tessera_menu_widths = {
-                "priced_rungs": len(priced_tessera),
-                "attested_rungs": len(kept),
-                "dropped_unattested_rungs": len(unattested),
-            }
-        print(
-            f"[alloc] Tessera menu: {len(kept)} of {len(priced_tessera)} priced "
-            f"rungs are attested by the pinned runtime"
-            + (f" ({len(unattested)} dropped as unattested)" if unattested else "")
-            + (f"; sample: {kept[:4]}" if kept else ""),
-            flush=True,
-        )
+            tessera_menu_widths = widths
+        print(line, flush=True)
         # The measured status of the ranking this DP is about to do. Printed
         # here rather than at the end because it governs how the whole run's
         # output is to be read, and stamped into provenance below because a

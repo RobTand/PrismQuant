@@ -1446,6 +1446,62 @@ def expand_menu_tokens_report(names, priced_formats=(), *, context_by_unit=None)
     return out, ([] if not any(str(n) == MENU_TOKEN for n in names) else dropped)
 
 
+def partition_attested(names, *, context_by_unit=None) -> tuple[list[str], list[str]]:
+    """``(admitted, refused)`` over the Tessera names actually on a menu.
+
+    The menu token narrows itself through ``format_is_producer_eligible``
+    (above). An explicitly named rung is kept on the menu on purpose so the
+    eligibility gate refuses it out loud -- but counting it as attested before
+    that gate runs was a producer-side claim with no contract read behind it
+    (#278): the allocator printed "3 of 3 priced rungs are attested" one line
+    before refusing all three. Same predicate, third use; nothing here reads
+    the contract a second way.
+    """
+    from . import format_registry as fr
+
+    if context_by_unit is not None:
+        context_by_unit = {context.key(): context for context in context_by_unit.values()
+                           if context is not None}
+    admitted: list[str] = []
+    refused: list[str] = []
+    for name in names:
+        name = str(name)
+        if not name.startswith("TESSERA_"):
+            continue
+        eligible = fr.format_is_producer_eligible(name, **(
+            {"context_by_unit": context_by_unit} if context_by_unit is not None else {}))
+        (admitted if eligible else refused).append(name)
+    return admitted, refused
+
+
+def menu_width_report(priced, admitted, dropped, explicit_refused, mode) -> tuple[dict, str]:
+    """The provenance widths and the one log line for a Tessera menu.
+
+    ``attested_rungs`` counts what the admission predicate admitted, not what
+    the caller named. Under research mode the predicate admits unattested
+    rungs by design, so the line says "admitted under research mode" rather
+    than "attested by the pinned runtime": the count is honest either way,
+    the label says which question it answers.
+    """
+    research = mode == MENU_RESEARCH
+    widths = {
+        "priced_rungs": len(priced),
+        "attested_rungs": 0 if research else len(admitted),
+        "research_admitted_rungs": len(admitted) if research else 0,
+        "dropped_unattested_rungs": len(dropped),
+        "explicit_unattested_rungs": len(explicit_refused),
+        "menu_mode": mode,
+    }
+    label = ("admitted under PRISMAQUANT_TESSERA_MENU=research (not attested by the "
+             "pinned runtime)" if research else "attested by the pinned runtime")
+    line = (f"[alloc] Tessera menu: {len(admitted)} of {len(priced)} priced rungs are {label}"
+            + (f" ({len(dropped)} dropped as unattested)" if dropped else "")
+            + (f" ({len(explicit_refused)} explicitly named rungs are unattested; "
+               "the eligibility gate refuses them below)" if explicit_refused else "")
+            + (f"; sample: {list(admitted)[:4]}" if admitted else ""))
+    return widths, line
+
+
 #: How a family's rungs are priced. Today every family answers the same way,
 #: and the value of naming it per family is that the answer is a property OF
 #: the family rather than a global assumption -- Tessera's embedded axis is a
