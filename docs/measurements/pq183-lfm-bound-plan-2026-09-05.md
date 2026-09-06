@@ -327,3 +327,45 @@ The minimum expert support is 13 routed rows; nonzero support for all experts
 does not mean full-rank Hessians or certified quantization quality. Existing
 no-row and Hessian gates remain unchanged. Attempt 05 uses fresh `run183-05`
 output and production cache; all earlier observations remain in the results doc.
+
+## Frozen campaign continuation after attempt 05
+
+Attempt 05 completed the declared 96-unit campaign and wrote its fixed
+assignment before export preflight refused the shared string-format parser.
+The opt-in continuation preserves those exact cost, assignment, recipe, Hessian
+and priced wire bytes. It performs no campaign, allocation or quantization.
+The parser repair must be integrated into the fresh source snapshot first.
+
+The `seal-campaign` stage, executed through PB as offline input preparation,
+writes an externally pinned SHA-256 manifest outside the original run. Its
+106-file consumed roster comprises cost/assignment/recipe, five prior execution
+and image receipts, the Hessian capture and provenance, and 96 priced wires.
+It requires the successful campaign receipt, complete measured scope, unchanged
+calibration/runtime identities and safe prior container cleanup. Unused static
+input scales and rendered-cache copies are excluded; the E4M3 exporter does
+not consume them. The original run remains mounted read-only at its original
+absolute path, preserving paths already embedded in the priced receipts.
+
+Add `--campaign-input /absolute/run183-05`,
+`--campaign-input-manifest /absolute/run183-05-inputs.json` and
+`--campaign-input-manifest-sha256 <sealed-sha256>` to the existing `host`
+invocation, with a fresh `--out`. The deterministic remaining phase graph is
+shared assignment/Hessian/source preflight, cached export, artifact seal,
+census and its gate, paired serving smoke, and final byte/output check. Existing
+deadline, Netdata, runtime/source identity and exact-container cleanup remain
+in force; PB retains sole responsibility for admission and placement.
+
+Preflight uses the unchanged copied assignment and reads original H/wires.
+Only after that gate passes, the continuation copies the validated 96 wire
+blobs into a fresh transport bundle and calls the existing cached-unit writer.
+Build serialization matches the shared CLI's sorted, indented JSON plus newline;
+its digest comes from the bytes written by this action. The original cost and
+assignment are copied byte-for-byte; old campaign and new continuation snapshot
+heads are recorded together. Every phase checks the frozen input seal before
+and after execution. Fresh outputs retain failures without overwriting the
+original run or requiring an agent between phases.
+
+`tests/test_pq183_continuation.py` supplies portable, offline stdlib fixtures for
+this transport and refusal contract. Fixture success does not qualify actual
+Hessian numerics, exporter output, or serving behavior; those gates run in the
+admitted continuation with the actual image, model and sealed campaign.

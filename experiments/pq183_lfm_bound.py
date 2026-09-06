@@ -17,6 +17,7 @@ from pathlib import Path
 import pickle
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -228,6 +229,11 @@ def build(args):
                "--write-cached-expert-units", "--print-build-sha256", *SCOPE],
               "preflight", capture=True)
     require(re.fullmatch(r"[0-9a-f]{64}", build_sha), "preflight did not return its owned build digest")
+    export_from_build(args, hessian, build_sha)
+
+
+def export_from_build(args, hessian, build_sha):
+    """The existing plan/export/seal handoff, also used by a frozen continuation."""
     build_record = read(args.out / "build.json")
     require(build_record.get("cached_expert_units"), "preflight did not bind cached expert units")
     run(args, [sys.executable, args.tessera_repo / "experiments/plan_from_layer_config.py",
@@ -240,6 +246,183 @@ def build(args):
                "--hessian", hessian, "--cached-expert-units", build_record["cached_expert_units"],
                "--device", "cuda"], "export")
     seal(args)
+
+
+def campaign_input_description(root, *, hash_files=True):
+    """The consumed run05 population and input roster, without loading a model."""
+    root = Path(root)
+    with (root / "cost.pkl").open("rb") as stream:
+        data = pickle.load(stream)  # Only the owned campaign's sealed output.
+    config = read(root / "layer_config.json")
+    meta, costs, prov = config["__prismaquant__"], data["costs"], data["provenance"]
+    recipe, command, previous = (read(root / name) for name in
+                                 ("recipe.json", "campaign.command.json", "host-status.json"))
+    require(command.get("exit_code") == 0, "prior campaign did not exit successfully")
+    argv = command["argv"]
+    for flag, value in {"--menu-mode": "attested", "--anchors": "1", "--max-rounds": "1",
+                        "--anchor-budget": "1", "--nsamples": "32", "--seqlen": "512",
+                        "--seed": "0", "--max-act-rows": "512", "--layer-stride": "13",
+                        "--hessian": "require", "--tp-degree": "1"}.items():
+        require(argv.count(flag) == 1 and argv[argv.index(flag) + 1] == value,
+                f"prior campaign changed its declared calibration/scope flag {flag}")
+    require(set(costs) == EXPECTED_UNITS, "prior campaign is not the complete measured 96-unit population")
+    receipts = meta["tessera_expert_wires"]
+    require(set(receipts) == EXPECTED_UNITS, "prior assignment does not carry exactly 96 priced wires")
+    require(meta["tessera_expert_stack_formats"] == {STACK: "TESSERA_E4M3_K1_R1024"},
+            "prior assignment differs from the frozen whole-stack recipe")
+    for name, rows in costs.items():
+        fmt = config[name]
+        require(fmt == "TESSERA_E4M3_K1_R1024" and set(rows) == {fmt},
+                f"{name}: prior campaign/assignment changed rung")
+        row = rows[fmt]
+        require(row.get("output_mse_measured") is True
+                and row.get("hessian_identity", {}).get("applied") is True
+                and row["wire_bytes"] == receipts[name]["blob_bytes"],
+                f"{name}: prior row is not the measured H-aware priced wire")
+        require(data["tessera_expert_wires"][name][fmt] == receipts[name],
+                f"{name}: assignment receipt differs from the measured cost payload")
+    require(all(value == "BF16" for name, value in config.items()
+                if name not in EXPECTED_UNITS and name != "__prismaquant__"),
+            "prior assignment changed an unpriced unit")
+    cost_sha = sha(root / "cost.pkl")
+    require(recipe.get("selected_units") == 96
+            and recipe["cost_sha256"] == meta["measurement_recipe"]["cost_sha256"] == cost_sha,
+            "prior recipe is not bound to this complete cost payload")
+    target = {"platform": "sm_121", "runtime_image": IMAGE,
+              "execution_mode": "eager", "residency": "resident"}
+    require(meta["tessera_serving_scope"] == prov["tessera_serving_scope"]
+            and meta["tessera_serving_scope"]["target"] == target,
+            "prior measured scope differs from the continuation target")
+    require(previous["producer_image_id"] == PRODUCER_IMAGE
+            and previous["serving_image"] == IMAGE
+            and previous["tessera_source"]["commit"] == TESSERA_COMMIT,
+            "prior producer/source/serving runtime differs")
+    require(re.fullmatch(r"[0-9a-f]{40}", previous["source_snapshot"])
+            and previous.get("cleanup") and all(item.get("safe") is True
+                                                 for item in previous["cleanup"].values()),
+            "prior source snapshot or completed container cleanup is unverified")
+    verify_producer_image(read(root / "producer-image.json"), PRODUCER_IMAGE)
+    require(IMAGE in read(root / "serving-image.json").get("RepoDigests", []),
+            "prior serving image receipt lacks the exact target digest")
+    require(read(root / "producer-dependencies.json")["passed"] is True,
+            "prior producer dependency preflight failed")
+    wire_dir = Path(meta["tessera_expert_wire_dir"])
+    require(str(wire_dir) == prov["wire_dir"] and wire_dir.parent.parent == root,
+            "prior wire paths do not belong to the declared original campaign root")
+    hessian = Path(prov["hessian"]["capture_path"])
+    require(hessian.is_relative_to(root), "prior Hessian path escapes the campaign")
+    files = {"cost.pkl", "layer_config.json", "recipe.json", "campaign.command.json",
+             "host-status.json", "producer-image.json", "serving-image.json", "producer-dependencies.json",
+             str(hessian.relative_to(root)), str(hessian.relative_to(root)) + ".provenance.json"}
+    wire_files = set()
+    for record in receipts.values():
+        require(Path(record["file"]).name == record["file"], "priced wire file is not a local leaf")
+        rel = str((wire_dir / record["file"]).relative_to(root))
+        require(rel not in wire_files, "two priced units share a wire file")
+        wire_files.add(rel)
+    require(len(wire_files) == 96, "prior wire roster is incomplete")
+    files.update(wire_files)
+    hashes = {}
+    for name in sorted(files):
+        path = root / name
+        require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(root.resolve()),
+                f"campaign input is not a contained regular file: {name}")
+        hashes[name] = sha(path) if hash_files else None
+    if hash_files:
+        for record in receipts.values():
+            path = wire_dir / record["file"]
+            require(hashes[str(path.relative_to(root))] == record["blob_sha256"]
+                    and path.stat().st_size == record["blob_bytes"], "prior wire differs from its priced receipt")
+    return {"schema": "prismaquant.pq183-campaign-inputs.v1", "campaign_root": str(root),
+            "campaign_source_snapshot": previous["source_snapshot"],
+            "tessera_source": previous["tessera_source"], "producer_image_id": PRODUCER_IMAGE,
+            "serving_target": target, "measured_units": 96, "priced_wires": 96,
+            "files": hashes}
+
+
+def verify_campaign_inputs(args):
+    require(args.campaign_input and args.campaign_input_manifest and args.campaign_input_manifest_sha256,
+            "continuation requires the original campaign root and a sealed input manifest/digest")
+    require(args.campaign_input.is_absolute() and args.campaign_input != args.out
+            and not args.out.is_relative_to(args.campaign_input), "continuation output must be fresh and outside its input")
+    require(sha(args.campaign_input_manifest) == args.campaign_input_manifest_sha256,
+            "campaign input manifest changed")
+    manifest = read(args.campaign_input_manifest)
+    require(manifest.get("schema") == "prismaquant.pq183-campaign-inputs.v1"
+            and manifest.get("campaign_root") == str(args.campaign_input), "wrong campaign input seal")
+    require(isinstance(manifest.get("files"), dict)
+            and {"cost.pkl", "layer_config.json"} <= set(manifest["files"]),
+            "campaign seal omits the authoritative cost/assignment inputs")
+    for name, digest in manifest["files"].items():
+        path = args.campaign_input / name
+        require(not Path(name).is_absolute() and ".." not in Path(name).parts
+                and path.resolve().is_relative_to(args.campaign_input.resolve())
+                and not path.is_symlink() and path.is_file(), "campaign input escaped its sealed root")
+        require(sha(path) == digest, f"frozen campaign input changed: {name}")
+    # The bound pickle is read only AFTER its expected digest was verified.
+    described = campaign_input_description(args.campaign_input, hash_files=False)
+    require(set(described["files"]) == set(manifest["files"])
+            and {key: value for key, value in described.items() if key != "files"}
+            == {key: value for key, value in manifest.items() if key != "files"},
+            "campaign input roster, source, scope or measured completion differs")
+    return manifest
+
+
+def seal_campaign(args):
+    """Offline input preparation, run through PB before continuation admission."""
+    require(args.campaign_input and args.campaign_input_manifest,
+            "seal-campaign requires --campaign-input and --campaign-input-manifest")
+    require(not args.campaign_input_manifest.resolve().is_relative_to(args.campaign_input.resolve()),
+            "write the input seal outside the immutable original campaign")
+    manifest = campaign_input_description(args.campaign_input)
+    write(args.campaign_input_manifest, manifest)
+    print(json.dumps({"path": str(args.campaign_input_manifest),
+                      "sha256": sha(args.campaign_input_manifest), "measured_units": 96, "priced_wires": 96}))
+
+
+def continue_export(args):
+    """Export existing prices and bytes; never call the campaign or allocator."""
+    manifest = verify_campaign_inputs(args)
+    producer_preflight(args)
+    for name in ("cost.pkl", "layer_config.json", "recipe.json"):
+        destination = args.out / name
+        require(not destination.exists(), f"continuation output collision: {name}")
+        shutil.copyfile(args.campaign_input / name, destination)
+        require(sha(destination) == manifest["files"][name], f"copied input changed: {name}")
+    data = payload(args)
+    hessian = Path(data["provenance"]["hessian"]["capture_path"])
+    from prismaquant.tessera_export_lane import preflight, write_cached_expert_units
+    from prismaquant.tessera_serving_scope import ServingTarget
+    # The shared assignment/Hessian/source/wire gates run before any transport
+    # bundle is made. The old cache is read-only; only its writer is deferred.
+    report = preflight(args.model, assignment_path=args.out / "layer_config.json",
+                       hessian_path=hessian, target=ServingTarget(**manifest["serving_target"]),
+                       cached_expert_units=False)
+    write(args.out / "continuation-preflight.json", report)
+    projection = report["selected_serving_scope"]["expert_projection"]
+    require(set(projection["units"]) == EXPECTED_UNITS, "preflight did not validate all 96 priced wires")
+    bundle_dir = args.out / "cached-expert-units"
+    bundle_dir.mkdir()
+    for record in projection["units"].values():
+        original = Path(projection["wire_dir"]) / record["file"]
+        destination = bundle_dir / record["file"]
+        shutil.copyfile(original, destination)
+        require(sha(destination) == record["blob_sha256"] == sha(original), "wire transport copy changed")
+    cached = write_cached_expert_units({**projection, "wire_dir": str(bundle_dir)})
+    build_record = {**report["build"], "cached_expert_units": str(cached)}
+    build_bytes = (json.dumps(build_record, indent=2, sort_keys=True) + "\n").encode()
+    with (args.out / "build.json").open("xb") as stream:
+        stream.write(build_bytes)
+    write(args.out / "continuation.json", {
+        "input_manifest_sha256": args.campaign_input_manifest_sha256,
+        "campaign_source_snapshot": manifest["campaign_source_snapshot"],
+        "continuation_source_snapshot": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                                                cwd=REPO, text=True).strip(),
+        "assignment_unchanged": True, "cost_unchanged": True, "priced_wire_copies": 96,
+        "original_input_root": str(args.campaign_input), "original_inputs_mounted_read_only": True,
+        "reallocated": False, "requantized": False})
+    export_from_build(args, hessian, hashlib.sha256(build_bytes).hexdigest())
+    verify_campaign_inputs(args)
 
 
 def wire_audit(args):
@@ -439,6 +622,10 @@ def host(args):
             "declare both distinct Netdata URLs")
     require(args.seconds > 0, "deadline must be positive")
     require(args.producer_image, "host stage requires the host's explicit immutable producer image ID")
+    continuation_fields = (args.campaign_input, args.campaign_input_manifest,
+                           args.campaign_input_manifest_sha256)
+    require(all(continuation_fields) or not any(continuation_fields),
+            "continuation must declare the original campaign root, input manifest and digest together")
     require(not args.out.exists(), "host output exists; use a fresh attempt")
     args.out.mkdir(parents=True)
     deadline = time.monotonic() + args.seconds
@@ -542,6 +729,10 @@ def host(args):
     def phase(label, argv):
         state["phases"][label] = {"argv": list(map(str, argv)), "source": bound_source(),
                                    "started_unix": time.time()}
+        if args.campaign_input:
+            original = verify_campaign_inputs(args)
+            state["phases"][label]["campaign_input_manifest_sha256"] = args.campaign_input_manifest_sha256
+            state["campaign_source_snapshot"] = original["campaign_source_snapshot"]
         dump(args.out / "host-status.json", state)
         proc = None
         try:
@@ -560,6 +751,9 @@ def host(args):
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=10)
             state["phases"][label]["finished_unix"] = time.time()
+            if args.campaign_input:
+                verify_campaign_inputs(args)
+                state["phases"][label]["campaign_inputs_unchanged_after"] = True
             dump(args.out / "host-status.json", state)
 
     def producer_command(stage, name):
@@ -570,6 +764,9 @@ def host(args):
                 "--ipc=host", "--network=host", "-v", f"{REPO}:{REPO}:ro",
                 "-v", f"{args.tessera_repo}:{args.tessera_repo}:ro",
                 "-v", "/mnt/shared:/mnt/shared:ro", "-v", f"{args.model}:{args.model}:ro",
+                *(["-v", f"{args.campaign_input}:{args.campaign_input}:ro",
+                   "-v", f"{args.campaign_input_manifest}:{args.campaign_input_manifest}:ro"]
+                  if args.campaign_input else []),
                 "-v", f"{args.out}:{args.out}", "-w", str(REPO),
                 "-e", "OMP_NUM_THREADS=1", "-e", "MKL_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1",
                 "-e", "MAX_JOBS=4", "-e", "CMAKE_BUILD_PARALLEL_LEVEL=4",
@@ -580,7 +777,11 @@ def host(args):
                 "-e", f"TRITON_CACHE_DIR={args.out / 'triton'}", "--entrypoint", "python3",
                 args.producer_image, str(Path(__file__).resolve()), stage,
                 "--model", str(args.model), "--out", str(args.out),
-                "--tessera-repo", str(args.tessera_repo), "--tessera-commit", TESSERA_COMMIT]
+                "--tessera-repo", str(args.tessera_repo), "--tessera-commit", TESSERA_COMMIT,
+                *(["--campaign-input", str(args.campaign_input),
+                   "--campaign-input-manifest", str(args.campaign_input_manifest),
+                   "--campaign-input-manifest-sha256", args.campaign_input_manifest_sha256]
+                  if args.campaign_input else [])]
 
     def verify_artifact(label):
         from tessera.serving_parts import source_identity
@@ -621,7 +822,8 @@ def host(args):
         phase("instrument-preflight", [sys.executable, "-c", "import requests, tokenizers, numpy"])
         thread = threading.Thread(target=collect, daemon=True)
         thread.start()
-        phase("producer", producer_command("producer", names[0]))
+        phase("continue-export" if args.campaign_input else "producer",
+              producer_command("continue-export" if args.campaign_input else "producer", names[0]))
         verify_artifact("before-census")
         census = serve["commands"]["census"]
         boundary = census.index("--")
@@ -691,7 +893,7 @@ def host(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", choices=("host", "producer", "producer-preflight", "campaign",
-                                           "build", "seal", "check", "commands"))
+                                           "build", "seal", "check", "commands", "seal-campaign", "continue-export"))
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--tessera-repo", type=Path, required=True)
@@ -701,6 +903,9 @@ def main():
     parser.add_argument("--tessera-source-manifest", type=Path)
     parser.add_argument("--tessera-source-manifest-sha256")
     parser.add_argument("--producer-image", help="immutable local Docker ID; Config and RootFS are verified")
+    parser.add_argument("--campaign-input", type=Path, help="opt-in continuation of an unchanged completed campaign")
+    parser.add_argument("--campaign-input-manifest", type=Path)
+    parser.add_argument("--campaign-input-manifest-sha256")
     parser.add_argument("--seconds", type=int, default=7200)
     parser.add_argument("--netdata-url", action="append", default=[])
     args = parser.parse_args()
