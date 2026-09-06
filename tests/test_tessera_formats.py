@@ -52,7 +52,7 @@ REFERENCE_SHAPE = (4096, 4096)
 
 
 def _render_seam_weight(name, recipe=None):
-    """A complete rate superblock and two trellis histories, on the real wire.
+    """A complete rate superblock and at least two histories of the real trellis.
 
     These integration checks compare producer seams, not large-matrix
     throughput. Keep the default window width and real encoder, but derive a

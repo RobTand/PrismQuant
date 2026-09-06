@@ -1,0 +1,20 @@
+[
+  {
+    "path": "calibration/diverse-v1.jsonl",
+    "symlink": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "bytes": 4597898,
+    "sha256": "e09a138a4903c4af66a3bf2f9367185f3432224391f1dfe8c94ccc29d99315ba"
+  },
+  {
+    "path": "calibration/xdom-fit-v1.jsonl",
+    "symlink": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl",
+    "bytes": 7830216,
+    "sha256": "8425e172ee00a85c92795c6350c862de5c0c6f0b9d16b323c1fd4551d8b11058"
+  },
+  {
+    "path": "calibration/xdom-gate-v1.jsonl",
+    "symlink": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "bytes": 2454832,
+    "sha256": "d44ce5d5f8f263cd37c3c028528c08f5ca8a6960aaa698e225d6e56f18ccbc05"
+  }
+]

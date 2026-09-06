@@ -1,0 +1,40 @@
+{
+  "action_key": "102019b78608a13dea6a739dd4005254048cfbb6f828ffa0129be701e96dd31c",
+  "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/102019b78608a13dea6a739dd4005254048cfbb6f828ffa0129be701e96dd31c.json",
+  "terminal_sha256": "a65c719360efafad81d948013a531ee2026fb2e9d8c0a1a34b6e851955b9203c",
+  "status": "failed",
+  "returncode": 1,
+  "elapsed_s": 394.09725618362427,
+  "host": "dl380g10",
+  "resources": {
+    "cpu": 4,
+    "mem_gb": 24
+  },
+  "cpu_allocation": {
+    "fallback": [],
+    "preferred": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  "telemetry": {
+    "complete": true,
+    "cpu_seconds": 95.526125,
+    "errors": [],
+    "host": "dl380g10",
+    "memory_peak_bytes": 11833049088,
+    "memory_max_bytes": 25769803776,
+    "oom_kill": 0,
+    "oom_local": 0,
+    "wall_seconds": 394.1456652380002
+  },
+  "stdout": "bringing up nodes...\nbringing up nodes...\n\n\n==================================== ERRORS ====================================\n________________ ERROR collecting tests/test_tessera_formats.py ________________\nImportError while importing test module '/home/rob/tmp/prismabuild-checkouts/102019b78608.uk7hjjo9/checkout/tests/test_tessera_formats.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/lib/python3.14/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_tessera_formats.py:19: in <module>\n    from prismaquant.tessera_formats import (\nprismaquant/__init__.py:17: in <module>\n    from .format_registry import FormatSpec, REGISTRY, register_format\nprismaquant/format_registry.py:33: in <module>\n    from compressed_tensors.quantization.utils.mxfp_utils import generate_mx_scales\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/__init__.py:9: in <module>\n    from .compressors import *\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/compressors/__init__.py:6: in <module>\n    from .base import *\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/compressors/base.py:8: in <module>\n    from compressed_tensors.compressors.format import infer_module_format\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/compressors/format.py:8: in <module>\n    from compressed_tensors.quantization import QuantizationScheme\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/quantization/__init__.py:7: in <module>\n    from .quant_args import *\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/quantization/quant_args.py:9: in <module>\n    from compressed_tensors.utils import Aliasable\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/utils/__init__.py:11: in <module>\n    from .offload import *\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/utils/offload.py:18: in <module>\n    from compressed_tensors.offload import (\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/offload/__init__.py:25: in <module>\n    from compressed_tensors.offload.load import load_offloaded_model\n../../../pq251-rx2kqukf/venv/lib/python3.14/site-packages/compressed_tensors/offload/load.py:11: in <module>\n    import psutil\nE   ModuleNotFoundError: No module named 'psutil'\n=========================== short test summary info ============================\nERROR tests/test_tessera_formats.py - ImportError while importing test module...\n1 error in 6.06s\n{\"started_unix\": 1788676486.99239, \"finished_unix\": 1788676493.4770591, \"returncode\": 1, \"command\": [\"/home/rob/tmp/pq251-rx2kqukf/venv/bin/python\", \"-m\", \"pytest\", \"-c\", \"pytest.ini\", \"-q\", \"--timeout=300\", \"-n\", \"4\", \"--dist\", \"worksteal\", \"--durations=20\", \"-ra\", \"-p\", \"no:cacheprovider\", \"--junitxml=/mnt/shared/prismaquant-runs/cpu-tessera-251/suite-deps/junit.xml\", \"tests/test_tessera_formats.py\"], \"tessera_commit\": \"ba582d476a3b6db9057ebd1385dc52926f171451\", \"prismaquant_snapshot\": \"2d606408571491af628ead1d7d9930201ebf8eae\", \"python\": \"3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]\", \"platform\": \"Linux-7.0.0-31-generic-x86_64-with-glibc2.43\"}\n",
+  "population": {
+    "collected": 0,
+    "collection_errors": 1
+  },
+  "cas_result": null,
+  "disposition": "Superseded after scoped dependency repair; setup failure, not a measured test result."
+}
