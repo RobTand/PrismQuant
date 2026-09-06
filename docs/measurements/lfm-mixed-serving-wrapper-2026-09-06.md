@@ -123,3 +123,47 @@ covers1,029files and has verified SHA256
 Use these exact values for the encoder arguments above. The actual completed
 assembly CAS result and its SHA remain inputs supplied after PB assembly;
 none are invented in this source delivery.
+
+## Actual CAS envelope correction and local code-input staging
+
+Subsequent inspection of a real PB exporter payload showed logs plus one
+`PB_TESSERA_RESULT=` line, rather than a bare JSON document. Regression PB
+`529e79dd4fee5252b413c0310e35dbffa755aff65f7aa5bd13c2d217c01996ca`
+reproduced the old reader's JSONDecodeError on that actual-shaped envelope;
+exit1,cleanup complete, no successful CAS claimed. The reader now hashes the
+original stdout blob, requires exactly one completion line, and compares the
+parsed record to `pb-result.json`. The seal keeps `assembly_stdout_sha256`
+and `assembly_record_sha256` separate. Missing/duplicate completion lines,
+altered records and changed log bytes refuse. The earlier32-test source proof
+predates this correction; the correction has its own regression validation.
+
+The shared source archive is16,619,520bytes, SHA256
+`07ee4eb51a7fa23051e0615313e6057bb016c6806ce0aefbb41cb61b56410b4a`.
+Individual verification of1,029 shared files hit the NFS205 contention before
+Torch import in the independent qualification task. Use the existing task-local
+code-input staging convention via `experiments/lfm_mixed_source_run.py`:
+
+```bash
+python3 experiments/lfm_mixed_source_run.py \
+  --encoder-archive /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906-archive-input.tar \
+  --encoder-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906-source-manifest.json \
+  --encoder-manifest-sha256 81dbf9c1ee123b5bdd8bdf3b09f2705b414e5070f70ee40e5779bbaa935f545c \
+  -- --preflight-only \
+  --out /home/rob/tessera-runs/mixed-lfm-237-2026-09-06/serve-preflight-01 \
+  --archive /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/serve-preflight-01 \
+  --artifact /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/model-export-01 \
+  --source /mnt/shared/models/LFM2.5-8B-A1B-BF16 \
+  --plan /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/plan.json \
+  --calibration /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01 \
+  --assembly-result ACTUAL_SHARED_CAS_STDOUT_BLOB \
+  --assembly-result-sha256 ACTUAL_CAS_STDOUT_SHA256
+```
+
+This prelude runs inside the admitted action, verifies the original manifest
+and archive bytes, extracts into an owned temporary local directory, checks
+its entire file closure, and keeps that directory alive until the wrapper exits.
+The wrapper's repeated source checks then read local files. No source cache,
+manual placement, input distribution or model-artifact mutation is introduced.
+For serving, remove `--preflight-only`, choose fresh local/shared outputs and
+supply the original bounded serving deadline/port; the same explicit source
+input and assembly bindings apply.

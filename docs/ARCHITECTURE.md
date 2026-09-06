@@ -13,7 +13,9 @@ EUGR dense cell attestations remain a refusal of production admission; a raw
 route or paired-smoke receipt cannot promote them. Every launched container
 has explicit resource/native limits, captured ownership and ID cleanup. A
 CPU-only prerequisite can stop after the same handoff checks and seal; completed
-owned results can be archived with byte hashes after cleanup.
+owned results can be archived with byte hashes after cleanup. A verified archive
+prelude materializes the immutable code input in task-local temporary storage;
+there is no persistent source cache or model placement logic.
 No export scheduler, runtime pin or production default changes. Gate:
 `tests/test_lfm_mixed_serving.py`.
 
