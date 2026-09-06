@@ -1,0 +1,15 @@
+{
+  "control_full_fingerprint": "1609474a8949c0b1b340c8f0aefb5aae4ef24821bfa260b7bf2670709229b220",
+  "candidate_full_fingerprint": "03ea2d38644b95fbef30ab6eadb4c919ce7f9c5c6f2f22739e8d52843efdb8db",
+  "differences": {
+    "resident_extensions": {
+      "control": [
+        "sampling.so"
+      ],
+      "candidate": [
+        "sampling.so",
+        "trtllm_utils.so"
+      ]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "source_commit": "3a6719f35f693d8a02903545b3e447e8a81c5155",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--tag",
+    "gb10",
+    "--cpus",
+    "2",
+    "--demand",
+    "mem_gb=8",
+    "--timeout-s",
+    "300",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
+    "-m",
+    "pytest",
+    "-n",
+    "2",
+    "-q",
+    "-ra",
+    "--tb=short",
+    "tests/test_boundary_stack_contract.py"
+  ],
+  "started": 1788660496.4061642,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"1b65696d241e88828c9153f995251540003a825ef976aa7d0919e1fd5d29c0c7\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/1b65696d241e88828c9153f995251540003a825ef976aa7d0919e1fd5d29c0c7.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/1b65696d241e88828c9153f995251540003a825ef976aa7d0919e1fd5d29c0c7.json\", \"job_id\": null, \"published_unix\": 1788660503.1767447, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/1b65696d241e88828c9153f995251540003a825ef976aa7d0919e1fd5d29c0c7.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/1b65696d241e88828c9153f995251540003a825ef976aa7d0919e1fd5d29c0c7.json\"}\n",
+  "stderr": "pbrun: queued 1b65696d241e tags=['gb10'] demand={'mem_gb': 8, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788660503.193686,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": "?? tests/test_boundary_stack_contract.py\n"
+}

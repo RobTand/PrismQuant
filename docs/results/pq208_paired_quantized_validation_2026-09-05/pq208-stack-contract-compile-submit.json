@@ -1,0 +1,48 @@
+{
+  "source_commit": "3a6719f35f693d8a02903545b3e447e8a81c5155",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=2",
+    "--timeout-s",
+    "90",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/usr/bin/python3",
+    "-m",
+    "py_compile",
+    "prismaquant/boundary_control.py",
+    "tools/measure_boundary_control.py",
+    "experiments/pq87_paired_validation.py",
+    "tests/test_boundary_stack_contract.py"
+  ],
+  "started": 1788661089.1286533,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"e33b8cd1d7ec6d474eb43b2297573b3de203b70f8735171e0baa76dbf9283639\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/e33b8cd1d7ec6d474eb43b2297573b3de203b70f8735171e0baa76dbf9283639.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/e33b8cd1d7ec6d474eb43b2297573b3de203b70f8735171e0baa76dbf9283639.json\", \"job_id\": null, \"published_unix\": 1788661097.0313373, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/e33b8cd1d7ec6d474eb43b2297573b3de203b70f8735171e0baa76dbf9283639.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/e33b8cd1d7ec6d474eb43b2297573b3de203b70f8735171e0baa76dbf9283639.json\"}\n",
+  "stderr": "pbrun: PINNED to sparky by --tag sparky, so no other box can claim this action.  2 other live boxes fit this demand: dl380g10, sparklina.\npbrun: queued e33b8cd1d7ec tags=['sparky'] demand={'mem_gb': 2, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788661097.0480654,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": " M docs/ARCHITECTURE.md\n M docs/experiments/pq87_quantized_validation.md\n M experiments/pq87_paired_validation.py\n M experiments/pq87_validation_manifest.json\n M prismaquant/boundary_control.py\n M tools/measure_boundary_control.py\n?? tests/test_boundary_stack_contract.py\n"
+}

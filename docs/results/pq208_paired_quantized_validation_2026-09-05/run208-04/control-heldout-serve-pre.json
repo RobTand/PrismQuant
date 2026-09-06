@@ -1,0 +1,346 @@
+{
+  "schema": "prismaquant.serve_manifest/1",
+  "created": "2026-09-06T02:30:03.714533Z",
+  "attestation_phase": "pre",
+  "source": "server",
+  "hostname": "sparky",
+  "host_identity": {
+    "hostname": "sparky",
+    "boot_id": "cd89f170-5418-4657-a855-8e44fad2fdff",
+    "machine_id_sha256": "cc69a3d3cf09f1d7f94e8153b78116be4983158f41718d10e82396e8c51dc559",
+    "pid_namespace": "pid:[4026533041]"
+  },
+  "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "model": "/models/control",
+  "served_model_name": "run208-04",
+  "launch_argv": [
+    "/usr/bin/python3",
+    "/usr/local/bin/vllm",
+    "serve",
+    "/models/control",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8187",
+    "--served-model-name",
+    "run208-04",
+    "--dtype",
+    "bfloat16",
+    "--kv-cache-memory-bytes",
+    "1073741824",
+    "--max-model-len",
+    "4096",
+    "--max-num-seqs",
+    "1",
+    "--max-num-batched-tokens",
+    "512",
+    "--enforce-eager",
+    "--generation-config",
+    "vllm",
+    "--gpu-memory-utilization",
+    "0.2"
+  ],
+  "launch_flags": [
+    "<path>",
+    "<path>",
+    "serve",
+    "<path>",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8187",
+    "--served-model-name",
+    "run208-04",
+    "--dtype",
+    "bfloat16",
+    "--kv-cache-memory-bytes",
+    "1073741824",
+    "--max-model-len",
+    "4096",
+    "--max-num-seqs",
+    "1",
+    "--max-num-batched-tokens",
+    "512",
+    "--enforce-eager",
+    "--generation-config",
+    "vllm",
+    "--gpu-memory-utilization",
+    "0.2"
+  ],
+  "normalized_performance_argv": [
+    "/usr/bin/python3",
+    "/usr/local/bin/vllm",
+    "serve",
+    "<arm-model>",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8187",
+    "--served-model-name",
+    "<arm-model>",
+    "--dtype",
+    "bfloat16",
+    "--kv-cache-memory-bytes",
+    "1073741824",
+    "--max-model-len",
+    "4096",
+    "--max-num-seqs",
+    "1",
+    "--max-num-batched-tokens",
+    "512",
+    "--enforce-eager",
+    "--generation-config",
+    "vllm",
+    "--gpu-memory-utilization",
+    "0.2"
+  ],
+  "enforce_eager": true,
+  "quantization": null,
+  "kv_cache_dtype": null,
+  "speculative_config": null,
+  "package_versions": {
+    "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904",
+    "torch": "2.13.0+cu130",
+    "flashinfer-python": "0.6.18",
+    "transformers": "5.16.1"
+  },
+  "resident_extensions": [
+    "sampling.so"
+  ],
+  "native_extension_status": [
+    {
+      "module_name_prefix": "tessera_nvfp4_",
+      "filename_glob": "tessera_nvfp4_*.so",
+      "match": "basename_fnmatch",
+      "resident": false,
+      "when_unavailable": {
+        "resident": {
+          "status": "substituted",
+          "decoder": "torch_materialize_stock"
+        },
+        "streamed": {
+          "status": "refused",
+          "decoder": null
+        }
+      }
+    },
+    {
+      "module_name_prefix": "tessera_window_gemv",
+      "filename_glob": "tessera_window_gemv*.so",
+      "match": "basename_fnmatch",
+      "resident": false,
+      "when_unavailable": {
+        "resident": {
+          "status": "substituted",
+          "decoder": "torch_window"
+        },
+        "streamed": {
+          "status": "substituted",
+          "decoder": "torch_window"
+        }
+      }
+    }
+  ],
+  "residency_readable": true,
+  "processes": [
+    {
+      "pid": 51,
+      "argv": [
+        "/usr/bin/python3",
+        "/usr/local/bin/vllm",
+        "serve",
+        "/models/control",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8187",
+        "--served-model-name",
+        "run208-04",
+        "--dtype",
+        "bfloat16",
+        "--kv-cache-memory-bytes",
+        "1073741824",
+        "--max-model-len",
+        "4096",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "512",
+        "--enforce-eager",
+        "--generation-config",
+        "vllm",
+        "--gpu-memory-utilization",
+        "0.2"
+      ],
+      "cmdline": "/usr/bin/python3 /usr/local/bin/vllm serve /models/control --host 127.0.0.1 --port 8187 --served-model-name run208-04 --dtype bfloat16 --kv-cache-memory-bytes 1073741824 --max-model-len 4096 --max-num-seqs 1 --max-num-batched-tokens 512 --enforce-eager --generation-config vllm --gpu-memory-utilization 0.2",
+      "start_time_ticks": 13233045,
+      "pid_namespace": "pid:[4026533041]",
+      "executable": "/usr/bin/python3.12",
+      "identity_sha256": "8e16470639215219c2cb9aebf7750b984883c902bae5ea5e0cb302493952dde1"
+    },
+    {
+      "pid": 74,
+      "argv": [
+        "VLLM::EngineCore"
+      ],
+      "cmdline": "VLLM::EngineCore",
+      "start_time_ticks": 13235127,
+      "pid_namespace": "pid:[4026533041]",
+      "executable": "/usr/bin/python3.12",
+      "identity_sha256": "63e95f5c709dddd4f5a2bbdd8764f6629231dcf8a0cb45bbb7ffb08897d4066a"
+    }
+  ],
+  "server_process_environment": {
+    "schema": "prismaquant.server_process_environment/1",
+    "allowlist": [
+      "PYTHONPATH",
+      "PYTHONSAFEPATH",
+      "TESSERA_SERVE_MODE"
+    ],
+    "readable_pids": [
+      51,
+      74
+    ],
+    "unreadable_pids": [],
+    "consistent": true,
+    "values": {
+      "PYTHONSAFEPATH": "1"
+    },
+    "processes": [
+      {
+        "pid": 51,
+        "values": {
+          "PYTHONSAFEPATH": "1"
+        },
+        "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+      },
+      {
+        "pid": 74,
+        "values": {
+          "PYTHONSAFEPATH": "1"
+        },
+        "sha256": "5721e67f4560bf19a30aa8d49b72cff923cab7c3571bcdb7b533d3857d12f0bc"
+      }
+    ]
+  },
+  "pq_env": {
+    "PYTHONSAFEPATH": "1"
+  },
+  "listener_census": {
+    "schema": "prismaquant.server_tcp_listeners/1",
+    "tables_readable": true,
+    "unreadable_pids": [],
+    "listeners": [
+      {
+        "family": "ipv4",
+        "address": "127.0.0.1",
+        "port": 8187,
+        "socket_inode": "31614242",
+        "pids": [
+          51
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+        "port": 33071,
+        "socket_inode": "31614423",
+        "pids": [
+          74
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+        "port": 39591,
+        "socket_inode": "31614409",
+        "pids": [
+          74
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:375f:724c:7f31:edad",
+        "port": 45795,
+        "socket_inode": "31614437",
+        "pids": [
+          74
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+        "port": 34557,
+        "socket_inode": "31614395",
+        "pids": [
+          74
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+        "port": 40331,
+        "socket_inode": "31614451",
+        "pids": [
+          74
+        ]
+      },
+      {
+        "family": "ipv6",
+        "address": "fd12:ccc7:3556:4639:7b6a:76a1:466b:ac46",
+        "port": 43161,
+        "socket_inode": "31614465",
+        "pids": [
+          74
+        ]
+      }
+    ]
+  },
+  "listener_binding": {
+    "schema": "prismaquant.server_listener_binding/1",
+    "base_url": "http://127.0.0.1:8187",
+    "launch_host": "127.0.0.1",
+    "launch_port": 8187,
+    "listeners": [
+      {
+        "family": "ipv4",
+        "address": "127.0.0.1",
+        "port": 8187,
+        "socket_inode": "31614242",
+        "pids": [
+          51
+        ]
+      }
+    ]
+  },
+  "models_endpoint_binding": {
+    "schema": "prismaquant.server_models_endpoint_binding/1",
+    "canonical_identity_sha256": "cd45ca70c9a4292dd9eaf857f53a5b608cbbf0f8cf485109878700e73afa921e",
+    "response_object": "list",
+    "model_count": 1,
+    "model": {
+      "id": "run208-04",
+      "object": "model",
+      "owned_by": "vllm",
+      "root": "/models/control",
+      "max_model_len": 4096
+    }
+  },
+  "gpu_name": "NVIDIA GB10",
+  "gpu_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+  "driver_version": "595.84",
+  "compute_capability": [
+    12,
+    1
+  ],
+  "gpu_compute_capabilities": [
+    [
+      12,
+      1
+    ]
+  ],
+  "gpu_count": 1,
+  "serve_session_id": "4d6ba2414f2a78ad0b9c2383a875981ac5464274649f0d71aa18a91873ce2f60",
+  "performance_stack_fingerprint": "1609474a8949c0b1b340c8f0aefb5aae4ef24821bfa260b7bf2670709229b220",
+  "serve_fingerprint": "a6b5fcea875e05c14b13492f43d5389615894aa4afc1ceb1de441a71ea092612"
+}

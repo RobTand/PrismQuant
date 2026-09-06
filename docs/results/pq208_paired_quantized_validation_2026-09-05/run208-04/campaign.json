@@ -1,0 +1,353 @@
+{
+  "status": "completed",
+  "advisory_only": true,
+  "started": 1788661326.5736525,
+  "container_ownership": {
+    "name": "pq87-16804b18fd132114-e8b2fdf0decc4286b189f10ae92769cd",
+    "action": "16804b18fd132114763b206adffebd08ead283f624d082573dcbb1e6d05432d1",
+    "nonce": "e8b2fdf0decc4286b189f10ae92769cd"
+  },
+  "manifest_sha256": "62bc3d9c43d8ce26e8e8265e20e85c36c5843e297267ad87e31a9f09d18546da",
+  "source_snapshot": "ec0805c93883c060708cc53485bc3f50cb72ae16",
+  "docker_argv": [
+    "docker",
+    "run",
+    "--pull=never",
+    "--name",
+    "pq87-16804b18fd132114-e8b2fdf0decc4286b189f10ae92769cd",
+    "--cidfile",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/container.cid",
+    "--label",
+    "prismaquant.pq87.campaign=e8b2fdf0decc4286b189f10ae92769cd",
+    "--gpus",
+    "all",
+    "--memory=28g",
+    "--memory-swap=28g",
+    "--cpus=2",
+    "--shm-size=1g",
+    "--network=host",
+    "--cap-add=SYS_PTRACE",
+    "--security-opt=seccomp=unconfined",
+    "-v",
+    "/home/rob/tmp/prismabuild-checkouts/0140467ada83.98rt_9hn/checkout:/repo:ro",
+    "-v",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04:/run",
+    "-v",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models:/models:ro",
+    "-v",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models:/run/models:ro",
+    "-e",
+    "SPT_NOENV=1",
+    "-e",
+    "OMP_NUM_THREADS=2",
+    "-e",
+    "OPENBLAS_NUM_THREADS=2",
+    "-e",
+    "MKL_NUM_THREADS=2",
+    "-e",
+    "TMPDIR=/run/tmp",
+    "-e",
+    "TRITON_CACHE_DIR=/run/triton",
+    "-e",
+    "TORCHINDUCTOR_CACHE_DIR=/run/inductor",
+    "-e",
+    "VLLM_CACHE_ROOT=/run/vllm-cache",
+    "-e",
+    "HF_HUB_OFFLINE=1",
+    "-e",
+    "PYTHONSAFEPATH=1",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "PYTHONNOUSERSITE=1",
+    "-e",
+    "PQ_RUNTIME_PRISMAQUANT_ROOT=/repo",
+    "--entrypoint",
+    "/usr/bin/env",
+    "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "-u",
+    "PYTHONPATH",
+    "python3",
+    "-P",
+    "/repo/experiments/pq87_paired_validation.py",
+    "--inside",
+    "--seconds",
+    "2366",
+    "--nonce",
+    "run208-04"
+  ],
+  "inside": {
+    "status": "completed",
+    "advisory_only": true,
+    "started": 1788661330.9560902,
+    "phases": {
+      "control": {
+        "argv": [
+          "vllm",
+          "serve",
+          "/models/control",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "screen": {
+          "returncode": 0,
+          "decision": null,
+          "ppl": null
+        },
+        "heldout": {
+          "returncode": 0,
+          "decision": null,
+          "ppl": null
+        },
+        "ppl": {
+          "returncode": 0,
+          "decision": null,
+          "ppl": {
+            "name": "perplexity",
+            "passed": true,
+            "detail": "OK",
+            "metrics": {
+              "perplexity": 11.164634991734285,
+              "mean_nll_per_tok": 2.4127511925709118,
+              "p99_nll_per_tok": 3.316376398656649,
+              "max_nll_per_tok": 3.3357807611838717,
+              "per_prompt_avg_nll": [
+                1.4501271767864072,
+                1.5071945540362504,
+                1.9408573475856152,
+                1.971062740286865,
+                2.2876968378784346,
+                2.390662697059881,
+                2.6081818141747357,
+                2.851346011126512,
+                2.8639758550937082,
+                3.019920255914211,
+                3.159377465481844,
+                3.3357807611838717
+              ],
+              "n_tokens": 583,
+              "spec_decode_detected": false
+            }
+          }
+        }
+      },
+      "candidate": {
+        "argv": [
+          "vllm",
+          "serve",
+          "/models/candidate",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8187",
+          "--served-model-name",
+          "run208-04",
+          "--dtype",
+          "bfloat16",
+          "--kv-cache-memory-bytes",
+          "1073741824",
+          "--max-model-len",
+          "4096",
+          "--max-num-seqs",
+          "1",
+          "--max-num-batched-tokens",
+          "512",
+          "--enforce-eager",
+          "--generation-config",
+          "vllm",
+          "--gpu-memory-utilization",
+          "0.2"
+        ],
+        "screen": {
+          "returncode": 0,
+          "decision": {
+            "schema": "prismaquant.boundary_decision/1",
+            "policy": "prismaquant.no_new_boundary_failures/1",
+            "advisory_only": true,
+            "verdict": "accepted",
+            "reason": "no new defect kind on any matched prompt/seed pair",
+            "control_sha256": "2960b9b7a46117bc9019ca83905ac9b42aab35bece7922680a2dcca69ceee357",
+            "candidate_sha256": "499d8d15408b9a285fb0235509dd8685597e058fecb18d61a61ea0987cab9b7d",
+            "pair_count": 30,
+            "max_tokens": 2048,
+            "newly_broken_pairs": 0,
+            "new_defect_kind_pairs": 0,
+            "violations": []
+          },
+          "ppl": null
+        },
+        "heldout": {
+          "returncode": 2,
+          "decision": {
+            "schema": "prismaquant.boundary_decision/1",
+            "policy": "prismaquant.no_new_boundary_failures/1",
+            "advisory_only": true,
+            "verdict": "refused",
+            "reason": "candidate introduced new defects on matched prompt/seed pairs",
+            "control_sha256": "5915a390f37687b3962478aa2501c88cf2980ec44fa07361d528d2c31a4c1f08",
+            "candidate_sha256": "a40adab17347abaeaed8a669f2e69f2b7f45797b260090bb8a9b116862abb7dd",
+            "pair_count": 30,
+            "max_tokens": 1024,
+            "newly_broken_pairs": 4,
+            "new_defect_kind_pairs": 0,
+            "violations": [
+              {
+                "prompt_index": 0,
+                "seed": 1,
+                "stratum": "numeric",
+                "control_defects": [],
+                "candidate_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ],
+                "new_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ]
+              },
+              {
+                "prompt_index": 1,
+                "seed": 1,
+                "stratum": "numeric",
+                "control_defects": [],
+                "candidate_defects": [
+                  "cap_truncation"
+                ],
+                "new_defects": [
+                  "cap_truncation"
+                ]
+              },
+              {
+                "prompt_index": 1,
+                "seed": 3,
+                "stratum": "numeric",
+                "control_defects": [],
+                "candidate_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ],
+                "new_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ]
+              },
+              {
+                "prompt_index": 1,
+                "seed": 4,
+                "stratum": "numeric",
+                "control_defects": [],
+                "candidate_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ],
+                "new_defects": [
+                  "cap_truncation",
+                  "zero_tag"
+                ]
+              }
+            ]
+          },
+          "ppl": null
+        },
+        "ppl": {
+          "returncode": 0,
+          "decision": null,
+          "ppl": {
+            "name": "perplexity",
+            "passed": true,
+            "detail": "OK",
+            "metrics": {
+              "perplexity": 11.865439750163203,
+              "mean_nll_per_tok": 2.4736299520043907,
+              "p99_nll_per_tok": 3.4148417506381565,
+              "max_nll_per_tok": 3.450937754757303,
+              "per_prompt_avg_nll": [
+                1.5237152826062994,
+                1.6383000508612895,
+                1.903841401335186,
+                2.030974718356584,
+                2.3665911976902008,
+                2.492430404374437,
+                2.804172448478898,
+                2.805837130196756,
+                2.880354050154749,
+                3.0386569779127455,
+                3.1227922627650617,
+                3.450937754757303
+              ],
+              "n_tokens": 583,
+              "spec_decode_detected": false
+            }
+          }
+        }
+      }
+    },
+    "finished": 1788662445.6007178
+  },
+  "cleanup": {
+    "safe": true,
+    "commands": [
+      {
+        "argv": [
+          "docker",
+          "inspect",
+          "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7"
+        ],
+        "returncode": 0,
+        "output": "[\n    {\n        \"Id\": \"e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7\",\n        \"Created\": \"2026-09-06T02:22:10.43339989Z\",\n        \"Path\": \"/usr/bin/env\",\n        \"Args\": [\n            \"-u\",\n            \"PYTHONPATH\",\n            \"python3\",\n            \"-P\",\n            \"/repo/experiments/pq87_paired_validation.py\",\n            \"--inside\",\n            \"--seconds\",\n            \"2366\",\n            \"--nonce\",\n            \"run208-04\"\n        ],\n        \"State\": {\n            \"Status\": \"exited\",\n            \"Running\": false,\n            \"Paused\": false,\n            \"Restarting\": false,\n            \"OOMKilled\": false,\n            \"Dead\": false,\n            \"Pid\": 0,\n            \"ExitCode\": 0,\n            \"Error\": \"\",\n            \"StartedAt\": \"2026-09-06T02:22:10.793368201Z\",\n            \"FinishedAt\": \"2026-09-06T02:40:45.617185521Z\"\n        },\n        \"Image\": \"sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c\",\n        \"ResolvConfPath\": \"/var/lib/docker/containers/e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7/resolv.conf\",\n        \"HostnamePath\": \"/var/lib/docker/containers/e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7/hostname\",\n        \"HostsPath\": \"/var/lib/docker/containers/e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7/hosts\",\n        \"LogPath\": \"/var/lib/docker/containers/e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7/e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7-json.log\",\n        \"Name\": \"/pq87-16804b18fd132114-e8b2fdf0decc4286b189f10ae92769cd\",\n        \"RestartCount\": 0,\n        \"Driver\": \"overlayfs\",\n        \"Platform\": \"linux\",\n        \"MountLabel\": \"\",\n        \"ProcessLabel\": \"\",\n        \"AppArmorProfile\": \"docker-default\",\n        \"ExecIDs\": null,\n        \"HostConfig\": {\n            \"Binds\": [\n                \"/home/rob/tmp/prismabuild-checkouts/0140467ada83.98rt_9hn/checkout:/repo:ro\",\n                \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04:/run\",\n                \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models:/models:ro\",\n                \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models:/run/models:ro\"\n            ],\n            \"ContainerIDFile\": \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/container.cid\",\n            \"LogConfig\": {\n                \"Type\": \"json-file\",\n                \"Config\": {}\n            },\n            \"NetworkMode\": \"host\",\n            \"PortBindings\": {},\n            \"RestartPolicy\": {\n                \"Name\": \"no\",\n                \"MaximumRetryCount\": 0\n            },\n            \"AutoRemove\": false,\n            \"VolumeDriver\": \"\",\n            \"VolumesFrom\": null,\n            \"ConsoleSize\": [\n                0,\n                0\n            ],\n            \"CapAdd\": [\n                \"CAP_SYS_PTRACE\"\n            ],\n            \"CapDrop\": null,\n            \"CgroupnsMode\": \"private\",\n            \"Dns\": null,\n            \"DnsOptions\": [],\n            \"DnsSearch\": [],\n            \"ExtraHosts\": null,\n            \"GroupAdd\": null,\n            \"IpcMode\": \"private\",\n            \"Cgroup\": \"\",\n            \"Links\": null,\n            \"OomScoreAdj\": 0,\n            \"PidMode\": \"\",\n            \"Privileged\": false,\n            \"PublishAllPorts\": false,\n            \"ReadonlyRootfs\": false,\n            \"SecurityOpt\": [\n                \"seccomp=unconfined\"\n            ],\n            \"UTSMode\": \"\",\n            \"UsernsMode\": \"\",\n            \"ShmSize\": 1073741824,\n            \"Runtime\": \"runc\",\n            \"Isolation\": \"\",\n            \"CpuShares\": 0,\n            \"Memory\": 30064771072,\n            \"NanoCpus\": 2000000000,\n            \"CgroupParent\": \"prismabuild-job1bafeab92c90e444fc9e57e9a9c19871.slice\",\n            \"BlkioWeight\": 0,\n            \"BlkioWeightDevice\": [],\n            \"BlkioDeviceReadBps\": [],\n            \"BlkioDeviceWriteBps\": [],\n            \"BlkioDeviceReadIOps\": [],\n            \"BlkioDeviceWriteIOps\": [],\n            \"CpuPeriod\": 0,\n            \"CpuQuota\": 0,\n            \"CpuRealtimePeriod\": 0,\n            \"CpuRealtimeRuntime\": 0,\n            \"CpusetCpus\": \"5,6\",\n            \"CpusetMems\": \"\",\n            \"Devices\": [],\n            \"DeviceCgroupRules\": null,\n            \"DeviceRequests\": [\n                {\n                    \"Driver\": \"\",\n                    \"Count\": -1,\n                    \"DeviceIDs\": null,\n                    \"Capabilities\": [\n                        [\n                            \"gpu\"\n                        ]\n                    ],\n                    \"Options\": {}\n                }\n            ],\n            \"MemoryReservation\": 0,\n            \"MemorySwap\": 30064771072,\n            \"MemorySwappiness\": null,\n            \"OomKillDisable\": null,\n            \"PidsLimit\": null,\n            \"Ulimits\": [],\n            \"CpuCount\": 0,\n            \"CpuPercent\": 0,\n            \"IOMaximumIOps\": 0,\n            \"IOMaximumBandwidth\": 0,\n            \"MaskedPaths\": [\n                \"/proc/acpi\",\n                \"/proc/asound\",\n                \"/proc/interrupts\",\n                \"/proc/kcore\",\n                \"/proc/keys\",\n                \"/proc/latency_stats\",\n                \"/proc/sched_debug\",\n                \"/proc/scsi\",\n                \"/proc/timer_list\",\n                \"/proc/timer_stats\",\n                \"/sys/devices/virtual/powercap\",\n                \"/sys/firmware\"\n            ],\n            \"ReadonlyPaths\": [\n                \"/proc/bus\",\n                \"/proc/fs\",\n                \"/proc/irq\",\n                \"/proc/sys\",\n                \"/proc/sysrq-trigger\"\n            ]\n        },\n        \"Storage\": {\n            \"RootFS\": {\n                \"Snapshot\": {\n                    \"Name\": \"overlayfs\"\n                }\n            }\n        },\n        \"Mounts\": [\n            {\n                \"Type\": \"bind\",\n                \"Source\": \"/home/rob/tmp/prismabuild-checkouts/0140467ada83.98rt_9hn/checkout\",\n                \"Destination\": \"/repo\",\n                \"Mode\": \"ro\",\n                \"RW\": false,\n                \"Propagation\": \"rprivate\"\n            },\n            {\n                \"Type\": \"bind\",\n                \"Source\": \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04\",\n                \"Destination\": \"/run\",\n                \"Mode\": \"\",\n                \"RW\": true,\n                \"Propagation\": \"rprivate\"\n            },\n            {\n                \"Type\": \"bind\",\n                \"Source\": \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models\",\n                \"Destination\": \"/models\",\n                \"Mode\": \"ro\",\n                \"RW\": false,\n                \"Propagation\": \"rprivate\"\n            },\n            {\n                \"Type\": \"bind\",\n                \"Source\": \"/home/rob/tessera-runs/measurement-208-183-2026-09-05/run208-04/models\",\n                \"Destination\": \"/run/models\",\n                \"Mode\": \"ro\",\n                \"RW\": false,\n                \"Propagation\": \"rprivate\"\n            }\n        ],\n        \"Config\": {\n            \"Hostname\": \"sparky\",\n            \"Domainname\": \"\",\n            \"User\": \"\",\n            \"AttachStdin\": false,\n            \"AttachStdout\": true,\n            \"AttachStderr\": true,\n            \"Tty\": false,\n            \"OpenStdin\": false,\n            \"StdinOnce\": false,\n            \"Env\": [\n                \"PYTHONNOUSERSITE=1\",\n                \"TMPDIR=/run/tmp\",\n                \"TRITON_CACHE_DIR=/run/triton\",\n                \"VLLM_CACHE_ROOT=/run/vllm-cache\",\n                \"PYTHONDONTWRITEBYTECODE=1\",\n                \"PQ_RUNTIME_PRISMAQUANT_ROOT=/repo\",\n                \"SPT_NOENV=1\",\n                \"OMP_NUM_THREADS=2\",\n                \"OPENBLAS_NUM_THREADS=2\",\n                \"MKL_NUM_THREADS=2\",\n                \"TORCHINDUCTOR_CACHE_DIR=/run/inductor\",\n                \"HF_HUB_OFFLINE=1\",\n                \"PYTHONSAFEPATH=1\",\n                \"PATH=/workspace/vllm:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",\n                \"NVARCH=sbsa\",\n                \"NVIDIA_REQUIRE_CUDA=cuda>=13.0 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=575,driver<576 brand=grid,driver>=575,driver<576 brand=tesla,driver>=575,driver<576 brand=nvidia,driver>=575,driver<576 brand=quadro,driver>=575,driver<576 brand=quadrortx,driver>=575,driver<576 brand=nvidiartx,driver>=575,driver<576 brand=vapps,driver>=575,driver<576 brand=vpc,driver>=575,driver<576 brand=vcs,driver>=575,driver<576 brand=vws,driver>=575,driver<576 brand=cloudgaming,driver>=575,driver<576\",\n                \"NV_CUDA_CUDART_VERSION=13.0.96-1\",\n                \"CUDA_VERSION=13.0.2\",\n                \"LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64\",\n                \"NVIDIA_VISIBLE_DEVICES=all\",\n                \"NVIDIA_DRIVER_CAPABILITIES=compute,utility\",\n                \"NV_CUDA_LIB_VERSION=13.0.2-1\",\n                \"NV_NVTX_VERSION=13.0.85-1\",\n                \"NV_LIBNPP_VERSION=13.0.1.2-1\",\n                \"NV_LIBNPP_PACKAGE=libnpp-13-0=13.0.1.2-1\",\n                \"NV_LIBCUSPARSE_VERSION=12.6.3.3-1\",\n                \"NV_LIBCUBLAS_PACKAGE_NAME=libcublas-13-0\",\n                \"NV_LIBCUBLAS_VERSION=13.1.0.3-1\",\n                \"NV_LIBCUBLAS_PACKAGE=libcublas-13-0=13.1.0.3-1\",\n                \"NV_LIBNCCL_PACKAGE_NAME=libnccl2\",\n                \"NV_LIBNCCL_PACKAGE_VERSION=2.28.3-1\",\n                \"NCCL_VERSION=2.28.3-1\",\n                \"NV_LIBNCCL_PACKAGE=libnccl2=2.28.3-1+cuda13.0\",\n                \"NVIDIA_PRODUCT_NAME=CUDA\",\n                \"NV_CUDA_CUDART_DEV_VERSION=13.0.96-1\",\n                \"NV_NVML_DEV_VERSION=13.0.87-1\",\n                \"NV_LIBCUSPARSE_DEV_VERSION=12.6.3.3-1\",\n                \"NV_LIBNPP_DEV_VERSION=13.0.1.2-1\",\n                \"NV_LIBNPP_DEV_PACKAGE=libnpp-dev-13-0=13.0.1.2-1\",\n                \"NV_LIBCUBLAS_DEV_PACKAGE_NAME=libcublas-dev-13-0\",\n                \"NV_LIBCUBLAS_DEV_VERSION=13.1.0.3-1\",\n                \"NV_LIBCUBLAS_DEV_PACKAGE=libcublas-dev-13-0=13.1.0.3-1\",\n                \"NV_CUDA_NSIGHT_COMPUTE_VERSION=13.0.2-1\",\n                \"NV_CUDA_NSIGHT_COMPUTE_DEV_PACKAGE=cuda-nsight-compute-13-0=13.0.2-1\",\n                \"NV_LIBNCCL_DEV_PACKAGE_NAME=libnccl-dev\",\n                \"NV_LIBNCCL_DEV_PACKAGE_VERSION=2.28.3-1\",\n                \"NV_LIBNCCL_DEV_PACKAGE=libnccl-dev=2.28.3-1+cuda13.0\",\n                \"LIBRARY_PATH=/usr/local/cuda/lib64/stubs\",\n                \"MAX_JOBS=16\",\n                \"CMAKE_BUILD_PARALLEL_LEVEL=16\",\n                \"NINJAFLAGS=-j16\",\n                \"MAKEFLAGS=-j16\",\n                \"DG_JIT_USE_NVRTC=0\",\n                \"USE_CUDNN=1\",\n                \"DEBIAN_FRONTEND=noninteractive\",\n                \"PIP_BREAK_SYSTEM_PACKAGES=1\",\n                \"VLLM_BASE_DIR=/workspace/vllm\",\n                \"PIP_CACHE_DIR=/root/.cache/pip\",\n                \"UV_CACHE_DIR=/root/.cache/uv\",\n                \"UV_SYSTEM_PYTHON=1\",\n                \"UV_BREAK_SYSTEM_PACKAGES=1\",\n                \"UV_LINK_MODE=copy\",\n                \"TORCH_CUDA_ARCH_LIST=12.1a\",\n                \"FLASHINFER_CUDA_ARCH_LIST=12.1a\",\n                \"TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas\",\n                \"TIKTOKEN_ENCODINGS_BASE=/workspace/vllm/tiktoken_encodings\"\n            ],\n            \"Cmd\": [\n                \"-u\",\n                \"PYTHONPATH\",\n                \"python3\",\n                \"-P\",\n                \"/repo/experiments/pq87_paired_validation.py\",\n                \"--inside\",\n                \"--seconds\",\n                \"2366\",\n                \"--nonce\",\n                \"run208-04\"\n            ],\n            \"Image\": \"eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c\",\n            \"Volumes\": null,\n            \"WorkingDir\": \"/workspace/vllm\",\n            \"Entrypoint\": [\n                \"/usr/bin/env\"\n            ],\n            \"Labels\": {\n                \"maintainer\": \"NVIDIA CORPORATION <cudatools@nvidia.com>\",\n                \"org.opencontainers.image.ref.name\": \"ubuntu\",\n                \"org.opencontainers.image.version\": \"24.04\",\n                \"prismabuild.action\": \"16804b18fd132114763b206adffebd08ead283f624d082573dcbb1e6d05432d1\",\n                \"prismabuild.scope\": \"prismabuild-job1bafeab92c90e444fc9e57e9a9c19871.slice\",\n                \"prismaquant.pq87.campaign\": \"e8b2fdf0decc4286b189f10ae92769cd\"\n            }\n        },\n        \"NetworkSettings\": {\n            \"SandboxID\": \"\",\n            \"SandboxKey\": \"\",\n            \"Ports\": {},\n            \"Networks\": {\n                \"host\": {\n                    \"IPAMConfig\": null,\n                    \"Links\": null,\n                    \"Aliases\": null,\n                    \"DriverOpts\": null,\n                    \"GwPriority\": 0,\n                    \"NetworkID\": \"391c957c0275c01cd5ebe6bef074b9448b32658bff7d8bc124651ccc51cc610e\",\n                    \"EndpointID\": \"\",\n                    \"Gateway\": \"\",\n                    \"IPAddress\": \"\",\n                    \"MacAddress\": \"\",\n                    \"IPPrefixLen\": 0,\n                    \"IPv6Gateway\": \"\",\n                    \"GlobalIPv6Address\": \"\",\n                    \"GlobalIPv6PrefixLen\": 0,\n                    \"DNSNames\": null\n                }\n            }\n        },\n        \"ImageManifestDescriptor\": {\n            \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\",\n            \"digest\": \"sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c\",\n            \"size\": 4735,\n            \"platform\": {\n                \"architecture\": \"arm64\",\n                \"os\": \"linux\"\n            }\n        }\n    }\n]\n"
+      },
+      {
+        "argv": [
+          "docker",
+          "stop",
+          "--time",
+          "10",
+          "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7"
+        ],
+        "returncode": 0,
+        "output": "Flag --time has been deprecated, use --timeout instead\ne817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7\n"
+      },
+      {
+        "argv": [
+          "docker",
+          "rm",
+          "-f",
+          "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7"
+        ],
+        "returncode": 0,
+        "output": "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7\n"
+      },
+      {
+        "argv": [
+          "docker",
+          "inspect",
+          "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7"
+        ],
+        "returncode": 1,
+        "output": "[]\nerror: no such object: e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7\n"
+      }
+    ],
+    "attempted": true,
+    "container_id": "e817cabf3131f99d71cbb15de75fb0fb82e92583836c6181aed88a50173f12a7"
+  },
+  "finished": 1788662446.0207415
+}

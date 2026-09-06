@@ -1,0 +1,27 @@
+{
+  "content": {
+    "model_sha": "53363c685419ad6285dc32673dfdf5cac5226209432806eb8303b163e2722bc7",
+    "weight_content_manifest": {
+      "schema": "prismaquant.weight_content_manifest/1",
+      "algorithm": "sha256",
+      "files": {
+        "model.safetensors": {
+          "bytes": 870290032,
+          "sha256": "1645b7c34b3da4e6b329bb497b7a1682b37b28ad38c5003e64ddc7f093b18ea4"
+        }
+      }
+    }
+  },
+  "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+  "source_stats": {
+    "schema": "prismaquant.weight_stat_attestation/1",
+    "files": {
+      "model.safetensors": {
+        "bytes": 870290032,
+        "mtime_ns": 1788368078980335183,
+        "ctime_ns": 1788368078980335183
+      }
+    }
+  },
+  "captured": 1788661330.3095503
+}

@@ -1,0 +1,52 @@
+{
+  "source_commit": "3a6719f35f693d8a02903545b3e447e8a81c5155",
+  "snapshot_excluded_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "command": [
+    "python3",
+    "/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py",
+    "--cwd",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq208",
+    "--transport",
+    "pool",
+    "--tag",
+    "gb10",
+    "--cpus",
+    "1",
+    "--demand",
+    "mem_gb=4",
+    "--timeout-s",
+    "300",
+    "--detach",
+    "--env",
+    "OMP_NUM_THREADS=1",
+    "--env",
+    "MKL_NUM_THREADS=1",
+    "--env",
+    "OPENBLAS_NUM_THREADS=1",
+    "--",
+    "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-ra",
+    "--tb=short",
+    "tests/test_boundary_stack_contract.py",
+    "-k",
+    "preserves_json_types"
+  ],
+  "started": 1788660813.1694763,
+  "returncode": 0,
+  "stdout": "{\"action_key\": \"4b7629a98cb420831be4e00add176218a4948b99ceed9119f94b5dcff8faef9f\", \"done\": \"/mnt/shared/prismabuild-fleet/pb-queue/done/4b7629a98cb420831be4e00add176218a4948b99ceed9119f94b5dcff8faef9f.json\", \"failed\": \"/mnt/shared/prismabuild-fleet/pb-queue/failed/4b7629a98cb420831be4e00add176218a4948b99ceed9119f94b5dcff8faef9f.json\", \"job_id\": null, \"published_unix\": 1788660819.8494859, \"schema\": \"prismaquant.prismabuild.pbrun_detach.v1\", \"status\": \"submitted\", \"submission\": \"/mnt/shared/prismabuild-fleet/pb-queue/ready/4b7629a98cb420831be4e00add176218a4948b99ceed9119f94b5dcff8faef9f.json\", \"transport\": \"pool\", \"withdrawn\": \"/mnt/shared/prismabuild-fleet/pb-queue/withdrawn/4b7629a98cb420831be4e00add176218a4948b99ceed9119f94b5dcff8faef9f.json\"}\n",
+  "stderr": "pbrun: queued 4b7629a98cb4 tags=['gb10'] demand={'mem_gb': 4, 'cpu': 1}  [no GPU: CUDA_VISIBLE_DEVICES='']\n",
+  "finished": 1788660819.8670177,
+  "restored_symlinks": {
+    "calibration/diverse-v1.jsonl": "/home/rob/dq-runs/calibration/diverse-v1.jsonl",
+    "calibration/xdom-gate-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-gate-v1.jsonl",
+    "calibration/xdom-fit-v1.jsonl": "/home/rob/dq-runs/calibration/xdom-fit-v1.jsonl"
+  },
+  "git_status_after": " M experiments/pq87_paired_validation.py\n M experiments/pq87_validation_manifest.json\n M prismaquant/boundary_control.py\n M tools/measure_boundary_control.py\n?? tests/test_boundary_stack_contract.py\n"
+}

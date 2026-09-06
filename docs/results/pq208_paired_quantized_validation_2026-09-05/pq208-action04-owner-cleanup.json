@@ -1,0 +1,15 @@
+{
+  "owner": "16804b18fd132114763b206adffebd08ead283f624d082573dcbb1e6d05432d1",
+  "command": [
+    "docker",
+    "ps",
+    "-a",
+    "--filter",
+    "label=prismabuild.action=16804b18fd132114763b206adffebd08ead283f624d082573dcbb1e6d05432d1",
+    "--format",
+    "{{.ID}}"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": ""
+}

@@ -1,0 +1,35 @@
+{
+  "status": "inconclusive",
+  "advisory_only": true,
+  "started": 1788658257.4471383,
+  "phases": {
+    "control": {
+      "argv": [
+        "vllm",
+        "serve",
+        "/models/control",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8187",
+        "--served-model-name",
+        "run208-02",
+        "--dtype",
+        "bfloat16",
+        "--kv-cache-memory-bytes",
+        "1073741824",
+        "--max-model-len",
+        "4096",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "512",
+        "--enforce-eager",
+        "--generation-config",
+        "vllm"
+      ]
+    }
+  },
+  "error": "RuntimeError('control server exited 1')",
+  "finished": 1788658291.4850094
+}

@@ -1,0 +1,104 @@
+{
+  "schema": "prismaquant.boundary_validation/2",
+  "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "stack_contract": {
+    "schema": "prismaquant.boundary_stack_contract/1",
+    "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "roles": {
+      "bf16_control": {
+        "artifact_id": "24e9b66a00b4495068efc88c4450677912057b33b27caae40d6eaf909dca06bc",
+        "resident_extensions": [
+          "sampling.so"
+        ]
+      },
+      "candidate": {
+        "artifact_id": "0c87a90020e39d62fcf1fd560c22cc9d6ccf01d190ac9248a07825bd54f29a80",
+        "resident_extensions": [
+          "sampling.so",
+          "trtllm_utils.so"
+        ]
+      }
+    }
+  },
+  "models": {
+    "control": "/mnt/shared/tessera-runs/ts113-fresh-sparklina-aa6-r1/inputs/bf16",
+    "candidate": "/mnt/shared/tessera-runs/bf16/refs/qwen3-0.6b-nvfp4"
+  },
+  "contracts": {
+    "screen": {
+      "prompts": [
+        {
+          "text": "144÷12",
+          "stratum": "numeric"
+        },
+        {
+          "text": "9²",
+          "stratum": "numeric"
+        },
+        {
+          "text": "How many legs does a spider have?",
+          "stratum": "terse_qa"
+        },
+        {
+          "text": "What is 7×8?",
+          "stratum": "numeric"
+        },
+        {
+          "text": "Name the capital of France.",
+          "stratum": "short_recall"
+        }
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "temperature": 1.0,
+      "initial_max_tokens": 64,
+      "max_steps": 11
+    },
+    "heldout": {
+      "prompts": [
+        {
+          "text": "13×7",
+          "stratum": "numeric"
+        },
+        {
+          "text": "121÷11",
+          "stratum": "numeric"
+        },
+        {
+          "text": "What do bees collect from flowers?",
+          "stratum": "terse_qa"
+        },
+        {
+          "text": "How many minutes are there in three hours?",
+          "stratum": "numeric"
+        },
+        {
+          "text": "Name the largest planet in our Solar System.",
+          "stratum": "short_recall"
+        }
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "temperature": 1.0,
+      "initial_max_tokens": 64,
+      "max_steps": 11
+    }
+  },
+  "deadline_seconds": 2400,
+  "netdata_urls": [
+    "http://sparky:19999",
+    "http://sparklina:19999"
+  ]
+}
