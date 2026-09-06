@@ -543,3 +543,58 @@ time to behavioral encoder identity fixtures. Its performance follow-up is
 experiment or guessed compilation/saturation explanation is claimed here.
 The published PB generation's omitted required documentation is tracked in
 [PrismaBuild #196](https://github.com/RobTand/prismabuild/issues/196).
+
+## Attempt 08: actual exported bytes match, then host readability refuses
+
+PB action `8dc3bc2e4ea62c4797b8519fda133328ae7ae9d72147ec03f0553d5053e0238c`
+ran source `465fc13796abb0d5eeec1b3e93036478cd74fdaf`, snapshot
+`1675e1368b42748547c1b21967daaa9dfc17c408`, bundle SHA-256
+`a1933620df872cc7405ab4ff88fc1e6781111596a8115c93a89c6ed46f7bd9e7`.
+Its cached export completed: one selected routed stack, 32 experts and
+96 projections, with 2,016 other expert tensors retained BF16. The direct
+producer wrote 2,302 tensors into a 16,409,528,112-byte safetensors shard.
+
+The actual wire audit parsed every selected exported container and matched
+its embedded blob byte-for-byte and by SHA-256 against its original priced
+cache record: **96 blobs totaling 178,161,760 bytes**. The 96 exported fused
+containers total **178,164,864 bytes**, including their additional framing.
+These are distinct accounting scopes. The producer separately reports
+`totals.wire_bytes=178094080`; that narrower field is not substituted for the
+priced self-describing blob comparison. It reports 352,321,536 selected
+quantizable parameters, 353,042,432 resident-mode bytes, and 16,231,072,000
+BF16 passthrough bytes. None of these selected-unit bpp figures is a
+whole-model compression claim.
+
+Direct finalization succeeded with its explicit producer/serving-image
+separation, preserved original manifest, validated source/plan and augmented
+manifest. The producer wrote `wire-audit.json` and `artifact-seal.json` and
+exited zero. The actual checkpoint shard SHA-256 is
+`4924daacfcd4e2779fa4a673abcb38a2fbfa0c41f85df74c4bda495d5d0573c1`.
+The host's next pre-census identity read then failed with `PermissionError`:
+the shard had mode 0600 and owner root:root, while the host verifier runs as
+rob. Other exported files were readable. No census or serving occurred.
+
+The overall action exited 1 after 123.83 seconds and has no successful CAS
+receipt. Both-host telemetry succeeded, monitor errors were empty, exact
+container cleanup was safe and PB resource cleanup completed. Peak scope
+memory was 22,230,003,712 bytes. All metadata, cached wires and logs are mirrored
+under `pq183-evidence/run183-08/`; the unreadable 16 GB shard remains intact in
+its original remote directory and is not included in that mirror. Its full
+producer-observed hash remains in the seal. The original campaign 05 and
+attempt 08 artifact permissions were not changed.
+
+The scoped repair sets only newly exported regular safetensors shards to
+0644 before sealing and records their before/after modes and independently
+computed equal byte hashes. PB
+`bd10c98f491c63cb5ef57638e3b38e8c32b88c3f8da8f98386c27fc57dadd3c1`
+reproduced 0600 rather than readable 0644 (one intended failure, eight passes).
+After the repair, PB
+`fdb18fe67deaffe0a776fa63f4d653bdb4302776c7f8b8905a6bf223e16c06ea`
+passed nine direct-finalization plus 15 continuation tests, zero skips, and
+compile checks. Verified CAS receipt
+`068e208d84366500feaa5ccea2af62651d1ccb60ac5b6dd29b73c9a6937d3462`
+binds a 221-byte payload, SHA-256
+`d36bcbf55f82020d01d0b9ca9ac48748f8620624f870a4a50787442873e6598a`.
+Fresh continuation 09 keeps the existing deterministic graph and original
+priced cache, repeating only cached export and the remaining validation.
+Acceptance 4 still requires actual census and paired serving.
