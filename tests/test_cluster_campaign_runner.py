@@ -46,6 +46,13 @@ _WRITE_BYTES = (
 # ---------------------------------------------------------------------------
 
 _WEDGE_BACKSTOP_SECONDS = 120
+"""Last-resort bound on every cross-process wait and stage in this file.
+
+Not a budget for the work.  It answers only "the producer is wedged and nothing
+will ever satisfy this", so it sits far above anything a healthy run reaches --
+the slowest wait measured under load was 19.3s.  A healthy run never observes
+it; a run that does has found a real defect, and reports it as one.
+"""
 
 # How many helpers `test_an_exiting_helper_is_never_called_ambiguous` watches
 # exit.  This is a sample count, not a threshold: the test's verdict is decided
@@ -55,13 +62,6 @@ _WEDGE_BACKSTOP_SECONDS = 120
 # at least once, so twenty children leave a regression essentially nowhere to
 # hide while costing a few milliseconds each.
 _EXITING_HELPERS_WATCHED = 20
-"""Last-resort bound on every cross-process wait and stage in this file.
-
-Not a budget for the work.  It answers only "the producer is wedged and nothing
-will ever satisfy this", so it sits far above anything a healthy run reaches --
-the slowest wait measured under load was 19.3s.  A healthy run never observes
-it; a run that does has found a real defect, and reports it as one.
-"""
 
 
 def _wait_until(
@@ -1311,6 +1311,7 @@ def test_an_exiting_helper_is_never_called_ambiguous(tmp_path):
 
     token = "0" * 64
     verdicts: dict[str, int] = {"owned": 0, "gone": 0}
+    watched = 0
     for index in range(_EXITING_HELPERS_WATCHED):
         marker = tmp_path / f"exiting-{index}"
         environment = dict(os.environ)
@@ -1332,14 +1333,19 @@ def test_an_exiting_helper_is_never_called_ambiguous(tmp_path):
             snapshot = campaign._proc_snapshot(child.pid)
             if snapshot is None:  # pragma: no cover - the child beat the read
                 continue
+            watched += 1
             # Start watching where the recovery starts: the moment the helper's
             # receipt is on disk, which is the moment before it exits.
-            _wait_until(
-                lambda: marker.exists() and marker.stat().st_size > 0,
-                unmet="the helper never published its marker",
-                alive=lambda: child.poll() is None,
-            )
+            # Deliberately not `_wait_until`, and deliberately never
+            # `child.poll()`: `Popen.poll()` reaps an exited child, which
+            # removes `/proc/<pid>` and with it the exit window this test
+            # exists to sample.  The helper writes its marker before it exits,
+            # so the marker is the wait, and the backstop is the bound.
             backstop = time.monotonic() + _WEDGE_BACKSTOP_SECONDS
+            while not (marker.exists() and marker.stat().st_size > 0):
+                assert time.monotonic() < backstop, (
+                    f"helper {child.pid} never published its marker"
+                )
             while True:
                 assert time.monotonic() < backstop, (
                     f"helper {child.pid} never finished: {verdicts}"
@@ -1357,7 +1363,8 @@ def test_an_exiting_helper_is_never_called_ambiguous(tmp_path):
                     break
         finally:
             child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
-    assert verdicts["gone"] == _EXITING_HELPERS_WATCHED
+    assert watched > 0, "no helper was watched at all"
+    assert verdicts["gone"] == watched
     # Samples taken while the helper was still alive.  Without at least one the
     # loop proved nothing but that a finished pid reads as `gone`, so say so
     # rather than passing on a vacuous run.
