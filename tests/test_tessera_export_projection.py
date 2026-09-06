@@ -407,6 +407,7 @@ def _isolate_other_gates(monkeypatch):
     monkeypatch.setattr(export, "require_declared_structure", lambda model: "routed_moe")
     monkeypatch.setattr(export, "require_executes_derived_from_contract", lambda: ())
     monkeypatch.setattr(export, "require_producer_tools", lambda: ())
+    monkeypatch.setattr(export, "require_producer_repo_is_pinned", lambda: ())
     monkeypatch.setattr(export, "require_release_pin", lambda: None)
     monkeypatch.setattr(pin, "load_tessera_serving_runtime_pin",
                         lambda: SimpleNamespace(version="fixture", commit="f" * 40))
