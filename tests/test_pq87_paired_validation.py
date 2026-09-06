@@ -57,6 +57,19 @@ def test_both_model_arms_reuse_the_existing_bounded_server_configuration():
     assert "--quantization" not in control + candidate
 
 
+@pytest.mark.parametrize("role", ["control", "candidate"])
+def test_paired_server_startup_budget_fits_the_reserved_container(role):
+    # A fixed 1 GiB KV cache does not bypass vLLM's device-startup fraction
+    # check. The image's 0.92 default requests 111.9 GiB on our GB10, far
+    # outside this campaign's 28 GiB container and 32 GiB fleet reservation.
+    argv = _driver().server_argv("nonce", f"/models/{role}")
+    flag = "--gpu-memory-utilization"
+    assert argv.count(flag) == 1, "paired server must declare its startup memory budget"
+    fraction = float(argv[argv.index(flag) + 1])
+    assert fraction == 0.2
+    assert (1 << 30) < fraction * 121.63 * (1 << 30) < 28 * (1 << 30)
+
+
 def _arm_receipts(monkeypatch, *, control_texts=None, candidate_texts):
     """The two `prismaquant.boundary_campaign_arm/1` files the driver reads back."""
     from prismaquant import boundary_control as bc

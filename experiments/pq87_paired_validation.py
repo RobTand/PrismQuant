@@ -63,6 +63,10 @@ def validate_manifest(value):
 def server_argv(nonce, model):
     argv = instrument.server_argv(nonce)
     argv[argv.index("serve") + 1] = model
+    # Explicit KV bytes do not bypass vLLM's startup memory-fraction check.
+    # On this GB10 campaign, 20% is ~24.3 GiB within the 28 GiB container;
+    # inheriting the image's 92% default requests ~111.9 GiB instead.
+    argv += ["--gpu-memory-utilization", "0.2"]
     return argv
 
 
