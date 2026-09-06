@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `codex/237-paired-diagnostics`. Stamps
+As of: 2026-09-06 · `codex/pq262-static-anchor`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `codex/pq262-static-anchor`) for streamed static
+activation calibration (#262). `_render_dense_layer` uses the resident cache's
+resolved-format predicate `_formats_need_static_activation_max`, including
+Tessera-only A4 plans. Native NVFP4 weight-global derivation remains separate.
+Sparse transient requests calibrate the complete planned layer scope and unify
+fused-sibling maxima before scoring any member, so render batching/order cannot
+change the activation identity consumed by joint AURA. Existing calibration,
+source, render-lever and transient-consumer bindings remain required; no new
+cache, serving route, numerical promotion or production default is introduced.
 
 Re-stamped (2026-09-06, `codex/237-paired-diagnostics`) for validated paired
 assignment diagnostics (#257, research groundwork for #237). The shared joint
