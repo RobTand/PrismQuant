@@ -474,3 +474,72 @@ completed. Full `plan.log`, command, source/build/preflight receipts and
 terminal remain in `run183-07/` and its `pq183-evidence/` mirror. This attempt
 performed no calibration, allocation or quantization. Acceptance 4 remains
 open pending the remaining actual stages.
+
+## Producer-owned plan and transparent direct-export finalization
+
+Before attempt 08, source review identified two more concrete interface
+assumptions. The pinned dense plan translator emits routed expert leaf names,
+whereas the exporter accepts the producer's whole-stack unit and refuses
+routed leaf overrides. Also, the direct exporter writes its actual plan but
+has no `export_identity`; the bounded census gate previously expected that
+field from merged exports. No partitioning or distribution was introduced to
+work around either interface.
+
+The bounded harness now obtains source classification and stack geometry from
+the pinned producer's `quantizable`, `expert_stacks`, `packed_expert_stacks`
+and `project_expert_plan` APIs and uses PrismaQuant's existing
+`stack_plan_request`. It requires the complete re-derived projection to equal
+the priced producer projection and retains the original assignment unchanged.
+The resulting serving plan names the selected stack at its measured rung,
+66 ordinary dense tensors and 21 other stacks explicitly at BF16, and records
+22 producer-classified routers that the exporter always retains at BF16.
+This is the bounded measurement handoff. The ordinary pipeline still invokes
+the dense translator; its routed-plan/representation fix and pin integration
+are tracked in [Tessera #363](https://github.com/RobTand/tessera/issues/363).
+
+The direct finalizer validates the producer's published plan against actual
+plan bytes and calls its existing `validate_explicit_plan` over actual modules,
+configuration groups and source tensor roster. It verifies complete source
+identity against the priced projection, preserves the original manifest
+outside the checkpoint, and appends an explicitly versioned direct-export
+identity before artifact sealing or census. Its producer image is the actual
+47dd image; its serving target is the pinned EUGR image in a separate field.
+The record binds the export command, build, Hessian, cached-unit manifest,
+full Tessera source seal and PQ host snapshot. It makes no partition or merge
+claim. Census hashes and reads the same augmented manifest bytes; there is no
+shadow manifest, gate override or fabricated producer runtime identity.
+
+The direct-shaped regression first reproduced the absent `export_identity`
+KeyError in PB `fab0180f2396c75a4f01a4e67d0f1bd13316fb429fc8399a3b98dc6a7a29524f`
+(seven passes, one intended failure). After integration and stable module
+imports, PB `7a69be4f27b1dd2d7cee3c4ed15ecf9aa0bcb139657e02b174d4873a0ad48e42`
+passed eight direct-finalization and 15 continuation fixtures, zero skips,
+plus compile checks. The fixtures check provenance mutation order and refusal
+contracts with stubbed numerical/producer boundaries; they do not certify
+actual exported bytes. Its 220-byte CAS payload SHA-256
+`71eff40aebedb97ae7cfdfcba4b3085bd79d05ca09e3e4adba5ee0d22c7b4f42`
+was independently verified; receipt
+`6b027f9301bdad4503440e825c51172176dcc50698a7044907507d9f1da5adb3`.
+
+A separate CPU-only PB action,
+`3eea10b7b333a4aebe009d95de950c62c752c16c975e6f74408680006bcb7c06`,
+then exercised the actual new plan helper against copied run-07 assignment
+and build bytes, real model headers, and real pinned producer APIs inside the
+qualified 47dd image. It asserted that CUDA was unavailable, used two CPUs
+and 4 GiB, and performed no calibration, quantization or export. It passed,
+producing exactly the scope above and plan SHA-256
+`4361ef9ccb7cf6a4bb50f0c759d1480a6c5ea0d06fdcad84add01aaffd26c95c`.
+The 317-byte CAS payload SHA-256
+`ad231eb04cc240a700f6eb5b1c2c8256a9c3c80b46f32bf94baf2361a867ef41`
+was independently verified; receipt
+`b83f13659c9d8a89adaa2fdb40c0fa35ee8abb7901db4677e8ae0b2ed8ad938d`.
+Actual artifacts and image/source receipts are archived in `plan183-cpu-01/`
+and mirrored under `pq183-evidence/`. This qualifies plan construction only;
+actual direct finalization and serving remain required.
+
+The retained campaign profile attributes 76.190 seconds of cumulative startup
+time to behavioral encoder identity fixtures. Its performance follow-up is
+[Tessera #364](https://github.com/RobTand/tessera/issues/364); no new performance
+experiment or guessed compilation/saturation explanation is claimed here.
+The published PB generation's omitted required documentation is tracked in
+[PrismaBuild #196](https://github.com/RobTand/prismabuild/issues/196).
