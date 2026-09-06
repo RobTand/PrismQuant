@@ -1,7 +1,36 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/audit4-integration`. Stamps
+As of: 2026-09-05 · `codex/tessera-anchored-surface`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for opt-in,
+receipt-bound Tessera anchored-shape replay (§4.10). A declared shared pilot
+and one/two per-unit anchors predict a curve; separate audit rungs, exact
+measured values, a PWL comparison and deterministic measurement requests
+make its limitations inspectable. The CLI emits a research report only and
+imports the campaign's actual output-MSE currency. It does not qualify an
+AURA price, publish allocator rows or replace the campaign scheduler.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for the shared
+`anchored_shape` numerical core. The existing AURA receipt/currency wrappers
+delegate centered log-shape fitting without changing their numerical result
+or admission. The neutral core additionally supports a per-unit level and
+slope correction from sparse anchors, with exact measured values and frozen
+independent audit predictions. This adds no production interpolation policy.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for correlated
+group uncertainty (PrismaQuant #236). Uniform fused/packed groups retain the
+sum of scaled standard errors as a conservative bound; shared AURA probes
+do not establish independence. Default `PRISMAQUANT_COST_UCB_Z=0` candidate
+prices are unchanged, while grouped uncertainty metadata can increase even
+at zero. The mixed-rung Tessera fold still refuses opt-in UCB pricing.
+
+Re-stamped (2026-09-05, `codex/two-anchor-bootstrap`) for campaign
+bootstrapping from two endpoints (§4.10). A requested initial count of one
+or two retains both endpoints; subsequent rounds use the existing widest-gap
+fallback until leave-one-out can be evaluated, subject to the existing budget,
+round limit and available rungs. This repairs scheduling without qualifying
+interpolation quality or changing production defaults.
 
 Re-stamped (2026-09-05, `codex/audit4-integration`) for the coordinated
 producer API pin following Tessera #356: `ba582d476a3b6db9057ebd1385dc52926f171451`.
@@ -6385,8 +6414,11 @@ while the family constraint itself costs 1.008x / 1.000x / 1.000x against an
 unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
 against brute force on a menu with a non-convex pocket, a uniform-rung option
 must price identically through both constructions or the aggregation refuses,
-and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
-`z*sqrt(sum stderr^2)` is not additive. Measured again on a cost table whose
+and the fold still refuses at `PRISMAQUANT_COST_UCB_Z > 0`: mixed-rung UCB
+repricing remains unsupported. Uniform fused/packed groups use a conservative
+sum of scaled standard errors (#236), since shared AURA probes do not imply
+independent estimates. This does not promote mixed-rung uncertainty support.
+Measured again on a cost table whose
 anchors were placed per group (the correct placement) the one-rung constraint
 costs **1.237x / 1.558x / 1.113x**, and at 4.0 the fold is shown to *contain*
 the unconstrained arm's own rung triple, so the family constraint there is free
@@ -6411,9 +6443,10 @@ inside one run. Four consequences, all of them enforced rather than described:
 
 * `q256: per_member` is the licence for the fold at all. Withdraw it and the
   fold enumerates nothing, so the group keeps the per-NAME intersection, which
-  asserts nothing per member. **With no contract pinned -- production today,
-  since no Tessera RELEASE tag exists -- there is no licence to read and the
-  fold likewise declines, where before this change it folded.** Either way it
+  asserts nothing per member. With no verified contract pin there is no
+  licence to read and the fold likewise declines. The current exact-commit
+  pin supplies the packaged contract; a release tag is no longer required.
+  Either way it
   stamps `__licence__` into the group report, so a receipt can tell "the
   runtime says one rung" from "nothing was asked" -- but only where the
   question arises: a group with no Tessera rung on any member's menu returns
@@ -6465,7 +6498,21 @@ how far the worst surface could be improved -- the opposite of the loop's
 purpose. Each surface records its anchors, encode seconds and which of the two
 stopped it.
 
+`--anchors 1` and `--anchors 2` both start with the two endpoints when the
+legal range has more than one rung. Before three anchors are available, the
+next round splits the widest gap using the shared legal grid. Budget, round
+and available-rung limits still apply; fewer than three measurements cannot
+close the leave-one-out gate and report its error as null.
+
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
+
+The separate `tools/tessera_surface_replay.py` research command can compare
+the existing PWL model with shared-shape transfer from one/two anchors. It
+binds current campaign payload and journal identities, checks recorded wire
+hashes, and keeps activation/recipe segments distinct. A successful replay is
+not fresh source/producer attestation or serving qualification. Details and
+the pending joint-AURA/prefill extension (#237) are in
+[`docs/design/tessera_anchored_replay.md`](design/tessera_anchored_replay.md).
 
 Resume is an identity check, not a name match. The JSON checkpoint manifest
 uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in

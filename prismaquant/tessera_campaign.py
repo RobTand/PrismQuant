@@ -1828,11 +1828,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     if value > worst:
                         worst, worst_loo = value, member_loo
                 if not ready:
-                    continue
-                if not interpolable:
+                    # LOO cannot judge two endpoints. Bootstrap an interior
+                    # anchor through next_anchor_rate's widest-gap fallback;
+                    # missing LOO is neither a closed gate nor a refusal.
+                    worst_loo = {}
+                elif not interpolable:
                     surface_stop.setdefault((key, family), "non_interpolable")
                     continue
-                if worst <= args.loo_gate:
+                elif worst <= args.loo_gate:
                     surface_stop.setdefault((key, family), "gate_closed")
                     continue
                 nxt = next_anchor_rate(grid, worst_loo)

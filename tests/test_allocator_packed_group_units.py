@@ -588,15 +588,9 @@ def test_super_item_stats_do_not_impersonate_one_member_shape():
         assert entry["_memory_bytes_by_format"][cand.fmt] == cand.memory_bytes
 
 
-def test_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
-    """PRISMAQUANT_COST_UCB_Z hedging on a packed group: member dloss
-    estimates are independent measurements, so the stderr of the group SUM
-    is sqrt(sum stderr^2). Summing per-member UCB'd candidates would charge
-    the linear z*sum(stderr) (a sqrt(N)-factor over-hedge on an N-member
-    group), and dropping the field would silently zero the hedge for any
-    consumer of the aggregated cost table. Pin both: the group candidate
-    carries the quadrature hedge, and the super cost entry keeps the
-    (base sum, aggregated stderr) pair."""
+def test_group_ucb_stderr_preserves_conservative_bound(monkeypatch):
+    """Packed members may share AURA probes. Without verified alignment,
+    prices and grouped cost rows retain the conservative sum of stderrs."""
     from prismaquant.allocator_candidates import build_candidates
 
     z = 2.0
@@ -620,7 +614,7 @@ def test_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
         stats, costs, _specs(), cands, _PackedProfile())
     super_name = next(n for n in cands2 if _PACKED_GROUP_MARKER in n)
     for fmt in base:
-        agg = (n_members * stderr[fmt] ** 2) ** 0.5
+        agg = n_members * stderr[fmt]
         cand = next(c for c in cands2[super_name] if c.fmt == fmt)
         assert abs(cand.predicted_dloss
                    - (n_members * base[fmt] + z * agg)) < 1e-12
@@ -636,8 +630,10 @@ def test_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
     super0 = next(n for n in cands0x if _PACKED_GROUP_MARKER in n)
     for fmt in base:
         cand = next(c for c in cands0x[super0] if c.fmt == fmt)
-        assert abs(cand.predicted_dloss - n_members * base[fmt]) < 1e-12
-        agg = (n_members * stderr[fmt] ** 2) ** 0.5
+        exact_sum = sum(next(c.predicted_dloss for c in cands0[name]
+                             if c.fmt == fmt) for name in sorted(stats))
+        assert cand.predicted_dloss.hex() == exact_sum.hex()
+        agg = n_members * stderr[fmt]
         assert abs(costs0[super0][fmt]["predicted_dloss_stderr"] - agg) < 1e-12
 
 

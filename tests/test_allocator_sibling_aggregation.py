@@ -785,7 +785,7 @@ def test_feasible_rung_satisfies_the_tolerance_contract(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# UCB hedge on fused super-items: independence aggregate, not linear sum
+# UCB hedge on fused super-items: conservative bound for correlated errors
 # ---------------------------------------------------------------------------
 
 def _mk_qkv_ucb_fixture(base: dict, stderr: dict):
@@ -803,15 +803,9 @@ def _mk_qkv_ucb_fixture(base: dict, stderr: dict):
     return members, stats, costs
 
 
-def test_fused_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
-    """A qkv triple must hedge at √3-independence, not 3x linear.
-
-    Members' dloss estimates are independent measurements, so the stderr of
-    the group SUM is sqrt(Σ stderr²). Summing per-member UCB'd terms charged
-    the LINEAR z·Σ(stderr) — a √N over-hedge — and the super cost entry
-    dropped predicted_dloss_stderr entirely, zeroing the hedge for consumers
-    of the aggregated table. Same contract the packed path already pins.
-    """
+def test_fused_group_ucb_stderr_preserves_conservative_bound(monkeypatch):
+    """Shared AURA probes can correlate all qkv estimates; absent verified
+    alignment, retain the sum of standard errors in prices and cost rows."""
     z = 2.0
     monkeypatch.setenv("PRISMAQUANT_COST_UCB_Z", str(z))
     base = {"NVFP4": 0.05, "BF16": 0.01}
@@ -830,7 +824,7 @@ def test_fused_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
     for cand in cands_ext[super_name]:
         fmt = cand.fmt
         assert fmt in base, f"unexpected format {fmt} in fixture"
-        agg = (n_members * stderr[fmt] ** 2) ** 0.5
+        agg = n_members * stderr[fmt]
         exact_sum = 0.0
         for _ in members:
             exact_sum += base[fmt]
@@ -840,8 +834,8 @@ def test_fused_group_ucb_stderr_aggregates_in_quadrature(monkeypatch):
         assert abs(entry["predicted_dloss_stderr"] - agg) < 1e-12
         # weight_mse is derived from the UN-hedged sum (no z contamination).
         assert abs(entry["weight_mse"] - exact_sum / (0.5 * sum_h)) < 1e-12
-        # Strictly cheaper than the linear hedge it replaces.
-        assert z * agg < z * n_members * stderr[fmt] - 1e-12
+        # Fully correlated errors attain this bound: no group-size discount.
+        assert z * agg == z * n_members * stderr[fmt]
         checked += 1
     assert checked >= 1
 
@@ -1018,7 +1012,7 @@ def test_group_options_refuse_a_ucb_hedge_rather_than_price_it_wrong():
     candidates = {
         m: _tessera_member_candidates([(10, 2.0), (20, 1.0)]) for m in members
     }
-    with pytest.raises(NotImplementedError, match="not additive"):
+    with pytest.raises(NotImplementedError, match="do not support UCB pricing"):
         tessera_group_composites(
             members, candidates, n_params=1000,
             licence=_installed_fused_licence(), ucb_z=1.0)
