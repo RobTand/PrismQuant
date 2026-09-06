@@ -5,7 +5,8 @@ follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-06, `codex/lfm-mixed-serving`) for the opt-in mixed-LFM
 assembled-artifact observation (#253). A bounded host action verifies the actual
-PB assembly result and immutable encoder/calibration inputs, seals all artifact
+PB assembly stdout CAS blob and its unique completion record, plus immutable
+encoder/calibration inputs, seals all artifact
 bytes, drives all 74 owners in prefill and decode, preserves the strict census
 result separately, and collects a matched BF16/student greedy smoke. Missing
 EUGR dense cell attestations remain a refusal of production admission; a raw

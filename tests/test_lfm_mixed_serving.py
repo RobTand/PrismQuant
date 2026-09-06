@@ -22,7 +22,7 @@ class ServingTests(unittest.TestCase):
             record = {"schema": "prismabuild.tessera-model.v1", "index": None, "files": {"weights": m.sha(artifact / "weights")}}
             m.write(artifact / "pb-result.json", record)
             receipt = root / "result.json"
-            m.write(receipt, record)
+            receipt.write_text("assembly log\nPB_TESSERA_RESULT=" + json.dumps(record) + "\n")
             digest = m.sha(receipt)
             self.assertEqual(m.verify_assembly(artifact, receipt, digest), record)
             (artifact / "weights").write_bytes(b"changed bytes")
@@ -38,8 +38,10 @@ class ServingTests(unittest.TestCase):
             root = Path(directory)
             record = {"schema": "prismabuild.tessera-model.v1", "index": 0, "files": {"weights": "x"}}
             m.write(root / "pb-result.json", record)
+            blob = root / "cas.stdout"
+            blob.write_text("PB_TESSERA_RESULT=" + json.dumps(record) + "\n")
             with self.assertRaisesRegex(ValueError, "assembled"):
-                m.verify_assembly(root, root / "pb-result.json", m.sha(root / "pb-result.json"))
+                m.verify_assembly(root, blob, m.sha(blob))
 
     def test_encoder_full_closure_refuses_added_or_changed_code(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -179,7 +181,7 @@ class ServingTests(unittest.TestCase):
                  patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "test-owner"}), \
                  patch.object(m.os, "sched_getaffinity", return_value={1}), \
                  patch.object(m, "verify_encoder", return_value={"commit": m.ENCODER}), \
-                 patch.object(m, "verify_assembly"), patch.object(m, "read", side_effect=read), \
+                 patch.object(m, "verify_assembly", return_value={"files": {"fixture": "digest"}}), patch.object(m, "read", side_effect=read), \
                  patch.object(m, "CALIBRATION_SEAL", m.sha(calibrator / "preparation-seal.json")), \
                  patch.object(m, "PROMPTS", m.sha(encoder / "experiments/moe_greedy_smoke_prompts.json")), \
                  patch.object(m.importlib.util, "spec_from_file_location", return_value=spec), \

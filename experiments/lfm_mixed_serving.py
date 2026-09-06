@@ -53,7 +53,10 @@ def verify_encoder(root, manifest_path, digest):
 
 def verify_assembly(artifact, result_path, digest):
     require(sha(result_path) == digest, "assembly result changed")
-    result = read(result_path)
+    records = [line.removeprefix("PB_TESSERA_RESULT=")
+               for line in result_path.read_text().splitlines() if line.startswith("PB_TESSERA_RESULT=")]
+    require(len(records) == 1, "assembly stdout requires exactly one PB completion record")
+    result = json.loads(records[0])
     require(read(artifact / "pb-result.json") == result, "artifact differs from actual PB result")
     require(result.get("schema") == "prismabuild.tessera-model.v1" and "index" in result
             and result["index"] is None and bool(result.get("files")), "not an assembled PB result")
@@ -236,7 +239,7 @@ def main():
     spec = importlib.util.spec_from_file_location("mixed_census_gate", ts / "experiments/ts5_census_check.py")
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
-    verify_assembly(args.artifact, args.assembly_result, args.assembly_result_sha256)
+    assembly_record = verify_assembly(args.artifact, args.assembly_result, args.assembly_result_sha256)
     require(sha(args.calibration / "preparation-seal.json") == CALIBRATION_SEAL, "calibration seal changed")
     calibration = read(args.calibration / "preparation-seal.json")
     for name, record in calibration["files"].items():
@@ -250,7 +253,9 @@ def main():
     require(sha(ts / "experiments/moe_greedy_smoke_prompts.json") == PROMPTS, "fixed smoke prompts changed")
     checkpoint = source_identity(args.artifact)
     seal = {"checkpoint": str(args.artifact), "checkpoint_identity": checkpoint, "export_identity": identity,
-            "encoder": bound_encoder(), "assembly_result_sha256": args.assembly_result_sha256,
+            "encoder": bound_encoder(), "assembly_stdout_sha256": args.assembly_result_sha256,
+            "assembly_record_sha256": hashlib.sha256(json.dumps(assembly_record, sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
             "calibration_seal_sha256": CALIBRATION_SEAL, "plan_sha256": sha(args.plan)}
     write(out / "artifact-seal.json", seal)
     if args.preflight_only:

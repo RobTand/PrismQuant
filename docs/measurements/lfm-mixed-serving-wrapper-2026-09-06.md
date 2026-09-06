@@ -40,8 +40,11 @@ Root supplies two new exact digests after PB completes: the immutable encoder's
 full source manifest SHA and the actual assembly CAS result payload SHA. The
 encoder manifest is an object with `commit` and `files` (relative name→SHA256)
 covering every regular file; no Git files, symlinks or omitted producer scripts.
-The assembly result is the actual PB `prismabuild.tessera-model.v1` result,
-identical to the completed artifact's `pb-result.json`, with `index: null`.
+The assembly input is the actual CAS stdout blob, containing logs and exactly
+one `PB_TESSERA_RESULT=` completion line. The parsed
+`prismabuild.tessera-model.v1` record must equal the completed artifact's
+`pb-result.json`, with `index: null`. The seal records the original stdout
+digest separately from the canonical parsed-record digest.
 Do not substitute a submission acknowledgement for that result.
 
 Example admitted command (paths and digests supplied explicitly):
@@ -56,7 +59,7 @@ python3 experiments/lfm_mixed_serving.py \
   --source /mnt/shared/models/LFM2.5-8B-A1B-BF16 \
   --plan /path/to/immutable/plan.json \
   --calibration /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01 \
-  --assembly-result /path/to/actual-assembly-result.json \
+  --assembly-result /path/to/actual-assembly.stdout \
   --assembly-result-sha256 ACTUAL_CAS_RESULT_SHA256 \
   --seconds 5400 --port 8198
 ```
