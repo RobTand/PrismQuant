@@ -287,3 +287,22 @@ The next source combines merged main90f37e00 (including #230/#242/#243/#245)
 with this opt-in runner and dependency preflight; its actual full commit and
 PB snapshot will be recorded at admission. Complete GPU campaign/export/serve
 acceptance remains pending until those outputs exist.
+
+## Explicit calibration coverage revision for attempt 04
+
+Attempt 03 completed real calibration forwards with the repaired parent-owned
+router bias, but expert 2 received no rows in the eight-sequence draw. Its
+three projections therefore had no empirical Hessian, and the campaign refused
+before producing costs. The full negative observation is retained in the results
+document. This is calibration coverage setup; no eight-sample quality, cost, or
+serving observation exists to select candidates against.
+
+The next attempt explicitly uses **32** WikiText `wikitext-2-raw-v1` train
+sequences, length 512, seed zero, with the existing maximum 512 stored activation
+rows per unit. It reuses the same complete corpus in the qualified offline image
+and the existing sampling implementation; the first eight draws are unchanged.
+All 96 layer-12 expert projections remain in scope, all other declared BF16
+dispositions remain explicit, and the no-routed-rows refusal remains enforced.
+This is a revised calibration contract, not a claim that the eight-sample
+campaign passed. It uses a fresh production cache and output directory,
+`run183-04`, with the same fixed E4M3/q1024 candidate and serving topology.

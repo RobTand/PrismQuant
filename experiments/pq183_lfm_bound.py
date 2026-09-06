@@ -120,7 +120,7 @@ def campaign(args):
                "--model", args.model, "--out", args.out / "cost.pkl",
                "--cache-dir", args.out / "cache", "--menu-mode", "attested",
                "--anchors", 1, "--max-rounds", 1, "--anchor-budget", 1,
-               "--nsamples", 8, "--seqlen", 512, "--seed", 0,
+               "--nsamples", 32, "--seqlen", 512, "--seed", 0,
                "--max-act-rows", 512, "--layer-stride", 12,
                "--hessian", "require", "--tp-degree", 1, *SCOPE], "campaign")
 
