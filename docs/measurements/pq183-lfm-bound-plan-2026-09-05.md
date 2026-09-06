@@ -306,3 +306,24 @@ dispositions remain explicit, and the no-routed-rows refusal remains enforced.
 This is a revised calibration contract, not a claim that the eight-sample
 campaign passed. It uses a fresh production cache and output directory,
 `run183-04`, with the same fixed E4M3/q1024 candidate and serving topology.
+
+## Frozen scope amendment for attempt 05
+
+The 32-sequence layer-12 attempt still lacked support for expert 2. An actual
+forward-hook diagnostic under the same draw observed all 22 sparse layers,
+recording only selected-expert counts and actual parent bias vectors. Before
+inspecting its results, the scope criterion was fixed to the lowest layer index
+at least 13 for which every expert received a calibration row. Eligible layers
+were 13, 17, 20, 22, and 23, so **layer 13** is selected before any quantization.
+
+The campaign now uses stride 13 and exactly
+`model.layers.13.feed_forward.experts.{0..31}.{w1,w3,w2}`: still one complete
+96-projection stack plus dense layer 0. All 32 samples, corpus/train split,
+512-token length, seed zero, 512 stored-row cap, required Hessian, fixed
+E4M3/q1024 candidate, explicit BF16 dispositions, image and serving topology
+remain unchanged. The recipe metadata binds the diagnostic histogram SHA-256
+`d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3`.
+The minimum expert support is 13 routed rows; nonzero support for all experts
+does not mean full-rank Hessians or certified quantization quality. Existing
+no-row and Hessian gates remain unchanged. Attempt 05 uses fresh `run183-05`
+output and production cache; all earlier observations remain in the results doc.

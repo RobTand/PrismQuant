@@ -31,7 +31,7 @@ PRODUCER_IMAGE = "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210
 PRODUCER_CONFIG_SHA = "fda47b55fb7105c93e8a0bf99cd633191c198e4033719957734d065a635de31e"
 PRODUCER_ROOTFS_SHA = "df0f8207331bd466df86322a178e14501f707f7b765e820a60e7ce9f28d51d71"
 TESSERA_COMMIT = "ba582d476a3b6db9057ebd1385dc52926f171451"
-STACK = "model.layers.12.feed_forward.experts"
+STACK = "model.layers.13.feed_forward.experts"
 EXPECTED_UNITS = {f"{STACK}.{expert}.{role}" for expert in range(32)
                   for role in ("w1", "w3", "w2")}
 SCOPE = ["--tessera-platform", "sm_121", "--tessera-runtime-image", IMAGE,
@@ -121,7 +121,7 @@ def campaign(args):
                "--cache-dir", args.out / "cache", "--menu-mode", "attested",
                "--anchors", 1, "--max-rounds", 1, "--anchor-budget", 1,
                "--nsamples", 32, "--seqlen", 512, "--seed", 0,
-               "--max-act-rows", 512, "--layer-stride", 12,
+               "--max-act-rows", 512, "--layer-stride", 13,
                "--hessian", "require", "--tp-degree", 1, *SCOPE], "campaign")
 
 
@@ -162,7 +162,7 @@ def allocate(args):
     prov, costs = data["provenance"], data["costs"]
     _, units, stacks = carried_units(prov[PROJECTION_KEY])
     require(set(units) == EXPECTED_UNITS and set(stacks.values()) == {STACK},
-            "producer projection must contain exactly 96 layer-12 expert units")
+            "producer projection must contain exactly 96 layer-13 expert units")
     selected = {}
     for name in sorted(units):
         candidates = []
@@ -190,7 +190,11 @@ def allocate(args):
     meta = {
         "measurement_recipe": {
             "schema": "prismaquant.pq183-lfm-fixed-recipe.v1",
-            "selection": "predeclared_measured_E4M3_q1024_layer12",
+            "selection": "predeclared_measured_E4M3_q1024_layer13",
+            "scope_selection": "lowest_index_ge_13_with_all_experts_observed_before_quantization",
+            "coverage_histogram_sha256": "d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3",
+            "minimum_observed_routed_rows": 13, "calibration_nsamples": 32,
+            "full_rank_hessian_claimed": False,
             "allocator_optimum_claimed": False, "quality_promotion_claimed": False,
             "unpriced_disposition": "explicit_BF16", "cost_sha256": sha(args.out / "cost.pkl"),
         },
