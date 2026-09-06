@@ -1319,13 +1319,42 @@ def _proc_snapshot(pid: int, *, strict: bool = False) -> tuple[int, str] | None:
     return ticks, state
 
 
-def _proc_has_owner(pid: int, owner_token: str) -> bool:
+def _proc_owner_observation(pid: int, owner_token: str) -> str:
+    """Report what ``/proc/<pid>/environ`` establishes about ownership.
+
+    Five answers, because they are five different facts:
+
+    ``owned``
+        The reserved token is in the process environment.
+    ``no-process``
+        There is no process with this pid to ask.
+    ``no-address-space``
+        The read succeeded and returned nothing.  A task keeps its environment
+        inside its address space, so this says the task currently has none:
+        it was execed with an empty environment.
+    ``other-owner``
+        An environment was read and the reserved token is not in it.  This is
+        the only one of the five that establishes a *different* owner.
+    ``unreadable``
+        The read failed for some other reason, so nothing was established.
+        This is what an exiting helper looks like: past ``exit_mm()`` and
+        before ``exit_notify()``, ``/proc/<pid>/environ`` refuses with
+        ``PermissionError`` rather than returning nothing.  Measured on
+        6.17.0-1032-nvidia over 199 of 200 exiting children: every one of the
+        2492 samples inside that window read ``EACCES``/``EPERM``, none read
+        empty, and the recorded start time was intact in all of them.
+    """
+
     try:
         data = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return "no-process"
     except OSError:
-        return False
+        return "unreadable"
+    if not data:
+        return "no-address-space"
     expected = f"{_RESERVED_OWNER_ENV}={owner_token}".encode("utf-8")
-    return expected in data.split(b"\0")
+    return "owned" if expected in data.split(b"\0") else "other-owner"
 
 
 def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
@@ -1337,21 +1366,61 @@ def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
             return "mismatch"
         if snapshot[1] == "Z":
             return "gone"
-        if _proc_has_owner(pid, owner_token):
+        observation = _proc_owner_observation(pid, owner_token)
+        if observation == "owned":
             return "owned"
-        # Exit can empty/remove environ after stat still showed a live helper.
-        # Only disappearance or a zombie with the same start time proves this
-        # attempt ended. PID reuse and unreadable state remain ambiguous.
+        if observation == "other-owner":
+            # An environment was read, in full, and the reserved token is not
+            # in it.  That is the one observation that establishes a different
+            # owner, and it still fails closed.
+            return "mismatch"
+        # Every other observation is a read that *failed*, and a read that
+        # failed establishes nothing about who owns this pid -- least of all
+        # that somebody else does.  Ask the identity again instead.
         snapshot = _proc_snapshot(pid, strict=True)
     except (OSError, ValueError):
         return "mismatch"
     if snapshot is None or snapshot == (ticks, "Z"):
         return "gone"
+    if snapshot[0] == ticks:
+        # The recorded start time still holds, so this IS the recorded process
+        # rather than a recycled pid: field 19 of `/proc/<pid>/stat` is what
+        # establishes identity here, and the owner token is a second check that
+        # can only ever fail to be *readable*.  Treating "I could not ask" as
+        # "the answer was no" is what refused a recovery for watching its own
+        # helper exit -- measured, on this kernel, as a `PermissionError` from
+        # `/proc/<pid>/environ` on every sample inside that window (2492 of
+        # 2492, identity unchanged in all of them) while the task is between
+        # `exit_mm()` and `exit_notify()`.  Nothing here proves the attempt
+        # ended, so it stays owned and the caller's bounded wait looks again;
+        # the zombie or the absence that does prove it is the next observation.
+        #
+        # Being wrong here is bounded and points the safe way: a pid recycled
+        # inside one clock tick, by a process whose environment we cannot read
+        # at all, would be terminated at the recorded deadline rather than
+        # refused outright.
+        return "owned"
+    # PID reuse stays ambiguous.
     return "mismatch"
 
 
 def _terminate_recorded_owned_process(pid: int, ticks: int, owner_token: str) -> bool:
-    if _owned_process_state(pid, ticks, owner_token) != "owned":
+    """Stop the recorded process; report whether it is definitely not running.
+
+    That is the question the callers ask, and an already-ended process answers
+    it as completely as a kill does -- which is why `ProcessLookupError` from
+    the signal below already returns True.  Reading the same fact one moment
+    earlier used to return False instead, and the caller turns False into
+    `process was not killed`, a terminal stage failure.  Only an ownership that
+    was never established leaves the question open, and only that refuses: a
+    recycled pid, or an environment read in full that carries somebody else's
+    token.  A read that merely failed is not that -- see `_owned_process_state`.
+    """
+
+    state = _owned_process_state(pid, ticks, owner_token)
+    if state == "gone":
+        return True
+    if state != "owned":
         return False
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -1751,6 +1820,33 @@ def _ready_stages(
     return ready
 
 
+def _terminal_failure_report(
+    state: Mapping[str, object], terminal: Sequence[str]
+) -> str:
+    """Say why each terminal stage is terminal, in the exception itself.
+
+    A campaign that stops names the stages; what a reader needs is the
+    transition that stopped them.  That has always been recorded in the state
+    file's attempt `detail`, and a CI job that keeps only the traceback threw
+    it away -- twice, in #244, for a failure nobody could then account for.
+    """
+
+    parts: list[str] = []
+    for stage_id in terminal:
+        record = state["stages"][str(stage_id)]  # type: ignore[index]
+        attempts = record["attempts"]  # type: ignore[index]
+        if not attempts:
+            parts.append(f"{stage_id}: no attempt was recorded")
+            continue
+        attempt = attempts[-1]
+        detail = str(attempt["detail"]) or "(no detail recorded)"
+        parts.append(
+            f"{stage_id} attempt {attempt['number']}: {detail} "
+            f"(worker log: {attempt['log_path']})"
+        )
+    return "; ".join(parts)
+
+
 def _terminal_stage_ids(state: Mapping[str, object]) -> list[str]:
     return sorted(
         str(stage_id)
@@ -1855,7 +1951,8 @@ def run_campaign_v2(
                     )
                     terminal = _terminal_stage_ids(state)
                 raise CampaignTerminalFailure(
-                    f"campaign has terminal failed stages: {terminal}"
+                    f"campaign has terminal failed stages: {terminal}; "
+                    + _terminal_failure_report(state, terminal)
                 )
             if all(
                 record["status"] == "succeeded"

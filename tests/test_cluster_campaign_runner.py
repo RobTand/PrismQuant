@@ -54,6 +54,15 @@ the slowest wait measured under load was 19.3s.  A healthy run never observes
 it; a run that does has found a real defect, and reports it as one.
 """
 
+# How many helpers `test_an_exiting_helper_is_never_called_ambiguous` watches
+# exit.  This is a sample count, not a threshold: the test's verdict is decided
+# per sample, so no number here can turn a violation into a pass, and the only
+# thing it trades is runtime against how reliably a regression is caught.
+# Measured on 6.17.0-1032-nvidia, 199 of 200 exiting children opened the window
+# at least once, so twenty children leave a regression essentially nowhere to
+# hide while costing a few milliseconds each.
+_EXITING_HELPERS_WATCHED = 20
+
 
 def _wait_until(
     condition: Callable[[], bool],
@@ -93,6 +102,43 @@ def _wait_until(
                 "producer is wedged"
             )
         time.sleep(poll_interval)
+
+
+def _campaign_diagnosis(state_path: Path) -> str:
+    """Everything the state file and its attempt logs know about a failure.
+
+    `CampaignTerminalFailure` names the stages that stopped; the transition
+    that stopped them lives in the state file, and the worker's own account of
+    it lives in that attempt's log.  A CI job keeps neither.  #244 spent three
+    runs on a recovery failure that could not be accounted for because the only
+    surviving record was the traceback, so every campaign this file resumes
+    reports both when it fails.
+    """
+
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"state at {state_path} could not be read: {exc!r}"
+    lines = [f"state {state_path}:"]
+    for stage_id, record in sorted(raw.get("stages", {}).items()):
+        lines.append(f"  {stage_id}: status={record['status']}")
+        for attempt in record["attempts"]:
+            lines.append(
+                f"    attempt {attempt['number']}: status={attempt['status']} "
+                f"pid={attempt['pid']} start_ticks={attempt['pid_start_ticks']} "
+                f"detail={attempt['detail']!r}"
+            )
+            log = Path(str(attempt["log_path"]))
+            try:
+                text = log.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                lines.append(f"      worker log {log} unreadable: {exc!r}")
+                continue
+            lines.append(f"      worker log {log}:")
+            lines.extend(
+                f"        {line}" for line in (text.splitlines() or ["(empty)"])
+            )
+    return "\n".join(lines)
 
 
 def _nonempty(path: Path) -> Callable[[], bool]:
@@ -462,6 +508,7 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
     fast_path = tmp_path / "fast.receipt"
     gate_path = tmp_path / "gate.receipt"
     waiting_path = tmp_path / "waiting.receipt"
+    release_path = tmp_path / "release.receipt"
     # No private deadline in the child: the stage's own timeout_seconds is the
     # authoritative bound and the worker enforces it by terminating the child's
     # process group (cluster_campaign.py, `_exec-request`). A second, shorter
@@ -472,6 +519,17 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
         "gate=Path(sys.argv[1]); out=Path(sys.argv[2]); "
         "exec(\"while not gate.exists():\\n time.sleep(0.02)\"); "
         "out.write_bytes(b'waiting')"
+    )
+    # The refill stage publishes its gate and then stays alive until a stage
+    # that can only run *after* the waiting stage has been recorded finished
+    # releases it.  That makes the completion order the inverse of the one this
+    # test used to assert, by causality rather than by timing: nothing here
+    # depends on which child the scheduler happens to notice first.
+    gate_then_wait_script = (
+        "from pathlib import Path; import sys, time; "
+        "Path(sys.argv[1]).write_bytes(b'gate'); "
+        "release=Path(sys.argv[2]); "
+        "exec(\"while not release.exists():\\n time.sleep(0.02)\")"
     )
     stages = [
         _stage(
@@ -502,8 +560,31 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
             stage_id="refill-local",
             host_id="sparky",
             dependencies=["fast-local"],
-            argv=[sys.executable, "-c", _WRITE_BYTES, str(gate_path), "gate"],
+            argv=[
+                sys.executable,
+                "-c",
+                gate_then_wait_script,
+                str(gate_path),
+                str(release_path),
+            ],
             receipts=[_receipt(gate_path, "gate")],
+        ),
+        # Only reachable once waiting-remote has succeeded, which frees
+        # sparklina and is recorded before this stage can start.  Its whole job
+        # is to end the refill stage afterwards.
+        _stage(
+            tmp_path,
+            stage_id="release-refill",
+            host_id="sparklina",
+            dependencies=["waiting-remote"],
+            argv=[
+                sys.executable,
+                "-c",
+                _WRITE_BYTES,
+                str(release_path),
+                "release",
+            ],
+            receipts=[_receipt(release_path, "release")],
         ),
     ]
     manifest = _manifest(tmp_path, stages, ssh=True, max_parallel=2)
@@ -514,12 +595,33 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
         poll_interval=0.01,
     )
 
-    waiting_attempt = state["stages"]["waiting-remote"]["attempts"]
-    assert len(waiting_attempt) == 1
-    refill_finished = state["stages"]["refill-local"]["attempts"][0][
-        "finished_unix_ns"
-    ]
-    assert waiting_attempt[0]["finished_unix_ns"] >= refill_finished
+    assert {row["status"] for row in state["stages"].values()} == {"succeeded"}
+    waiting_attempts = state["stages"]["waiting-remote"]["attempts"]
+    assert len(waiting_attempts) == 1
+    waiting_attempt = waiting_attempts[0]
+    refill_attempt = state["stages"]["refill-local"]["attempts"][0]
+
+    # The contract this test is named for: sparky was freed by fast-local and
+    # refilled with refill-local while sparklina was still running
+    # waiting-remote.  The gate is what proves it rather than the clock --
+    # waiting-remote's child cannot end before refill-local's child has written
+    # `gate.receipt`, so refill-local had to be running inside waiting-remote's
+    # attempt.  The coordinator writes all three timestamps itself, in that
+    # order, which is why reading them back is a fair record of it.
+    assert (
+        waiting_attempt["started_unix_ns"]
+        <= refill_attempt["started_unix_ns"]
+        <= waiting_attempt["finished_unix_ns"]
+    )
+
+    # And the order this test asserted until #244 is the one the protocol
+    # actually produces here.  A stage is recorded finished after its worker
+    # exits, and nothing in the protocol orders those two records: the refill
+    # child publishes its receipt while it is still alive, so the stage it
+    # released can finish first.  `release-refill` makes that happen every
+    # time, so a scheduler that stopped overlapping hosts would fail the
+    # assertion above rather than pass by winning a race here.
+    assert waiting_attempt["finished_unix_ns"] < refill_attempt["finished_unix_ns"]
 
 
 def test_bounded_retry_reuses_exact_receipt_gate(tmp_path):
@@ -882,9 +984,16 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
                 ),
             )
 
-            state = campaign.run_campaign_v2(
-                manifest, state_path, poll_interval=0.02
-            )
+            try:
+                state = campaign.run_campaign_v2(
+                    manifest, state_path, poll_interval=0.02
+                )
+            except campaign.CampaignTerminalFailure as exc:
+                raise AssertionError(
+                    "the resume terminal-failed instead of adopting the "
+                    f"completed helper's work: {exc}\n"
+                    + _campaign_diagnosis(state_path)
+                ) from exc
 
             attempts = state["stages"]["slow-stage"]["attempts"]
             assert len(attempts) == 1, (
@@ -1018,31 +1127,41 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "second_stat, expected",
+    "second_stat, expected_empty_env, expected_env_error",
     [
-        ("42 Z", "gone"),
-        (FileNotFoundError(), "gone"),
-        (ProcessLookupError(), "gone"),
-        ("42 S", "mismatch"),
-        ("43 S", "mismatch"),
-        ("43 Z", "mismatch"),
-        (PermissionError(), "mismatch"),
-        (OSError("stat I/O failed"), "mismatch"),
-        ("malformed", "mismatch"),
-        ("invalid S", "mismatch"),
+        ("42 Z", "gone", "gone"),
+        (FileNotFoundError(), "gone", "gone"),
+        (ProcessLookupError(), "gone", "gone"),
+        # The cell #244 changes: a *failed* owner read with the recorded start
+        # time intact.  That is our own helper on its way out of `do_exit`, and
+        # a read that failed establishes nothing about who owns the pid --
+        # least of all that somebody else does.  Both spellings of a failed
+        # read (nothing came back, and the read refused) land here, because the
+        # kernel produces the second one, not the first: measured on
+        # 6.17.0-1032-nvidia, every sample inside the window read
+        # EACCES/EPERM.  A changed start time below is still a recycled pid.
+        ("42 S", "owned", "owned"),
+        ("43 S", "mismatch", "mismatch"),
+        ("43 Z", "mismatch", "mismatch"),
+        (PermissionError(), "mismatch", "mismatch"),
+        (OSError("stat I/O failed"), "mismatch", "mismatch"),
+        ("malformed", "mismatch", "mismatch"),
+        ("invalid S", "mismatch", "mismatch"),
     ],
     ids=[
-        "zombie", "missing", "esrch", "live-owner-mismatch", "pid-reused",
+        "zombie", "missing", "esrch", "still-live-same-identity", "pid-reused",
         "pid-reused-zombie", "permission-denied", "io-error", "malformed",
         "invalid-ticks",
     ],
 )
 @pytest.mark.parametrize("owner_read_error", [False, True], ids=["empty-env", "env-error"])
 def test_owned_process_state_rechecks_exit_after_failed_owner_read(
-    monkeypatch, second_stat, expected, owner_read_error
+    monkeypatch, second_stat, expected_empty_env, expected_env_error,
+    owner_read_error,
 ):
     # Force the exact exit window: stat reports our live helper, then environ
     # loses its owner as the helper exits. No scheduling or sleep is involved.
+    expected = expected_env_error if owner_read_error else expected_empty_env
     snapshots = iter(["42 S", second_stat])
 
     def read_stat(path, **kwargs):
@@ -1066,18 +1185,231 @@ def test_owned_process_state_rechecks_exit_after_failed_owner_read(
     assert campaign._owned_process_state(424242, 42, "owner") == expected
 
 
-@pytest.mark.parametrize("owner_matches, expected", [(True, "owned"), (False, "mismatch")])
-def test_owned_process_state_live_identity(monkeypatch, owner_matches, expected):
+@pytest.mark.parametrize(
+    "observation, expected",
+    [
+        ("owned", "owned"),
+        # A full read that lacks the token is the one observation that
+        # establishes a different owner, and it still fails closed.
+        ("other-owner", "mismatch"),
+        # A read that failed does not.  With the recorded start time intact
+        # this is the recorded process, so the caller's bounded wait looks
+        # again rather than terminal-failing the campaign (#244).
+        ("unreadable", "owned"),
+        ("no-process", "owned"),
+        ("no-address-space", "owned"),
+    ],
+)
+def test_owned_process_state_live_identity(monkeypatch, observation, expected):
     monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (42, "S"))
-    monkeypatch.setattr(campaign, "_proc_has_owner", lambda *a: owner_matches)
+    monkeypatch.setattr(
+        campaign, "_proc_owner_observation", lambda *a: observation
+    )
     assert campaign._owned_process_state(424242, 42, "owner") == expected
+
+
+@pytest.mark.parametrize(
+    "environ, expected",
+    [
+        (f"{campaign._RESERVED_OWNER_ENV}=owner\0".encode("utf-8"), "owned"),
+        (b"", "no-address-space"),
+        (b"PATH=/usr/bin\x00", "other-owner"),
+    ],
+    ids=["carries-the-token", "no-address-space", "someone-else"],
+)
+def test_proc_owner_observation_tells_empty_from_absent(
+    monkeypatch, environ, expected
+):
+    # An environ that reads as nothing and an environ that names somebody else
+    # are different facts about a pid, and #244 turned on telling them apart.
+    monkeypatch.setattr(Path, "read_bytes", lambda self: environ)
+    assert campaign._proc_owner_observation(424242, "owner") == expected
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (FileNotFoundError(), "no-process"),
+        (ProcessLookupError(), "no-process"),
+        (PermissionError(), "unreadable"),
+        (OSError("environ I/O failed"), "unreadable"),
+    ],
+    ids=["missing", "esrch", "permission-denied", "io-error"],
+)
+def test_proc_owner_observation_tells_absent_from_unreadable(
+    monkeypatch, error, expected
+):
+    def read_bytes(self):
+        raise error
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert campaign._proc_owner_observation(424242, "owner") == expected
+
+
+def test_a_live_process_with_no_environment_is_still_owned():
+    """A real process, with a real empty environ, is not a recycled pid.
+
+    This is the observation `_owned_process_state` gets from a helper that has
+    released its address space on the way out: `/proc/<pid>/environ` reads as
+    zero bytes while `/proc/<pid>/stat` still reports the recorded start time
+    and a state that is not `Z`.  A process execed with an empty environment
+    produces exactly that observation on demand, with no window to hit and
+    nothing patched, so the verdict can be asserted rather than caught.
+    """
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={},
+    )
+    try:
+        _wait_until(
+            lambda: campaign._proc_snapshot(child.pid) is not None,
+            unmet="the child never appeared in /proc",
+            alive=lambda: child.poll() is None,
+        )
+        snapshot = campaign._proc_snapshot(child.pid)
+        assert snapshot is not None
+        assert campaign._proc_owner_observation(child.pid, "owner") == (
+            "no-address-space"
+        ), "the kernel no longer reports an empty environ for env={}"
+        assert campaign._owned_process_state(
+            child.pid, snapshot[0], "owner"
+        ) == "owned"
+    finally:
+        assert child.stdin is not None
+        child.stdin.close()
+        child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
+    assert campaign._owned_process_state(child.pid, snapshot[0], "owner") == (
+        "gone"
+    )
+
+
+def test_an_exiting_helper_is_never_called_ambiguous(tmp_path):
+    """Watch real helpers exit, at every sample, and refuse to call one a stranger.
+
+    The table above fixes each observation in place; this asks the kernel what
+    it actually produces.  A helper that publishes its receipt and exits passes
+    through a window -- between `exit_mm()` releasing the address space and
+    `exit_notify()` making the task a zombie -- in which `/proc/<pid>/environ`
+    refuses to be read while `/proc/<pid>/stat` still reports the recorded
+    start time and a live state.  Measured on 6.17.0-1032-nvidia, 199 of 200
+    exiting children pass through it and every one of the 2492 samples taken
+    inside it read `EACCES`/`EPERM`; `_owned_process_state` called all of them
+    `mismatch`, which is a terminal campaign failure for a recovery that is
+    watching its own helper finish.
+
+    Polling flat out is what makes this deterministic rather than lucky: it is
+    not waiting for a rare interleaving, it is sampling a window that every
+    exiting child opens.  The assertion can only fail when the contract is
+    actually violated -- our own child cannot acquire a different owner token
+    or a different start time -- so a green run is green for the right reason
+    and cannot flake the other way.
+    """
+
+    token = "0" * 64
+    verdicts: dict[str, int] = {"owned": 0, "gone": 0}
+    watched = 0
+    for index in range(_EXITING_HELPERS_WATCHED):
+        marker = tmp_path / f"exiting-{index}"
+        environment = dict(os.environ)
+        environment[campaign._RESERVED_OWNER_ENV] = token
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).write_bytes(b'done')",
+                str(marker),
+            ],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            snapshot = campaign._proc_snapshot(child.pid)
+            if snapshot is None:  # pragma: no cover - the child beat the read
+                continue
+            watched += 1
+            # Start watching where the recovery starts: the moment the helper's
+            # receipt is on disk, which is the moment before it exits.
+            # Deliberately not `_wait_until`, and deliberately never
+            # `child.poll()`: `Popen.poll()` reaps an exited child, which
+            # removes `/proc/<pid>` and with it the exit window this test
+            # exists to sample.  The helper writes its marker before it exits,
+            # so the marker is the wait, and the backstop is the bound.
+            backstop = time.monotonic() + _WEDGE_BACKSTOP_SECONDS
+            while not (marker.exists() and marker.stat().st_size > 0):
+                assert time.monotonic() < backstop, (
+                    f"helper {child.pid} never published its marker"
+                )
+            while True:
+                assert time.monotonic() < backstop, (
+                    f"helper {child.pid} never finished: {verdicts}"
+                )
+                verdict = campaign._owned_process_state(
+                    child.pid, snapshot[0], token
+                )
+                verdicts[verdict] = verdicts.get(verdict, 0) + 1
+                assert verdict != "mismatch", (
+                    "a helper of ours, exiting, was called a recycled pid: "
+                    f"child {child.pid} start ticks {snapshot[0]}, "
+                    f"verdicts so far {verdicts}"
+                )
+                if verdict == "gone":
+                    break
+        finally:
+            child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
+    assert watched > 0, "no helper was watched at all"
+    assert verdicts["gone"] == watched
+    # Samples taken while the helper was still alive.  Without at least one the
+    # loop proved nothing but that a finished pid reads as `gone`, so say so
+    # rather than passing on a vacuous run.
+    assert verdicts["owned"] > 0, (
+        "every helper was already finished at its first sample, so the exit "
+        f"window was never watched: {verdicts}"
+    )
+
+
+def test_terminating_a_process_that_already_ended_is_not_ambiguous():
+    """"Gone" answers "is the recorded process stopped?" -- it does not refuse.
+
+    A zombie is the deterministic way to ask: the process has ended, and its
+    pid cannot be recycled underneath the question while it stays unreaped.
+    `_recover_running_stages` turns a False here into a terminal stage failure,
+    so a helper that ended between the ownership check and the kill used to end
+    the campaign.
+    """
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", ""],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    snapshot = campaign._proc_snapshot(child.pid)
+    assert snapshot is not None, "the child was reaped before it was recorded"
+    ticks = snapshot[0]
+    try:
+        _wait_until(
+            lambda: (campaign._proc_snapshot(child.pid) or (0, "Z"))[1] == "Z",
+            unmet="the child never became an unreaped zombie",
+        )
+        assert campaign._owned_process_state(child.pid, ticks, "owner") == "gone"
+        assert campaign._terminate_recorded_owned_process(
+            child.pid, ticks, "owner"
+        )
+    finally:
+        child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
 
 
 @pytest.mark.parametrize("state", ["S", "Z"])
 def test_recorded_process_pid_reuse_is_never_owned_or_killed(monkeypatch, state):
     monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (43, state))
     monkeypatch.setattr(
-        campaign, "_proc_has_owner",
+        campaign, "_proc_owner_observation",
         lambda *a: pytest.fail("a reused PID must not be checked for ownership"),
     )
     monkeypatch.setattr(
@@ -1160,7 +1492,13 @@ def test_ambiguous_recorded_pid_fails_closed_without_killing_it(
         os, "killpg", lambda *a: pytest.fail("ambiguous ownership must not be killed")
     )
 
-    with pytest.raises(campaign.CampaignTerminalFailure, match="ambiguous"):
+    # The message has to name the transition, not only the stage: "ambiguous"
+    # is also the stage id here, and a CI job that keeps the traceback and
+    # nothing else has to be able to explain the failure from it (#244).
+    with pytest.raises(
+        campaign.CampaignTerminalFailure,
+        match="recorded PID ownership is ambiguous",
+    ):
         campaign.run_campaign_v2(manifest, state_path, poll_interval=0.01)
 
     assert os.getpid() > 0

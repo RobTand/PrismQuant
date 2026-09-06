@@ -1,7 +1,36 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `codex/pq262-static-anchor`. Stamps
+As of: 2026-09-06 · `claude/pq244-campaign-causality`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `claude/pq244-campaign-causality`) for **an exiting
+helper being the same helper** (§3.0; RobTand/prismaquant#244, P2). The #239
+contract above reads "a failed owner-environment read now rechecks process
+identity"; it rechecked identity and then called a live one ambiguous anyway.
+Linux `do_exit` runs `exit_mm()` before `exit_notify()`, so a helper on its way
+out has released its address space while `/proc/<pid>/stat` still reports the
+recorded start time and a state that is not `Z`, and `/proc/<pid>/environ`
+stops being readable. Measured on this kernel (6.17.0-1032-nvidia): 199 of 200
+exiting children pass through that window, and all 2492 samples taken inside it
+read `EACCES`/`EPERM` -- never empty, never truncated -- with the recorded
+start time intact in every one. The old code read "I could not ask who owns
+this" as "somebody else owns this" and the campaign failed closed on a process
+it owned. `_proc_has_owner` is therefore split into `_proc_owner_observation`,
+which reports what the read established rather than a bare boolean, and the
+`_owned_process_state` rule is stated on the fact that decides it: field 19 of
+`/proc/<pid>/stat` establishes identity, and the owner token is a second check
+that can only ever fail to be *readable*. So a read that **failed** -- refused,
+empty or absent -- leaves a process whose recorded start time is intact
+`owned`, and the caller's existing bounded wait looks again. A **successful**
+read whose environment lacks the token is the one observation that establishes
+a different owner, and it still fails closed; so does a changed start time, and
+neither authorizes killing that process. Two smaller
+consequences: terminating a recorded owned process that has already ended
+reports success rather than failure -- there is nothing left to kill and the
+receipt is recoverable -- and `CampaignTerminalFailure` now names each
+terminal stage's attempt, its refusal detail and its worker log, so the next
+occurrence records why it stopped instead of only that it stopped. No default,
+stage graph, format menu, serving lane, ship gate or byte changes.
 
 Re-stamped (2026-09-06, `codex/pq262-static-anchor`) for streamed static
 activation calibration (#262). `_render_dense_layer` uses the resident cache's
