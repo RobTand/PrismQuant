@@ -549,12 +549,33 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
         poll_interval=0.01,
     )
 
-    waiting_attempt = state["stages"]["waiting-remote"]["attempts"]
-    assert len(waiting_attempt) == 1
-    refill_finished = state["stages"]["refill-local"]["attempts"][0][
-        "finished_unix_ns"
-    ]
-    assert waiting_attempt[0]["finished_unix_ns"] >= refill_finished
+    assert {row["status"] for row in state["stages"].values()} == {"succeeded"}
+    waiting_attempts = state["stages"]["waiting-remote"]["attempts"]
+    assert len(waiting_attempts) == 1
+    waiting_attempt = waiting_attempts[0]
+    refill_attempt = state["stages"]["refill-local"]["attempts"][0]
+
+    # The contract this test is named for: sparky was freed by fast-local and
+    # refilled with refill-local while sparklina was still running
+    # waiting-remote.  The gate is what proves it rather than the clock --
+    # waiting-remote's child cannot end before refill-local's child has written
+    # `gate.receipt`, so refill-local had to be running inside waiting-remote's
+    # attempt.  The coordinator writes all three timestamps itself, in that
+    # order, which is why reading them back is a fair record of it.
+    assert (
+        waiting_attempt["started_unix_ns"]
+        <= refill_attempt["started_unix_ns"]
+        <= waiting_attempt["finished_unix_ns"]
+    )
+
+    # And the order this test asserted until #244 is the one the protocol
+    # actually produces here.  A stage is recorded finished after its worker
+    # exits, and nothing in the protocol orders those two records: the refill
+    # child publishes its receipt while it is still alive, so the stage it
+    # released can finish first.  `release-refill` makes that happen every
+    # time, so a scheduler that stopped overlapping hosts would fail the
+    # assertion above rather than pass by winning a race here.
+    assert waiting_attempt["finished_unix_ns"] < refill_attempt["finished_unix_ns"]
 
 
 def test_bounded_retry_reuses_exact_receipt_gate(tmp_path):
