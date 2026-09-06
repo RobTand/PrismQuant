@@ -1615,6 +1615,14 @@ def _recover_running_stages(
         terminal = False
         if pid is not None and ticks is not None:
             process_state = _owned_process_state(int(pid), int(ticks), owner)
+            deadline_ns = int(attempt["started_unix_ns"]) + int(
+                stage["timeout_seconds"] + _RECOVERY_KILL_GRACE_SECONDS
+            ) * 1_000_000_000
+            while process_state == "owned" and time.time_ns() < deadline_ns:
+                time.sleep(max(0.01, float(poll_interval)))
+                process_state = _owned_process_state(int(pid), int(ticks), owner)
+            # Ownership may become ambiguous while monitoring, as well as on
+            # the initial read. Refuse before probing receipts or retrying.
             if process_state == "mismatch":
                 state = _finish_attempt(
                     state,
@@ -1626,12 +1634,6 @@ def _recover_running_stages(
                     detail="recorded PID ownership is ambiguous; process was not killed",
                 )
                 continue
-            deadline_ns = int(attempt["started_unix_ns"]) + int(
-                stage["timeout_seconds"] + _RECOVERY_KILL_GRACE_SECONDS
-            ) * 1_000_000_000
-            while process_state == "owned" and time.time_ns() < deadline_ns:
-                time.sleep(max(0.01, float(poll_interval)))
-                process_state = _owned_process_state(int(pid), int(ticks), owner)
             if process_state == "owned":
                 killed = _terminate_recorded_owned_process(
                     int(pid), int(ticks), owner

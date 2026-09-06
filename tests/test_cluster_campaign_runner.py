@@ -1100,7 +1100,10 @@ def test_recorded_process_unreadable_stat_is_never_killed(monkeypatch, error):
     assert not campaign._terminate_recorded_owned_process(424242, 42, "owner")
 
 
-def test_ambiguous_recorded_pid_fails_closed_without_killing_it(tmp_path):
+@pytest.mark.parametrize("initially_owned", [False, True], ids=["on-resume", "during-monitoring"])
+def test_ambiguous_recorded_pid_fails_closed_without_killing_it(
+    tmp_path, monkeypatch, initially_owned
+):
     receipt_path = tmp_path / "never.json"
     receipt = _receipt(receipt_path, "never")
     stage = _stage(
@@ -1144,6 +1147,18 @@ def test_ambiguous_recorded_pid_fails_closed_without_killing_it(tmp_path):
     campaign.validate_campaign_state_v2(running, manifest)
     state_path = tmp_path / "ambiguous-state.json"
     state_path.write_text(json.dumps(running), encoding="utf-8")
+
+    if initially_owned:
+        # Start monitoring an owned helper, then deterministically lose its
+        # ownership on the next poll. Neither receipts nor retries may bypass
+        # the same refusal required when ownership is ambiguous on resume.
+        process_states = iter(["owned", "mismatch"])
+        monkeypatch.setattr(
+            campaign, "_owned_process_state", lambda *a: next(process_states)
+        )
+    monkeypatch.setattr(
+        os, "killpg", lambda *a: pytest.fail("ambiguous ownership must not be killed")
+    )
 
     with pytest.raises(campaign.CampaignTerminalFailure, match="ambiguous"):
         campaign.run_campaign_v2(manifest, state_path, poll_interval=0.01)
