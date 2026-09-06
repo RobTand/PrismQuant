@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `codex/237-paired-diagnostics`. Stamps
+As of: 2026-09-06 · `codex/lfm-mixed-serving`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `codex/lfm-mixed-serving`) for the opt-in mixed-LFM
+assembled-artifact observation (#253). A bounded host action verifies the actual
+PB assembly result and immutable encoder/calibration inputs, seals all artifact
+bytes, drives all 74 owners in prefill and decode, preserves the strict census
+result separately, and collects a matched BF16/student greedy smoke. Missing
+EUGR dense cell attestations remain a refusal of production admission; a raw
+route or paired-smoke receipt cannot promote them. Every launched container
+has explicit resource/native limits, captured ownership and ID cleanup.
+No export scheduler, runtime pin or production default changes. Gate:
+`tests/test_lfm_mixed_serving.py`.
 
 Re-stamped (2026-09-06, `codex/237-paired-diagnostics`) for validated paired
 assignment diagnostics (#257, research groundwork for #237). The shared joint
