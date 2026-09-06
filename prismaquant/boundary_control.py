@@ -18,6 +18,7 @@ import re
 from prismaquant import validate_quantized_model as vqm
 
 SCHEMA = "prismaquant.boundary_control/1"
+DECLARED_STACK_SCHEMA = "prismaquant.boundary_control/2"
 SCORER = "prismaquant.boundary_close_count/1"
 DECISION_SCHEMA = "prismaquant.boundary_decision/1"
 NO_NEW_FAILURES_POLICY = "prismaquant.no_new_boundary_failures/1"
@@ -40,6 +41,70 @@ def artifact_content_id(content):
     _closed_weight_content_manifest(content["weight_content_manifest"],
                                     where="boundary artifact_content")
     return digest(content)
+
+
+def validate_stack_contract(contract):
+    """An explicit image/artifact/role declaration, never a residency wildcard."""
+    if (not isinstance(contract, dict) or set(contract) != {"schema", "image", "roles"}
+            or contract["schema"] != "prismaquant.boundary_stack_contract/1"
+            or not isinstance(contract["image"], str)
+            or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", contract["image"])):
+        raise ValueError("invalid paired stack contract")
+    roles = contract["roles"]
+    if not isinstance(roles, dict) or set(roles) != {"bf16_control", "candidate"}:
+        raise ValueError("paired stack contract requires both treatment roles")
+    for row in roles.values():
+        if (not isinstance(row, dict) or set(row) != {"artifact_id", "resident_extensions"}
+                or not isinstance(row["artifact_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", row["artifact_id"])):
+            raise ValueError("paired stack contract requires exact artifact_id")
+        extensions = row["resident_extensions"]
+        if (not isinstance(extensions, list)
+                or any(not isinstance(name, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_+.-]+\.so(?:\.[0-9]+)*", name) for name in extensions)
+                or extensions != sorted(set(extensions))):
+            raise ValueError("paired resident_extensions must be exact sorted unique basenames")
+    if roles["bf16_control"]["artifact_id"] == roles["candidate"]["artifact_id"]:
+        raise ValueError("paired stack contract requires distinct treatment artifacts")
+    return contract
+
+
+def _paired_stack_payload(binding, role):
+    from tools import serve_fingerprint as sf
+
+    proof = binding.get("paired_stack")
+    if (not isinstance(proof, dict) or set(proof) != {"schema", "role", "contract", "manifest"}
+            or proof["schema"] != "prismaquant.boundary_stack_binding/1"
+            or proof["role"] != role or role not in {"bf16_control", "candidate"}):
+        raise ValueError("paired stack binding role or schema differs")
+    contract = validate_stack_contract(proof["contract"])
+    expected = contract["roles"][role]
+    if binding["artifact_id"] != expected["artifact_id"]:
+        raise ValueError("paired stack treatment artifact_id differs")
+    manifest = proof["manifest"]
+    if not isinstance(manifest, dict) or manifest.get("residency_readable") is not True:
+        raise ValueError("paired stack requires readable residency")
+    raw = sf.performance_stack_fingerprint(manifest)
+    if raw != binding["serve_fingerprint"] or raw != manifest.get("performance_stack_fingerprint"):
+        raise ValueError("paired raw serve fingerprint differs from observed manifest")
+    if (manifest.get("serve_session_id") != binding["serve_session_id"]
+            or (manifest.get("host_identity") or {}).get("boot_id") != binding["host_boot_id"]):
+        raise ValueError("paired stack live session or host binding differs")
+    payload = sf.performance_stack_payload(manifest)
+    if payload["image"] != contract["image"]:
+        raise ValueError("paired stack image differs from treatment declaration")
+    if payload["resident_extensions"] != expected["resident_extensions"]:
+        raise ValueError("paired resident_extensions differ from exact role declaration")
+    # The complete raw fingerprint remains in the binding. Only this explicitly
+    # declared treatment coordinate is projected out of the paired comparison.
+    return {key: value for key, value in payload.items() if key != "resident_extensions"}
+
+
+def bind_stack_contract(binding, contract, manifest, role):
+    proof = {"schema": "prismaquant.boundary_stack_binding/1", "role": role,
+             "contract": copy.deepcopy(contract), "manifest": copy.deepcopy(manifest)}
+    _paired_stack_payload({**binding, "paired_stack": proof}, role)
+    return proof
 
 
 def _positive(value, field):
@@ -183,7 +248,9 @@ def measure_step(base_url, model_name, contract, max_tokens, *, raw=False):
 
 
 def _receipt(contract, binding, role):
-    return {"schema": SCHEMA, "scorer": SCORER,
+    if "paired_stack" in binding:
+        _paired_stack_payload(binding, role)
+    return {"schema": DECLARED_STACK_SCHEMA if "paired_stack" in binding else SCHEMA, "scorer": SCORER,
             "request_schema": vqm.BOUNDARY_REQUEST_SCHEMA,
             "response_schema": vqm.BOUNDARY_RESPONSE_SCHEMA,
             "promptset_sha256": digest(contract["prompts"]),
@@ -232,7 +299,8 @@ def _replay_step(step, contract, cap):
 
 
 def _replay_header(receipt):
-    expected = {"schema": SCHEMA, "scorer": SCORER,
+    declared = "paired_stack" in receipt.get("binding", {})
+    expected = {"schema": DECLARED_STACK_SCHEMA if declared else SCHEMA, "scorer": SCORER,
                 "request_schema": vqm.BOUNDARY_REQUEST_SCHEMA,
                 "response_schema": vqm.BOUNDARY_RESPONSE_SCHEMA,
                 "advisory_only": True}
@@ -241,6 +309,8 @@ def _replay_header(receipt):
             raise ValueError(f"receipt {field} differs from measurement contract")
     contract, binding = receipt["contract"], receipt["binding"]
     bound = _validate(contract, binding)
+    if declared:
+        _paired_stack_payload(binding, receipt.get("role"))
     if receipt.get("promptset_sha256") != digest(contract["prompts"]):
         raise ValueError("promptset_sha256 does not bind measured prompts")
     return contract, bound
@@ -275,7 +345,19 @@ def _paired(control, binding):
     if not control["fixed_point"]:
         raise ValueError("BF16 control did not reach a finishing fixed point")
     _validate(control["contract"], binding)
-    for field in ("campaign_id", "host_boot_id", "serve_fingerprint",
+    reference = control["binding"]
+    declared = "paired_stack" in reference or "paired_stack" in binding
+    if declared:
+        control_payload = _paired_stack_payload(reference, "bf16_control")
+        candidate_payload = _paired_stack_payload(binding, "candidate")
+        if reference["paired_stack"]["contract"] != binding["paired_stack"]["contract"]:
+            raise ValueError("paired stack treatment declaration differs")
+        for field in control_payload:
+            if digest(control_payload[field]) != digest(candidate_payload[field]):
+                raise ValueError(f"paired serve stack {field} differs")
+    elif binding["serve_fingerprint"] != reference["serve_fingerprint"]:
+        raise ValueError("paired serve_fingerprint differs")
+    for field in ("campaign_id", "host_boot_id",
                   "model_context_tokens", "prompt_tokens", "prompt_token_ids",
                   "producer_source_sha256"):
         if binding[field] != control["binding"][field]:
