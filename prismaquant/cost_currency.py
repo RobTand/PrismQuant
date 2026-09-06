@@ -110,6 +110,9 @@ def require_run_currency(cost_data: Mapping[str, Any]) -> dict[str, Any]:
     costs = cost_data.get("costs")
     if not isinstance(costs, Mapping):
         raise CostCurrencyError("cost payload carries no 'costs' table")
+    joint = _require_joint_run_currency(cost_data, costs)
+    if joint is not None:
+        return joint
     tessera = _tessera_rows(costs)
     provenance = cost_data.get("provenance")
     cost_mode = (
@@ -157,3 +160,58 @@ def require_run_currency(cost_data: Mapping[str, Any]) -> dict[str, Any]:
         "expected_currency": expected,
         "tessera_rows": len(tessera),
     }
+
+
+def _require_joint_run_currency(cost_data, costs):
+    """Joint AURA is an explicitly attested homogeneous measurement table.
+
+    A weight-only AURA row and a joint row use related quadratic objectives,
+    but mixing them makes the unmeasured activation side look free. Require
+    every usable row, including the BF16 control, to carry the same complete
+    joint measurement and probe identity before the allocator sees it.
+    """
+    provenance = cost_data.get("provenance")
+    provenance = provenance if isinstance(provenance, Mapping) else {}
+    rows = [(unit, fmt, entry) for unit, per_unit in costs.items()
+            if isinstance(per_unit, Mapping)
+            for fmt, entry in per_unit.items()
+            if isinstance(entry, Mapping) and "error" not in entry]
+    claimed = provenance.get("joint_activation") is True or any(
+        entry.get("cost_source") == "joint_aura"
+        or entry.get("cost_currency") == "joint_aura_predicted_dloss"
+        or "joint_operator_identity" in entry
+        or "joint_operator_identity_sha256" in entry
+        for _, _, entry in rows)
+    if not claimed:
+        return None
+    from .joint_aura import JOINT_AURA_COST_CURRENCY, validate_joint_aura_entry
+    from .tessera_formats import parse_tessera_format_name
+
+    if (provenance.get("cost_mode") != "aura"
+            or provenance.get("joint_activation") is not True
+            or provenance.get("cost_currency") != JOINT_AURA_COST_CURRENCY):
+        raise CostCurrencyError("joint AURA requires matching aura/joint provenance")
+    if not rows:
+        raise CostCurrencyError("joint AURA table has no measured rows")
+    probe_identity = None
+    tessera_count = 0
+    for unit, fmt, entry in rows:
+        try:
+            if not validate_joint_aura_entry(entry):
+                raise ValueError("mixes joint and non-joint cost rows")
+            operator = entry["joint_operator_identity"]
+            if operator["qname"] != unit or operator["format"] != fmt:
+                raise ValueError("operator identity differs from its cost-table key")
+            current = entry["probe_identity_sha256"]
+            if probe_identity is not None and current != probe_identity:
+                raise ValueError("rows do not share one probe/calibration identity")
+            probe_identity = current
+            tessera_count += parse_tessera_format_name(fmt) is not None
+        except (ValueError, TypeError, KeyError) as exc:
+            raise CostCurrencyError(f"joint AURA cost row {unit}/{fmt}: {exc}") from exc
+    return {"cost_mode": "aura", "expected_currency": "aura-adjoint",
+            "cost_currency": JOINT_AURA_COST_CURRENCY,
+            "tessera_rows": tessera_count, "joint_aura_rows": len(rows),
+            "probe_identity_sha256": probe_identity,
+            "activation_quantization_included": True,
+            "measurement_status": "research"}

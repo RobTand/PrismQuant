@@ -1387,6 +1387,13 @@ def cost_entry_weight_only_dloss(
     )
 
 
+def cost_entry_is_joint_aura(cost_entry: dict) -> bool:
+    """Validate any joint claim before interpreting generic cost fields."""
+    from .joint_aura import validate_joint_aura_entry
+
+    return validate_joint_aura_entry(cost_entry)
+
+
 def cost_entry_is_anchored_aura_supersurrogate(cost_entry: dict) -> bool:
     """Whether one row was priced by the anchored-AURA campaign.
 
@@ -1412,11 +1419,12 @@ def cost_entry_is_anchored_aura_supersurrogate(cost_entry: dict) -> bool:
     every family is uncalibrated and ``penalty_for`` already returns exactly
     1.0. Skipping the penalty is a provenance statement, not a number change.
 
-    Two facts bound the exposure, which is why this is reported and not gated:
+    The exposure remains explicitly bounded by its measurement scope:
 
-      * the activation path is CONSTANT across K within each CB family, so the
-        blindness cannot reorder rungs INSIDE a family — it can only shift the
-        nvfp4_cb-vs-fp8_cb family-choice margin;
+      * a constant activation operator across K does not make the joint
+        residual constant: its cross terms depend on each rendered weight and
+        can reorder rungs inside a family. The opt-in joint AURA path prices
+        those terms; these legacy weight-only rows retain that limitation;
       * AURA's validated wins (-38%/-39.5% @4B, -17.9% @27B on served KL) were
         measured against ``h_trace x output_mse``, and THAT baseline carried
         the A side (``measure_quant_cost`` applies
@@ -1461,6 +1469,8 @@ def cost_entry_activation_pricing_branch(
     question is answerable from the artifact rather than from the code
     version that produced it.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        return "joint_aura"
     if cost_entry_is_source_passthrough(cost_entry, format_name):
         # Neither measured nor weight-only: the row was never priced from an
         # error estimate at all. It gets its own label so the artifact can
@@ -1542,6 +1552,16 @@ def cost_entry_predicted_dloss(
     price off zero — ``cost_entry_prices_unmeasured_activation_at_zero``
     keeps its full strength.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        if float(gain) != 1.0 or cost_entry.get(APPLIED_MARKER_KEY) is True:
+            raise ValueError("joint AURA refuses calibrated gain or a second activation transfer")
+        if (format_name is not None and
+                cost_entry["joint_operator_identity"]["format"] != format_name):
+            raise ValueError("joint AURA row cannot price a different format")
+        # Its signed full residual already contains weight, activation and
+        # mixed terms under one downstream KL Fisher. Only probe uncertainty
+        # may change the proposal price; no scalar sensitivity is applied.
+        return cost_entry_weight_only_dloss(stats_entry, cost_entry, gain=1.0)
     if cost_entry_is_exact_by_construction(cost_entry, format_name):
         # Zero cost by construction, in one of two ways: a lossless re-encode
         # END TO END (weights verbatim AND identity activation path,
@@ -1690,6 +1710,8 @@ def cost_entry_prices_unmeasured_activation_at_zero(
         stay free to take the cheapest format instead of being forced onto
         BF16.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        return False
     if format_name is None:
         return False
     if cost_entry_is_anchored_aura_supersurrogate(cost_entry):
@@ -1787,6 +1809,8 @@ def collect_activation_calibration_rows(
                 continue
             entry, _entry_fmt = _resolve_cost_entry(costs[name], spec.name)
             if entry is None or "error" in entry:
+                continue
+            if cost_entry_is_joint_aura(entry):
                 continue
             if cost_entry_is_bit_exact(entry, spec.name):
                 continue
@@ -1895,6 +1919,10 @@ def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
             continue
         if cost_entry is None or "error" in cost_entry:
             continue
+        if cost_entry_is_joint_aura(cost_entry):
+            # The family transfer never scaled the full-residual member, so
+            # it must not scale the hedge removed from that member either.
+            gain = 1.0
         # Mirror cost_entry_predicted_dloss: the stderr hedge is only applied
         # on the explicit predicted_dloss branch. This must track the PRICING
         # predicate, not the provenance one — a band-interpolated member priced

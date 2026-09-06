@@ -3,6 +3,15 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA allocator
+currency admission (#237). Complete joint rows are validated before generic
+MSE/weight/exactness branches and consumed directly, with no scalar Fisher,
+calibrated gain or activation transfer. One table must share a joint
+calibration/probe identity and bind each operator to its unit/format key;
+malformed or mixed-currency rows refuse. Optional UCB uses the measured probe
+standard error once, and grouped uncertainty does not reapply a family
+activation penalty. Legacy tables keep their existing pricing branches.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for opt-in streamed joint
 AURA (`compute_aura_cost_streamed(..., joint_activation=True)` and
 `aura_cost --streaming --joint-activation`, #237). The existing resident
