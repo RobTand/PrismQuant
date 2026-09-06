@@ -39,6 +39,47 @@ not uncertainty over new calibration data or evidence of generalization.
 The additive sum of local quadratic prices is still a model approximation;
 it does not establish the quality of every joint assignment.
 
+## Assignment diagnostics
+
+`joint_aura.assignment_probe_summary` and `paired_assignment_difference`
+consume complete joint rows keyed by unit. The paired helper requires the
+same nonempty unit roster in both arms, including unchanged units. Every row
+must pass the producer's identity and sample validator. Probe IDs and the full
+probe identity (source model, calibration, producer source and arithmetic)
+must agree. Each unit retains its source weight; different formats carry
+their own validated render and activation identities. The same unit/format
+cannot silently change operator binding between arms.
+
+The explicit `objective` determines the per-probe quantity:
+
+- `additive` (default): `0.5 sum_i(a_i[k] ** 2)`, the allocator's unary sum.
+- `joint_quadratic`: `0.5 (sum_i a_i[k]) ** 2`, the baseline local
+  linearization with cross-unit terms retained.
+
+Pairing reports A minus B on common samples and its empirical standard error,
+conditional on the fixed calibration. Unchanged units cancel from additive
+differences, but remain in the cross terms of `joint_quadratic`. Neither
+objective measures a new background forward pass or fixes background-dependent
+unary ordering. There is no automatic allocator refinement or admission from
+these diagnostics.
+
+The existing `aura_additivity_gate` CLI accepts `--comparison-assignment` and
+`--paired-objective` to append this paired report. Its additivity prediction
+always remains additive. Complete aligned joint rows use
+`stderr_method=per_probe_aligned_empirical`. Historical bare arrays retain
+their previous numeric estimate as `per_probe_unverified`; equal lengths are
+not proof of alignment. Without arrays the independence estimate is labeled
+`independence_assumed`, not a covariance lower bound. Old bare-list screen
+receipts remain unverified by this identity contract.
+
+Measured KL must be finite; a finite negative sample estimate is allowed.
+Its supplied standard error must be finite and nonnegative.
+The existing `measured_kl_stderr` is caller-supplied held-out sequence
+uncertainty and stays separate from the probe standard error. The residual
+z-score is descriptive and assumes independent probe and sequence errors;
+this helper does not certify the supplied held-out dataset or estimate
+generalization from probe variance.
+
 ## Runtime input and search
 
 `--measured-runtime-table` opts the allocator into measured-resource search.

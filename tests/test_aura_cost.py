@@ -252,7 +252,7 @@ def test_per_probe_samples_align_and_reproduce_mean():
         assert abs(0.5 * sum(xs) / 6 - row["predicted_dloss"]) < 1e-12
 
 
-def test_additivity_gate_exact_correlated_stderr():
+def test_additivity_gate_legacy_correlated_stderr_has_unverified_alignment():
     import math
     from prismaquant.aura_additivity_gate import additivity_gate
 
@@ -262,7 +262,7 @@ def test_additivity_gate_exact_correlated_stderr():
         n_probes=8, min_free_gib=0.0, n_linear_chunks=1,
     )
     assignment = {n: "NVFP4" for n in payload["costs"]}
-    # Exact stderr must equal the std-of-per-probe-sums computed by hand.
+    # Preserve the legacy arithmetic, but array lengths are not probe identity.
     K = 8
     sums = [0.0] * K
     for n in payload["costs"]:
@@ -274,7 +274,8 @@ def test_additivity_gate_exact_correlated_stderr():
     expected_sum = 0.5 * mean_s
 
     out = additivity_gate(payload, assignment, measured_kl=expected_sum * 1.1)
-    assert out["stderr_method"] == "per_probe_exact"
+    assert out["stderr_method"] == "per_probe_unverified"
+    assert out["probe_alignment_verified"] is False
     assert abs(out["predicted_sum"] - expected_sum) < 1e-12
     assert abs(out["predicted_stderr"] - expected_stderr) < 1e-12
     assert abs(out["residual"] - 0.1 * expected_sum) < 1e-9
