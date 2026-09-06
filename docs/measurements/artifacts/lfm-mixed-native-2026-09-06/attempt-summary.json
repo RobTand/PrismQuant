@@ -1,0 +1,145 @@
+{
+  "schema": "prismaquant.lfm-native-attempt-summary.v1",
+  "attempts": [
+    {
+      "attempt": "01",
+      "action": "ccbff80214cbb5d1c247e5f3c7f8632945f0e224a6bc4e7b77cdcf83b4f39690",
+      "action_status": "failed",
+      "action_exit": 1,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "f86359409371d46cea0501aad13ddf16a79f011a",
+        "input": {
+          "bytes": 24756453,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "d4ebc1ba34d509215a59747d79c6cb1c768fb6acaf8a44e1c5bd5d0a66dfa10d"
+        },
+        "parent": "260924459a7eabf1666d7a0f2bae8019acfc84ef",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "scope_cleanup_complete": true,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/ccbff80214cbb5d1c247e5f3c7f8632945f0e224a6bc4e7b77cdcf83b4f39690.json",
+      "terminal_sha256": "1905f46bf0d94ef4272b3e9b6bea140936b0500889379de0abeea94e42e67c31",
+      "retained_files": {
+        "netdata.jsonl": {
+          "bytes": 1851179,
+          "sha256": "32c54044a045f5688d00e47c3ef5de3e9b7fd52c5850e5126e1c2ee438a66eb5"
+        },
+        "container.cid": {
+          "bytes": 64,
+          "sha256": "1c2f568babc45cd66f6227794ccdedbcade16aec3338a37bf71d97719be75418"
+        },
+        "host.json": {
+          "bytes": 2249,
+          "sha256": "a178e91a17df93c2fadee72b22490955729d2412ec7b09978cdd654553c94d5b"
+        },
+        "run.log": {
+          "bytes": 295,
+          "sha256": "1f31a47e1444746770c103ce0f76889a8d561f6a482055dd2aa391a0571a0f3a"
+        }
+      }
+    },
+    {
+      "attempt": "02",
+      "action": "91f5befdf455b173aa69e0282085ad088a13b1b613e56386c1f6fa00320e0cb8",
+      "action_status": "failed",
+      "action_exit": 1,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "490a29dfc40e83c151b8df1b33139187f2a48620",
+        "input": {
+          "bytes": 24756959,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "d99b546c0446660b34d1efe5a3eac38bc9a45649ff4855e115ec238911156631"
+        },
+        "parent": "5525f483653a7587cf35148d3608e80be4fbb01c",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "scope_cleanup_complete": true,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/91f5befdf455b173aa69e0282085ad088a13b1b613e56386c1f6fa00320e0cb8.json",
+      "terminal_sha256": "822f855e69fc4b29fcbe1d5c4afdadc9da0c3cf1e86eb802cb354f5648fed952",
+      "retained_files": {
+        "run.log": {
+          "bytes": 287,
+          "sha256": "872c658cc2dc3f80c7d77dea54b9acf7976c312784af60293c9bf860c077c25c"
+        },
+        "container.cid": {
+          "bytes": 64,
+          "sha256": "29a65afe8b0c1c5bc0f4b69c1e2577787096f3c4752dbba9ea9f92980e0d63e6"
+        },
+        "host.json": {
+          "bytes": 2181,
+          "sha256": "5ed66b9e39bc7aafd61464bc34a18f80e981325a41d1ef716ed7c9d0d2c0c7fb"
+        },
+        "netdata.jsonl": {
+          "bytes": 1853209,
+          "sha256": "b5503a5b9d9cf5a05040137e675e24f117bb08147820136d3c1ba5c2247ed9ab"
+        }
+      }
+    },
+    {
+      "attempt": "03",
+      "action": "89d5ce963e622226c1816616b476a812980fb2e75c1fe7fe2f355a1c33ee49ef",
+      "action_status": "failed",
+      "action_exit": 1,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "8c64ab5e1370dfbb1b3eb7d40ab0309fc9dd47f5",
+        "input": {
+          "bytes": 24756938,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "952d87454af80be64e2b9c85c8725828e3208d377931a8163b3bfceba46b670d"
+        },
+        "parent": "5525f483653a7587cf35148d3608e80be4fbb01c",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "scope_cleanup_complete": true,
+      "terminal_path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/89d5ce963e622226c1816616b476a812980fb2e75c1fe7fe2f355a1c33ee49ef.json",
+      "terminal_sha256": "0d15beeb19cfb0f47c1b1820794ff93aa1e941244a99441c9c591cf1ec67ee63",
+      "retained_files": {
+        "artifact-recovery.json": {
+          "bytes": 660,
+          "sha256": "90dcf1dc42931a29429d22565c0e4642a0c9f0fd126274944c1e9509a75ed1f5"
+        },
+        "run.log": {
+          "bytes": 238,
+          "sha256": "c86eaaeb6dc8b69d2fbda4124bbb62d3310e96a21db2c65a6a504efee67c685c"
+        },
+        "host.json": {
+          "bytes": 2182,
+          "sha256": "eb8aadc2c7a3fea76d11f5cc8edcd11de1f7f83b014467704995cd67a9f5ee53"
+        },
+        "netdata.jsonl": {
+          "bytes": 1859594,
+          "sha256": "7069d6e41b20a2e6c989900b5f754ba7436af8c2f4bd97d9d027a3bc09894757"
+        },
+        "container.cid": {
+          "bytes": 64,
+          "sha256": "2dc3a7f0c1187b0bb5ad188b770db6aec6ef8ef29707d6899b246db006b8edaf"
+        },
+        "probe/profile.txt": {
+          "bytes": 5804,
+          "sha256": "7f7bf8447545904540ac1c26f3263a2c1f940d4f2a530bc59d34315697953e13"
+        },
+        "probe/result.json": {
+          "bytes": 3688,
+          "sha256": "84972dbb3d417358dd7ecd021193504f4bb634ad38cb221df6e045a4db78f61f"
+        },
+        "probe/profile.json": {
+          "bytes": 572478,
+          "sha256": "7179bbb65606208651a41df457c58b1aa3a93b37a3dcd65ae1a4939e8654a993"
+        }
+      }
+    }
+  ],
+  "interpretation": "Ten native ABI/shape calls passed; original action failed after child exit zero during artifact cleanup. Separate CPU-only recovery verified hashes and completed cleanup without repeating GPU work. No model or runtime-price qualification.",
+  "recovery_action": "4b2ffe85c77956057e0fe3419bdfd48e5f18523c7107943b3f6df81c2b963eae",
+  "recovery_receipt": "cf69b282225c58b63fd0a4fd8cbaad1ab1814b93dc6005e32bb83db16a14a94c",
+  "recovery_payload_sha256": "1c3cda1200fa26d57214a2c1032bf9b3872335b79d89324b706f04959920bb8b"
+}

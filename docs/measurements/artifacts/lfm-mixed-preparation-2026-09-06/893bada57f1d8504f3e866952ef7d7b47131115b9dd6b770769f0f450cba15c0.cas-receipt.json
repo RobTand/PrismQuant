@@ -1,0 +1,67 @@
+{
+  "action_key": "893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0",
+  "action_manifest_sha256": "64212ba09763a9f68348ac2bbe41862d6152d8fbd4951a921a57ec9287e730bf",
+  "producer": {
+    "action_key": "893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0",
+    "attestation_sha256": "4077ca9138af7a8e1d41ced1fee7091834e6d0ef9724bd7136b49997e89f900f",
+    "evidence": {
+      "accelerators": [
+        {
+          "compute_capability": "12.1",
+          "driver_version": "595.84",
+          "kind": "nvidia"
+        }
+      ],
+      "hostname": "sparklina",
+      "libc": "glibc-2.39",
+      "machine": "aarch64",
+      "slurm": null,
+      "source": "local",
+      "system": "linux"
+    },
+    "executable": {
+      "bytes": 1543048,
+      "path": "/bin/bash",
+      "resolved_path": "/usr/bin/bash",
+      "sha256": "af955ef55333c8fc9c5aa50df91ad1a629d9a79a9afa125cd5e9629585f78015"
+    },
+    "host_class": null,
+    "inputs": [
+      {
+        "bytes": 24766575,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e3cdad4a0a8a0437da5a19891824b9900bf5402b8c851e0c9bfc24380aea2d29"
+      }
+    ],
+    "platform_key": "linux-aarch64-sm121",
+    "runtime": {
+      "core": {
+        "bytes": 214108,
+        "path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/src/prismabuild/core.py",
+        "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/src/prismabuild/core.py",
+        "sha256": "761cd7b14fb9fa0bcb505ba37ed08fa488f8203a8b65e36a636e52240cee4296"
+      },
+      "launch_kind": "script",
+      "launcher": {
+        "bytes": 2285,
+        "path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/tools/prismabuild_worker.py",
+        "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/tools/prismabuild_worker.py",
+        "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418"
+      },
+      "runtime_sha256": "4c485ca1a7a9b0a3aaa6df9b3dc0a8c14ecdb01eced0446aa6b8d13de7d8bde3",
+      "schema": "prismaquant.prismabuild.worker_runtime.v1"
+    },
+    "schema": "prismaquant.prismabuild.worker_attestation.v2",
+    "toolchain": {
+      "declared": {},
+      "verified": {}
+    },
+    "worker_id": "sparklina"
+  },
+  "receipt_sha256": "9e5634dc5707ae69bf88559b6a173a6dcc8cccb131dd0cd6eb8fabbdc9078e6b",
+  "result": {
+    "bytes": 177,
+    "sha256": "b07b8e4581031c0df4dd16b39d671f548110e8b098f3b9d5fb18b31b6f09ea7c"
+  },
+  "schema": "prismaquant.prismabuild.cas_receipt.v3"
+}

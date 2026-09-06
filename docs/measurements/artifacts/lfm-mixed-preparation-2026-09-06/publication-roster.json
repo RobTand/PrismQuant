@@ -1,0 +1,177 @@
+{
+  "schema": "prismaquant.lfm-mixed-publication.v1",
+  "files": [
+    {
+      "published": "528e50aee0b2db8cf57675cfe7184272785879ceb26e17156e700d922c604f39.cas-receipt.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/528e50aee0b2db8cf57675cfe7184272785879ceb26e17156e700d922c604f39.cas-receipt.json",
+      "archive_sha256": "41e575ea3486b29de66bc6e20371f34100f6a4872cfe9b56109ebf35302dfbf1",
+      "published_sha256": "41e575ea3486b29de66bc6e20371f34100f6a4872cfe9b56109ebf35302dfbf1",
+      "bytes": 2625,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "528e50aee0b2db8cf57675cfe7184272785879ceb26e17156e700d922c604f39.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/528e50aee0b2db8cf57675cfe7184272785879ceb26e17156e700d922c604f39.terminal.json",
+      "archive_sha256": "a65ece37a0de2ee75d9d1b2adfd3e00e943dade14689ced9ec6c4c620f6727e6",
+      "published_sha256": "2e151259a6ac9684e20f6cbcd76e7b14df88d41b91ff43905af3ff560bfb654c",
+      "bytes": 9079,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "5bdd397e1f7c35a28f5d2fdee47c1aeccf55a21b31eebd16e8ee4e2399c5f3a9.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/5bdd397e1f7c35a28f5d2fdee47c1aeccf55a21b31eebd16e8ee4e2399c5f3a9.terminal.json",
+      "archive_sha256": "45f64605669af15e87a42c442a405b323f57317aaf97dcb834e3bd3592c35287",
+      "published_sha256": "49910705bbece7a1aba9e787fa1ca79de8d26c4142a963eb2d3efc68359a6711",
+      "bytes": 5527,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "862727591e5ccd98238eb82c0041418d698b21bd841e5d888bb99c822b42a038.cas-receipt.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/862727591e5ccd98238eb82c0041418d698b21bd841e5d888bb99c822b42a038.cas-receipt.json",
+      "archive_sha256": "41ff39fa69a3bf43f393d0a4451f1902bf5da5af5faadab5a6d05cee285c1a58",
+      "published_sha256": "41ff39fa69a3bf43f393d0a4451f1902bf5da5af5faadab5a6d05cee285c1a58",
+      "bytes": 2624,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "862727591e5ccd98238eb82c0041418d698b21bd841e5d888bb99c822b42a038.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/862727591e5ccd98238eb82c0041418d698b21bd841e5d888bb99c822b42a038.terminal.json",
+      "archive_sha256": "ee04d6d28f7744c32c24ba5383ee875f6ab31e4a233cc2d8ec7f6c5abeb622b0",
+      "published_sha256": "0c72ff5f7c1278526aa6e15761ae1fd9f4892ec4fde9c281a98d872fc97a45e0",
+      "bytes": 7763,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0.cas-receipt.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0.cas-receipt.json",
+      "archive_sha256": "a7a4581f8217d5a60fdbdbdc6363f53eee67da6ebd3785f3579eb61a522b3655",
+      "published_sha256": "a7a4581f8217d5a60fdbdbdc6363f53eee67da6ebd3785f3579eb61a522b3655",
+      "bytes": 2630,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/893bada57f1d8504f3e866952ef7d7b47131115b9dd6b770769f0f450cba15c0.terminal.json",
+      "archive_sha256": "ff2b5a305e8d663750289a3d1f10d5ea212d71631aec6637ec5459be508a6868",
+      "published_sha256": "092b7c854d2fc9b7e20c3799ea9ad49aab430dc528e1666bb6eea799524bd4b6",
+      "bytes": 7579,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "b403b43b35d955aa017b07ec335fbfb50d4fadf6040c05539f58c43b9b36e1b4.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/b403b43b35d955aa017b07ec335fbfb50d4fadf6040c05539f58c43b9b36e1b4.terminal.json",
+      "archive_sha256": "cb5a41d0c2ff99dfadbcfb89532c5b5eaf42dc1a1f8f94be92d4d54518cecb41",
+      "published_sha256": "838ff32cbeb264841cd291c5ce41790f9d19d53a61d39759a90b0abcc0b827e8",
+      "bytes": 5511,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f.cas-receipt.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f.cas-receipt.json",
+      "archive_sha256": "f8352ff5a9c7cb123baa54dcaa0b4cbe1a704503ef36096b9d9bb85c30bca2dd",
+      "published_sha256": "f8352ff5a9c7cb123baa54dcaa0b4cbe1a704503ef36096b9d9bb85c30bca2dd",
+      "bytes": 2489,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f.terminal.json",
+      "archive_sha256": "e318e8e47a5a0ac0c1e60849350b5472a3b964b52ceafd4b3558969e9f6221a8",
+      "published_sha256": "c2d8e6131aab76550d05ae3989488a3ef074cd4e2f42b8c479eaf4a0196dcdaf",
+      "bytes": 9183,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "c69b6445f40408be4d672c5778f2363fc2c6681da2dd506c0b7f1649a6ec18d0.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/c69b6445f40408be4d672c5778f2363fc2c6681da2dd506c0b7f1649a6ec18d0.terminal.json",
+      "archive_sha256": "fd5d6b88c0ec8bca78b0c7c671ad8ab3f6f8cebb0823c55c7647a697aa58748e",
+      "published_sha256": "907d29eee07222726b079e5945d06c947d581ccedd4fb0b414dca0322f4fae6f",
+      "bytes": 7691,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "d014fd59a345833af5492e4aa4eafe4a816650493307e5608dbc61174ae04ba3.cas-receipt.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/d014fd59a345833af5492e4aa4eafe4a816650493307e5608dbc61174ae04ba3.cas-receipt.json",
+      "archive_sha256": "397ddb58a2becbaf0eb93f836ee77ff62475da031526e65ba380fd7288204d3c",
+      "published_sha256": "397ddb58a2becbaf0eb93f836ee77ff62475da031526e65ba380fd7288204d3c",
+      "bytes": 2630,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "d014fd59a345833af5492e4aa4eafe4a816650493307e5608dbc61174ae04ba3.terminal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/private-preparation-evidence/d014fd59a345833af5492e4aa4eafe4a816650493307e5608dbc61174ae04ba3.terminal.json",
+      "archive_sha256": "5183e54e31195f608a699215d10855c99cefdd7240b7f0cd48f244ac95fdb321",
+      "published_sha256": "f80a38d406cef1ac45a55420937ecdf99d1fdfa7ba167908ee4084d40bf07d81",
+      "bytes": 8124,
+      "distinct_scope_tokens_redacted": 1,
+      "transformation": "scope token replacements only"
+    },
+    {
+      "published": "calibration.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/calibration.json",
+      "archive_sha256": "a5a81a9228762c9a1a704b82b48ff80c21154b0621afbffa1c059e60b7501a79",
+      "published_sha256": "a5a81a9228762c9a1a704b82b48ff80c21154b0621afbffa1c059e60b7501a79",
+      "bytes": 1828,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "plan.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/plan.json",
+      "archive_sha256": "6e2ecfdd15a6577e28db229aae5005a3cc4bfb3b81333e148560ac53b0364e55",
+      "published_sha256": "6e2ecfdd15a6577e28db229aae5005a3cc4bfb3b81333e148560ac53b0364e55",
+      "bytes": 8585,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "population.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/population.json",
+      "archive_sha256": "5f474a454cef856218b04113aa0ca9229ee050b9c1b8c55f4f47e0d27f975061",
+      "published_sha256": "5f474a454cef856218b04113aa0ca9229ee050b9c1b8c55f4f47e0d27f975061",
+      "bytes": 138961,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "preparation-seal.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/preparation-seal.json",
+      "archive_sha256": "d302740baa39a484135a5de73abfcf9d5c3ec91eb419cb59a3d4af94c2704952",
+      "published_sha256": "d302740baa39a484135a5de73abfcf9d5c3ec91eb419cb59a3d4af94c2704952",
+      "bytes": 1476,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "host-input.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/host-input.json",
+      "archive_sha256": "0b9627fca8aa7cb9c65c01d34a65fcb9be548541e2315df62e6ab96eb9db04c4",
+      "published_sha256": "0b9627fca8aa7cb9c65c01d34a65fcb9be548541e2315df62e6ab96eb9db04c4",
+      "bytes": 10944,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    },
+    {
+      "published": "host-status.json",
+      "archive": "/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/calibrate-01/host-status.json",
+      "archive_sha256": "20d1d16d32d1246dc3fd7ae6776c322deef340f1218119f9289357bd224fb618",
+      "published_sha256": "20d1d16d32d1246dc3fd7ae6776c322deef340f1218119f9289357bd224fb618",
+      "bytes": 820,
+      "distinct_scope_tokens_redacted": 0,
+      "transformation": "byte-for-byte"
+    }
+  ],
+  "omissions": "Binary scales, cProfile, full producer projection/source identity and telemetry stay in the shared sealed archive."
+}

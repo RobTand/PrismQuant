@@ -1,0 +1,31 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                           fp4_ff_up/M1         0.00%       0.000us         0.00%       0.000us       0.000us      21.936ms       348.53%      21.936ms      21.936ms             1  
+                                  Lazy Function Loading         0.31%     715.284us         0.31%     715.284us      26.492us       3.769ms        59.89%       3.769ms     139.599us            27  
+                                              aten::mul         2.33%       5.312ms         4.14%       9.452ms     450.090us       2.249ms        35.74%       3.201ms     152.423us            21  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.221ms        35.29%       2.221ms     444.284us             5  
+                                            aten::copy_         3.09%       7.054ms         3.97%       9.065ms     431.690us       1.671ms        26.55%       2.371ms     112.909us            21  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.598ms        25.39%       1.598ms     145.260us            11  
+                                          aten::normal_         1.02%       2.315ms         1.29%       2.932ms     195.455us       1.215ms        19.30%       1.772ms     118.106us            15  
+void at::native::(anonymous namespace)::distribution...         0.00%       0.000us         0.00%       0.000us       0.000us       1.189ms        18.88%       1.189ms     237.717us             5  
+                                   _C::scaled_fp4_quant         0.54%       1.239ms         0.66%       1.504ms     250.665us     469.346us         7.46%     771.235us     128.539us             6  
+void vllm::cvt_fp16_to_fp4<__nv_bfloat16, false, fal...         0.00%       0.000us         0.00%       0.000us       0.000us     469.346us         7.46%     469.346us      78.224us             6  
+                                               aten::mm        58.10%     132.513ms        62.52%     142.612ms      23.769ms     382.593us         6.08%     879.395us     146.566us             6  
+                                        bf16_conv_in/M1         0.00%       0.000us         0.00%       0.000us       0.000us     355.490us         5.65%     355.490us     355.490us             1  
+                       Runtime Triggered Module Loading         4.33%       9.870ms         4.33%       9.870ms       3.290ms     306.625us         4.87%     306.625us     102.208us             3  
+                                       aten::_scaled_mm         8.83%      20.133ms         9.74%      22.213ms       5.553ms     221.536us         3.52%       1.281ms     320.272us             4  
+cutlass3x_sm120_bstensorop_s16864gemm_block_scaled_u...         0.00%       0.000us         0.00%       0.000us       0.000us     221.536us         3.52%     221.536us      55.384us             4  
+                                          fp4_ff_up/M64         0.00%       0.000us         0.00%       0.000us       0.000us     204.417us         3.25%     204.417us     204.417us             1  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     173.025us         2.75%     173.025us      57.675us             3  
+                                       bf16_conv_in/M64         0.00%       0.000us         0.00%       0.000us       0.000us     151.009us         2.40%     151.009us     151.009us             1  
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     109.280us         1.74%     109.280us     109.280us             1  
+                       Memcpy DtoH (Device -> Pageable)         0.00%       0.000us         0.00%       0.000us       0.000us      73.058us         1.16%      73.058us       7.306us            10  
+                                        fp4_ff_down/M64         0.00%       0.000us         0.00%       0.000us       0.000us      72.416us         1.15%      72.416us      72.416us             1  
+                                 bf16_attention_qkv/M64         0.00%       0.000us         0.00%       0.000us       0.000us      62.912us         1.00%      62.912us      62.912us             1  
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us      57.920us         0.92%      57.920us      57.920us             1  
+                                       bf16_conv_out/M1         0.00%       0.000us         0.00%       0.000us       0.000us      50.529us         0.80%      50.529us      50.529us             1  
+                                      bf16_conv_out/M64         0.00%       0.000us         0.00%       0.000us       0.000us      46.720us         0.74%      46.720us      46.720us             1  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 228.093ms
+Self CUDA time total: 6.294ms

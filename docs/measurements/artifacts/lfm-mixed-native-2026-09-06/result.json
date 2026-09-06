@@ -1,0 +1,145 @@
+{
+  "compute_capability": [
+    12,
+    1
+  ],
+  "cuda_peak_allocated_bytes": 234881536,
+  "device": "NVIDIA GB10",
+  "image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "native_threads": 1,
+  "passed": true,
+  "rows": [
+    {
+      "family": "fp4",
+      "finite": true,
+      "k": 2048,
+      "m": 1,
+      "n": 14336,
+      "output_sha256": "f02e6559389e34af4eeba2176abd8e7183533a8efb694daa346aba0a02796e22",
+      "owner_geometry": "fp4_ff_up"
+    },
+    {
+      "family": "fp4",
+      "finite": true,
+      "k": 2048,
+      "m": 64,
+      "n": 14336,
+      "output_sha256": "75c05bdf8599d8ce5956c512cf9a904b8bf7fd2bd7e933393c6928370652d4ce",
+      "owner_geometry": "fp4_ff_up"
+    },
+    {
+      "family": "fp4",
+      "finite": true,
+      "k": 7168,
+      "m": 1,
+      "n": 2048,
+      "output_sha256": "aea331fbd2d05b88bbfe46fe3598097ed075ded88f56c8f62a85a30dec40adca",
+      "owner_geometry": "fp4_ff_down"
+    },
+    {
+      "family": "fp4",
+      "finite": true,
+      "k": 7168,
+      "m": 64,
+      "n": 2048,
+      "output_sha256": "c7b730feb84e0514a444d4eefaa7cae990345dd47ef78964b3648d8046d02f4b",
+      "owner_geometry": "fp4_ff_down"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 1,
+      "n": 6144,
+      "output_sha256": "d10f885b04f55e66652cf807e65929446f3c7aa2f48d54c086d8543d8c4099b1",
+      "owner_geometry": "bf16_conv_in"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 64,
+      "n": 6144,
+      "output_sha256": "9a3e4f2f67a374ce9299a86a5aa4691deaf0017a33b1983f225f1bb1000a0bbe",
+      "owner_geometry": "bf16_conv_in"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 1,
+      "n": 2048,
+      "output_sha256": "6ebe70ce901906404955609eb8d2aad07d9e51eeb70e543ebd45d8789a48e445",
+      "owner_geometry": "bf16_conv_out"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 64,
+      "n": 2048,
+      "output_sha256": "09573de28c006ac15e427f1c6018e51952466b9157f50419296cd4d3ff53aab6",
+      "owner_geometry": "bf16_conv_out"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 1,
+      "n": 3072,
+      "output_sha256": "314f122b2240f3b386c07270ef426b01b5dc3b0f2bab252cca3bcd372e242cea",
+      "owner_geometry": "bf16_attention_qkv"
+    },
+    {
+      "family": "bf16",
+      "finite": true,
+      "k": 2048,
+      "m": 64,
+      "n": 3072,
+      "output_sha256": "e02ff94b8c40c91e3b60ef8c1f7344f475437c647bd4def4c27142b0103e92a8",
+      "owner_geometry": "bf16_attention_qkv"
+    }
+  ],
+  "runtime_price_claimed": false,
+  "schema": "prismaquant.lfm_mixed_native_preflight.v1",
+  "scope": "synthetic operand ABI/shape check; no model encoding or cell qualification",
+  "seed": 253,
+  "source_model": "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+  "source_shapes": {
+    "model.layers.0.conv.in_proj.weight": [
+      6144,
+      2048
+    ],
+    "model.layers.0.conv.out_proj.weight": [
+      2048,
+      2048
+    ],
+    "model.layers.0.feed_forward.w1.weight": [
+      7168,
+      2048
+    ],
+    "model.layers.0.feed_forward.w2.weight": [
+      2048,
+      7168
+    ],
+    "model.layers.0.feed_forward.w3.weight": [
+      7168,
+      2048
+    ],
+    "model.layers.2.self_attn.k_proj.weight": [
+      512,
+      2048
+    ],
+    "model.layers.2.self_attn.q_proj.weight": [
+      2048,
+      2048
+    ],
+    "model.layers.2.self_attn.v_proj.weight": [
+      512,
+      2048
+    ]
+  },
+  "tessera_commit": "6faa5ce314cadeee8a190cbeadcf6cde3a333efb",
+  "torch": "2.13.0+cu130",
+  "vllm": "0.28.1rc1.dev397+gfd4a15126.d20260904"
+}

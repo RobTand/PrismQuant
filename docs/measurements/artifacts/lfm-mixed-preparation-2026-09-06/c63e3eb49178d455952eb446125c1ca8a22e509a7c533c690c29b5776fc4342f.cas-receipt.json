@@ -1,0 +1,61 @@
+{
+  "action_key": "c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f",
+  "action_manifest_sha256": "7f0dfbf09b783b03dca367d4c4a58fd3bf2c904336f506e612ab7fbffccc8709",
+  "producer": {
+    "action_key": "c63e3eb49178d455952eb446125c1ca8a22e509a7c533c690c29b5776fc4342f",
+    "attestation_sha256": "b3bcad85f5865d4c8bc98796e60fb350cad33cd9fcc708e0e984de179f513409",
+    "evidence": {
+      "accelerators": [],
+      "hostname": "dl380g10",
+      "libc": "glibc-2.43",
+      "machine": "x86_64",
+      "slurm": null,
+      "source": "local",
+      "system": "linux"
+    },
+    "executable": {
+      "bytes": 1540520,
+      "path": "/bin/bash",
+      "resolved_path": "/usr/bin/bash",
+      "sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd"
+    },
+    "host_class": null,
+    "inputs": [
+      {
+        "bytes": 24763287,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "46ecb70991182bf1452926fc97cb691cd544d571898b972f86d85bc415e2e529"
+      }
+    ],
+    "platform_key": "linux-x86_64",
+    "runtime": {
+      "core": {
+        "bytes": 214108,
+        "path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/src/prismabuild/core.py",
+        "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/src/prismabuild/core.py",
+        "sha256": "761cd7b14fb9fa0bcb505ba37ed08fa488f8203a8b65e36a636e52240cee4296"
+      },
+      "launch_kind": "script",
+      "launcher": {
+        "bytes": 2285,
+        "path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/tools/prismabuild_worker.py",
+        "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/f83eebf3a537-1788667902-87b36c173b12/tools/prismabuild_worker.py",
+        "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418"
+      },
+      "runtime_sha256": "4c485ca1a7a9b0a3aaa6df9b3dc0a8c14ecdb01eced0446aa6b8d13de7d8bde3",
+      "schema": "prismaquant.prismabuild.worker_runtime.v1"
+    },
+    "schema": "prismaquant.prismabuild.worker_attestation.v2",
+    "toolchain": {
+      "declared": {},
+      "verified": {}
+    },
+    "worker_id": "dl380g10"
+  },
+  "receipt_sha256": "18b3c1ee4c28373ddb519d2a89f272ace9d000c73f5734d02ef3f5a16e4d24f1",
+  "result": {
+    "bytes": 1932,
+    "sha256": "94d9da84ebd4c1ae6e671b5ee5bcf45dc8ec8ce7aaa979e276abb24648089f8a"
+  },
+  "schema": "prismaquant.prismabuild.cas_receipt.v3"
+}

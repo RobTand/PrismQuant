@@ -3,6 +3,18 @@
 As of: 2026-09-05 · `codex/pq183-tessera-reader`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-06, `codex/lfm-mixed-preparation`) for the opt-in
+LFM full-body mixed-family sanity input preparation (#253). The producer's
+source classification and fusion roster define 22 E4M3 routed stacks, six
+E2M1x2 dense matrices and 60 BF16-grid trellis matrices; retained source tensors
+are explicit. Existing PQ calibration and static activation-scale policy collect
+32 x 512 WikiText train tokens, seed 0, for the six dense inputs, with producer
+fusion supplied through the existing profile interface. This experiment seals a
+weights-only export plan: no Hessians, invented expert observations, empirical
+allocation, serving admission or production-default changes. PrismaBuild owns
+export execution and distribution. Gate: `tests/test_lfm_mixed_preparation.py`;
+actual preparation/calibration receipts remain separate from serving evidence.
+
 Re-stamped (2026-09-06, `codex/tessera-row-count-255`) for truthful calibration
 row counts without Hessians (#255). The shared Tessera campaign collector
 counts all observed dense or routed input rows independently of the Hessian
