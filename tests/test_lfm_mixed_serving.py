@@ -69,7 +69,7 @@ class ServingTests(unittest.TestCase):
         identity = {"source": source, "runtime_image": m.IMAGE, "encoder_fixture_id": "numerics",
                     "code_sha256": "code", "options": {"plan": plan, "hessian_sha256": None,
                     "input_scales_sha256": m.SCALES}}
-        manifest = {"export_identity": identity, "merged_from": [{}], "totals": {"modules": 74, "units": 2178}}
+        manifest = {"export_identity": identity, "merged_from": [{}], "totals": {"modules": 74, "units": 2214}}
         calibration = {"mode": "calibrate", "weights_only_export": True, "hessian": None}
         return plan, manifest, source, calibration
 
@@ -97,7 +97,7 @@ class ServingTests(unittest.TestCase):
 
     def test_strict_refusal_does_not_become_attestation_or_mask_raw_failure(self):
         observed = {"verdict": "passed", "require_attested": False,
-                    "expected_owners": list(range(74)), "expected_projection_units": 2178,
+                    "expected_owners": list(range(74)), "expected_projection_units": 2214,
                     "cell_launch_agreement": {"structures": {
                         structure: {"phases": {phase: {"covered_by_cell": covered, "unattested": missing}
                                    for phase in ("prefill", "decode")}}

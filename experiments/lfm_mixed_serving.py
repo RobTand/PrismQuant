@@ -29,7 +29,10 @@ from experiments.pq183_lfm_bound import IMAGE, sha, require, read, write
 from experiments.pq87_physical_ab import cleanup_container, _http
 from experiments.pq87_paired_validation import require_container_name_available
 
-ENCODER = "7018fa2222925416b4c88cc8b6afab834dcac906"
+# tessera master 5ac9b72 (#378): a dense owner's roles are the runtime's attested
+# output partitions, so the 18 quantized ShortConv in_proj tensors are emitted as
+# three row-window roles each (serving_gate.geometry.row_sliced_modules).
+ENCODER = "5ac9b72ff3a1f39f96603b37b479011eac9fe439"
 CALIBRATION_SEAL = "d302740baa39a484135a5de73abfcf9d5c3ec91eb419cb59a3d4af94c2704952"
 SCALES = "08bce65811467a0620f1140c17d4a01a8198b49fa18c32b9603faefb5bc5bbe6"
 PROMPTS = "1d280c010c23d156493e89d015afaad04cf94f434b3f4f60e6e797a0adb88375"
@@ -83,7 +86,7 @@ def validate_handoff(plan, manifest, source_identity, calibration):
     require(Counter((v["grid"], v["q256"]) for v in plan.values()) ==
             Counter({("E4M3", 1024): 22, ("E2M1x2", 896): 6, ("BF16", 1792): 60}),
             "mixed family population changed")
-    require(manifest["totals"]["modules"] == 74 and manifest["totals"]["units"] == 2178,
+    require(manifest["totals"]["modules"] == 74 and manifest["totals"]["units"] == 2214,
             "incomplete full-body export")
     require(bool(identity.get("encoder_fixture_id")) and bool(identity.get("code_sha256")),
             "missing encoder numerical/source identity")
@@ -145,7 +148,7 @@ def cleanup_owned(name, cidpath, owner):
 def classify_strict(observed, strict, rc):
     require(observed.get("verdict") == "passed" and observed.get("require_attested") is False,
             "actual raw route validation failed")
-    require(len(observed["expected_owners"]) == 74 and observed["expected_projection_units"] == 2178,
+    require(len(observed["expected_owners"]) == 74 and observed["expected_projection_units"] == 2214,
             "observational census population incomplete")
     if rc == 0:
         require(strict.get("verdict") == "passed" and strict.get("require_attested") is True,
@@ -261,7 +264,7 @@ def main():
     if args.preflight_only:
         receipt = {"schema": "prismaquant.lfm-mixed-serving-preflight.v1", "status": "verified",
                    "artifact_seal_sha256": sha(out / "artifact-seal.json"),
-                   "expected_owners": 74, "expected_projection_units": 2178,
+                   "expected_owners": 74, "expected_projection_units": 2214,
                    "gpu_or_container_launched": False, "out": str(out)}
         write(out / "preflight.json", receipt)
         if args.archive is not None:
