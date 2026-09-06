@@ -3,6 +3,17 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for the opt-in discrete
+`allocator_solver.solve_runtime_frontier` (#237). Its declared additive
+model keeps nondominated bytes, quality and prefill time, with optional
+decode and separate terminal-residency/activation/scratch coordinates. It
+uses exact integer byte charges and retains nonconvex choices. Finite state
+and transition limits refuse rather than return incomplete allocations.
+The legacy solver is unchanged; timing provenance, nonadditive artifact
+overheads, serving-group composition and end-to-end validation remain
+caller responsibilities. Exactness here describes this supplied resource
+model, not a claim of global model-quality or served-latency optimality.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for measured runtime price
 inputs (`measured_runtime_prices`, #237). The optional versioned table binds
 an independently supplied workload context and cost-payload digest to exact
