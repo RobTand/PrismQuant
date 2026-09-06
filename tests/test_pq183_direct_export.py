@@ -21,6 +21,9 @@ class DirectExportTests(unittest.TestCase):
         self.out = self.root / 'out'
         self.exported = self.out / 'exported'
         self.exported.mkdir(parents=True)
+        self.shard = self.exported / 'model.safetensors'
+        self.shard.write_bytes(b'fixture checkpoint bytes')
+        self.shard.chmod(0o600)
         self.model = self.root / 'model'
         self.model.mkdir()
         self.ts = self.root / 'ts'
@@ -94,6 +97,16 @@ class DirectExportTests(unittest.TestCase):
         self.assertEqual(identity['source'], self.source)
         self.assertEqual(self.gate_calls[0][1]['source_tensors'], self.source['tensors'])
         self.assertEqual(json.loads((self.exported / 'tessera_serving_manifest.json').read_text()), result)
+
+    def test_atomic_checkpoint_shard_becomes_readable_without_byte_changes(self):
+        before = self.shard.read_bytes()
+        result = self.supplement()
+        self.assertEqual(self.shard.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.shard.read_bytes(), before)
+        self.assertEqual(result['export_identity']['origin']['checkpoint_shard_readability'],
+                         {'model.safetensors': {'before': '0o600', 'after': '0o644',
+                           'sha256_before': hashlib.sha256(before).hexdigest(),
+                           'sha256_after': hashlib.sha256(before).hexdigest()}})
 
     def test_plan_drift_refuses_before_manifest_mutation(self):
         bad = copy.deepcopy(self.manifest)

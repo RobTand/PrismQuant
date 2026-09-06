@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 
 
 def _sha(path):
@@ -76,6 +77,18 @@ def supplement_direct_export(args, *, expected_source, producer_image_id,
     validate_explicit_plan(plan, manifest['modules'],
                            config['quantization_config']['config_groups'],
                            source_tensors=source['tensors'])
+    # The producer's atomic safetensors writer creates mode 0600 files. The
+    # next admitted host and serving readers must read these task-owned bytes.
+    # Change only regular checkpoint shards, after all provenance gates pass.
+    shards = sorted((out / 'exported').glob('*.safetensors'))
+    _require(bool(shards), 'direct export has no checkpoint shards')
+    modes = {}
+    for shard in shards:
+        info = shard.lstat()
+        _require(stat.S_ISREG(info.st_mode), 'checkpoint shard is not a regular file')
+        before = stat.S_IMODE(info.st_mode)
+        modes[shard.name] = {'before': oct(before), 'after': '0o644',
+                             'sha256_before': _sha(shard)}
     identity = {
         'schema': 'prismaquant.pq183-direct-export-identity.v1',
         'source': source,
@@ -96,12 +109,18 @@ def supplement_direct_export(args, *, expected_source, producer_image_id,
             'host_receipt_sha256_at_finalization': _sha(out / 'host-status.json'),
             'campaign_input_manifest_sha256': getattr(args, 'campaign_input_manifest_sha256', None),
             'partitioned': False,
+            'checkpoint_shard_readability': modes,
         },
     }
     # Every fallible provenance/obligation check precedes modification. These
     # records are retained even if a subsequent wire audit or serve refuses.
     with original_path.open('xb') as stream:
         stream.write(original)
+    for shard in shards:
+        shard.chmod(int(modes[shard.name]['after'], 8))
+        modes[shard.name]['sha256_after'] = _sha(shard)
+        _require(modes[shard.name]['sha256_before'] == modes[shard.name]['sha256_after'],
+                 'checkpoint bytes changed during readability finalization')
     augmented = {**manifest, 'export_identity': identity}
     path.write_text(json.dumps(augmented, indent=2, sort_keys=True) + '\n')
     return augmented

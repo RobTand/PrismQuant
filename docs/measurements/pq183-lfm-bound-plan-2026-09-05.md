@@ -403,3 +403,11 @@ passes the full pinned `TESSERA_GIT` to the producer. Offline fixtures exercise
 stack-plan translation, corruption refusal and direct-shaped seal/teacher-check
 handoff; actual producer classification, export bytes and serving remain gated
 by the next admitted continuation.
+
+The direct finalizer also publishes readability for its newly written
+safetensors shards before sealing. The pinned writer creates mode 0600 shards
+inside the root producer container, which the host verifier cannot read.
+Only regular shards under this attempt's exported checkpoint are changed to
+0644; before/after modes and independently computed byte hashes are retained
+in the explicit finalization origin, and any byte change refuses. Original
+campaign files and earlier attempts are never modified.
