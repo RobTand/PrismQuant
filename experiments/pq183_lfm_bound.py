@@ -548,7 +548,7 @@ def wire_audit(args):
 
 def seal(args):
     from tessera.serving_parts import source_identity
-    from pq183_direct_export import supplement_direct_export
+    from experiments.pq183_direct_export import supplement_direct_export
     audit = wire_audit(args)
     write(args.out / "wire-audit.json", audit)
     source = read(args.out / "layer_config.json")["__prismaquant__"][

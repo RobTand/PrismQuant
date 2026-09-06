@@ -291,7 +291,7 @@ class ContinuationTests(unittest.TestCase):
         def identity(path):
             self.assertIn("finalize", events)
             return checkpoint if Path(path) == exported else source
-        modules = {"pq183_direct_export": types.SimpleNamespace(supplement_direct_export=supplement),
+        modules = {"experiments.pq183_direct_export": types.SimpleNamespace(supplement_direct_export=supplement),
                    "tessera.serving_parts": types.SimpleNamespace(source_identity=identity),
                    "tessera.serving.contract": types.SimpleNamespace(derive_smoke_status=lambda _: "recorded"),
                    "tessera.serving.build_identity": types.SimpleNamespace(
