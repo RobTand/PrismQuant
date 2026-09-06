@@ -13,8 +13,12 @@ pool. The wrapper's Tessera pin moved to master `d19e3ad` (tessera#382: the
 census roster counts a row-sliced owner's source tensor once, not per role).
 That change is `experiments/`-only, so an artifact encoded at `5ac9b72` keeps
 its encoder fixture id and serves under the new pin; the artifact seal records
-both `artifact_encoder_git` and the serving `encoder.commit`, and the runtime
-compares the fixture id at load. The census gate's population is resolved
+both `artifact_encoder_git` and the serving `encoder.commit`. The serving
+loader forwards the artifact's stamped fixture id to its shards rather than
+recomputing one (tessera#236, `serving/sharding.py`); the fixture-id equality
+rule in `encoder_identity` governs encoder cache reuse, not load. Load under
+pin `d19e3ad` did not refuse (serve-03, 74 owners driven, no lane refusals).
+The census gate's population is resolved
 from the runtime's attested construction entry (tessera#377). No export
 scheduler, runtime pin or production default changes. Gate:
 `tests/test_lfm_mixed_serving.py`.
