@@ -168,17 +168,17 @@ TESSERA_SERVING_RUNTIME_CONTRACT_SHA256_PENDING = "PENDING_TESSERA_CONTRACT_SHA2
 #: the same commit.  Re-check it against the COMMIT rather than a past HEAD,
 #: which nobody can re-run::
 #:
-#:     git -C "$TS" cat-file -p 8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a:src/tessera/serving/runtime_contract.json | sha256sum
+#:     git -C "$TS" cat-file -p ba582d476a3b6db9057ebd1385dc52926f171451:src/tessera/serving/runtime_contract.json | sha256sum
 #:
-#: A Tessera commit re-stales this pin only when it changes what the runtime
-#: PUBLISHES: the previous bind walked master forward 56 commits (#312 and
-#: #314-#324) without moving the digest at all, because none of them touched
-#: the contract.  This one moves it, because #332 does.
+#: Re-pinned 2026-09-05 to ba582d4 (Tessera #356) for the priced-input
+#: exporter snapshot API required by PrismaQuant #231. The v22 contract bytes
+#: and reviewed admission answer are unchanged. Producer API dependencies can
+#: require a newer pin even when the published runtime contract is identical.
 #: No git tag names this commit, so ``version_is_release`` stays false in the
 #: JSON beside this module: ``0.1.0`` is what the checkout's ``pyproject``
 #: says, not a cut release.
 TESSERA_SERVING_RUNTIME_PINNED_COMMIT = (
-    "8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a"
+    "ba582d476a3b6db9057ebd1385dc52926f171451"
 )
 TESSERA_SERVING_RUNTIME_PINNED_VERSION = "0.1.0"
 TESSERA_SERVING_RUNTIME_PINNED_CONTRACT_SHA256 = (

@@ -687,14 +687,15 @@ class SmokeRecordRow:
     ``prompt`` names WHICH prompt was run, never the completion it produced:
     the contract records the shape of the observation and points at a receipt
     for the text. ``status``/``reference_status`` are the same vocabulary the
-    cell's own status uses, for the route and for the reference arm.
+    cell's own status uses, for the route and for the reference arm. The
+    reference status is null exactly when the record names no reference arm.
     """
 
     prompt: str
     form: str
     interface: str
     status: str
-    reference_status: str
+    reference_status: str | None
 
     def as_dict(self) -> dict[str, Any]:
         return {"prompt": self.prompt, "form": self.form,
@@ -720,7 +721,7 @@ class SmokeRecord:
 
     instrument: str
     rule: str
-    reference: str
+    reference: str | None
     rows: tuple[SmokeRecordRow, ...]
 
     def as_dict(self) -> dict[str, Any]:
@@ -880,79 +881,27 @@ def _tessera_published(name: str, where: str) -> Any:
         ) from exc
 
 
-def _tessera_smoke_vocabulary(name: str, where: str) -> frozenset[str]:
-    return frozenset(_tessera_published(name, where))
+def _parse_smoke_record(payload: Any, where: str, *,
+                        control: Any = None) -> SmokeRecord | None:
+    """Read v9 records through the pinned producer's owning pure validator.
 
-
-def _parse_smoke_record(payload: Any, where: str) -> SmokeRecord | None:
-    """v9's ``smoke.record``: ``null``, or the closed rule-plus-rows block.
-
-    Parsed closed at every level, with the KEY SETS and the two vocabularies
-    READ from ``tessera.serving.contract`` rather than transcribed beside this
-    parser: a member or an interface Tessera adds must widen this reader on
-    the re-pin that installs it, not on the day somebody notices.
+    Validating only vocabularies before deriving a status is insufficient:
+    observation identity, portable paths and nullable reference arms are also
+    producer grammar. The immutable pin binds this private metadata helper's
+    API; a runtime lacking it refuses by name through ``_tessera_published``.
+    No serving execution or kernel module is imported here.
     """
-    if payload is None:
+    validate = _tessera_published("_evidence_smoke_record", where)
+    try:
+        parsed = validate(payload, where, control, where.removesuffix(".record"))
+    except ValueError as exc:
+        raise LaneEligibilityError(str(exc)) from exc
+    if parsed is None:
         return None
-    if not isinstance(payload, Mapping):
-        raise LaneEligibilityError(f"{where} must be null or a JSON object")
-    _require_keys(payload, where,
-                  required=set(_tessera_smoke_vocabulary(
-                      "EVIDENCE_SMOKE_RECORD_KEYS", where)),
-                  optional=set())
-    head: dict[str, str] = {}
-    for key in ("instrument", "rule", "reference"):
-        value = payload[key]
-        if not isinstance(value, str) or not value.strip():
-            raise LaneEligibilityError(
-                f"{where}.{key} must be a non-empty string; a record that does "
-                f"not say what its {key} was attests nothing a reader can check")
-        head[key] = value
-    raw = payload["rows"]
-    if not isinstance(raw, list) or not raw:
-        raise LaneEligibilityError(
-            f"{where}.rows must be a non-empty JSON array of "
-            "{prompt, form, interface, status, reference_status} objects; a "
-            "status derived over zero observations is the empty completion "
-            "RobTand/tessera#327 reports, wearing a schema")
-    interfaces = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_INTERFACES", where)
-    forms = _tessera_smoke_vocabulary("EVIDENCE_SMOKE_FORMS", where)
-    rows: list[SmokeRecordRow] = []
-    for i, row in enumerate(raw):
-        spot = f"{where}.rows[{i}]"
-        if not isinstance(row, Mapping):
-            raise LaneEligibilityError(f"{spot} must be a JSON object")
-        _require_keys(row, spot,
-                      required=set(_tessera_smoke_vocabulary(
-                          "EVIDENCE_SMOKE_ROW_KEYS", spot)),
-                      optional=set())
-        prompt = row["prompt"]
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise LaneEligibilityError(
-                f"{spot}.prompt must be a non-empty string naming which prompt "
-                f"was run, got {prompt!r}")
-        for key, vocabulary, source in (
-                ("form", forms, "EVIDENCE_SMOKE_FORMS"),
-                ("interface", interfaces, "EVIDENCE_SMOKE_INTERFACES")):
-            if row[key] not in vocabulary:
-                raise LaneEligibilityError(
-                    f"{spot}.{key} must be one of {sorted(vocabulary)} "
-                    f"(Tessera's {source}), got {row[key]!r}")
-        for key in ("status", "reference_status"):
-            if row[key] not in EVIDENCE_SMOKE_STATUSES:
-                raise LaneEligibilityError(
-                    f"{spot}.{key} must be one of "
-                    f"{sorted(EVIDENCE_SMOKE_STATUSES)}, got {row[key]!r}")
-        rows.append(SmokeRecordRow(
-            prompt=prompt, form=str(row["form"]), interface=str(row["interface"]),
-            status=str(row["status"]),
-            reference_status=str(row["reference_status"])))
-    keys = [tuple(row.as_dict().values()) for row in rows]
-    if len(set(keys)) != len(keys):
-        raise LaneEligibilityError(
-            f"{where}.rows repeats an observation; the field is a set of them")
-    return SmokeRecord(instrument=head["instrument"], rule=head["rule"],
-                       reference=head["reference"], rows=tuple(rows))
+    return SmokeRecord(
+        instrument=parsed["instrument"], rule=parsed["rule"],
+        reference=parsed["reference"],
+        rows=tuple(SmokeRecordRow(**row) for row in parsed["rows"]))
 
 
 def _require_receipt(value: Any, where: str) -> str:
@@ -1166,14 +1115,8 @@ def parse_cell_evidence(payload: Any, where: str, *, cell_regime: str,
     if attributed:
         control = _parse_smoke_control(smoke["control"], f"{where}.smoke.control")
     if recorded_smoke:
-        record = _parse_smoke_record(smoke["record"], f"{where}.smoke.record")
-        if record is not None and control is not None:
-            raise LaneEligibilityError(
-                f"{where}.smoke carries BOTH a record and a control "
-                f"({control.as_dict()!r}); Tessera's validator refuses that "
-                "pair, because two homes for one derivation is exactly how "
-                "they drift. A v9 cell that was re-measured records its rows "
-                "and retires the v7 control.")
+        record = _parse_smoke_record(
+            smoke["record"], f"{where}.smoke.record", control=smoke["control"])
         # "Is this cell's word derived, or asserted?" is a state Tessera
         # NAMES, so it is asked rather than inferred from the key: a reader
         # that spelled it `record is not None` would be restating the rule

@@ -40,24 +40,23 @@ The commands name the canonical remote rather than somebody's checkout,
 because a digest bound from a working tree records what that tree happened to
 contain, which nobody else can re-derive.
 
-The pin below was first bound that way on 2026-09-04, when master was
-`5acc2a6f` (contract v17), and re-bound on 2026-09-05 to Tessera master at
-`8ed1d9a` — the merge of Tessera #332, and master's tip when it was bound
-(contract v22, lane schema v9). The release checkout Rob named, `e78959ed`,
-carried contract v20; the one published move past it is Tessera #313
-(`b8b1cb38`, eleven PR merges back from the pinned tip): the routed-MoE
-cells' smoke, re-measured and now `recorded`; PrismaQuant #198 option C.
-Re-check what is recorded against the COMMIT, never against a later `HEAD`:
+The current pin is Tessera `ba582d476a3b6db9057ebd1385dc52926f171451`,
+merged in Tessera #356 on 2026-09-05. It supplies the producer's
+`--priced-inputs` / `--priced-inputs-sha256` snapshot API used by PrismaQuant
+#231. Install that revision and point `TESSERA_REPO` at its complete checkout;
+the producer scripts live in `experiments/` and are not wheel entry points.
+
+The contract remains v22, lane schema v9, with the same SHA-256 and reviewed
+admission answer as the previous `8ed1d9a` pin (Tessera #332). That previous
+pin introduced the derived smoke records; this update adds no evidence or
+serving promotion. A producer API dependency can require a newer pin even
+when the runtime contract bytes do not change. Re-check the exact commit:
 
 ```bash
-git -C "$TS" cat-file -p 8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a:src/tessera/serving/runtime_contract.json | sha256sum
+git -C "$TS" cat-file -p ba582d476a3b6db9057ebd1385dc52926f171451:src/tessera/serving/runtime_contract.json | sha256sum
 ```
 
-The 56 commits (11 PR merges: Tessera #312 and #314–#324) between #313's merge
-and the pinned tip package byte-identical contract bytes, which is why moving
-the pin forward to master's tip did not move the digest. A Tessera commit
-re-stales this pin only when it changes what the runtime publishes. No tag
-names `8ed1d9a`, so `version_is_release` stays `false`.
+No tag names this commit, so `version_is_release` remains `false`.
 
 **`version_is_release` is advisory.** Still required, still parsed, still
 recorded, and still unable to be `true` over a PENDING commit — so it keeps

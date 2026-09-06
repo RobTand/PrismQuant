@@ -55,12 +55,14 @@ Before implementing new functionality, read this file,
    contract hashes to the pinned digest, so any other Tessera on `PYTHONPATH`
    still answers False for every rung — by the pin, not by an edit.
    `version_is_release` is recorded and advisory; no gate reads it. It is
-   dense-only at TP=1, and since contract v17 that is an EVIDENCE fact rather
-   than an absence: the contract does publish two `routed_moe` cells, both
-   carrying `evidence.smoke.status: "repetitive"`, and
-   `lane_eligibility.cell_evidence_admits` refuses them on that measured
-   generation failure. Promoting routed-MoE Tessera is Rob's decision under
-   principle 9; never widen the gate to admit one. The non-vLLM-native lanes are
+   limited by each matched cell's published scope and the closed-world TP
+   ceiling. At the current pin (contract v22, lane schema v9), the two
+   `routed_moe` cells carry `evidence.smoke.status: "recorded"`, derived from
+   their smoke records, and pass the unchanged status-only evidence gate.
+   This follows the producer remeasurement resolving PrismaQuant #198;
+   it does not establish a shipped PrismaQuant MoE artifact. Preserve
+   `lane_eligibility.cell_evidence_admits` and the independent export and
+   serving gates; do not infer admission beyond a matched cell. The non-vLLM-native lanes are
    sanctioned, not exceptions; what is forbidden is a forked runtime.
    PrismaQuant must never vendor or import the Tessera *serving* runtime;
    compatibility crosses that repository boundary only through the immutable
