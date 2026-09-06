@@ -388,3 +388,50 @@ file. PB scope-token values were redacted before publication, including the
 terminal's `resource_scope.token` and `detail.argv` value after `--token`;
 the unmodified terminal remains in the private archive. Binary cache/Hessian
 and profiler payloads remain archived and are not copied into Git.
+
+## Attempt 06: actual preflight passes; receipt construction needs no Git executable
+
+The shared reader repair was delivered in PR 249, merged as
+`cb517da154b274c61e53b151f7a08312d1c57c18`, after 50 integrated tests passed
+with zero skips through PB. The opt-in continuation retains campaign 05's
+exact cost, assignment and recipe, without calibration, allocation or
+quantization. CPU PB action
+`799ba1ff56d191d9dae6fd14c58e6c1dccd7b63dfe11534972a8c566852d4567`
+sealed 106 consumed files, including all 96 priced wires and the Hessian plus
+provenance. The input manifest SHA-256 is
+`99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819`.
+Its actual terminal and 208-byte CAS payload were verified; receipt
+`fb6c5ece985e27817c6baa4e04318177c0f4539873869f4b47d6627d3ccb96c1`,
+payload SHA-256
+`add0e75c565440cb56f15df53c0e813a8efe7c40861045fc388499d68a075986`.
+The CPU preparation used one CPU/4 GiB and retained the original absolute
+campaign path because that local output is its concrete input dependency.
+
+Continuation PB action
+`51421c470ee9597240fd063c13992cb478b3d75958471f81ec3629d5376bf24c`
+used source `03909b705516babc5e989899824dd216f07c48d3`, snapshot
+`782581a0aed1de191cb80d259afd7816dc157d58`, bundle SHA-256
+`5c4542414d3831925825ce3b27bd607b0137252c62cb30de2c23b00b3d2a2fbe`.
+The original campaign was mounted read-only. The actual shared export
+preflight accepted its unchanged assignment, Hessian, serving scope and all
+96 priced wire receipts, writing `continuation-preflight.json`. The existing
+cached-unit writer then wrote the fresh 96-unit transport bundle and
+`build.json`. The copied cost, assignment and recipe SHA-256 values matched
+the originals exactly.
+
+The producer next failed at continuation receipt construction because it
+invoked `git rev-parse HEAD` inside the qualified container, which has no Git
+executable. That command was unnecessary: the admitted host already records
+its exact source snapshot. This is an opt-in harness dependency defect after
+successful actual preflight; it is not a quantization or parser failure. No
+export, census or serving observation was produced. Repairing receipt source
+binding must retain the qualified numerical image and use the host's existing
+verified source identity, with missing or malformed identity refused.
+
+The overall action exited 1 after 12.22 seconds, without a successful CAS
+receipt. Both Netdata endpoints succeeded, monitor errors were empty, exact
+container cleanup was safe and PB resource cleanup completed. Scope telemetry
+recorded peak memory 2,810,134,528 bytes and no OOM. Originals remain under
+`run183-06/`, with terminal and outputs mirrored under `pq183-evidence/`.
+Campaign 05 and its sealed input manifest remain unchanged. Acceptance 4
+remains open until actual export/census/paired serving complete.
