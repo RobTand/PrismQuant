@@ -114,7 +114,27 @@ jobs:
         env:
           PYTHONPATH: .
           CUDA_VISIBLE_DEVICES: ""
-        run: pytest tests/ -q --timeout=300 -p no:cacheprovider
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          NUMEXPR_NUM_THREADS: "1"
+          TORCHINDUCTOR_COMPILE_THREADS: "1"
+          MAX_JOBS: "1"
+        run: |
+          # Keep one native thread per worker and leave 1 GiB for the runner.
+          # The 2 GiB worker budget bounds collection plus numerical fixtures.
+          workers="$(python - <<'PY'
+          import os
+          from pathlib import Path
+          memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+          available = int(memory["MemAvailable"].split()[0]) * 1024
+          budget = max(1, (available - 1024**3) // (2 * 1024**3))
+          print(min(len(os.sched_getaffinity(0)), budget))
+          PY
+          )"
+          echo "pytest workers=$workers (CPU affinity and available-memory bound)"
+          python -m pytest -c pytest.ini tests/ -q --timeout=300 \
+            -n "$workers" --dist worksteal --durations=30 -ra -p no:cacheprovider
 
   # Import hygiene: catches a module that only imports because the reference box
   # happens to have vLLM, a CUDA extension, or a stray sys.path entry. Cheap, and
