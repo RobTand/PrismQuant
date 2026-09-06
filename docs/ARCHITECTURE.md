@@ -10,7 +10,9 @@ bytes, drives all 74 owners in prefill and decode, preserves the strict census
 result separately, and collects a matched BF16/student greedy smoke. Missing
 EUGR dense cell attestations remain a refusal of production admission; a raw
 route or paired-smoke receipt cannot promote them. Every launched container
-has explicit resource/native limits, captured ownership and ID cleanup.
+has explicit resource/native limits, captured ownership and ID cleanup. A
+CPU-only prerequisite can stop after the same handoff checks and seal; completed
+owned results can be archived with byte hashes after cleanup.
 No export scheduler, runtime pin or production default changes. Gate:
 `tests/test_lfm_mixed_serving.py`.
 

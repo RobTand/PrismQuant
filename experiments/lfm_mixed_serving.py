@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -168,14 +169,41 @@ def container_flags(out, name, owner, cpus):
             "-v", "/mnt/shared:/mnt/shared:ro"]
 
 
+def publish_output(out, archive):
+    """Archive this completed owned output, excluding existing compilation caches."""
+    require(not archive.exists(), "fresh shared result archive required")
+    shutil.copytree(out, archive, ignore=shutil.ignore_patterns("ext", "vllm-cache"))
+    files = {}
+    for path in archive.rglob("*"):
+        require(not path.is_symlink(), "unsafe result archive symlink")
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            rel = str(path.relative_to(archive))
+            digest = sha(path)
+            require(digest == sha(out / rel), "result archive byte drift")
+            path.chmod(0o644)
+            files[rel] = {"sha256": digest, "bytes": path.stat().st_size}
+    archive.chmod(0o755)
+    receipt = {"schema": "prismaquant.lfm-mixed-serving-archive.v1", "source": str(out),
+               "archive": str(archive), "worker_host": socket.gethostname(), "files": files}
+    write(archive / "archive-receipt.json", receipt)
+    (archive / "archive-receipt.json").chmod(0o644)
+    write(out / "archive-receipt.json", receipt)
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("out", "encoder", "encoder-manifest", "artifact", "source", "plan", "calibration", "assembly-result"):
         parser.add_argument("--" + key, required=True, type=Path)
+    parser.add_argument("--archive", type=Path, help="fresh shared result destination after cleanup")
     parser.add_argument("--encoder-manifest-sha256", required=True)
     parser.add_argument("--assembly-result-sha256", required=True)
     parser.add_argument("--seconds", type=int, default=5400)
     parser.add_argument("--port", type=int, default=8198)
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="verify the complete CPU handoff and seal, then stop before Docker")
     args = parser.parse_args()
     require(os.environ.get("PRISMABUILD_CONTAINER_OWNER"),
             "batch validation requires PrismaBuild admission")
@@ -184,6 +212,10 @@ def main():
     require(1 <= len(cpus) <= 4, "reserve at most four CPUs and preserve PB affinity")
     for key in ("out", "encoder", "artifact", "source", "plan", "calibration", "assembly_result", "encoder_manifest"):
         setattr(args, key, getattr(args, key).resolve())
+    if args.archive is not None:
+        args.archive = args.archive.resolve()
+        args.archive.relative_to(Path("/mnt/shared"))
+        require(not args.archive.exists(), "fresh shared result archive required")
     for path in (args.artifact, args.source):
         path.relative_to(Path("/mnt/shared"))
     require(not args.out.exists(), "fresh output required")
@@ -221,6 +253,16 @@ def main():
             "encoder": bound_encoder(), "assembly_result_sha256": args.assembly_result_sha256,
             "calibration_seal_sha256": CALIBRATION_SEAL, "plan_sha256": sha(args.plan)}
     write(out / "artifact-seal.json", seal)
+    if args.preflight_only:
+        receipt = {"schema": "prismaquant.lfm-mixed-serving-preflight.v1", "status": "verified",
+                   "artifact_seal_sha256": sha(out / "artifact-seal.json"),
+                   "expected_owners": 74, "expected_projection_units": 2178,
+                   "gpu_or_container_launched": False, "out": str(out)}
+        write(out / "preflight.json", receipt)
+        if args.archive is not None:
+            publish_output(out, args.archive)
+        print(json.dumps(receipt))
+        return
     image = json.loads(subprocess.check_output(["docker", "image", "inspect", IMAGE]))[0]
     require(IMAGE in image.get("RepoDigests", []), "daemon lacks exact EUGR image")
     owner = uuid.uuid4().hex
@@ -233,7 +275,7 @@ def main():
              "image": {"Id": image["Id"], "RepoDigests": image["RepoDigests"],
                        **{key + "_sha256": hashlib.sha256(json.dumps(image[key], sort_keys=True,
                           separators=(",", ":")).encode()).hexdigest() for key in ("Config", "RootFS")}}, "cpu_affinity": cpus, "encoder": seal["encoder"], "phases": {}, "cleanup": {},
-             "started_unix": time.time(), "telemetry_success": {}, "telemetry_errors": []}
+             "started_unix": time.time(), "worker_host": socket.gethostname(), "telemetry_success": {}, "telemetry_errors": []}
     deadline = time.monotonic() + args.seconds
     def remaining():
         value = deadline - time.monotonic()
@@ -387,6 +429,8 @@ def main():
         state["cleanup_errors"] = failures
         state["finished_unix"] = time.time()
         write(out / "host-status.json", state)
+        if args.archive is not None and not failures:
+            publish_output(out, args.archive)
     require(not state["cleanup_errors"] and set(state["telemetry_success"]) == {"sparky", "sparklina"},
             "cleanup or both-host telemetry incomplete")
     require(state["sanity_passed"], "paired smoke did not record a passing bounded sanity observation")

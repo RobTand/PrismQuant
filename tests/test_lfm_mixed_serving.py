@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import types
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -132,6 +134,78 @@ class ServingTests(unittest.TestCase):
         public = m.public_container(record)
         self.assertNotIn("private-token", json.dumps(public))
         self.assertEqual(public["native_environment"], m.LIMITS)
+
+    def test_preflight_runs_handoff_and_returns_before_docker(self):
+        # Drive the real CLI/control flow and real seal files; substitute only
+        # the external producer/header APIs and the already measured inputs.
+        plan, manifest, teacher, calibration = self.handoff()
+        calibration["files"] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            encoder = root / "encoder"
+            (encoder / "experiments").mkdir(parents=True)
+            (encoder / "experiments/moe_greedy_smoke_prompts.json").write_text("prompts")
+            calibrator = root / "calibration"
+            calibrator.mkdir()
+            m.write(calibrator / "preparation-seal.json", calibration)
+            m.write(calibrator / "plan.json", plan)
+            planpath = root / "plan.json"
+            m.write(planpath, plan)
+            artifact = Path("/mnt/shared/fixture-student")
+            source = Path("/mnt/shared/fixture-teacher")
+            modules = {}
+            for name in ("tessera", "tessera.serving", "tessera.serving_parts",
+                         "tessera.serving.build_identity", "tessera.serving.contract"):
+                modules[name] = types.ModuleType(name)
+            modules["tessera.serving_parts"].source_identity = lambda p: teacher if p == source else {"student": "bytes"}
+            modules["tessera.serving.build_identity"].is_complete = lambda p: True
+            modules["tessera.serving.build_identity"].incomplete_reason = lambda p: ""
+            modules["tessera.serving.contract"].derive_smoke_status = lambda p: "recorded"
+            gate = types.ModuleType("fixture_gate")
+            gate._population = unittest.mock.Mock()
+            loader = unittest.mock.Mock()
+            spec = types.SimpleNamespace(loader=loader)
+            original_read = m.read
+            def read(path):
+                if path == artifact / "tessera_serving_manifest.json": return manifest
+                if path == artifact / "config.json": return {}
+                return original_read(path)
+            argv = ["wrapper", "--out", str(root / "out"), "--encoder", str(encoder),
+                    "--encoder-manifest", str(root / "manifest.json"), "--encoder-manifest-sha256", "bound",
+                    "--artifact", str(artifact), "--source", str(source), "--plan", str(planpath),
+                    "--calibration", str(calibrator), "--assembly-result", str(root / "assembly.json"),
+                    "--assembly-result-sha256", "bound", "--preflight-only"]
+            with patch.dict(sys.modules, modules), patch.object(sys, "argv", argv), \
+                 patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "test-owner"}), \
+                 patch.object(m.os, "sched_getaffinity", return_value={1}), \
+                 patch.object(m, "verify_encoder", return_value={"commit": m.ENCODER}), \
+                 patch.object(m, "verify_assembly"), patch.object(m, "read", side_effect=read), \
+                 patch.object(m, "CALIBRATION_SEAL", m.sha(calibrator / "preparation-seal.json")), \
+                 patch.object(m, "PROMPTS", m.sha(encoder / "experiments/moe_greedy_smoke_prompts.json")), \
+                 patch.object(m.importlib.util, "spec_from_file_location", return_value=spec), \
+                 patch.object(m.importlib.util, "module_from_spec", return_value=gate), \
+                 patch.object(m.subprocess, "check_output", side_effect=AssertionError("Docker/model must not start")):
+                m.main()
+            gate._population.assert_called_once_with(plan, {}, manifest)
+            receipt = original_read(root / "out/preflight.json")
+            self.assertEqual(receipt["status"], "verified")
+            self.assertEqual(receipt["artifact_seal_sha256"], m.sha(root / "out/artifact-seal.json"))
+            self.assertFalse(receipt["gpu_or_container_launched"])
+
+    def test_archive_preserves_output_bytes_excludes_build_caches_and_refuses_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = root / "out"
+            out.mkdir()
+            (out / "ext").mkdir()
+            (out / "ext/kernel.so").write_bytes(b"compiled")
+            (out / "receipt.json").write_text('{"observed": true}')
+            archive = root / "archive"
+            record = m.publish_output(out, archive)
+            self.assertEqual(record["files"]["receipt.json"]["sha256"], m.sha(out / "receipt.json"))
+            self.assertFalse((archive / "ext").exists())
+            with self.assertRaisesRegex(ValueError, "fresh shared"):
+                m.publish_output(out, archive)
 
     def test_cleanup_never_stops_a_differently_owned_container(self):
         with tempfile.TemporaryDirectory() as directory:

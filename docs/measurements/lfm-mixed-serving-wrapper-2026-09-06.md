@@ -72,3 +72,19 @@ is filed as [Tessera375](https://github.com/RobTand/tessera/issues/375). This
 wrapper uses established plugin launch, request, compare, build-identity and
 metrics helpers directly; frozen Tessera source stays unchanged. The old183
 cached96/H campaign and old ts5 campaign-specific paths are not invoked.
+
+Use the same command with `--preflight-only` as a CPU-only PB prerequisite
+(one CPU/4GiB, GPU hidden). It exercises the actual source, assembly, scale,
+plan and full-population checks, writes `artifact-seal.json` plus `preflight.json`,
+and returns before Docker inspection or model loading. Use a distinct fresh
+output for this prerequisite and the later serving action. Host imports disable
+bytecode writes; children receive `PYTHONDONTWRITEBYTECODE=1`, preserving the
+immutable encoder closure.
+
+For portable execution, select the shared exact7018 encoder archive and its
+full manifest; the coordinator-only export workspace is not a portable input.
+Add `--archive /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/serve-01`
+to publish the completed local result after owned-container cleanup. The archive
+preserves file bytes and records their hashes, sizes and actual worker host;
+existing kernel/vLLM compilation caches stay task-local. Existing destinations
+refuse. No source/model placement or distribution is performed by the wrapper.
