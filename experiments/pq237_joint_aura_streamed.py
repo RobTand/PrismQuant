@@ -80,6 +80,11 @@ def load_candidate_payload(path, plan, operator_bindings, probe_sha256):
             raise ValueError(f"persisted joint operator binding differs: {name}@{fmt}")
         if row["probe_identity_sha256"] != probe_sha256:
             raise ValueError("persisted joint row probe identity mismatch")
+        shape = row["joint_operator_identity"]["source_weight"]["shape"]
+        stats = payload["stats"][name]
+        if (len(shape) != 2 or stats.get("n_params") != math.prod(shape)
+                or stats.get("in_features") != shape[1] or stats.get("out_features") != shape[0]):
+            raise ValueError("persisted joint stats differ from the bound dense source shape")
     masks, menu = [], {}
     candidates = build_candidates(
         payload["stats"], costs,

@@ -44,6 +44,12 @@ def test_streamed_checkpoint_pickle_candidates_and_identity_refusal(tmp_path, mo
     with pytest.raises(ValueError, match="coordinate scope"):
         load_candidate_payload(path, plan, bindings, probe)
 
+    changed = copy.deepcopy(restored)
+    changed["stats"][name]["n_params"] += 1
+    _write(path, changed)
+    with pytest.raises(ValueError, match="bound dense source shape"):
+        load_candidate_payload(path, plan, bindings, probe)
+
     _write(path, restored)
     wrong = copy.deepcopy(bindings)
     wrong[name]["BF16"] = "f" * 64
