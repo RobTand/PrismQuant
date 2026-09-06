@@ -147,6 +147,8 @@ def _receipt(name: str, unit: dict, fmt: str = FMT) -> dict:
 def _population() -> dict:
     return {
         "schema": POPULATION_SCHEMA, "layer_stride": 1,
+        "enumerated": {"dense": [DENSE], "routed_experts": _units()},
+        "unpriced": {"dense": {}, "routed_experts": {}},
         "priced": {"dense": [DENSE], "routed_experts": _units(),
                    "packed_parameters": {f"{STACK}.gate_up_proj": [2, 2 * N, N],
                                          f"{STACK}.down_proj": [2, N, N]},
@@ -405,6 +407,7 @@ def _isolate_other_gates(monkeypatch):
     monkeypatch.setattr(export, "require_declared_structure", lambda model: "routed_moe")
     monkeypatch.setattr(export, "require_executes_derived_from_contract", lambda: ())
     monkeypatch.setattr(export, "require_producer_tools", lambda: ())
+    monkeypatch.setattr(export, "require_producer_repo_is_pinned", lambda: ())
     monkeypatch.setattr(export, "require_release_pin", lambda: None)
     monkeypatch.setattr(pin, "load_tessera_serving_runtime_pin",
                         lambda: SimpleNamespace(version="fixture", commit="f" * 40))
@@ -477,6 +480,8 @@ def _allocator_metadata(case, assignment):
     """
     meta = _meta(case)
     payload = {
+        "costs": {name: {FMT: {"output_mse": 1e-4}}
+                  for name in [DENSE, *_units()]},
         "provenance": {
             POPULATION_KEY: meta[POPULATION_KEY],
             PROJECTION_KEY: meta[PROJECTION_KEY],

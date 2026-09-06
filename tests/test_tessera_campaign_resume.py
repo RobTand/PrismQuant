@@ -59,7 +59,7 @@ def _main_fixture(monkeypatch, tmp_path, *, priced=False):
 
     def unverified_anchors_reached_payload(anchors, *_args, **_kwargs):
         assert not anchors, "unverified checkpoint anchors reached the current cost payload"
-        return {"costs": {}, "formats": []}
+        return {**_kwargs["provenance"], "costs": {}, "formats": []}
 
     if not priced:
         monkeypatch.setattr(tessera_campaign, "campaign_cost_payload",
@@ -244,11 +244,10 @@ def test_refused_resume_leaves_the_surviving_tables_export_inputs(monkeypatch, t
     ``hessian_capture.pt``, its sidecar and ``input_scales.safetensors`` are
     the export leg's half of the same surviving table: destroy them and the
     table that survived cannot be exported at all (#211).  The pytest form of
-    ``pq-audit-caches/pq-204/proofs/rejected_resume_postfix.py``; it needs the
-    release Tessera's ``cached_unit`` receipt API to reach ``main()``'s resume
-    at all, so it skips at the development pin.  The menu is left empty (the
-    ``priced=False`` fixture) so the refusal is the run-level identity's and
-    not the released contract's lane-eligibility schema.
+    ``pq-audit-caches/pq-204/proofs/rejected_resume_postfix.py``; it needs
+    Tessera's ``cached_unit`` receipt API to reach ``main()``'s resume.
+    The menu is left empty (the ``priced=False`` fixture) so the refusal
+    exercises run-level identity independently of route admission.
     """
     pytest.importorskip("tessera.cached_unit")
     campaign, checkpoint, argv, _model, inputs = _main_fixture(monkeypatch, tmp_path)

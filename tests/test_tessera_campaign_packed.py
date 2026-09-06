@@ -327,10 +327,9 @@ def _bridge_main_fixture(monkeypatch, tmp_path, *, perturb=None):
     """main() with a real capture, projection, encode and receipt; no route scoring.
 
     ``_measure_anchor`` is replaced by the producer's real encode without its
-    served-route admission, and by name: on this branch the campaign cannot
-    score a rung against either producer checkout (the pinned Tessera lacks
-    ``tessera.cached_unit``; the release publishes lane eligibility v8, which
-    PrismaQuant #192 admits).  Everything the bridge adds -- the population
+    served-route admission: this CPU fixture exercises the bridge, while
+    runtime-scoped GPU pricing requires its own measurement. Everything the
+    bridge adds -- the population
     gate, the producer request, the binding, the source-byte check, the real
     Tessera bytes under ``unit_input_identity`` receipts and the payload's
     population/projection/wire blocks -- runs for real.
@@ -471,6 +470,50 @@ def test_main_refuses_a_live_view_that_disagrees_with_the_producer_source(monkey
     assert f"{STACK}.0.w1" not in str(error.value)
     assert not encoded, "priced a rung on bytes the exporter would not read"
     assert not (tmp_path / "cost.pkl").exists()
+
+
+@pytest.mark.parametrize("failure", ["empty_menu", "failed_anchor", "failed_expert"])
+def test_main_reports_unpriced_targets_without_claiming_coverage(monkeypatch, tmp_path, failure):
+    campaign, argv, _model, _encoded = _bridge_main_fixture(monkeypatch, tmp_path)
+    dense = "model.layers.0.attention"
+    target = _expert_unit_names()[0] if failure == "failed_expert" else dense
+    if failure == "empty_menu":
+        expand = campaign.expand_menus_for_targets
+
+        def menus(*args, **kwargs):
+            result = expand(*args, **kwargs)
+            result[dense] = []
+            return result
+
+        monkeypatch.setattr(campaign, "expand_menus_for_targets", menus)
+    else:
+        measure = campaign._measure_anchor
+
+        def failing_measure(**kwargs):
+            if kwargs["qname"] == target:
+                raise RuntimeError("synthetic encode failure")
+            return measure(**kwargs)
+
+        monkeypatch.setattr(campaign, "_measure_anchor", failing_measure)
+    assert campaign.main(argv) == 0
+    payload = pickle.loads((tmp_path / "cost.pkl").read_bytes())
+    population = payload["provenance"]["population"]
+    assert target not in payload["costs"]
+    if failure == "failed_expert":
+        assert target not in population["priced"]["routed_experts"]
+        assert population["enumerated"]["routed_experts"] == sorted(_expert_unit_names())
+        assert population["unpriced"]["routed_experts"] == {target: "no_successful_anchor"}
+        assert population["priced"]["stacks"] == []
+        assert population["priced"]["packed_parameters"] == {}
+        assert population["counts"]["routed_experts_priced"] == len(_expert_unit_names()) - 1
+        return
+    assert population["priced"]["dense"] == []
+    assert population["enumerated"]["dense"] == [dense]
+    assert population["unpriced"]["dense"] == {
+        dense: "no_admitted_menu" if failure == "empty_menu" else "no_successful_anchor"}
+    assert population["counts"]["dense_priced"] == 0
+    assert population["counts"]["dense_unpriced"] == 1
+    assert population["priced"]["routed_experts"] == sorted(_expert_unit_names())
 
 
 def test_wire_backed_units_keep_only_measured_rows():
