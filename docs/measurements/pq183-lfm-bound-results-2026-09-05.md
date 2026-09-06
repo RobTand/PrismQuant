@@ -1,0 +1,773 @@
+# Issue 183 bounded LFM campaign: actual run evidence
+
+This is the append-only observation record for the opt-in run described in
+`pq183-lfm-bound-plan-2026-09-05.md`. Acceptance 4 requires a completed actual
+campaign, export, attested census, paired serving smoke, and matched byte and
+identity records. A dependency check or CPU regression does not satisfy it.
+
+## Attempt 01: producer environment failure before calibration
+
+PB action `bf8fe2dfbc3c836436077db638c22bf1435de314b303f77cd5bf4c2baccb839e`
+ran on sparklina with four admitted CPUs (5–8), 64 GiB aggregate memory,
+three exclusive GPU slots, and native numerical threads limited to one.
+It exited 1 after 81.26 seconds. PB recorded 19,399,270,400 bytes peak
+cgroup memory, no OOM, and completed resource cleanup.
+
+The real LFM2.5-8B-A1B-BF16 model loaded and enumerated three dense Linear
+targets plus 96 projected expert units from layer 12. The next operation,
+the existing `_calibration_tokens` loader, raised
+`ModuleNotFoundError: No module named 'datasets'`. PrismaQuant declares
+`datasets>=3.0`; the producer image did not contain it. No calibration,
+priced cost rows, exported artifact, census, or serving comparison resulted.
+This attempt is inconclusive and does not establish acceptance 4.
+
+The host harness recorded both Netdata endpoints (`http://sparky:19999` and
+`http://sparklina:19999`) successfully, no telemetry-monitor errors, and safe
+cleanup for every exact owned container. `campaign.pstats`, campaign and host
+logs, image inspections, and `telemetry.jsonl` are retained. These are failure
+diagnostics, not performance measurements.
+
+Source provenance:
+
+- Actual run parent: `1eb268f1825b85a0f0dff61423343ee13d59eb4e`.
+- PB materialized snapshot: `f631c464cfa9f9fd740bf025f8178c581abb1af1`;
+  bundle SHA-256 `545e5412da5222c5e46dd3072dc3f61d3e6a590de6fae35ac89f62676df2fc24`.
+- Coverage correction subsequently merged in PR 243:
+  `195f3ba754f4f4efdcbcfcc7a5aecd76d7b9acda`; the actual run already contained
+  the reviewed production changes through their original commits.
+- Tessera: `ba582d476a3b6db9057ebd1385dc52926f171451`, sealed full 1,017-file
+  source manifest SHA-256
+  `00710fbf9f15269ae0a579c02d6ad8fae22a476ece20293d73feea56c37f211a`.
+- Producer local image:
+  `sha256:79cb5c9a8cd696f30cb0d8b5803d67d65906de4df91741c9811f3de088a13846`;
+  canonical Config SHA-256
+  `83d0dcabcd3b6d259e9dea48bb67b5bf36108e22d03a7abb2209d73a2adc9e53`;
+  RootFS SHA-256
+  `d97ec6de925255c82642f99bc250a3e5a554002583b276aa8eacfd15166c7592`.
+- Declared serving image, not reached in this attempt:
+  `eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c`.
+
+All run paths below are relative to
+`/home/rob/tessera-runs/measurement-208-183-2026-09-05`:
+
+- Original sparklina outputs: `run183-01/`; submission: `pq183-submit-01.json`.
+- Preserved local diagnostic copy: `pq183-evidence/run183-01/`.
+- PB terminal:
+  `/mnt/shared/prismabuild-fleet/pb-queue/failed/bf8fe2dfbc3c836436077db638c22bf1435de314b303f77cd5bf4c2baccb839e.json`.
+
+## Environment qualification, separate from the GPU measurement
+
+CPU-only PB action
+`4f58ad3a72d5fe8223e705ed3a1b697e3b3dab9a299c329abdfb9f749d93d2d3`
+attempted `datasets==5.0.1` while constraining every existing image
+distribution to its original version. Resolution refused because the base
+contained `fsspec==2026.7.0`, while datasets requires `fsspec<=2026.6.0`.
+No image was published; its exact owned container was removed. The negative
+receipt and resolution log remain under `environment-repair-01/` on sparklina.
+
+The scoped follow-up pins `fsspec==2026.6.0` explicitly and retains all other
+existing distribution constraints. It must check the actual before/after
+distribution inventories and the unchanged WikiText train calibration contract
+(eight sequences, length 512, seed zero) before publishing a derivative image.
+
+CPU action `3740e7795eefb460dafdb71c8232fdfb3d1a2f1109d40fc8f8eb0d3f21cc9845`
+installed and imported datasets successfully, but the unchanged calibration
+loader failed: base `huggingface-hub==1.28.0` rejected the `wikitext` alias
+with `HfUriError` requiring a namespace. No image was published. Its evidence
+and exact-container cleanup are retained in `environment-repair-02/`.
+The next qualification also pins `huggingface-hub==1.10.2`, matching the
+existing host environment's dataset client. This changes the transport client,
+not the calibration dataset or token draw.
+
+The base's package metadata already reports a Torch/NCCL requirement mismatch
+(Torch 2.13.0+cu130 declares NCCL 2.29.7; the image contains NCCL 2.30.7).
+Dependency repair retains that existing native stack. Base duplicate `six`
+distribution metadata also exposed an inventory ambiguity; later qualifications
+record the complete distribution roster and use effective `metadata.version`
+lookups for constraints, rather than collapsing duplicate entries arbitrarily.
+
+CPU action `acabfd790fe0bb8c00248272a963478c2b654640b119838b5b6314eaaebca884`
+then completed installation, imports, unchanged numerical-package checks, and
+the actual eight-by-512, seed-zero calibration draw in 24.8 seconds. Its package
+delta was exactly fsspec 2026.7.0 → 2026.6.0 and huggingface-hub 1.28.0 → 1.10.2;
+new packages were datasets 5.0.1, multiprocess 0.70.19, pandas 3.0.5,
+pyarrow 25.0.1, and xxhash 4.0.1. Torch 2.13.0+cu130, Transformers 5.15.1,
+NumPy 2.2.6, safetensors 0.8.0, accelerate 1.14.0, and native distributions
+retained their existing effective versions. The CAS receipt is
+`f6ae50e84d10cc88a36846fc88e8fd2886d191b4f66fe8c760a5ca194ea09560`;
+its 35,280-byte payload SHA-256
+`c40955c511e6cdf59bba80fa48f87e29c7d1fe105b8ae4ee44fac3102325f16e`
+was independently verified. Original evidence is `environment-repair-03/`.
+
+CPU action `432058644465fd5a9806ab46a71c603ae1e07a7360b8e68390ed89250ddf9875`
+baked that verified Hugging Face cache into `/opt/pq183-hf-cache` and reloaded
+the exact calibration with Docker networking disabled and both Hub/datasets
+offline flags set. The corpus and all eight int64 token-buffer hashes matched
+the online draw exactly. It exited zero in 11.3 seconds, used two admitted CPUs,
+eight GiB memory, no GPU, and peaked at 2,340,651,008 bytes. Exact owned-container
+cleanup and PB resource cleanup completed. The CAS receipt is
+`f80c543ac3f891ecb5bf4f9ecb47f698a5dfb4b68ab1f5388178af5b87a79a5b`;
+the 27,202-byte payload SHA-256
+`8b2eb95fae60061875b7ba9de2ddb0099b80a6f23b77294cd23416b8c1d2e0de`
+was independently verified.
+
+Final qualified producer image:
+
+- ID: `sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0`.
+- Canonical Config SHA-256:
+  `fda47b55fb7105c93e8a0bf99cd633191c198e4033719957734d065a635de31e`.
+- RootFS SHA-256:
+  `df0f8207331bd466df86322a178e14501f707f7b765e820a60e7ce9f28d51d71`.
+- Corpus SHA-256:
+  `aee724fa58bfbdeb3fc6803297fb6bab27b203d7c40b39ddef9b9770e5d52fe5`.
+- Cache manifest SHA-256:
+  `130331b93cc509674cd06fed6e35fd3ecb1163257ad69a08be5efaf52176610d`.
+
+`environment-repair-04/` contains the final image inspection, cache manifest,
+offline calibration receipt with individual token hashes, exact command logs,
+and cleanup evidence. The image fixes `HF_HOME=/opt/pq183-hf-cache`,
+`HF_HUB_OFFLINE=1`, and `HF_DATASETS_OFFLINE=1`; the host producer command must
+preserve those settings. The source model and Tessera source were read-only
+mounts during qualification. Container creation/installation/qualification/
+commit all ran through PB; no daemon build or host environment provisioning
+was used. The bounded derivation scripts and equivalent Dockerfile are retained
+in `environment-repair-source/`, with immutable PB snapshots in the receipts.
+The intermediate image `sha256:500117f774d8d89f187107cfc7363481e361558febd0de0d082e69c15cbdacdd`
+is retained as provenance; the final image above includes the offline cache.
+
+These CPU qualifications repair and characterize the environment. Actual GPU
+campaign/export/serving acceptance remains pending a fresh reviewed run.
+
+## Attempt 02: real capture exposed a parent-owned router bias
+
+PB action `b47707a2f754eb71a78eb34ecd7a7aaea81b890d4d03d4660e57479898b6018f`
+did execute despite an initially stale placement indication. A later withdrawal
+request found it already failed; it was not a cancelled, unexecuted attempt.
+Source parent was `3ac5f3c69782b5430b4a5804cc20451a67038e37`, materialized
+snapshot `936259b853512f5e81fffc53191d59c35109dc93`, bundle SHA-256
+`6e99d1de8fb4dacee586346c51b0debcc2052100aa9cd658d54d95e865a08306`.
+It used the final offline producer image above, four CPUs, 64 GiB, and the
+then-submitted exclusive three-slot GPU request on sparklina. It exited 1
+after 30.31 seconds with completed PB resource cleanup and safe exact-container
+cleanup. Both-host telemetry, dependency preflight receipt, actual campaign
+log, and cProfile output remain in `run183-02/` and the local mirror
+`pq183-evidence/run183-02/`.
+
+The producer dependency preflight and actual offline calibration load passed.
+During real model forward capture, `derive_per_expert_activations` replayed
+the packed router without its parent-owned `expert_bias`. Transformers 5.15.1
+stores that buffer on `Lfm2MoeSparseMoeBlock` and passes it to
+`Lfm2MoeTopKRouter.forward(hidden_states, expert_bias)`. PrismaQuant's existing
+adapter recognized only `e_score_correction_bias`; the missing LFM argument
+caused `Tensor + None` to fail. No priced costs, exported artifact, census, or
+serving results were produced. Acceptance 4 remains unestablished.
+
+The bounded repair extends the shared router adapter and its three callers:
+activation capture, packed-cost replay, and empirical down-input statistics.
+It passes the original parent buffer to the model router, refuses a missing
+buffer when bias is enabled, and retains explicitly disabled-bias behavior.
+
+CPU regression used the actual qualified image and Transformers 5.15.1 router,
+with a nonzero parent bias that flips selected experts relative to uncorrected
+routing. It checks actual model-forward indices/weights, derived gate/up and
+down-input rows, and empirical column statistics. It also checks disabled bias,
+clear missing-bias rejection, and existing correction-bias handling.
+
+- Red PB `6e958854678fc4d3302a80846038bf47ff70814ca3d703f47da5fa1ca6b12c12`:
+  two intended failures and one pass, no skips. The real-router capture
+  reproduced the exact `Tensor + None` exception before the fix.
+- Green PB `c6f5d1ff7694a576078497966c1538b14c579f16153adc5ef71fa2acaf089c00`:
+  32 passed, no skips, including existing packed-cost and empirical suites.
+  CPU-only, two admitted CPUs, eight GiB aggregate memory, native threads one,
+  and networking disabled. CAS receipt
+  `b0eec7fe8591638083b14d6b934977aa7cb5a423c6d41e6caafa07ed4bac44b8`;
+  independently verified 546-byte payload SHA-256
+  `c04707642fbca02bb534ad6879b09603eeb325ef56920d1a2135ae220a0a64f8`.
+
+Both CPU actions' terminal records and the successful CAS receipt are retained
+in `pq183-evidence/`; the sealed test-only source and driver are
+`pq183-router-validation/`. These regressions establish the routing repair,
+not completion of the actual GPU pipeline.
+
+Required architecture/staleness checks and source compilation passed separately
+through CPU PB
+`d3e11c503da0f8fe1ba2e85acf61eb95b5d3ce692bdf89fe526b0c60fa8317b2`;
+the actual log and verified CAS receipt are retained beside the routing tests.
+
+## Attempt 03: insufficient routed calibration coverage
+
+PB action `874fe72da13a00e3c6bd18f67e339235e655a5feb64c55cf5962c9b347c76608`
+ran source parent `4cb2084134133b3d487a1d01112e0055b541b186`, including the
+routing fix merged as PR 247 (`8b16aef3`). Its materialized snapshot was
+`53b210b0fb7d6f336f2bbcc51629af4fda8302f2`, bundle SHA-256
+`1ee0e9557776242c0ede3b00bd873160dd530f1b039ce659811065e916b5b309`.
+The qualified offline image and eight-by-512, seed-zero calibration remained
+unchanged. The resource request used the fleet's current one-slot representation
+of one exclusive physical GPU, four CPUs and 64 GiB on sparklina.
+
+The router fix worked. Real calibration completed its forwards, then the
+existing no-routed-rows gate refused exactly three units:
+`model.layers.12.feed_forward.experts.2.{w1,w2,w3}`. Expert 2 received no
+calibration tokens in this draw, so those three units had no empirical Hessian.
+The campaign correctly refused a shared-Hessian or weight-only fallback; it
+did not emit `cost.pkl` or start export/serving. This negative result establishes
+insufficient coverage for the declared eight-sample campaign, not a completed
+priced observation or a defect in the no-row gate.
+
+The action exited 1 after 30.64 seconds. Both Netdata endpoints were recorded,
+monitor errors were empty, exact-container cleanup was safe, and PB resource
+cleanup completed. Logs, cProfile, dependency receipt, host state and telemetry
+remain under `run183-03/`, mirrored in `pq183-evidence/run183-03/`; the failed
+terminal record is retained beside them. Acceptance 4 remains open.
+
+The existing CLI supports changing the calibration sample count but has no
+per-projected-unit exclusion flag. A later larger draw, if run, must be recorded
+as an explicit revised calibration contract, preserving the corpus, sequence
+length and seed and retaining this eight-sample negative observation.
+
+## Attempt 04: the explicit 32-sample draw still misses layer-12 expert 2
+
+PB action `e6e110874a033c26ed2ce1c3cf715f418758839a5cdefbad710ab358ee63cecc`
+used source `47a31e87b71c6d39109c6c730a3ca0a0649f717d`, materialized snapshot
+`4ed7bf06e93f9eebde705911b88ad1cee3708860`, bundle SHA-256
+`652ea18f28c005034f36539bbacae93d15c8f8705ee7c81d229a1135281cabc0`.
+This attempt explicitly increased the calibration draw to 32 sequences while
+retaining WikiText train, length 512, seed zero, maximum stored activation rows
+512, the qualified offline image, fixed candidate, and all 96 layer-12 units.
+
+It exited 1 after 33.95 seconds: expert 2 still received zero routed calibration
+rows, so its `w1`, `w2`, and `w3` projections had no Hessian. The unchanged gate
+refused before pricing, export, census, or serving. This result is insufficient
+layer-12 coverage under the 32-sample contract; it does not prove the expert is
+permanently inactive. No further sample escalation or fabricated fallback was
+used. A subsequent actual-forward histogram is a coverage diagnostic, not
+quantization-quality-based layer selection.
+
+Original artifacts are in `run183-04/`; the submission is `pq183-submit-04.json`.
+Both are mirrored in `pq183-evidence/`, along with the failed terminal record.
+Both-host telemetry succeeded with no monitor errors, all exact-container
+cleanup records were safe, and PB resource cleanup completed. Acceptance 4
+remains open.
+
+## Actual-forward coverage diagnostic and frozen layer-13 scope
+
+The first diagnostic launcher, PB
+`ad7284404af1cae07b7be070d23eaee05815fa5d3a3d34e9ad918bb2eb1cfbcb`,
+omitted the sealed Tessera import mount and failed before model loading.
+The exact container and PB resource scope were cleaned. That setup failure
+is retained in `route-diagnostic-01/`; it produced no routing observation.
+
+The corrected diagnostic, PB
+`3a2f8a9fa5483aa439f0759cf1db3bc08710e2176f13d17652793102587bb182`,
+completed in 30.0 seconds with exit zero. It observed the selected-expert tensor
+returned by every actual sparse-block gate during the same 32 calibration
+forwards. It used no router replay and retained no activation/Hessian cache:
+only 32 int64 counts for each of 22 sparse layers, plus each actual parent bias
+vector. Every layer's counts summed to 65,536 token-to-expert assignments.
+The first eight token-buffer hashes matched the qualified eight-sample draw.
+
+Among layers 13–23, every expert had nonzero support in layers
+**13, 17, 20, 22, and 23**. The criterion declared before inspecting this
+histogram was the lowest eligible index at least 13; therefore **layer 13**
+is frozen for the next quantization attempt. Existing stride 13 selects dense
+layer 0 and precisely that one sparse stack. This choice uses calibration
+population support, with no quantization costs or quality outcomes observed.
+Layer 13's least-observed expert had **13 routed rows**. Complete population
+support does not establish a full-rank Hessian or certify quantization quality.
+The existing required-Hessian and no-row gates remain in force.
+
+The full 22-layer counts, bias vectors, 32 token hashes, versions and source
+identity are in `route-diagnostic-02/router-histogram.json`, SHA-256
+`d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3`.
+The actual checkpoint SHA-256 is
+`c9b9e3c4b3be50b576e6da8c02de1b4223614ffe131d812abf92bb84421f6217`.
+The qualified image remained unchanged; observed peak CUDA allocation was
+17,409,684,480 bytes. Both Netdata endpoints were captured, the exact container
+was removed, and PB resource cleanup completed. cProfile, telemetry, image and
+container inspections, and full source binding are retained alongside the JSON
+and mirrored under `pq183-evidence/`.
+
+The successful CAS receipt is
+`a1f4a3e97f1de3936772d823070ef336e407df5b96f3a335213f835bd1a24612`;
+its 1,630-byte payload SHA-256
+`c3fee81522061838c30835c22e340831e84801f4e4fc2e20799050b355e97bad`
+was independently verified. The diagnostic establishes this scope-selection
+criterion only; actual campaign/export/serving acceptance remains open.
+
+## Attempt 05: complete bounded pricing, followed by an assignment-reader refusal
+
+PB action `e9e2588f14bf9d4663b9a95ab0662407bf8a757682036a38c925e2947fab718b`
+ran source `6ccb97e0ea8482353ab014e263a53dbeae076c06`, materialized snapshot
+`07a9771e57e6442bc6ae2ed5de16b40f4e4adb68`, bundle SHA-256
+`14b47d22982398de9a824e58b28fc013a767a18405e848be48a8b54ac2884002`.
+The source includes the coverage correction delivered as PR 243
+(`195f3ba754f4f4efdcbcfcc7a5aecd76d7b9acda`) and the routing correction delivered
+as PR 247. The frozen layer-13 scope, 32-by-512 seed-zero calibration,
+maximum 512 stored activation rows, required Hessians and qualified offline
+producer image remained unchanged. PB admitted one exclusive physical GB10
+GPU, four CPUs and 64 GiB on sparklina; the runtime target was TP1, eager,
+resident, on the pinned EUGR image.
+
+The campaign exited zero and priced all **96** expert projections at the
+predeclared `TESSERA_E4M3_K1_R1024` rung. Its population receipt separates
+96 priced routed units, zero unpriced routed units, three enumerated but
+unpriced dense units, 27 dense targets outside the stride, 42 packed parameter
+tensors outside the stride, and 36 pinned targets. The 42 count refers to
+packed tensors, not stacks. The saved assignment explicitly retains 2,104
+other body matrix units in BF16, including the three in-scope dense units.
+There is no claim that those retained or omitted units were empirically priced.
+
+The 96 selected projections contain **352,321,536 quantizable parameters**.
+Their priced cached wire blobs total **178,161,760 bytes**, corresponding to
+**4.0454355875651045 bpp over those selected parameters only**. This excludes
+BF16 regions and export framing and is not a whole-model bpp figure. A
+read-only SHA-256/length audit of all 96 actual cache blobs matched their
+unchanged assignment records exactly; its roster is
+`pq183-evidence/run05-priced-cache-readback.json`. The original assignment
+SHA-256 is `d9b07632f6aebb3e9a29722312ae68e064de5925ac2accf5c262d1444036e66c`;
+`cost.pkl` is 434,319 bytes with SHA-256
+`45b3d9307a16a031445fa61d5e6e8374da6f0c893937384d9414c07648fe4656`.
+These are priced cache bytes; exported and served byte identity remains
+unmeasured at this point.
+
+The subsequent fresh export process exited 2 with
+`unsupported format string: 'TESSERA_E4M3_K1_R1024'`. The shared layer-config
+reader accepted Tessera dictionary entries but omitted their saved string
+representation. No `build.json`, export, census or paired serving result was
+produced. The overall PB action exited 1 after 356.74 seconds and has no
+successful CAS receipt. Campaign, preflight and host logs, cProfile, both-host
+Netdata telemetry and exact cleanup evidence remain under `run183-05/`,
+mirrored in `pq183-evidence/`. Both telemetry endpoints succeeded without
+monitor errors; all exact-container cleanup records were safe and PB resource
+cleanup completed. The successful campaign cache is retained for a separately
+sealed continuation; quantization need not be repeated to repair this reader.
+The first logged anchor took 78.8 seconds; subsequent logged anchors at indices
+10 through 90 took approximately 2.3 seconds each. These phase observations
+are not a comparative performance claim.
+
+## Shared assignment-reader regression evidence
+
+The repair is production commit `08d372be79312effe7ced43cb1bfd404f80dcdff`.
+It accepts the saved Tessera rung string through the existing torch-free
+reader and requires a full grammar match in both string and dictionary paths.
+Rung legality and target admission remain with the existing downstream gates.
+A malformed dictionary ending in a newline previously passed the anchored
+regular expression; that adjacent reader defect is corrected in the same
+commit without changing valid dictionary case policy.
+
+The first two attempted test launches (`aeeecb4451c1` and `02e65c3d2d2c`)
+failed on missing numerical dependencies during collection and are retained
+as environment failures, not regression results. The isolated torch-free
+reader regression then demonstrated two intended failures and one pass in
+PB `2bd7dbaeab5a5fd7e64134f88275f520f99f54781d7c21e31a0bbbe4d6055ac0`.
+Its initial string fix passed all three tests in PB
+`43740749b568ed9e1e10b9035c0f2290542e325794ef24a7be5b703885562c39`.
+
+The added malformed-dictionary regression failed specifically on the trailing
+newline in PB `3060a29289e9d86bb9879c95601d8f17fb7efcbc22268d126ab47bd8f6d55a1d`
+(three passes, one intended failure). After the full-match correction, PB
+`3dfef54a381f9fb4348ea3c87d1a3b6195d2db076418588fa2f3c15392f0fedd`
+passed all four tests with zero skips and compiled both touched Python files.
+This portable CPU action requested one CPU and 1 GiB, bounded native threads
+to one, and was placed by PB on dl380g10. Actual terminal logs and CAS payload
+were inspected: receipt
+`62aacfa7d2160faabcde5acef69584461da70cdde136a68e589f1785aeba1ce9`,
+102-byte payload SHA-256
+`8446de9e69a8e2e2a9f5bf70c127c4f325e091ab1d98b3489fdd8b8d2d912b19`.
+The tests isolate the actual reader from the package's numerical initializer;
+actual assignment/export preflight remains a required first stage of the
+continuation. Acceptance 4 remains open pending export, census and serving.
+
+The bounded publication copies for the completed pricing and export refusal
+are retained in [the artifact roster](artifacts/pq183-lfm-bound-2026-09-05/publication-roster.json).
+They include the full fixed recipe/population, all 96 priced wire hashes,
+22-layer routing histogram, campaign/preflight commands, dependency receipt,
+host cleanup/telemetry status, failed terminal and final parser CAS receipt.
+The roster records the original archive SHA-256 and published SHA-256 for each
+file. PB scope-token values were redacted before publication, including the
+terminal's `resource_scope.token` and `detail.argv` value after `--token`;
+the unmodified terminal remains in the private archive. Binary cache/Hessian
+and profiler payloads remain archived and are not copied into Git.
+
+## Attempt 06: actual preflight passes; receipt construction needs no Git executable
+
+The shared reader repair was delivered in PR 249, merged as
+`cb517da154b274c61e53b151f7a08312d1c57c18`, after 50 integrated tests passed
+with zero skips through PB. The opt-in continuation retains campaign 05's
+exact cost, assignment and recipe, without calibration, allocation or
+quantization. CPU PB action
+`799ba1ff56d191d9dae6fd14c58e6c1dccd7b63dfe11534972a8c566852d4567`
+sealed 106 consumed files, including all 96 priced wires and the Hessian plus
+provenance. The input manifest SHA-256 is
+`99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819`.
+Its actual terminal and 208-byte CAS payload were verified; receipt
+`fb6c5ece985e27817c6baa4e04318177c0f4539873869f4b47d6627d3ccb96c1`,
+payload SHA-256
+`add0e75c565440cb56f15df53c0e813a8efe7c40861045fc388499d68a075986`.
+The CPU preparation used one CPU/4 GiB and retained the original absolute
+campaign path because that local output is its concrete input dependency.
+
+Continuation PB action
+`51421c470ee9597240fd063c13992cb478b3d75958471f81ec3629d5376bf24c`
+used source `03909b705516babc5e989899824dd216f07c48d3`, snapshot
+`782581a0aed1de191cb80d259afd7816dc157d58`, bundle SHA-256
+`5c4542414d3831925825ce3b27bd607b0137252c62cb30de2c23b00b3d2a2fbe`.
+The original campaign was mounted read-only. The actual shared export
+preflight accepted its unchanged assignment, Hessian, serving scope and all
+96 priced wire receipts, writing `continuation-preflight.json`. The existing
+cached-unit writer then wrote the fresh 96-unit transport bundle and
+`build.json`. The copied cost, assignment and recipe SHA-256 values matched
+the originals exactly.
+
+The producer next failed at continuation receipt construction because it
+invoked `git rev-parse HEAD` inside the qualified container, which has no Git
+executable. That command was unnecessary: the admitted host already records
+its exact source snapshot. This is an opt-in harness dependency defect after
+successful actual preflight; it is not a quantization or parser failure. No
+export, census or serving observation was produced. Repairing receipt source
+binding must retain the qualified numerical image and use the host's existing
+verified source identity, with missing or malformed identity refused.
+
+The overall action exited 1 after 12.22 seconds, without a successful CAS
+receipt. Both Netdata endpoints succeeded, monitor errors were empty, exact
+container cleanup was safe and PB resource cleanup completed. Scope telemetry
+recorded peak memory 2,810,134,528 bytes and no OOM. Originals remain under
+`run183-06/`, with terminal and outputs mirrored under `pq183-evidence/`.
+Campaign 05 and its sealed input manifest remain unchanged. Acceptance 4
+remains open until actual export/census/paired serving complete.
+
+## Attempt 07: the pinned planner requires dictionary representations
+
+The missing-Git repair passed 11 portable PB tests with zero skips in action
+`156ee8dd45998f61f05fdad91066634a78ac92f78a520d1913feb9d393c1c4a0`.
+The 110-byte CAS payload SHA-256
+`513cf626d88cdb96b14fcef97620f886418a43dc67a946d0147db17aab19086d`
+was independently verified. Its negative cases refuse missing, malformed or
+misbound host source identity before producer work, and its transport case
+succeeds with Git explicitly unavailable.
+
+Continuation action
+`7cac236ac42bae7ceae2a3396f692ebdddfd3836f56361349f11fc084347d19d`
+ran parent `85de9773ae644d26caa5f3b5e5101b623ca020f3`, snapshot
+`26d00459662f3f7c703bab4eb7ef9c1c0315ea6a`, bundle SHA-256
+`cd41a7aa2204c78922af872d4c342a639fb171e0f394ca70cc92e0f2e8764a4c`.
+Actual shared preflight, all 96 wire copies, cached-unit build and continuation
+source receipt succeeded. The new source receipt binds that exact snapshot
+to the unchanged campaign-05 snapshot and input seal. Cost, assignment and
+recipe copies again matched their original SHA-256 values exactly.
+
+The pinned Tessera `experiments/plan_from_layer_config.py` then refused all
+96 Tessera strings as non-Tessera quantized choices. At pinned commit
+`ba582d476a3b6db9057ebd1385dc52926f171451`, `parse_entry` lines 153–154 accepts
+BF16 strings and classifies every other string as `other`; its Tessera grammar
+is reached only for dictionaries. This is a producer-reader representation
+mismatch, separate from the repaired PrismaQuant reader. The planned repair
+uses PrismaQuant's existing registered format serializer to derive a separate
+planner input and proves canonical assignment/metadata equality. The original
+assignment and pinned Tessera source remain unchanged; unsupported-format
+refusals and all numerical gates remain in force.
+
+The action exited 1 after 13.28 seconds without an export, census, serving
+result or successful CAS receipt. Both telemetry endpoints succeeded, monitor
+errors were empty, exact container cleanup was safe and PB resource cleanup
+completed. Full `plan.log`, command, source/build/preflight receipts and
+terminal remain in `run183-07/` and its `pq183-evidence/` mirror. This attempt
+performed no calibration, allocation or quantization. Acceptance 4 remains
+open pending the remaining actual stages.
+
+## Producer-owned plan and transparent direct-export finalization
+
+Before attempt 08, source review identified two more concrete interface
+assumptions. The pinned dense plan translator emits routed expert leaf names,
+whereas the exporter accepts the producer's whole-stack unit and refuses
+routed leaf overrides. Also, the direct exporter writes its actual plan but
+has no `export_identity`; the bounded census gate previously expected that
+field from merged exports. No partitioning or distribution was introduced to
+work around either interface.
+
+The bounded harness now obtains source classification and stack geometry from
+the pinned producer's `quantizable`, `expert_stacks`, `packed_expert_stacks`
+and `project_expert_plan` APIs and uses PrismaQuant's existing
+`stack_plan_request`. It requires the complete re-derived projection to equal
+the priced producer projection and retains the original assignment unchanged.
+The resulting serving plan names the selected stack at its measured rung,
+66 ordinary dense tensors and 21 other stacks explicitly at BF16, and records
+22 producer-classified routers that the exporter always retains at BF16.
+This is the bounded measurement handoff. The ordinary pipeline still invokes
+the dense translator; its routed-plan/representation fix and pin integration
+are tracked in [Tessera #363](https://github.com/RobTand/tessera/issues/363).
+
+The direct finalizer validates the producer's published plan against actual
+plan bytes and calls its existing `validate_explicit_plan` over actual modules,
+configuration groups and source tensor roster. It verifies complete source
+identity against the priced projection, preserves the original manifest
+outside the checkpoint, and appends an explicitly versioned direct-export
+identity before artifact sealing or census. Its producer image is the actual
+47dd image; its serving target is the pinned EUGR image in a separate field.
+The record binds the export command, build, Hessian, cached-unit manifest,
+full Tessera source seal and PQ host snapshot. It makes no partition or merge
+claim. Census hashes and reads the same augmented manifest bytes; there is no
+shadow manifest, gate override or fabricated producer runtime identity.
+
+The direct-shaped regression first reproduced the absent `export_identity`
+KeyError in PB `fab0180f2396c75a4f01a4e67d0f1bd13316fb429fc8399a3b98dc6a7a29524f`
+(seven passes, one intended failure). After integration and stable module
+imports, PB `7a69be4f27b1dd2d7cee3c4ed15ecf9aa0bcb139657e02b174d4873a0ad48e42`
+passed eight direct-finalization and 15 continuation fixtures, zero skips,
+plus compile checks. The fixtures check provenance mutation order and refusal
+contracts with stubbed numerical/producer boundaries; they do not certify
+actual exported bytes. Its 220-byte CAS payload SHA-256
+`71eff40aebedb97ae7cfdfcba4b3085bd79d05ca09e3e4adba5ee0d22c7b4f42`
+was independently verified; receipt
+`6b027f9301bdad4503440e825c51172176dcc50698a7044907507d9f1da5adb3`.
+
+A separate CPU-only PB action,
+`3eea10b7b333a4aebe009d95de950c62c752c16c975e6f74408680006bcb7c06`,
+then exercised the actual new plan helper against copied run-07 assignment
+and build bytes, real model headers, and real pinned producer APIs inside the
+qualified 47dd image. It asserted that CUDA was unavailable, used two CPUs
+and 4 GiB, and performed no calibration, quantization or export. It passed,
+producing exactly the scope above and plan SHA-256
+`4361ef9ccb7cf6a4bb50f0c759d1480a6c5ea0d06fdcad84add01aaffd26c95c`.
+The 317-byte CAS payload SHA-256
+`ad231eb04cc240a700f6eb5b1c2c8256a9c3c80b46f32bf94baf2361a867ef41`
+was independently verified; receipt
+`b83f13659c9d8a89adaa2fdb40c0fa35ee8abb7901db4677e8ae0b2ed8ad938d`.
+Actual artifacts and image/source receipts are archived in `plan183-cpu-01/`
+and mirrored under `pq183-evidence/`. This qualifies plan construction only;
+actual direct finalization and serving remain required.
+
+The retained campaign profile attributes 76.190 seconds of cumulative startup
+time to behavioral encoder identity fixtures. Its performance follow-up is
+[Tessera #364](https://github.com/RobTand/tessera/issues/364); no new performance
+experiment or guessed compilation/saturation explanation is claimed here.
+The published PB generation's omitted required documentation is tracked in
+[PrismaBuild #196](https://github.com/RobTand/prismabuild/issues/196).
+
+## Attempt 08: actual exported bytes match, then host readability refuses
+
+PB action `8dc3bc2e4ea62c4797b8519fda133328ae7ae9d72147ec03f0553d5053e0238c`
+ran source `465fc13796abb0d5eeec1b3e93036478cd74fdaf`, snapshot
+`1675e1368b42748547c1b21967daaa9dfc17c408`, bundle SHA-256
+`a1933620df872cc7405ab4ff88fc1e6781111596a8115c93a89c6ed46f7bd9e7`.
+Its cached export completed: one selected routed stack, 32 experts and
+96 projections, with 2,016 other expert tensors retained BF16. The direct
+producer wrote 2,302 tensors into a 16,409,528,112-byte safetensors shard.
+
+The actual wire audit parsed every selected exported container and matched
+its embedded blob byte-for-byte and by SHA-256 against its original priced
+cache record: **96 blobs totaling 178,161,760 bytes**. The 96 exported fused
+containers total **178,164,864 bytes**, including their additional framing.
+These are distinct accounting scopes. The producer separately reports
+`totals.wire_bytes=178094080`; that narrower field is not substituted for the
+priced self-describing blob comparison. It reports 352,321,536 selected
+quantizable parameters, 353,042,432 resident-mode bytes, and 16,231,072,000
+BF16 passthrough bytes. None of these selected-unit bpp figures is a
+whole-model compression claim.
+
+Direct finalization succeeded with its explicit producer/serving-image
+separation, preserved original manifest, validated source/plan and augmented
+manifest. The producer wrote `wire-audit.json` and `artifact-seal.json` and
+exited zero. The actual checkpoint shard SHA-256 is
+`4924daacfcd4e2779fa4a673abcb38a2fbfa0c41f85df74c4bda495d5d0573c1`.
+The host's next pre-census identity read then failed with `PermissionError`:
+the shard had mode 0600 and owner root:root, while the host verifier runs as
+rob. Other exported files were readable. No census or serving occurred.
+
+The overall action exited 1 after 123.83 seconds and has no successful CAS
+receipt. Both-host telemetry succeeded, monitor errors were empty, exact
+container cleanup was safe and PB resource cleanup completed. Peak scope
+memory was 22,230,003,712 bytes. All metadata, cached wires and logs are mirrored
+under `pq183-evidence/run183-08/`; the unreadable 16 GB shard remains intact in
+its original remote directory and is not included in that mirror. Its full
+producer-observed hash remains in the seal. The original campaign 05 and
+attempt 08 artifact permissions were not changed.
+
+The scoped repair sets only newly exported regular safetensors shards to
+0644 before sealing and records their before/after modes and independently
+computed equal byte hashes. PB
+`bd10c98f491c63cb5ef57638e3b38e8c32b88c3f8da8f98386c27fc57dadd3c1`
+reproduced 0600 rather than readable 0644 (one intended failure, eight passes).
+After the repair, PB
+`fdb18fe67deaffe0a776fa63f4d653bdb4302776c7f8b8905a6bf223e16c06ea`
+passed nine direct-finalization plus 15 continuation tests, zero skips, and
+compile checks. Verified CAS receipt
+`068e208d84366500feaa5ccea2af62651d1ccb60ac5b6dd29b73c9a6937d3462`
+binds a 221-byte payload, SHA-256
+`d36bcbf55f82020d01d0b9ca9ac48748f8620624f870a4a50787442873e6598a`.
+Fresh continuation 09 keeps the existing deterministic graph and original
+priced cache, repeating only cached export and the remaining validation.
+Acceptance 4 still requires actual census and paired serving.
+
+
+## Attempt 09: bounded priced-to-served handoff completed
+
+On 2026-09-06, the unchanged 96-unit campaign from attempt 05 completed its
+cached export, attested resident census, paired greedy smoke and final artifact
+check. This supplies acceptance 4's bounded actual measurement. It does not
+promote the format, certify model quality or performance, establish allocator
+optimality, or fix the ordinary pipeline's producer-plan translator.
+
+PB action `b25114fe9341bf4408a83e6a17aa5f2511c08cb5a17bc2ac210b8a49d4b823f9`
+ran reviewed parent `0abb3fdda73bf3b5ef7dea1c48fe2924650f1993`, snapshot
+`6ff54346b9223fc6c4c2a0ac676dacee823c91b6`, bundle SHA-256
+`77612e9438bfdd7ef2e000653882b675ced04aca17fbdfdab00956d8047cfb29`.
+The source includes the coverage correction delivered by PR 243, parent-bias
+routing correction delivered by PR 247 and shared format-reader correction
+delivered by PR 249. Producer image 47dd, serving target EUGR 0afec, complete
+Tessera source ba582d47 and the 106-file campaign input seal
+`99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819`
+remain the identities recorded above. No calibration, quantization or allocation
+was repeated; original cost, assignment and recipe bytes remain unchanged.
+Every continuation phase verified the original consumed input seal again.
+
+The frozen calibration remains WikiText train, 32 sequences of 512 tokens,
+seed 0 and at most 512 activation rows per unit. Layer 13 was chosen before
+quantization by the documented lowest-eligible-layer criterion. All 32 experts
+were observed, with a minimum of 13 routed rows; that is population coverage,
+not full-rank Hessian evidence. The measured scope is exactly 96 projections
+in one whole routed stack. The original assignment retains 2,104 other body
+matrix units as BF16. Its population separately reports three in-scope dense
+units without admitted priced rows, 27 omitted dense targets, 42 omitted packed
+tensor targets and 36 pinned components. Packed tensor targets and expanded
+per-expert matrix units use different counting scopes. None is silently counted
+as measured. The producer-owned serving plan contains the selected stack,
+66 explicit ordinary BF16 tensors and 21 explicit BF16 stacks, with 22 classified
+routers retained implicitly as BF16.
+
+### Exact bytes and direct-export provenance
+
+The post-export and post-serve audit passed all **96 units**. The priced
+self-describing blobs total **178,161,760 bytes** and equal the embedded exported
+blobs byte-for-byte and by SHA-256. Their fused containers total
+**178,164,864 bytes**. Over the 352,321,536 selected quantizable parameters,
+these are respectively 4.0454355875651045 and 4.045506068638393 bits per
+parameter. They exclude immutable and retained BF16 regions; they are not
+whole-model bpp figures. The producer's narrower wire accounting and resident
+mode totals remain distinct, as recorded for attempt 08.
+
+The final `exported/model.safetensors` contains 2,302 tensors and
+16,409,528,112 bytes. Its actual SHA-256 is
+`4924daacfcd4e2779fa4a673abcb38a2fbfa0c41f85df74c4bda495d5d0573c1`,
+identical to attempt 08. The direct-finalization origin records mode 0600 to
+0644 and identical before/after byte hashes. Only newly written attempt-09
+shards were made readable; original attempts 05 and 08 remain unchanged.
+The general producer handoff defect is tracked in
+[Tessera #366](https://github.com/RobTand/tessera/issues/366).
+
+The transparent direct-manifest supplement binds the actual producer image
+separately from the serving target, validates actual source/plan/command/build
+and priced input identities, and preserves the original direct manifest outside
+the checkpoint. The actual augmented manifest is the one sealed, read and
+hashed by census. No partition, merge, alternate verification manifest or
+Tessera-source modification was introduced. Final artifact-seal SHA-256 is
+`e059d31dacc7a9d77b40479395d2fe50b0b69c02b1f5666fe91f52e9d70692ca`.
+
+### Actual serving observations and limits
+
+The route census returned `served`; the unchanged ts5 gate returned `passed`
+with `require_attested=true`, resident mode and 96 expected projection units.
+It observed one `TESSERA_FP8` routed-MoE owner in both prefill and decode,
+`vllm.fused_moe.modular_kernel:TRITON`, contract `fp8_per_token_dynamic`, decoder
+`torch_materialize_stock`. Recorded shapes were M64:N3584:K2048 for prefill
+and M1:N3584:K2048 for decode. This is an actual owner/topology observation,
+not a throughput comparison or proof of saturation.
+
+Both serving arms have complete build identities in the pinned EUGR image,
+vLLM `0.28.1rc1.dev397+gfd4a15126.d20260904`, with eager execution and no compiled
+forward. BF16 build fingerprint:
+`a9742a32bee8db4f31c90a0e7941127e76df9dfcf10ecef9998356cfefbd2bcd`.
+Tessera resident build fingerprint:
+`1473ade26775c434eb5aba280c800f263ec16770cfc9af4efe6571c23366df17`.
+The paired instrument used the same seven prompts in campaign and pure-greedy
+forms, 14 completions per arm. BF16 recorded eight repetitive and six recorded
+completions; Tessera recorded seven repetitive and seven recorded completions.
+All six chat-template observations per arm were recorded. The remaining raw
+completion repetition is explicitly retained. The existing paired contract
+returns `recorded`, attribution `shared_with_reference`; this is not a claim
+that all outputs are non-repetitive or that quantization improved quality.
+
+The final `artifact-after.json` reports `accepted=true`, `unchanged=true`,
+`smoke_status=recorded` and `quality_promotion_claimed=false`. It binds the
+actual census-check SHA-256
+`70aa3ac2602d5948a3c3d0935186d8a9d9b20278e0e8efcb3d1cf4e210e12a69`
+and paired-smoke SHA-256
+`76b9e48ab77cc0b05b52d588f56bd09578cccb34a07b181c38362c355e9e773b`.
+The before/after source and artifact identities passed around serving.
+
+### Terminal, telemetry and retained deliverable
+
+All six host phases exited zero. The final PB action exited zero after
+731.19 seconds, with cleanup complete, no OOM, no monitor errors and all five
+exact owned containers safely absent. Its 4-CPU, 64-GiB exclusive physical-GPU
+reservation preserved PB affinity `[5,6,7,8]`. Producer and census native
+threads were bounded to one; smoke retained its existing launcher policy within
+the same four-CPU cpuset.
+PB scope telemetry records 776.00 CPU seconds and peak accounted memory
+24,325,054,464 bytes. This is PB's scope accounting; independent host memory
+telemetry is retained separately and is not equated to that peak.
+
+Both hosts supplied 67 nonempty Netdata samples. The retained 125,586,882-byte
+telemetry stream has SHA-256
+`97646e5b3979b021a04f7b696745a2f09805f5ba192013132d29d0446240704d`.
+Its 67 sampled GPU power observations range from 4.2 to 59.63 W, median
+11.84 W; host-wide CPU endpoint busy fraction excluding idle and iowait is
+0.06728. These describe the sequential export/census/smoke/check observation,
+including startup and waits, and do not establish GPU saturation or efficiency.
+The original campaign profile and cold-start follow-up remain
+[Tessera #364](https://github.com/RobTand/tessera/issues/364).
+
+The successful CAS receipt is
+`0470d6d7deae7366f806e1011ba46e7a06f240cc08532c274877543ebfe635ef`.
+Its actual 119-byte payload was read and independently rehashed to
+`2dc64b2bd1694fe9b42e7f11f20e13e1651e8f0e57eb8afa8d2a30d0bd07946f`;
+it records observed output and safe cleanup. The full terminal remains under
+`pq183-evidence/` with the action key as filename. Its Git publication copy
+redacts PB scope tokens before staging; the publication roster retains both
+original and public byte hashes.
+
+The accessible retained deliverable is
+`/mnt/shared/tessera-measurements/prismaquant-183-2026-09-05/run183-09/`.
+It contains the exported checkpoint, 96 cached wire blobs, original and augmented
+manifests, plan/provenance, raw census and paired-smoke records, serving build
+identities, logs and both-host telemetry. All 159 copied files were independently
+size/hash checked, including the full 16-GB checkpoint; the adjacent
+`run183-09-archive-roster.json` records them. Compiled `ext/`, `triton/` and
+`vllm-cache/` directories were excluded from this copy and remain in the original
+remote output. Original attempts and immutable inputs remain archived.
+
+The bounded, reviewable Git evidence is indexed by
+[publication-roster.json](artifacts/pq183-lfm-bound-2026-09-05/publication-roster.json),
+including full 96-unit wire audit, population recipe, routing histogram,
+attested census, both served build identities, paired smoke, terminal/CAS,
+source/artifact seals and telemetry summary. Binary caches and checkpoint
+weights remain outside Git. Earlier negative attempts retain their actual
+failure disposition; no successful CAS is claimed for them.
+
+The ordinary PrismaQuant pipeline still uses the dense-only translator. This
+experiment's producer-owned plan bridge is bounded to the validated selected
+stack; general producer/reader integration remains
+[Tessera #363](https://github.com/RobTand/tessera/issues/363). The separate Tessera
+owner handles upstream repairs without changing this measurement's ba582d47
+pin. No further numerical run is required to support this bounded observation.
+
+
+## Final delivery review
+
+The root review checked all 32 publication files against their archived originals,
+including permitted token redactions, and read/hash-checked all 96 fused containers
+from the accessible final checkpoint against the wire-audit receipt. It also
+verified the actual CAS payload, canonical receipt digest, all six zero-exit
+phases, five safe container dispositions, final census/manifest/plan hashes,
+post-serve artifact seal and both-host telemetry status. This is an independent
+receipt and artifact review, without repeating the numerical campaign.
+
+The initial PR 250 broad CPU CI run is not green: two existing E4M3 rendering
+integration cases exceeded the 300-second limit, with 5,630 passes, 152 skips,
+3 xfails and 182 passing subtests. The import-surface check passed. Neither
+failing test nor its rendering implementation is changed by this PR. Actual
+stacks and workload are retained in
+[PrismaQuant #251](https://github.com/RobTand/prismaquant/issues/251); their cause
+has not been established by an isolated reproduction. This is separate from the
+24 passing targeted continuation/finalization regressions and the completed
+actual GPU observation.

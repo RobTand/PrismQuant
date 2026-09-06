@@ -1,0 +1,295 @@
+{
+  "schema": "prismaquant.pq183-publication-roster.v1",
+  "scope": "run05 measured 96-unit priced cache; run09 exact exported bytes, attested resident census and paired smoke; bounded observation only, with BF16-retained and omitted populations explicit",
+  "redaction": "PB scope token values replaced everywhere, including resource_scope.token and detail.argv after --token; originals preserved privately",
+  "files": [
+    {
+      "publication_file": "run09-terminal.redacted.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/b25114fe9341bf4408a83e6a17aa5f2511c08cb5a17bc2ac210b8a49d4b823f9.terminal.json",
+      "archive_bytes": 8676,
+      "archive_sha256": "ebb9b5d019c903246a143c274fd187c184c138ee0c006f34e05fa3b7fd597947",
+      "publication_bytes": 9697,
+      "publication_sha256": "38c37e192384dd4e7d82b38180dbdf98bb8e84997b87cb6378f0d3d8ec8d7e5c",
+      "scope_tokens_redacted": true
+    },
+    {
+      "publication_file": "run09-cas-receipt.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/b25114fe9341bf4408a83e6a17aa5f2511c08cb5a17bc2ac210b8a49d4b823f9.cas-receipt.json",
+      "archive_bytes": 3224,
+      "archive_sha256": "ca9112d604ff5e5079dcf96a8ec250ff5a8d3399a7b5a22e4576c34b26e918c9",
+      "publication_bytes": 3224,
+      "publication_sha256": "ca9112d604ff5e5079dcf96a8ec250ff5a8d3399a7b5a22e4576c34b26e918c9",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run06-terminal.redacted.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/51421c470ee9597240fd063c13992cb478b3d75958471f81ec3629d5376bf24c.terminal.json",
+      "archive_bytes": 6156,
+      "archive_sha256": "0d917f000fd48a56e0cd84d9e5a930f901ba170257c3320248aef36fc526c22d",
+      "publication_bytes": 7169,
+      "publication_sha256": "13a215d57ae180918b02aecc3faf28de0530c35ccd1da1e0ea3b4f96b449c2bd",
+      "scope_tokens_redacted": true
+    },
+    {
+      "publication_file": "run06-build.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-06/build.json",
+      "archive_bytes": 31745,
+      "archive_sha256": "43600fdf35884be1abae87bface9e7c47a099bee79036dccc1de73d4fbaded9b",
+      "publication_bytes": 31745,
+      "publication_sha256": "43600fdf35884be1abae87bface9e7c47a099bee79036dccc1de73d4fbaded9b",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run06-host-status.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-06/host-status.json",
+      "archive_bytes": 8672,
+      "archive_sha256": "0f71799ebe33b339e7b0331bdd84771b3278faffd311b6f01f727cca9e700d56",
+      "publication_bytes": 8672,
+      "publication_sha256": "189971431f763d0af8e70f02d387f50f3b52d200cd7fa4f90f04af824bc72da4",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-inputs.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05-inputs.json",
+      "archive_bytes": 17660,
+      "archive_sha256": "99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819",
+      "publication_bytes": 17660,
+      "publication_sha256": "99cc6100daa968aed8d7b7a357783bb439ce760732a7296c67e9415945f5f819",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "campaign-input-seal-receipt.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/799ba1ff56d191d9dae6fd14c58e6c1dccd7b63dfe11534972a8c566852d4567.cas-receipt.json",
+      "archive_bytes": 2630,
+      "archive_sha256": "cb7238d82f36379bf0f898633a8a3717a68b78567d9fb0791a218fcb106d4456",
+      "publication_bytes": 2630,
+      "publication_sha256": "cb7238d82f36379bf0f898633a8a3717a68b78567d9fb0791a218fcb106d4456",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-terminal.redacted.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/e9e2588f14bf9d4663b9a95ab0662407bf8a757682036a38c925e2947fab718b.terminal.json",
+      "archive_bytes": 6158,
+      "archive_sha256": "349d985de2b972651a7bce108c6ad62e8206187c8b0f63e8688a5448ae46f1c1",
+      "publication_bytes": 7171,
+      "publication_sha256": "ffe16424dd721357de606025ff4da9a9636d2cfd03a85a7f018d9ed556e309a2",
+      "scope_tokens_redacted": true
+    },
+    {
+      "publication_file": "run05-recipe.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/recipe.json",
+      "archive_bytes": 130681,
+      "archive_sha256": "e1f8f6f93024ebdcc59fd88db02f5e17bc57efcefd2e8955ea16efc5839b5cba",
+      "publication_bytes": 130681,
+      "publication_sha256": "e1f8f6f93024ebdcc59fd88db02f5e17bc57efcefd2e8955ea16efc5839b5cba",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-priced-cache-readback.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run05-priced-cache-readback.json",
+      "archive_bytes": 26802,
+      "archive_sha256": "660308155ec7d7d8108fb0e52a6142b871ab8ae19a8cb27b9fcab31fc5e44b22",
+      "publication_bytes": 26802,
+      "publication_sha256": "c80e22db3237ea90646165cf95f98284a582bbe54157cb5e4f1ea50277bca74d",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-host-status.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/host-status.json",
+      "archive_bytes": 7586,
+      "archive_sha256": "ff9d704deaf5c9a913b6211da3b6edbc9fdc029972337ec3baf83f702dc62b26",
+      "publication_bytes": 7586,
+      "publication_sha256": "9297bcc7463243c18cd07af74f0bbc68510697a27247aadfd640fa661dbdb269",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-campaign-command.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/campaign.command.json",
+      "archive_bytes": 1132,
+      "archive_sha256": "ccee60813d040edde50a3c7799abd1c5a9e89334b507c19a1d096e28dad89d61",
+      "publication_bytes": 1132,
+      "publication_sha256": "ccee60813d040edde50a3c7799abd1c5a9e89334b507c19a1d096e28dad89d61",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-preflight-command.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/preflight.command.json",
+      "archive_bytes": 889,
+      "archive_sha256": "211c9dab49a1a16bd952c816a11063ebb1930ad3b6789274cdcd4cd689524b5f",
+      "publication_bytes": 889,
+      "publication_sha256": "211c9dab49a1a16bd952c816a11063ebb1930ad3b6789274cdcd4cd689524b5f",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-producer-dependencies.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/producer-dependencies.json",
+      "archive_bytes": 3056,
+      "archive_sha256": "c5726b93fd6c13d37d4fa8a91f95f37f390dddc90951ba803a50b9f4a24d51df",
+      "publication_bytes": 3056,
+      "publication_sha256": "c5726b93fd6c13d37d4fa8a91f95f37f390dddc90951ba803a50b9f4a24d51df",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "routing-diagnostic02-histogram.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/route-diagnostic-02/router-histogram.json",
+      "archive_bytes": 32757,
+      "archive_sha256": "d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3",
+      "publication_bytes": 32757,
+      "publication_sha256": "d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "parser-final-green-receipt.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/3dfef54a381f9fb4348ea3c87d1a3b6195d2db076418588fa2f3c15392f0fedd.cas-receipt.json",
+      "archive_bytes": 2488,
+      "archive_sha256": "72ad3407e077afd3d1ac8bc744f1f8f61b32f9d25975effddea58c839f5d03f3",
+      "publication_bytes": 2488,
+      "publication_sha256": "72ad3407e077afd3d1ac8bc744f1f8f61b32f9d25975effddea58c839f5d03f3",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-host-status.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/host-status.json",
+      "archive_bytes": 22378,
+      "archive_sha256": "ccc2dbd77e7a8585f763990610ff214eb9f2c33112574535a0041324eca5d3d8",
+      "publication_bytes": 22378,
+      "publication_sha256": "3c23ae36d8e0faacb5c0f360ea02f3bb058a766947017eb50ce73e255f335f28",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-wire-audit.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/wire-audit.json",
+      "archive_bytes": 39106,
+      "archive_sha256": "c6bd695bc213af582a62ed67ed6665f51f36daa120536a488c19be9412eb0b6c",
+      "publication_bytes": 39106,
+      "publication_sha256": "c6bd695bc213af582a62ed67ed6665f51f36daa120536a488c19be9412eb0b6c",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-artifact-seal.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/artifact-seal.json",
+      "archive_bytes": 375143,
+      "archive_sha256": "e059d31dacc7a9d77b40479395d2fe50b0b69c02b1f5666fe91f52e9d70692ca",
+      "publication_bytes": 375143,
+      "publication_sha256": "e059d31dacc7a9d77b40479395d2fe50b0b69c02b1f5666fe91f52e9d70692ca",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-artifact-after.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/artifact-after.json",
+      "archive_bytes": 428,
+      "archive_sha256": "86bc0664c0eebca5a762012594f84fead38331b252bee6e1259775ee98001584",
+      "publication_bytes": 428,
+      "publication_sha256": "86bc0664c0eebca5a762012594f84fead38331b252bee6e1259775ee98001584",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-plan.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/plan.json",
+      "archive_bytes": 4523,
+      "archive_sha256": "4361ef9ccb7cf6a4bb50f0c759d1480a6c5ea0d06fdcad84add01aaffd26c95c",
+      "publication_bytes": 4523,
+      "publication_sha256": "4361ef9ccb7cf6a4bb50f0c759d1480a6c5ea0d06fdcad84add01aaffd26c95c",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-serving-plan-provenance.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/serving-plan-provenance.json",
+      "archive_bytes": 437723,
+      "archive_sha256": "25d03bbd6b55b0686cad9da7790d03ea33c7acd4c4c592dc7ab73648be4b273c",
+      "publication_bytes": 437723,
+      "publication_sha256": "25d03bbd6b55b0686cad9da7790d03ea33c7acd4c4c592dc7ab73648be4b273c",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-continuation.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/continuation.json",
+      "archive_bytes": 521,
+      "archive_sha256": "54207ecf414bf2a46c91013b5f3e7f3f353cb3f7408c22f46cf1c8c2edd639f8",
+      "publication_bytes": 521,
+      "publication_sha256": "54207ecf414bf2a46c91013b5f3e7f3f353cb3f7408c22f46cf1c8c2edd639f8",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-continuation-preflight.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/continuation-preflight.json",
+      "archive_bytes": 804208,
+      "archive_sha256": "c2cf292e65593a3c9db307d365f9ccd539d1865e9caa0b1c57f89575642a6b76",
+      "publication_bytes": 804208,
+      "publication_sha256": "c2cf292e65593a3c9db307d365f9ccd539d1865e9caa0b1c57f89575642a6b76",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-export.command.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/export.command.json",
+      "archive_bytes": 976,
+      "archive_sha256": "448dfefe78faa1e59c339c242858ade8546b39a2568178db976a0a8d830a3e6f",
+      "publication_bytes": 976,
+      "publication_sha256": "448dfefe78faa1e59c339c242858ade8546b39a2568178db976a0a8d830a3e6f",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-census-census.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/census/census.json",
+      "archive_bytes": 6306,
+      "archive_sha256": "24c831cdc34702bff1be837e194b0afe2e73ad6e2212fe1b7a3a847857c757d7",
+      "publication_bytes": 6996,
+      "publication_sha256": "d454716becb2aef64f621c8f8cb07c01ddae194f2f030968cb330a12d9e60f3f",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-census-check.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/census/check.json",
+      "archive_bytes": 197640,
+      "archive_sha256": "70aa3ac2602d5948a3c3d0935186d8a9d9b20278e0e8efcb3d1cf4e210e12a69",
+      "publication_bytes": 197640,
+      "publication_sha256": "70aa3ac2602d5948a3c3d0935186d8a9d9b20278e0e8efcb3d1cf4e210e12a69",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-smoke-pair.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/smoke/pair.json",
+      "archive_bytes": 40130,
+      "archive_sha256": "76b9e48ab77cc0b05b52d588f56bd09578cccb34a07b181c38362c355e9e773b",
+      "publication_bytes": 40130,
+      "publication_sha256": "c4c579e4eabc82085d1765190cd463828890899646a2b83da7958c7d429d25f0",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-smoke-smoke_bf16.build.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/smoke/smoke_bf16.build.json",
+      "archive_bytes": 1454,
+      "archive_sha256": "16069a1092c18bade831b30ada8860321afce12ea863bc497fc6a7fda90441c8",
+      "publication_bytes": 1561,
+      "publication_sha256": "cf7f9c65650e5a625092844d966bb6224b2025a988edabb576d5d38f34f068bb",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-smoke-smoke_tessera.build.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-09/smoke/smoke_tessera.build.json",
+      "archive_bytes": 1498,
+      "archive_sha256": "876a97324a76694315025600f629044dba086e216886fbd43cfd41842dfc68b3",
+      "publication_bytes": 1605,
+      "publication_sha256": "a324a4e58ab67de8322d42012287c224e6f1a5570806578c4ff2a8defb5c3011",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-telemetry-summary.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run09-telemetry-summary.json",
+      "archive_bytes": 872,
+      "archive_sha256": "36e130ae01007f2fa6d3a314fc22a5c0b20f85e90968cf4699eaa944f17f12dd",
+      "publication_bytes": 872,
+      "publication_sha256": "2e7b3df8e39779595b10c8bd508da5a04aeab05b1c85d1e1bc4e8487a4e58b1f",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run09-archive-roster.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run09-archive-roster.json",
+      "archive_bytes": 33069,
+      "archive_sha256": "23eddf5875aba3e3838d83afb2fc3113e5b143b201d01b73cb122a897da69b38",
+      "publication_bytes": 33069,
+      "publication_sha256": "9c2ed4ddbe2026b6863bb741639c8241bc9cb0d223e26fdfbcdbe8bbfdaddcf5",
+      "scope_tokens_redacted": false
+    }
+  ]
+}

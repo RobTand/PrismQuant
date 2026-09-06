@@ -1,0 +1,584 @@
+{
+  "assignment_sha256": "d9b07632f6aebb3e9a29722312ae68e064de5925ac2accf5c262d1444036e66c",
+  "schema": "prismaquant.pq183-priced-cache-readback.v1",
+  "scope": "priced cache only; exported/served bytes not yet available",
+  "total_bytes": 178161760,
+  "units": [
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__0__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "2e40f8479b688f2935c01e51af8655658a278f31674d3e00b7c5e396a9c66bbd",
+      "unit": "model.layers.13.feed_forward.experts.0.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__0__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "82855b436675bc5ac174c7461fe2f7a875767bda5f23e8d8b22ea9a17d795345",
+      "unit": "model.layers.13.feed_forward.experts.0.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__0__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "644f28a1e1e8ff280f75c5b244f5968db347df60456a159972148e31bb6cbfb0",
+      "unit": "model.layers.13.feed_forward.experts.0.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__1__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "f2c9a49ec185aee4ba824ad0af174bf52710a924e55179f1802203f00fde9470",
+      "unit": "model.layers.13.feed_forward.experts.1.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__1__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "c601c4c2ffd9968c303da01f87759f74c54897d40c022569a555e54404404a6a",
+      "unit": "model.layers.13.feed_forward.experts.1.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__1__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "ad0ed5a9917d114a4d07ae01f793ad77a63422dcdbc89ef85addafb67b07ddc9",
+      "unit": "model.layers.13.feed_forward.experts.1.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__10__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "4f828391ab8dac7db545fdd39743e34561a4f06cbfcf665c1acf9a0bec8ac42e",
+      "unit": "model.layers.13.feed_forward.experts.10.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__10__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "4044b625a5cba5909b83c412bdce6be78249a89295b183d26bca6336446c8888",
+      "unit": "model.layers.13.feed_forward.experts.10.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__10__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "9ed845390c1770cf247234a25a087bc2f96e0935d533d9189965e9605d810ae4",
+      "unit": "model.layers.13.feed_forward.experts.10.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__11__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "3e9c1970f83354098edc0589cd27c68d48ead23dd7351242a6cebeda228b7994",
+      "unit": "model.layers.13.feed_forward.experts.11.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__11__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "fa85b415ea28fccb44e015097dbd37373b912df4f44d8ac822d35087501c3b47",
+      "unit": "model.layers.13.feed_forward.experts.11.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__11__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "8646e70fc5b7337314ce17114a1f1c5475d0e2362bfda48cba48837560aee99c",
+      "unit": "model.layers.13.feed_forward.experts.11.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__12__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "d53658456fd1ac116f852715a6c3e0cd8f6e2974a9042df82f8a309f0b04068d",
+      "unit": "model.layers.13.feed_forward.experts.12.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__12__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "345f53d1c03692cd85909a0b0f0c656d18464aa21e6fc3a5f8dc838f075eb32f",
+      "unit": "model.layers.13.feed_forward.experts.12.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__12__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "7ce4ffac6578356a5cd0fb6f29c268c39a48d5031798392355b3444326764a76",
+      "unit": "model.layers.13.feed_forward.experts.12.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__13__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "7385c8f95535d88846e6e0e071810955a7ec1c942688b88745dd0fec60505b7d",
+      "unit": "model.layers.13.feed_forward.experts.13.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__13__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "fbd970ca2cdd5cad72d76243a4085228e2c9c15a43d6c5f6e5943a9322f3100f",
+      "unit": "model.layers.13.feed_forward.experts.13.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__13__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "1b3adb3edf36b8651ff5c3346af3270c2f938b74a0f84c7752823085ef805e7e",
+      "unit": "model.layers.13.feed_forward.experts.13.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__14__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "d0e69d00eee6846525ecdd5fedd90496167ce48010a987eb494a36b0dd1b0b97",
+      "unit": "model.layers.13.feed_forward.experts.14.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__14__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "cce90562358914e24e05c3d2d78cc71154f6bc167cf1aae36c60005dc35b052c",
+      "unit": "model.layers.13.feed_forward.experts.14.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__14__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "fadda6b45c61e7b6195268536dd829d29a563e7c40fd715b2d20f4ae89a7fe24",
+      "unit": "model.layers.13.feed_forward.experts.14.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__15__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "f74843404ec81632cf3279c78e31ba33825d2f1db434ec1af68ed042db6cb6e4",
+      "unit": "model.layers.13.feed_forward.experts.15.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__15__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "6bb47454ff591d64b49a30aa976b6c68e756a848c511d3bcf9ae3a458321066b",
+      "unit": "model.layers.13.feed_forward.experts.15.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__15__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "ee82cb4fc3ee333b17468745b9757da31ea0769ed9174a63558c3932522d51a4",
+      "unit": "model.layers.13.feed_forward.experts.15.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__16__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "a751971802808718d0a20bd8ae4157b0ce5927fd9fd725506392c40ef77d7d33",
+      "unit": "model.layers.13.feed_forward.experts.16.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__16__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "1e8d9583abc38c3a4a126f5c10a5a20226e9c3217ca6316539be070011c81e21",
+      "unit": "model.layers.13.feed_forward.experts.16.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__16__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "db578957fece2fde4e765b1f5d0fe6538ee149d9852194178ee934325efa8f7c",
+      "unit": "model.layers.13.feed_forward.experts.16.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__17__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "b16ebc93fccb44c0bbc71ae8a223e932ff2888231522084af6b673e88733f127",
+      "unit": "model.layers.13.feed_forward.experts.17.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__17__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "e1cff5cc7870a4c331525fef27af67910464ea6e552bc4c5cbd9b9d141fd2dce",
+      "unit": "model.layers.13.feed_forward.experts.17.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__17__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "fda2681dd3726b36a5a76a07a80b3f21110636ddcb324cff8420d9d65be12192",
+      "unit": "model.layers.13.feed_forward.experts.17.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__18__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "26c696763118256c0b18dc5be80d3fd5ceec284eaf134400599aeb097ec2069d",
+      "unit": "model.layers.13.feed_forward.experts.18.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__18__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "5df6fc948ad45e29518721ad1cf029716dcaff1dcb8109537be468711651e755",
+      "unit": "model.layers.13.feed_forward.experts.18.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__18__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "04b29588c4ffcd8363ef325b1cd0eea02aff991d1b151facd23d83697e3eddc6",
+      "unit": "model.layers.13.feed_forward.experts.18.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__19__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "fe976ba760ea3e7f0c5f1c65057627c65956e8c1f37f2ee27d86b2470eca50eb",
+      "unit": "model.layers.13.feed_forward.experts.19.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__19__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "6a9ab036fc2ac8100a50247bfa202cdd82902d85f79c66054b0e3edbfdffd852",
+      "unit": "model.layers.13.feed_forward.experts.19.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__19__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "a43a1fc8b68e7b1e78d086c15d04a6c4f7f33899a50885390edafd624accc363",
+      "unit": "model.layers.13.feed_forward.experts.19.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__2__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "d483f97e97d569d956358e9d03220278f8fb7820666fc89801f373cc588249b9",
+      "unit": "model.layers.13.feed_forward.experts.2.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__2__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "66e9e84259a0e9c1e50d777b04dbed05e1aec390a78146838af2e5175b046f0a",
+      "unit": "model.layers.13.feed_forward.experts.2.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__2__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "25a1b9c92e05ad80891a6673c2b0f6bf3d4b199722df0401497e9aa1839191db",
+      "unit": "model.layers.13.feed_forward.experts.2.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__20__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "ce134c5e9d160966680b7ec32938b96872a8908f5df5b70aa45a59647585326c",
+      "unit": "model.layers.13.feed_forward.experts.20.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__20__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "a75ee0a5b8576c84f63dc055803f982f8b20762fe4a25ebbeac77b1873d0f928",
+      "unit": "model.layers.13.feed_forward.experts.20.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__20__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "380645ca221fcdd947252e7b15a8bc148c8bd3b9ade9ffa06644caa5e7a916ff",
+      "unit": "model.layers.13.feed_forward.experts.20.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__21__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "c5af7ef5035d6f247a14087cc9b550922ba9acdfad91c72819478cf61a42f4f5",
+      "unit": "model.layers.13.feed_forward.experts.21.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__21__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "3ed5a120a4f4c075be9f51dba49c0677c8501f29a7d43164c621def02a682b0f",
+      "unit": "model.layers.13.feed_forward.experts.21.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__21__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "f0e2b87f1c049dc5f49f6f4ce5d289d271c13f6409ba70cef5c1efd3dda1e91e",
+      "unit": "model.layers.13.feed_forward.experts.21.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__22__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "22f2d6b05f2261a0ef4dc5924c54f30e1ffc150aae2d361ebece4cfcadeea885",
+      "unit": "model.layers.13.feed_forward.experts.22.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__22__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "1260c98704d0c66c5b48bf453d152a823fed1588b3241352839dbfc0813002e0",
+      "unit": "model.layers.13.feed_forward.experts.22.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__22__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "79a02d166209cb37ee3747a02969ba6ee1390a7e1d8e4dda8b3e429008fcb936",
+      "unit": "model.layers.13.feed_forward.experts.22.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__23__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "9e9398c110df01155ebc3d853012d5592c059344766e5d9cc0c17f520343d4ef",
+      "unit": "model.layers.13.feed_forward.experts.23.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__23__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "0cd27731777427deef216b5d44c35ab61e38fca5eb2b3e14ba0affc251225fe0",
+      "unit": "model.layers.13.feed_forward.experts.23.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__23__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "5f22fcc92f60bc391055a16554d8645ac1f2afd1fca889d1657a3312d7756b75",
+      "unit": "model.layers.13.feed_forward.experts.23.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__24__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "1647c417e01edc1cd403ed91e067d8c6bd4a0c37eb9c0d259c893579d1c69cc6",
+      "unit": "model.layers.13.feed_forward.experts.24.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__24__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "be398d212aa7e88e72ac5244bd220149f29b35a44fda15ffb05a9e34b887c46e",
+      "unit": "model.layers.13.feed_forward.experts.24.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__24__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "dd6933f75d841fcc59ab37ed3cbd01433372a89da690ebf6b8289b4234236074",
+      "unit": "model.layers.13.feed_forward.experts.24.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__25__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "be94c034dd6b2d285eaa3a4c00ad8bdf49bcbf172f71b4052cada29f12bdf863",
+      "unit": "model.layers.13.feed_forward.experts.25.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__25__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "83561a193741d47f38e9a87ad9c1b1d640b75ec34850aa17ad583c4c00de9d21",
+      "unit": "model.layers.13.feed_forward.experts.25.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__25__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "2663723d60048843a7efdd0e1f94150a3a2415f98ca7fa4e9d3dd4c2adff49f1",
+      "unit": "model.layers.13.feed_forward.experts.25.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__26__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "6c45a592775a5c1bbd16c40458b47f7820882841061414462ebe5359b359424f",
+      "unit": "model.layers.13.feed_forward.experts.26.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__26__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "8ba1d6b822d1709f58519bde127cf90c2418587830466cfbeb250be81b6731b8",
+      "unit": "model.layers.13.feed_forward.experts.26.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__26__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "a67427c2445e50ee39cfa10b31002350ba4495561f2ed0090fc6da3884257647",
+      "unit": "model.layers.13.feed_forward.experts.26.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__27__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "b5dd60ac5a070eec2c11ec4887afa9d2f5b7d9e732068ad885b2615c85e46e62",
+      "unit": "model.layers.13.feed_forward.experts.27.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__27__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "12c3405a4bdf95315174ed5da19e02b16337cf31bec5063934605bef4559be70",
+      "unit": "model.layers.13.feed_forward.experts.27.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__27__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "1f944a13aeb36daefe9ba8ad837a65570b73acfb6de985e6733fb042169ed8d2",
+      "unit": "model.layers.13.feed_forward.experts.27.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__28__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "c8cc4fb3764077ab75305b7f15dc636c0122de7ad318176c7380816c5783e385",
+      "unit": "model.layers.13.feed_forward.experts.28.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__28__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "07b36fc2ac93dbdf4e1011a79746fab2d3c6f978dd9370c3564deed99e269370",
+      "unit": "model.layers.13.feed_forward.experts.28.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__28__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "f816740da441cc400956b93e29ee3bfafeb1c00be292cdb40bc72bb9b6e8eb7a",
+      "unit": "model.layers.13.feed_forward.experts.28.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__29__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "26cbabbe2eb491986918a35da8eb35a56137e4d2b4ef25101c49f91b4c48be0e",
+      "unit": "model.layers.13.feed_forward.experts.29.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__29__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "4e4b0595f333eed2196676cf37f3802cb86e6487f9eefd7a1653d9f63f6359da",
+      "unit": "model.layers.13.feed_forward.experts.29.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__29__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "0ddc3f752277d034453d098aff10cd0a149d1de1745bfe065064d05b4553df71",
+      "unit": "model.layers.13.feed_forward.experts.29.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__3__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "cfc4149ce8aa99cb03a0b8f76beafbe49334e647a0900080af1cb5b3ae84504a",
+      "unit": "model.layers.13.feed_forward.experts.3.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__3__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "16307ff145f53ef1f4de86e20d68231ab39582ac81ebacc577580ade23c322d2",
+      "unit": "model.layers.13.feed_forward.experts.3.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__3__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "d7b5b5cf7a0efe3840ce2f156b18dd80e5ffe69325c8aaec6d9e25c4e1d1f804",
+      "unit": "model.layers.13.feed_forward.experts.3.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__30__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "531cf4bc1443ab44952fd4343453995940264602e51e373f84520e14bd4081c5",
+      "unit": "model.layers.13.feed_forward.experts.30.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__30__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "6e2af0b77d23b27c1cd4648f70121d6890a2d6be9f31fd7a8604de19bc982f1d",
+      "unit": "model.layers.13.feed_forward.experts.30.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__30__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "4765afb0f3a1cd4f78534e7e2d7d79879528714d30f3764d5ea2b3a9d3deb312",
+      "unit": "model.layers.13.feed_forward.experts.30.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__31__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "55e48fbdd8c6a76400b3553cc4360d3db3afdbf20ae5011f068dc68e6b7a8138",
+      "unit": "model.layers.13.feed_forward.experts.31.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__31__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "113d89e642707c4947a481f301ae80af9f5ce492f60db7dd62e571e480f28b64",
+      "unit": "model.layers.13.feed_forward.experts.31.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__31__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "3f8c60fcfb3e9674fb77a3703cbd013b5a8c91dd9d3f617ab0d7243b759eebd9",
+      "unit": "model.layers.13.feed_forward.experts.31.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__4__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "f7cd3ef81e421d1b5b6190ea623c89fef5549588631e691df18113d6a50c74cd",
+      "unit": "model.layers.13.feed_forward.experts.4.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__4__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "81f77df5d694fa2d59a70c157552afc3856b5e0d8a8b4a1eadebe3ab52e59fcc",
+      "unit": "model.layers.13.feed_forward.experts.4.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__4__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "bb7332aed0b49c3d6a2e19a71f98e55ff7fc702a5a4f428777bf104d3b7ef35d",
+      "unit": "model.layers.13.feed_forward.experts.4.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__5__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "c8a9272e93abb9691d3aba32d9c7044c923167f565c731a61ec1f7419bc1df26",
+      "unit": "model.layers.13.feed_forward.experts.5.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__5__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "a04b9b7d3db8138176f0ab381480a1d09a070657d07f1139ae335b494da22047",
+      "unit": "model.layers.13.feed_forward.experts.5.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__5__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "3cfb99fef0148025caced2cfb832f6f925dd584e4bcae9779c4d7efe9a2eeaee",
+      "unit": "model.layers.13.feed_forward.experts.5.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__6__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "d57b9c0a5b74e69f9c6881b2357fcd99ee104386420de7652e37ad849bf0cf4e",
+      "unit": "model.layers.13.feed_forward.experts.6.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__6__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "0acffe45b101f026cfbdc7856ca02b1cf8a1510f2d2b961ec1e0af968273ad71",
+      "unit": "model.layers.13.feed_forward.experts.6.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__6__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "722b1b69c96f50de3ae194fd230ba9dd6c6b2ac29e7f4217050b62cc23a8498f",
+      "unit": "model.layers.13.feed_forward.experts.6.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__7__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "7f197e85c48cccaa3a7d20148e616259156208f831ae42fc460e695ae60cbeda",
+      "unit": "model.layers.13.feed_forward.experts.7.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__7__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "204861b4a163784181020d1e5523a8e025c834bfced238f0bf35ca89f14b18ed",
+      "unit": "model.layers.13.feed_forward.experts.7.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__7__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "140832b656480d028d93f1e41d5926f811a10e4369693c22934c21fd2193e174",
+      "unit": "model.layers.13.feed_forward.experts.7.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__8__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "e2c6c1774c8a9a15b993fd8046c5ada8df103d801925c9da9f8d422dcda0b74d",
+      "unit": "model.layers.13.feed_forward.experts.8.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__8__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "e7e0e3a2e81c788c4bc6688904f6da346373b5f1996dc291f0442aaeb94a95d6",
+      "unit": "model.layers.13.feed_forward.experts.8.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__8__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "2330fd14e8de255125e4d92fcefe8917cd47994e37df762f9b5537ea01271794",
+      "unit": "model.layers.13.feed_forward.experts.8.w3"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__9__w1__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "ddad5992ad8ca21857168bb63fd9034af20efefbde950da4e3081356cd30fb44",
+      "unit": "model.layers.13.feed_forward.experts.9.w1"
+    },
+    {
+      "bytes": 1856193,
+      "file": "model__layers__13__feed_forward__experts__9__w2__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "9c310e1f7e6f460636b0e6c2a323e46ba603780c2e4b174901c16ab0aea09a0f",
+      "unit": "model.layers.13.feed_forward.experts.9.w2"
+    },
+    {
+      "bytes": 1855681,
+      "file": "model__layers__13__feed_forward__experts__9__w3__TESSERA_E4M3_K1_R1024.tessera",
+      "sha256": "559b92350b98887e7b8b8c2e9b65dd38794e2c5a1cf9a90572cb700c043eb323",
+      "unit": "model.layers.13.feed_forward.experts.9.w3"
+    }
+  ]
+}

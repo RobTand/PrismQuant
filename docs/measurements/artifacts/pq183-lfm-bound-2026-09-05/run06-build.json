@@ -1,0 +1,718 @@
+{
+  "cached_expert_units": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-06/cached-expert-units/cached_expert_units.json",
+  "layer_config": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-06/layer_config.json",
+  "layer_config_sha": "d9b07632f6aebb3e9a29722312ae68e064de5925ac2accf5c262d1444036e66c",
+  "priced_inputs": {
+    "hessian_capture_sha256": "652e5e0a0bab152e1c09d51b7525639950f9de425488eedda8dcb88ef20a90bf",
+    "input_global_scales": {},
+    "schema": "tessera.priced_export_inputs.v1"
+  },
+  "source_model": "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+  "tessera_expert_stack_formats": {
+    "model.layers.13.feed_forward.experts": "TESSERA_E4M3_K1_R1024"
+  },
+  "tessera_routed_expert_bytes": "priced_wires",
+  "tessera_serving_scope": {
+    "by_unit": {
+      "model.layers.0.feed_forward.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "dense"
+      },
+      "model.layers.0.feed_forward.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "dense"
+      },
+      "model.layers.0.feed_forward.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "dense"
+      },
+      "model.layers.13.feed_forward.experts.0.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.0.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.0.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.1.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.1.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.1.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.10.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.10.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.10.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.11.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.11.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.11.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.12.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.12.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.12.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.13.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.13.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.13.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.14.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.14.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.14.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.15.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.15.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.15.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.16.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.16.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.16.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.17.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.17.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.17.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.18.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.18.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.18.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.19.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.19.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.19.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.2.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.2.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.2.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.20.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.20.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.20.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.21.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.21.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.21.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.22.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.22.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.22.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.23.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.23.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.23.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.24.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.24.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.24.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.25.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.25.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.25.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.26.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.26.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.26.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.27.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.27.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.27.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.28.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.28.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.28.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.29.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.29.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.29.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.3.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.3.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.3.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.30.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.30.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.30.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.31.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.31.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.31.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.4.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.4.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.4.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.5.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.5.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.5.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.6.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.6.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.6.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.7.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.7.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.7.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.8.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.8.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.8.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.9.w1": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.9.w2": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      },
+      "model.layers.13.feed_forward.experts.9.w3": {
+        "execution_mode": "eager",
+        "platform": "sm_121",
+        "residency": "resident",
+        "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+        "structure": "routed_moe"
+      }
+    },
+    "target": {
+      "execution_mode": "eager",
+      "platform": "sm_121",
+      "residency": "resident",
+      "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
+    }
+  }
+}

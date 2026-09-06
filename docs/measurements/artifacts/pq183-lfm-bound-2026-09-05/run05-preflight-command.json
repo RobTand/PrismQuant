@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-m",
+    "prismaquant.tessera_export_lane",
+    "--model",
+    "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+    "--assignment",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/layer_config.json",
+    "--hessian",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/cache/hessian_capture.pt",
+    "--write-build-json",
+    "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/build.json",
+    "--write-cached-expert-units",
+    "--print-build-sha256",
+    "--tessera-platform",
+    "sm_121",
+    "--tessera-runtime-image",
+    "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+    "--tessera-execution-mode",
+    "eager",
+    "--tessera-residency",
+    "resident"
+  ],
+  "ended_unix": 1788664270.31426,
+  "exit_code": 2,
+  "started_unix": 1788664266.7882516
+}

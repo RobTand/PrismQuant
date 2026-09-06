@@ -1,0 +1,10 @@
+{
+  "accepted": true,
+  "artifact_seal_sha256": "e059d31dacc7a9d77b40479395d2fe50b0b69c02b1f5666fe91f52e9d70692ca",
+  "census_check_sha256": "70aa3ac2602d5948a3c3d0935186d8a9d9b20278e0e8efcb3d1cf4e210e12a69",
+  "checked_unix": 1788668624.3581557,
+  "quality_promotion_claimed": false,
+  "smoke_pair_sha256": "76b9e48ab77cc0b05b52d588f56bd09578cccb34a07b181c38362c355e9e773b",
+  "smoke_status": "recorded",
+  "unchanged": true
+}
