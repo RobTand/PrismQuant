@@ -33,6 +33,14 @@ Docker bind mounts, then archive receipts to shared storage after safe
 cleanup: the first #208 action's new NFS parent was mode 0700 and Docker
 could not traverse it. Retain both infrastructure-inconclusive attempts.
 
+The client now retains `<arm>-serve-pre.json` before any pairing refusal,
+so the observed stack is available even when no completed arm receipt is
+written. A bounded `--stack-preflight` diagnostic reuses the full controller's
+freeze, sequential servers, warmups and cleanup to capture both raw stack
+manifests. It skips all policy and PPL clients and ends with
+`status: preflight_completed`; this is never a completed quantized campaign.
+Keep the full fingerprints and all their fields when diagnosing a mismatch.
+
 The BF16 serve derives an uncensored schedule separately for the existing
 30-pair screen and a disjoint 30-pair heldout set. Both prompt sets and seeds
 are committed before either model is observed; no candidate outcome selects
