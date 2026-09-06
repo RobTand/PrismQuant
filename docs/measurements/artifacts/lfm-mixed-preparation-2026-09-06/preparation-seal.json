@@ -1,0 +1,42 @@
+{
+  "files": {
+    "calibration.json": {
+      "bytes": 1828,
+      "sha256": "a5a81a9228762c9a1a704b82b48ff80c21154b0621afbffa1c059e60b7501a79"
+    },
+    "calibration.prof": {
+      "bytes": 203076,
+      "sha256": "8c34ffb47d51d51da54a894281a69bb681d042e136daf37e9575b370476735ce"
+    },
+    "host-input.json": {
+      "bytes": 10944,
+      "sha256": "0b9627fca8aa7cb9c65c01d34a65fcb9be548541e2315df62e6ab96eb9db04c4"
+    },
+    "input-scales.safetensors": {
+      "bytes": 728,
+      "sha256": "08bce65811467a0620f1140c17d4a01a8198b49fa18c32b9603faefb5bc5bbe6"
+    },
+    "plan.json": {
+      "bytes": 8585,
+      "sha256": "6e2ecfdd15a6577e28db229aae5005a3cc4bfb3b81333e148560ac53b0364e55"
+    },
+    "population.json": {
+      "bytes": 138961,
+      "sha256": "5f474a454cef856218b04113aa0ca9229ee050b9c1b8c55f4f47e0d27f975061"
+    },
+    "producer-projection.json": {
+      "bytes": 1370935,
+      "sha256": "4d45a64dcdd8c2c7d044aa65ee1c3fca0ea7dec0444ec4156a243c7fc83bcb18"
+    },
+    "source-identity.json": {
+      "bytes": 176539,
+      "sha256": "7ede3e069132d98b87a8f4b5e4eea52878be295f4427b411859daee6959b29ea"
+    }
+  },
+  "hessian": null,
+  "mode": "calibrate",
+  "producer_image_id": "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0",
+  "schema": "prismaquant.lfm-mixed-preparation.v1",
+  "serving_target_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "weights_only_export": true
+}

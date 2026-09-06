@@ -1,0 +1,27 @@
+{
+  "schema": "prismaquant.lfm-mixed-preparation-host.v1",
+  "status": "prepared",
+  "started_unix": 1788671722.2913773,
+  "container_name": "lfm-mixed-preparation-63213c07a6ad",
+  "owner": "dca5c349fb9ede8860ce8c9a5445c821ff8603b4512be05024b33bfa0f930540",
+  "telemetry_success": {
+    "http://sparky:19999": true,
+    "http://sparklina:19999": true
+  },
+  "monitor_errors": [],
+  "container_id": "5c2dee7eb650f85b2553a839c45c387f5ff05acbf58b773e7bfc57981940db50",
+  "container_cpu_set": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "returncode": 0,
+  "seal_sha256": "d302740baa39a484135a5de73abfcf9d5c3ec91eb419cb59a3d4af94c2704952",
+  "cleanup": {
+    "safe": true,
+    "already_absent": true,
+    "container_id": "5c2dee7eb650f85b2553a839c45c387f5ff05acbf58b773e7bfc57981940db50"
+  },
+  "finished_unix": 1788671757.6871216
+}

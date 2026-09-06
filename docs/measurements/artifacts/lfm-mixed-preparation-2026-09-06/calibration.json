@@ -1,0 +1,50 @@
+{
+  "calibration": {
+    "corpus_sha256": "aee724fa58bfbdeb3fc6803297fb6bab27b203d7c40b39ddef9b9770e5d52fe5",
+    "dataset": "wikitext/wikitext-2-raw-v1",
+    "nsamples": 32,
+    "seed": 0,
+    "seqlen": 512,
+    "split": "train",
+    "token_sha256": "f79fd1b823c54b9f22d0cb814b9e496159086bec63cf5671bec13f1663375238",
+    "tokenizer_json_sha256": "695be7802a0e4b8a81048f0ff5ebb7fc811a0ba5a6be63dbb24deb5a81096f41"
+  },
+  "cuda_peak_allocated_bytes": 17110018048,
+  "expert_rows_claimed": false,
+  "hessian_captured": false,
+  "input_global_scales": {
+    "model.layers.0.feed_forward.w1": 2.3850932121276855,
+    "model.layers.0.feed_forward.w2": 5.862595558166504,
+    "model.layers.0.feed_forward.w3": 2.3850932121276855,
+    "model.layers.1.feed_forward.w1": 4.219780445098877,
+    "model.layers.1.feed_forward.w2": 26.947368621826172,
+    "model.layers.1.feed_forward.w3": 4.219780445098877
+  },
+  "max_abs": {
+    "model.layers.0.feed_forward.w1": 2.515625,
+    "model.layers.0.feed_forward.w2": 1.0234375,
+    "model.layers.0.feed_forward.w3": 2.515625,
+    "model.layers.1.feed_forward.w1": 1.421875,
+    "model.layers.1.feed_forward.w2": 0.22265625,
+    "model.layers.1.feed_forward.w3": 1.421875
+  },
+  "policy": "legacy_6_over_calibration_amax.v1",
+  "rows": {
+    "model.layers.0.feed_forward.w1": 16384,
+    "model.layers.0.feed_forward.w2": 16384,
+    "model.layers.0.feed_forward.w3": 16384,
+    "model.layers.1.feed_forward.w1": 16384,
+    "model.layers.1.feed_forward.w2": 16384,
+    "model.layers.1.feed_forward.w3": 16384
+  },
+  "schema": "prismaquant.lfm-mixed-static-scales.v1",
+  "scoring_rows_retained": 0,
+  "source": "actual_dense_forward_inputs",
+  "versions": {
+    "datasets": "5.0.1",
+    "numpy": "2.2.6",
+    "safetensors": "0.8.0",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.15.1"
+  }
+}
