@@ -1,0 +1,14 @@
+{
+  "schema": "prismaquant.native-artifact-recovery.v1",
+  "original_action": "89d5ce963e622226c1816616b476a812980fb2e75c1fe7fe2f355a1c33ee49ef",
+  "original_action_status": "failed_after_child_exit_zero",
+  "native_invocations": 10,
+  "archived_sha256": {
+    "profile.txt": "7f7bf8447545904540ac1c26f3263a2c1f940d4f2a530bc59d34315697953e13",
+    "result.json": "84972dbb3d417358dd7ecd021193504f4bb634ad38cb221df6e045a4db78f61f",
+    "profile.json": "7179bbb65606208651a41df457c58b1aa3a93b37a3dcd65ae1a4939e8654a993"
+  },
+  "retired_local_output": "/home/rob/tmp/lfm-mixed-native-eq6p5_kf",
+  "artifact_cleanup_complete": true,
+  "gpu_work_repeated": false
+}
