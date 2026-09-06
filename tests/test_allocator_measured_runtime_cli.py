@@ -244,3 +244,44 @@ def test_real_cli_binds_expected_context_to_joint_cost_evidence(tmp_path, monkey
     with pytest.raises(SystemExit, match="source/calibration differs from the joint AURA"):
         allocator.main()
     assert not (tmp_path / "layer.json").exists()
+
+
+def test_real_cli_rejects_cost_bytes_swapped_between_admission_and_parsing(tmp_path, monkeypatch):
+    """Restoring admitted bytes after parsing must not authenticate different prices."""
+    from prismaquant import measured_runtime_prices
+    from prismaquant.joint_aura import make_joint_aura_entry
+
+    name, argv = _main_fixture(tmp_path)
+    cost_path = tmp_path / "costs.pkl"
+    admitted_bytes = cost_path.read_bytes()
+    changed = pickle.loads(admitted_bytes)
+    row = changed["costs"][name]["FP8_E5M2"]
+    changed["costs"][name]["FP8_E5M2"] = make_joint_aura_entry(
+        operator_identity=row["joint_operator_identity"],
+        probe_identity=row["probe_identity"],
+        signed_components=[dict(weight=6.0, activation=0.0, mixed=0.0, total=6.0)] * 3,
+    )
+    changed_bytes = pickle.dumps(changed)
+    assert hashlib.sha256(changed_bytes).digest() != hashlib.sha256(admitted_bytes).digest()
+    real_admit = measured_runtime_prices.load_measured_runtime_table
+    real_load = pickle.load
+
+    def admit_then_replace(*args, **kwargs):
+        table = real_admit(*args, **kwargs)
+        cost_path.write_bytes(changed_bytes)
+        return table
+
+    def parse_then_restore(stream, *args, **kwargs):
+        value = real_load(stream, *args, **kwargs)
+        if getattr(stream, "name", None) == str(cost_path):
+            # Simulate an in-place writer restoring the admitted file between
+            # the vulnerable parser's first read and its later hash read.
+            cost_path.write_bytes(admitted_bytes)
+        return value
+
+    monkeypatch.setattr(measured_runtime_prices, "load_measured_runtime_table", admit_then_replace)
+    monkeypatch.setattr(pickle, "load", parse_then_restore)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit, match="cost payload changed after measured runtime admission"):
+        allocator.main()
+    assert not (tmp_path / "layer.json").exists()

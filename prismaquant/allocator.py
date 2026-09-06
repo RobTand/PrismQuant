@@ -2334,11 +2334,16 @@ def main():
     with open(args.probe, "rb") as f:
         probe = pickle.load(f)
     with open(args.costs, "rb") as f:
-        cost_data = pickle.load(f)
         if measured_runtime_table is not None:
-            f.seek(0)
-            if hashlib.file_digest(f, "sha256").hexdigest() != expected_cost_sha256:
+            # Authenticate the exact owned bytes parsed below. A later hash
+            # read of the mutable file could authenticate a different payload.
+            cost_bytes = f.read()
+            if hashlib.sha256(cost_bytes).hexdigest() != expected_cost_sha256:
                 raise SystemExit("[alloc] ERROR: cost payload changed after measured runtime admission")
+            cost_data = pickle.loads(cost_bytes)
+            del cost_bytes
+        else:
+            cost_data = pickle.load(f)
     validate_probe_payload(probe, args.probe)
     validate_cost_payload(cost_data, args.costs)
     # One DP prices in one currency: a cost table carrying Tessera-currency
