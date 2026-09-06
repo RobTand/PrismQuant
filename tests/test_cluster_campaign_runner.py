@@ -462,6 +462,7 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
     fast_path = tmp_path / "fast.receipt"
     gate_path = tmp_path / "gate.receipt"
     waiting_path = tmp_path / "waiting.receipt"
+    release_path = tmp_path / "release.receipt"
     # No private deadline in the child: the stage's own timeout_seconds is the
     # authoritative bound and the worker enforces it by terminating the child's
     # process group (cluster_campaign.py, `_exec-request`). A second, shorter
@@ -472,6 +473,17 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
         "gate=Path(sys.argv[1]); out=Path(sys.argv[2]); "
         "exec(\"while not gate.exists():\\n time.sleep(0.02)\"); "
         "out.write_bytes(b'waiting')"
+    )
+    # The refill stage publishes its gate and then stays alive until a stage
+    # that can only run *after* the waiting stage has been recorded finished
+    # releases it.  That makes the completion order the inverse of the one this
+    # test used to assert, by causality rather than by timing: nothing here
+    # depends on which child the scheduler happens to notice first.
+    gate_then_wait_script = (
+        "from pathlib import Path; import sys, time; "
+        "Path(sys.argv[1]).write_bytes(b'gate'); "
+        "release=Path(sys.argv[2]); "
+        "exec(\"while not release.exists():\\n time.sleep(0.02)\")"
     )
     stages = [
         _stage(
@@ -502,8 +514,31 @@ def test_scheduler_refills_a_freed_host_while_another_host_is_active(tmp_path):
             stage_id="refill-local",
             host_id="sparky",
             dependencies=["fast-local"],
-            argv=[sys.executable, "-c", _WRITE_BYTES, str(gate_path), "gate"],
+            argv=[
+                sys.executable,
+                "-c",
+                gate_then_wait_script,
+                str(gate_path),
+                str(release_path),
+            ],
             receipts=[_receipt(gate_path, "gate")],
+        ),
+        # Only reachable once waiting-remote has succeeded, which frees
+        # sparklina and is recorded before this stage can start.  Its whole job
+        # is to end the refill stage afterwards.
+        _stage(
+            tmp_path,
+            stage_id="release-refill",
+            host_id="sparklina",
+            dependencies=["waiting-remote"],
+            argv=[
+                sys.executable,
+                "-c",
+                _WRITE_BYTES,
+                str(release_path),
+                "release",
+            ],
+            receipts=[_receipt(release_path, "release")],
         ),
     ]
     manifest = _manifest(tmp_path, stages, ssh=True, max_parallel=2)
