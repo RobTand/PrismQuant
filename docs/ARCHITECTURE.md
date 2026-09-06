@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq183-parent-router-bias`. Stamps
+As of: 2026-09-05 · `codex/pq183-tessera-reader`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq183-tessera-reader`) for saved Tessera
+campaign assignment intake (#183). The shared torch-free layer-config reader
+accepts a Tessera rung name as a shorthand string as well as the existing
+`data_type=tessera` dictionary representation. Both preserve the family,
+arity and body-rate identity; malformed or group-only names, including trailing
+newlines in either representation, refuse. Parsing
+does not import the numerical runtime, establish rung legality, or certify
+target admission: the existing producer and serving gates still own those
+checks. Gate: `tests/test_layer_config_tessera_strings.py`.
 
 Re-stamped (2026-09-05, `codex/pq183-router-bias`) for packed LFM routing
 compatibility (#183). Activation capture, packed-cost replay and empirical
