@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `main-campaign/pq278-attested-count`. Stamps
+As of: 2026-09-06 · `claude/pq280-projection-family-ladder`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `claude/pq280-projection-family-ladder`) for **the
+nominal rung the campaign plans a packed-expert stack on** (§4.10;
+RobTand/prismaquant#280). The campaign asked the producer at the first menu
+rung, and the menu is ordered by rate, so on LFM2.5-8B-A1B it asked for an
+NVFP4 expert stack the pinned build has no route for and refused the whole
+population -- including the family that does have one. It now walks the menu's
+families in order and keeps the first the producer accepts, carrying every
+refusal.
 
 Re-stamped (2026-09-06, `main-campaign/pq278-attested-count`) for the
 Tessera menu width report (#278). `[alloc] Tessera menu: N of M priced rungs
@@ -6924,7 +6933,14 @@ Two properties make the numbers comparable with the rest of the menu:
   subprocess because the producer hashes the whole checkpoint), binds the
   answer exactly to the profile-declared units, reads each unit's source
   tensor from the shard the producer hashed and refuses, by name, a live view
-  that is not byte-for-byte that tensor. Expert anchors are grouped per
+  that is not byte-for-byte that tensor. The plan names a nominal rung per
+  stack, and the producer checks only that its *family* has an expert route on
+  its build; the menu is ordered by rate, so the campaign asks family by family
+  in menu order and keeps the first the producer accepts, carrying every
+  refusal in `plan_attempts` (PrismaQuant #280). At tessera `ba582d47` the LFM
+  expert stacks plan on `TESSERA_E4M3_K1` only -- `scheme.MOE_BUILDERS` names
+  `TESSERA_FP8` alone -- which is what the pinned contract's attested
+  `routed_moe` menu independently publishes. Expert anchors are grouped per
   producer stack (`_group_key` → `s:<stack>`) so every member measures the
   same rungs; their wire receipts are sealed with the producer's
   `unit_input_identity` (the projection record inside the identity, which is

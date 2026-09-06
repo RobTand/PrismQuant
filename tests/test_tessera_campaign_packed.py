@@ -548,3 +548,41 @@ def test_wire_backed_units_keep_only_measured_rows():
     assert set(payload["costs"][dense]) == {f"{fam}_R{r}" for r in (128, 384, 512, 896)}
     assert set(payload["costs"][expert]) == {f"{fam}_R{r}" for r in (128, 512, 896)}
     assert all(row["output_mse_measured"] for row in payload["costs"][expert].values())
+
+
+def test_projection_walks_the_menu_to_a_family_with_an_expert_route(monkeypatch, tmp_path):
+    """The cheapest rung's family need not have an expert route (#280).
+
+    The menu is ordered by rate, so its first rung is NVFP4 here.  The pinned
+    producer refuses an NVFP4 expert stack -- ``scheme.MOE_BUILDERS`` names
+    only ``TESSERA_FP8`` on this build -- and the campaign must ask the next
+    family rather than refuse the whole population.  The refusal is the
+    producer's real one: nothing about the route is mocked.
+    """
+    from prismaquant.model_profiles.lfm2_moe import Lfm2MoeProfile
+
+    campaign, _argv, model, _encoded = _bridge_main_fixture(monkeypatch, tmp_path)
+    population = campaign._require_campaign_population(model, Lfm2MoeProfile(), 1)
+    assert population.declared, "fixture must declare a packed expert stack"
+    weights = {member.qname: member.weight.detach() for member in population.members}
+    ladder = [SimpleNamespace(format_name="TESSERA_E2M1_K2_R128", family="TESSERA_E2M1_K2",
+                              body_rate_q256=128, bpp=0.5),
+              SimpleNamespace(format_name=RUNG, family="TESSERA_E4M3_K1",
+                              body_rate_q256=1024, bpp=4.0)]
+    menus = {name: list(ladder) for name in weights}
+
+    carried, projected = campaign._project_expert_population(
+        population, weights=weights, menus=menus,
+        model_path=str(tmp_path / "source"), cache_dir=tmp_path / "cache")
+
+    assert projected, "the routable family must yield the projected units"
+    attempts = carried["plan_attempts"]
+    assert len(attempts) == 2, attempts
+    first = attempts[0]
+    assert first["refused"], "the producer must have refused the NVFP4 stack"
+    assert "no expert route" in first["refused"]
+    assert {entry["grid"] for entry in first["request"].values()} == {"E2M1x2"}
+    assert attempts[-1]["refused"] is None
+    grids = {entry["grid"] for entry in carried["request"].values()}
+    assert grids == {entry["grid"] for entry in attempts[-1]["request"].values()}
+    assert "E2M1" not in "".join(grids)
