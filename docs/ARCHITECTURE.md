@@ -3,6 +3,16 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for opt-in streamed joint
+AURA (`compute_aura_cost_streamed(..., joint_activation=True)` and
+`aura_cost --streaming --joint-activation`, #237). The existing resident
+render/cache path supplies full weight and activation perturbations. Output
+cotangents project their signed weight, activation and mixed terms; repeated
+invocations sum before one square. Complete BF16 controls, aligned probe
+components and source/render/activation/arithmetic identities persist through
+checkpoint replay. This is a research quadratic price, not a new served
+quality result. See `docs/design/joint_aura_runtime_allocation.md`.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for the opt-in discrete
 `allocator_solver.solve_runtime_frontier` (#237). Its declared additive
 model keeps nondominated bytes, quality and prefill time, with optional
@@ -4855,10 +4865,11 @@ remains a post-export shipcard gate
 **Residual CB-family activation blindness (reported; terminal shortcut gated).** Every rung of `nvfp4_cb` and
 `fp8_cb` has `act_quant_changes_input = True`, and an anchored table carries no measured
 `output_mse`, so P5a has no calibration sample and `penalty_for` already returns exactly 1.0 —
-skipping it is a provenance statement, not a number change. Two facts bound the exposure. The
-activation path is **constant across K within each CB family**, so the blindness cannot reorder
-rungs *inside* a family; it can only shift the `nvfp4_cb`-vs-`fp8_cb` family-choice margin. And
-AURA's validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
+skipping it is a provenance statement, not a number change. The activation operator can be
+constant across K while its joint residual still varies with the rendered weight: activation/weight
+cross terms can reorder rungs within a family. The optional joint path above measures those
+terms; legacy anchored weight-only rows retain this limitation.
+AURA's historical validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
 `h_trace × output_mse` — a baseline that *did* carry the A side, since `measure_quant_cost`
 applies `activation_quantize_dequantize(X)` — on menus already mixing W4A4 NVFP4, W8A8 FP8 and
 BF16, i.e. the same family-choice margin. This is carried exactly like the route-flip limitation

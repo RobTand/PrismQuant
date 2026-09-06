@@ -1868,6 +1868,7 @@ def compute_aura_cost_streamed(
     anchor_renderer: object | None = None,
     include_routed_experts: bool = False,
     diagnostic_weight_mse_pairs: Sequence[tuple[str, str]] | None = None,
+    joint_activation: bool = False,
     profile=None,
 ) -> dict:
     """Layer-streamed KL-adjoint with identity-bound per-Linear shards.
@@ -1884,6 +1885,13 @@ def compute_aura_cost_streamed(
         raise ValueError(f"n_probes must be >= 1, got {n_probes!r}")
     if resume and checkpoint_dir is None:
         raise ValueError("resume=True requires checkpoint_dir")
+    if joint_activation:
+        if production_cache is None and anchor_renderer is None:
+            raise ValueError("joint AURA requires production-rendered weights")
+        if model_identity is None:
+            raise ValueError("joint AURA requires exact model_identity for its cotangents")
+        # Rounding dW to BF16 drops part of the requested local residual.
+        dw_dtype = "float32"
     profile = resolve_routed_expert_profile(
         runner.model, profile or runner.profile
     )
@@ -2016,6 +2024,61 @@ def compute_aura_cost_streamed(
         fmt for name in names for fmt in render_formats[name]
     ))
 
+    joint_probe_identity = None
+    joint_run_identity = None
+    joint_rows: dict[str, dict[str, dict]] = {}
+    joint_components: dict[tuple[str, str], list[dict]] = {}
+    joint_operators: dict[tuple[str, str], dict] = {}
+    joint_source_tensors: dict[str, dict] = {}
+    joint_cache_renders: dict[str, dict[str, dict]] = {}
+    joint_prefetch_stats: list[dict] = []
+    if joint_activation:
+        from prismaquant.cost_streaming import validate_streamed_model_identity
+        from prismaquant.joint_aura import (
+            SignedJointProjectionLease, activation_identity, arithmetic_identity,
+            identity_sha256, make_joint_aura_entry, prefetch_joint_cache,
+            validate_joint_aura_entry,
+        )
+        from prismaquant.production_weight_cache import _cb_cache_tensor_identity
+
+        joint_probe_identity = {
+            "schema": "prismaquant.joint_aura.probes.v1",
+            "source_model": validate_streamed_model_identity(model_identity, where="joint AURA"),
+            "calibration_sha256": hashlib.sha256(calib_ids.detach().cpu().contiguous().numpy().tobytes()).hexdigest(),
+            "calibration_shape": list(calib_ids.shape),
+            "calibration_dtype": str(calib_ids.dtype),
+            "n_probes": n_probes, "seed_base": seed_base,
+            "token_scope": token_scope, "temperature": temperature,
+            "distribution": "rademacher", "normalization": "global_kl_fisher",
+            "producer_source_sha256": _aura_source_sha256(),
+            "arithmetic": arithmetic_identity(runner.dtype),
+        }
+        # Hash actual decoded production outputs before checkpoint admission,
+        # in layer-bounded prefetch windows. This is identity preparation,
+        # outside the cotangent/projection hot path; no tensor copy is retained.
+        if production_cache is not None:
+            for layer_names in names_by_layer.values():
+                joint_prefetch_stats.append(prefetch_joint_cache(
+                    production_cache, layer_names, render_formats,
+                    max_resident_bytes=max(0, int((_free_gib() - min_free_gib) * 1024**3)),
+                ))
+                for name in layer_names:
+                    joint_cache_renders[name] = {
+                        fmt: _cb_cache_tensor_identity(production_cache.get(name, fmt))
+                        for fmt in render_formats[name]
+                    }
+                production_cache.compact_for_pickle()
+        joint_run_identity = {
+            "schema": "prismaquant.joint_aura.run.v1",
+            "probe_identity": joint_probe_identity,
+            "cached_rendered_weights": joint_cache_renders,
+            "activation_contracts": ({
+                name: {fmt: activation_identity(fr.get_format(fmt), production_cache.activation_max_abs or {}, name)
+                       for fmt in unit_formats[name]}
+                for name in names
+            } if production_cache is not None else None),
+        }
+
     anchor_identity: Mapping[str, object] | None = None
     if anchor_renderer is not None:
         if production_cache is not None:
@@ -2118,13 +2181,13 @@ def compute_aura_cost_streamed(
         # extra["production_anchor_renderer"], with the qname->format plan
         # asserted equal above). A non-CB menu has no CB identity to bear, so
         # an anchored non-CB run checkpoints on the anchor identity alone.
-        if not cb_provenance and anchor_identity is None:
+        if not cb_provenance and anchor_identity is None and not joint_activation:
             raise RuntimeError(
                 "streamed AURA durable checkpointing requires a value-bearing "
                 "render identity: a CB ProductionWeightCache identity or a "
                 "production-anchor renderer with exact identity"
             )
-        if anchor_renderer is None:
+        if anchor_renderer is None and not joint_activation:
             _validate_aura_checkpoint_cache_identity(production_cache)
     if assert_bf16_passthrough and "BF16" in fmts:
         if runner.dtype not in (torch.bfloat16, torch.float16):
@@ -2171,6 +2234,7 @@ def compute_aura_cost_streamed(
         )
         extra = dict(checkpoint_identity_extra or {})
         reserved = {
+            "joint_aura",
             "streamed_formats_by_qname",
             "unmeasured_streamed_formats_by_qname",
             "production_anchor_renderer",
@@ -2186,6 +2250,8 @@ def compute_aura_cost_streamed(
                 f"AURA identity fields: {sorted(reserved)}"
             )
         extra["streaming"] = True
+        if joint_activation:
+            extra["joint_aura"] = joint_run_identity
         extra["streamed_model_identity"] = exact_model_identity
         extra["streamed_formats_by_qname"] = {
             name: list(unit_formats[name]) for name in names
@@ -2256,6 +2322,28 @@ def compute_aura_cost_streamed(
                 require_source_weight_identity=anchor_renderer is not None,
                 source_weight_identity=source_weight_identity,
             )
+            if joint_activation:
+                rows = state.get("joint_aura_rows")
+                expected_formats = set(unit_formats[name]) - set(raw_unmeasured.get(name, ()))
+                if not isinstance(rows, Mapping) or set(rows) != expected_formats:
+                    raise RuntimeError(f"joint AURA checkpoint row scope mismatch for {name}")
+                for fmt, row in rows.items():
+                    try:
+                        if not validate_joint_aura_entry(row):
+                            raise ValueError("not a joint row")
+                        operator = row["joint_operator_identity"]
+                        if row["probe_identity"] != joint_probe_identity or operator["qname"] != name or operator["format"] != fmt:
+                            raise ValueError("probe/operator alignment mismatch")
+                        if production_cache is not None:
+                            if operator["activation"] != joint_run_identity["activation_contracts"][name][fmt]:
+                                raise ValueError("activation identity mismatch")
+                            if fmt in render_formats[name] and operator["rendered_weight"] != joint_cache_renders[name][fmt]:
+                                raise ValueError("actual rendered-weight identity mismatch")
+                        if fmt in render_formats[name] and row["x2_per_probe"] != x2_probe[(name, fmt)]:
+                            raise ValueError("legacy/joint sample alignment mismatch")
+                    except (ValueError, KeyError, TypeError) as exc:
+                        raise RuntimeError(f"joint AURA checkpoint identity mismatch for {name}@{fmt}: {exc}") from exc
+                joint_rows[name] = dict(rows)
             completed_checkpoint_units.add(name)
 
     def _finish_streamed_payload() -> dict:
@@ -2285,6 +2373,21 @@ def compute_aura_cost_streamed(
             col_energy=col_energy,
             weight_mse_diagnostic=weight_mse_diagnostic,
         )
+        if joint_activation:
+            if set(joint_rows) != set(names):
+                raise RuntimeError("joint AURA incomplete unit coverage")
+            payload["costs"] = joint_rows
+            payload["provenance"].update({
+                "cost_mode": "aura", "joint_activation": True,
+                "cost_currency": "joint_aura_predicted_dloss",
+                "joint_aura_identity": joint_run_identity,
+                "joint_aura_identity_sha256": identity_sha256(joint_run_identity),
+                "probe_identity": joint_probe_identity,
+                "probe_identity_sha256": identity_sha256(joint_probe_identity),
+                "joint_prefetch": joint_prefetch_stats,
+                "measurement_status": "research",
+                "uncertainty_scope": "probe_sampling_conditional_on_fixed_calibration",
+            })
         if anchor_renderer is not None:
             missing_source_identity = sorted(
                 set(names) - set(source_weight_identity)
@@ -2349,6 +2452,29 @@ def compute_aura_cost_streamed(
         _log(f"checkpoint resume: validated all {len(names)} streamed units; "
              "skip forward/reverse")
         return _finish_streamed_payload()
+
+    def _record_joint_operator(name, fmt, source, rendered):
+        if not joint_activation:
+            return
+        cache_owner = production_cache if production_cache is not None else getattr(anchor_renderer, "cache", None)
+        scales = getattr(cache_owner, "activation_max_abs", None) or {}
+        activation = activation_identity(fr.get_format(fmt), scales, name)
+        rendered_identity = _cb_cache_tensor_identity(rendered)
+        if production_cache is not None and fmt in render_formats[name]:
+            if rendered_identity != joint_cache_renders[name][fmt] or activation != joint_run_identity["activation_contracts"][name][fmt]:
+                raise RuntimeError(f"joint AURA actual render/activation identity changed for {name}@{fmt}")
+        if name not in joint_source_tensors:
+            joint_source_tensors[name] = _cb_cache_tensor_identity(source)
+        joint_operators[(name, fmt)] = {
+            "schema": "prismaquant.joint_aura.operator.v1",
+            "qname": name, "format": fmt,
+            "source_weight": joint_source_tensors[name],
+            "rendered_weight": rendered_identity,
+            "activation": activation,
+            "arithmetic": arithmetic_identity(runner.dtype),
+            "probe_identity_sha256": identity_sha256(joint_probe_identity),
+        }
+        joint_components[(name, fmt)] = []
 
     # Identity validation above is intentionally before the first model
     # forward: a mismatched resume is a refusal, never a recomputation.
@@ -2478,6 +2604,7 @@ def compute_aura_cost_streamed(
                                 f"{tuple(rendered_weight.shape)} source="
                                 f"{tuple(reference_weight.shape)}"
                             )
+                        _record_joint_operator(name, canonical_fmt, reference_weight, rendered_weight)
                         d_weights[key] = _stored_production_anchor_delta(
                             rendered_weight,
                             reference_weight,
@@ -2508,7 +2635,9 @@ def compute_aura_cost_streamed(
                                 },
                                 consume_render=_consume_anchor,
                                 consumer_identity=(
-                                    AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY
+                                    {**AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY,
+                                     "storage_dtype": "torch.float32"}
+                                    if joint_activation else AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY
                                 ),
                             )
                         }
@@ -2588,15 +2717,24 @@ def compute_aura_cost_streamed(
                             }
                     _release_streamed_anchor_allocator_cache(device)
                 else:
+                    if joint_activation and pending:
+                        joint_prefetch_stats.append(prefetch_joint_cache(
+                            production_cache, pending, render_formats,
+                            max_resident_bytes=max(0, int((_free_gib() - min_free_gib) * 1024**3)),
+                        ))
                     for name in pending:
                         for fmt in render_formats[name]:
-                            result = _delta_w(
-                                name,
-                                fmt,
-                                linears[name].weight.data,
-                                production_cache,
-                                strict=require_production_cache,
-                            )
+                            if joint_activation:
+                                weight = linears[name].weight.data
+                                rendered = production_cache.get(name, fmt)
+                                _record_joint_operator(name, fmt, weight, rendered)
+                                result = (rendered.to(weight.device, torch.float32) - weight.float(), "rendered")
+                                del rendered
+                            else:
+                                result = _delta_w(
+                                    name, fmt, linears[name].weight.data,
+                                    production_cache, strict=require_production_cache,
+                                )
                             if result is None:
                                 continue
                             delta, source = result
@@ -2606,6 +2744,12 @@ def compute_aura_cost_streamed(
                             s2[key] = 0.0
                             s4[key] = 0.0
                             x2_probe[key] = []
+                if joint_activation:
+                    for name in pending:
+                        for fmt in unit_formats[name]:
+                            if fmt in _ZERO_COST_FORMATS:
+                                weight = linears[name].weight.data
+                                _record_joint_operator(name, fmt, weight, weight)
             if anchor_renderer is None:
                 compact = getattr(production_cache, "compact_for_pickle", None)
                 if callable(compact):
@@ -2645,6 +2789,10 @@ def compute_aura_cost_streamed(
                         key = (name, fmt)
                         if key not in d_weights:
                             continue
+                        if joint_activation:
+                            # Output hooks retain all signed local components;
+                            # this parameter hook owns diagnostics only.
+                            continue
                         projection = float(
                             (
                                 gradient_fp32
@@ -2668,7 +2816,17 @@ def compute_aura_cost_streamed(
                 return _hook
 
             hook_handles = []
+            joint_lease = None
+            if joint_activation:
+                cache_owner = production_cache if production_cache is not None else getattr(anchor_renderer, "cache", None)
+                joint_lease = SignedJointProjectionLease(
+                    {name: linears[name] for name in pending},
+                    {name: {fmt: fr.get_format(fmt) for fmt in render_formats[name]} for name in pending},
+                    d_weights, activation_max_abs=getattr(cache_owner, "activation_max_abs", None),
+                )
             try:
+                if joint_lease is not None:
+                    joint_lease.__enter__()
                 for name in pending:
                     hook_handles.append(
                         linears[name].weight.register_post_accumulate_grad_hook(
@@ -2684,6 +2842,8 @@ def compute_aura_cost_streamed(
                             f"layer {layer} probe {probe_index + 1}"
                         )
                     harvested.clear()
+                    if joint_lease is not None:
+                        joint_lease.begin_probe()
                     incoming_grad = grad_outs[probe_index].to(device)
                     x_in = batch.activations_cpu[layer].to(
                         device=device, dtype=dtype
@@ -2733,8 +2893,15 @@ def compute_aura_cost_streamed(
                         # same K-probe rows as the legacy post-backward loop.
                         for fmt in render_formats[name]:
                             key = (name, fmt)
-                            if key in d_weights:
+                            if key in d_weights and not joint_activation:
                                 x2_probe[key].append(0.0)
+                    if joint_lease is not None:
+                        for key, terms in joint_lease.finish_probe().items():
+                            joint_components[key].append(terms)
+                            value = terms["total"] ** 2
+                            s2[key] += value
+                            s4[key] += value * value
+                            x2_probe[key].append(value)
                     del (
                         out,
                         x_in,
@@ -2744,8 +2911,26 @@ def compute_aura_cost_streamed(
                         root_grads,
                     )
             finally:
+                if joint_lease is not None:
+                    joint_lease.__exit__(None, None, None)
                 for handle in hook_handles:
                     handle.remove()
+
+            if joint_activation:
+                for name in pending:
+                    joint_rows[name] = {}
+                    for fmt in unit_formats[name]:
+                        if fmt in raw_unmeasured.get(name, ()):
+                            continue
+                        key = (name, fmt)
+                        components = joint_components[key]
+                        if fmt in _ZERO_COST_FORMATS:
+                            components = [{"weight": 0.0, "activation": 0.0, "mixed": 0.0, "total": 0.0} for _ in range(n_probes)]
+                        joint_rows[name][fmt] = make_joint_aura_entry(
+                            operator_identity=joint_operators[key],
+                            probe_identity=joint_probe_identity,
+                            signed_components=components,
+                        )
 
             # This layer's input boundary will not be read again in the reverse
             # sweep (the next iteration consumes boundary ``layer - 1``).
@@ -2760,7 +2945,7 @@ def compute_aura_cost_streamed(
                         checkpoint_root,
                         qname=name,
                         identity_sha256=checkpoint_identity_sha256,
-                        state=_aura_unit_state(
+                        state={**_aura_unit_state(
                             name,
                             render_formats[name],
                             s2=s2,
@@ -2771,7 +2956,7 @@ def compute_aura_cost_streamed(
                             col_energy=col_energy,
                             weight_mse_diagnostic=weight_mse_diagnostic,
                             source_weight_identity=source_weight_identity,
-                        ),
+                        ), **({"joint_aura_rows": joint_rows[name]} if joint_activation else {})},
                     )
             # Closed-loop observability: a reverse layer is minutes of silent
             # render+adjoint work at streamed scale, so each one reports its
@@ -2826,6 +3011,7 @@ def run_streamed_production_anchor_aura(
     include_routed_experts: bool = True,
     allow_packed_expert_omission: bool = False,
     collect_col_energy: bool = False,
+    joint_activation: bool = False,
     profile=None,
 ) -> dict:
     """Run one streamed KL adjoint over an exact production-anchor plan.
@@ -2973,7 +3159,9 @@ def run_streamed_production_anchor_aura(
         max_act_rows=max_act_rows,
         h_detail_dir=h_detail_dir,
         transient_consumer_identity=(
-            AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY
+            {**AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY,
+             "storage_dtype": "torch.float32"}
+            if joint_activation else AURA_PRODUCTION_ANCHOR_DELTA_CONSUMER_IDENTITY
         ),
     )
     extra = dict(checkpoint_identity_extra or {})
@@ -3009,6 +3197,7 @@ def run_streamed_production_anchor_aura(
         include_lm_head=False,
         allow_packed_expert_omission=allow_packed_expert_omission,
         collect_col_energy=collect_col_energy,
+        joint_activation=joint_activation,
         checkpoint_dir=checkpoint_dir,
         resume=resume,
         model_identity=model_identity,
@@ -3089,6 +3278,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Stream decoder layers through the existing prefetch/cache "
              "context and run a boundary-activation KL adjoint. Required for "
              "models whose expanded source cannot be resident.")
+    p.add_argument(
+        "--joint-activation", action="store_true",
+        help="Research-only joint activation/weight AURA; requires --streaming "
+             "and production renders. Keeps aligned signed probes and uses FP32 dW.")
     p.add_argument(
         "--streaming-offload-dir", default=None,
         help="Streaming model work directory. Defaults beneath the AURA "
@@ -3206,6 +3399,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="Pipeline COST_MODE stamped into "
                         "provenance['cost_mode'] (re-vet R2).")
     args = p.parse_args(argv)
+    if args.joint_activation and not args.streaming:
+        p.error("--joint-activation requires --streaming")
     if args.resume and not args.checkpoint_dir:
         p.error("--resume requires --checkpoint-dir")
     if args.streaming and args.gradient_checkpointing:
@@ -3334,7 +3529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if streamed_runner is not None:
         try:
             streamed_model_identity = None
-            if args.checkpoint_dir:
+            if args.checkpoint_dir or args.joint_activation:
                 from prismaquant.cost_streaming import (
                     build_streamed_model_identity,
                 )
@@ -3343,7 +3538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     streamed_runner,
                     args.model,
                     identity_cache_path=(
-                        Path(args.checkpoint_dir)
+                        Path(args.checkpoint_dir or Path(args.output).parent)
                         / "streamed_model_identity.json"
                     ),
                 )
@@ -3363,6 +3558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 include_lm_head=args.include_lm_head,
                 allow_packed_expert_omission=args.allow_packed_expert_omission,
                 collect_col_energy=args.collect_col_energy,
+                joint_activation=args.joint_activation,
                 checkpoint_dir=args.checkpoint_dir,
                 resume=args.resume,
                 unit_filter=(args.unit_filter or None),
