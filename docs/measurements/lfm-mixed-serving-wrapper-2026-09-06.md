@@ -167,3 +167,21 @@ manual placement, input distribution or model-artifact mutation is introduced.
 For serving, remove `--preflight-only`, choose fresh local/shared outputs and
 supply the original bounded serving deadline/port; the same explicit source
 input and assembly bindings apply.
+
+Final envelope/staging validation: published PBtest selected five actions for
+five supplied files against sourcee0c17c6b. All37 tests passed,zero skips,
+8 successful subtests; each action used1CPU/native thread1/4GiB with GPU hidden.
+The18 serving/envelope/archive fixtures and19 architecture/staleness tests each
+finished successfully. All five actual CAS payloads were read and rehashed;
+all terminal exits werezero and all PB cleanup receipts werecomplete.
+[The final proof](artifacts/lfm-mixed-serving-2026-09-06/assembly-and-staging-cpu-proof.json)
+retains every action/result/receipt digest plus the attributable red result.
+No GPU/model execution was performed for this source delivery.
+
+The root-verified completed assembly CAS stdout input is the3331-byte shared
+blob `/mnt/shared/prismabuild-fleet/cas/blobs/f2/f2995f6ae269331e9aeb0f4183b3ea3d6b165c3376766d908fb9768ba70e2fde`,
+SHA256 `f2995f6ae269331e9aeb0f4183b3ea3d6b165c3376766d908fb9768ba70e2fde`.
+This replaces the two assembly placeholders in the CPU prerequisite command.
+It is the unmodified CAS stdout, not an extracted JSON document given the same
+digest. Its actual input schema/population/byte handoff remains to be exercised
+by root's CPU prerequisite before the serving action.
