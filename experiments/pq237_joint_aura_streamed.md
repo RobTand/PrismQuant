@@ -181,6 +181,11 @@ The known image ID is
 Read-only inventory found it on Sparky and absent on Sparklina, so the launch
 declares the actual `sparky` image dependency. Remove that host restriction
 only after the same image has been staged and qualified on another worker.
+The admitted action first verifies and extracts the immutable source archive
+to a temporary local directory, then mounts it read-only as `/tessera`. This
+is code-input preparation; production weight and activation caching remain
+with their existing owners. The local file-hash pass avoids the NFS metadata
+stall observed when checking the materialized shared source one file at a time.
 The PB Docker shim preserves its assigned CPU affinity and process ownership.
 Native threads remain one; two prefetch workers share the four-CPU admission.
 The 48 GiB reservation/container limit retains the prior small-model screen's
@@ -207,25 +212,46 @@ try:
         path.unlink()
     subprocess.run(['python3', 'experiments/pq237_source_manifest.py',
                     '--out', str(run / 'joint-inputs/source-manifest.json')], check=True)
-    command = r'''docker run --rm --gpus all --network none --memory 48g --shm-size 8g \
-      -v "$PWD:/workspace:ro" -v /mnt/shared:/mnt/shared \
-      -w /workspace -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
-      -e PYTHONPATH=/workspace:/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906/src \
-      sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88 \
-      python3 experiments/pq237_joint_aura_streamed.py \
-      --model /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/Qwen3-0.6B \
-      --protocol experiments/protocols/pq237-streamed-20260906.json \
-      --protocol-sha256 f2268edac42bcaed2e0f4a0766357822bdf84c78db36b3488bd715d29f2e22f6 \
-      --corpus-arrow /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-validation.arrow \
-      --source-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/source-manifest.json \
-      --tessera-root /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906 \
-      --tessera-source-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906-source-manifest.json \
-      --image-id sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88 \
-      --out /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-streamed-run-01'''
+    command = r'''from pathlib import Path
+import hashlib, json, subprocess, tarfile, tempfile
+from experiments.pq237_joint_aura_streamed import verify_source_manifest
+
+inputs = Path('/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs')
+prefix = inputs / 'tessera-7018fa2222925416b4c88cc8b6afab834dcac906-archive-input'
+manifest = Path(str(prefix) + '.json')
+raw = manifest.read_bytes()
+if hashlib.sha256(raw).hexdigest() != '063aa02389cda1705a14e4f2736920a6cdc99ee56e96fe79b427776481743119':
+    raise ValueError('Tessera archive manifest identity differs')
+identity = json.loads(raw)
+archive = Path(str(prefix) + '.tar')
+if hashlib.sha256(archive.read_bytes()).hexdigest() != identity['archive_sha256']:
+    raise ValueError('Tessera source archive identity differs')
+with tempfile.TemporaryDirectory(prefix='pq237-streamed-source-') as source:
+    with tarfile.open(archive) as bundle:
+        bundle.extractall(source, filter='data')
+    verify_source_manifest(source, manifest)
+    subprocess.run([
+      'docker', 'run', '--rm', '--gpus', 'all', '--network', 'none',
+      '--memory', '48g', '--shm-size', '8g',
+      '-v', str(Path.cwd()) + ':/workspace:ro', '-v', source + ':/tessera:ro',
+      '-v', '/mnt/shared:/mnt/shared', '-w', '/workspace',
+      '-e', 'OMP_NUM_THREADS=1', '-e', 'MKL_NUM_THREADS=1', '-e', 'OPENBLAS_NUM_THREADS=1',
+      '-e', 'PYTHONPATH=/workspace:/tessera/src',
+      'sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88',
+      'python3', '-u', 'experiments/pq237_joint_aura_streamed.py',
+      '--model', str(inputs / 'Qwen3-0.6B'),
+      '--protocol', 'experiments/protocols/pq237-streamed-20260906.json',
+      '--protocol-sha256', 'f2268edac42bcaed2e0f4a0766357822bdf84c78db36b3488bd715d29f2e22f6',
+      '--corpus-arrow', str(inputs / 'b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-validation.arrow'),
+      '--source-manifest', str(inputs / 'source-manifest.json'),
+      '--tessera-root', '/tessera', '--tessera-source-manifest', str(manifest),
+      '--image-id', 'sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88',
+      '--out', str(inputs.parent / 'joint-streamed-run-01')], check=True)
+'''
     subprocess.run(['python3', '/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py',
                     '--cwd', str(root), '--gpu', '--tag', 'gb10', '--tag', 'sparky', '--cpus', '4',
                     '--demand', 'mem_gb=48', '--gpu-memory-gb', '32', '--exclusive',
-                    '--timeout-s', '7200', '--detach', '--', 'bash', '-c', command], check=True)
+                    '--timeout-s', '7200', '--detach', '--', 'python3', '-u', '-c', command], check=True)
 finally:
     for path, target in links.items():
         path.symlink_to(target)
@@ -256,6 +282,9 @@ fixture used one CPU. No skip was counted as a pass.
 | Frozen corpus/token preparation | Exit 0, expected 2/4/32 sequences | `1a8f6778430934fb215957a718df85b4f764834ce60bb57b5e42a2cb356bf8c7` / `726272fb67ba2a19b57f884bdc8848e2bdeded5df3478b36fc87971a745e0086` |
 | Rebased handoff and assignment diagnostics | 2 passed, zero skips | `06d3297981982f01c8234406616e73429cf8d38909f0f13b447c1b11076df78c` / `40cb0ef7a0000d398526c6759e378cd322787219dfe9a0a210155e7278eab453` |
 | Rebased compile and frozen-protocol verification | Exit 0; 2/4/32 sequences and 128 probes | `16a3e849854421076f88e256e595f01c1f2d1b098545ae3dbc5aa102926d6a3f` / `b884602c58b5f53a9b66a1721f32ea17601f827ee6f5d974cd502583d58fac92` |
+| Final wire/handoff attempt with per-file shared-source verification | Timeout at 302.8s; no tests counted | `2ea4384b5ab5abae48ec883bb6d38f030125142fb7561e730e3b5d51cea6bdb9` |
+| Final wire/handoff with verified local Tessera 7018 source; driver/helper compile | 6 passed, zero skips; compile exit 0 | `57e3941848d22a509b7984ffb396d0e600a1860003cdfb2334e7a429c01435d9` / `47121d99d4e247d97ac9015bd2f5fb06f804511652500244a8f6e503fb84cc8c` |
+| Prepared submission and nested admitted launch syntax | Exit 0; neither launch executed | `ce73b982efea7dc280e71df99abbc4e18dbd56c7a648f6a9655c3f1457e639f8` / `8dd22e47fd0e166ccfca45735a1d8e2e865ab196ea66f944dc82a69252c72df4` |
 
 Terminal records live under `/mnt/shared/prismabuild-fleet/pb-queue/{done,failed}/ACTION.json`;
 CAS payloads/receipts are linked by those records. The protocol test report is
@@ -265,6 +294,20 @@ execution: self-derived expected probe digests and a placeholder Hessian text
 hash. The rebased handoff checks include coherent full probe-identity rebinding,
 bound source-shape/stat mismatch refusal, and all four assignment comparison
 labels. PR #260 is merged at `fa229becf6a82752179a38189904209c0f5e8ad6`.
+
+The per-file shared-source attempt timed out with 0.51 CPU-seconds, 45 MiB
+peak memory, no test output and complete cleanup. It ran source verification
+before importing Torch. Those observations are consistent with the NFS delay
+tracked in [PB #205](https://github.com/RobTand/prismabuild/issues/205), rather
+than a codec result; they do not identify the storage failure
+causally. The retry uses the same immutable file map extracted locally from
+the verified archive inside PB. This is the prepared launch path as well. The retry passed all six tests
+in 8.25 seconds (37.4-second action), with 14 Torch deprecation warnings,
+zero skips, one reserved CPU and 4 GiB RAM on Sparky. Four cases use the real
+32×32 E4M3 weights-only encoder, record validator and decoder to check original
+bytes/receipt reuse and refuse disk-byte, decoded-value and shape mismatches.
+The other two exercise the actual streamed/persisted candidate handoff and
+paired comparison labels. These CPU fixtures make no serving or GPU claim.
 
 A separate CPU-only image preflight ran on Sparky using exact image 337dae
 and verified Tessera 7018. Runtime imports, Qwen3 class import, Hessian API
