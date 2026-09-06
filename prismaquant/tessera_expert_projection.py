@@ -72,7 +72,8 @@ PROJECTION_KEY = "tessera_expert_projection"
 EXPERT_WIRES_KEY = "tessera_expert_wires"
 #: Where the campaign payload says which population it priced and omitted.
 POPULATION_KEY = "population"
-POPULATION_SCHEMA = "prismaquant.tessera_campaign_population.v1"
+POPULATION_SCHEMA = "prismaquant.tessera_campaign_population.v2"
+LEGACY_POPULATION_SCHEMA = "prismaquant.tessera_campaign_population.v1"
 #: The projection block's own envelope schema inside PrismaQuant artifacts.
 CARRIED_PROJECTION_SCHEMA = "prismaquant.tessera_expert_projection.v1"
 
@@ -531,11 +532,63 @@ def allocation_expert_projection_block(payload: Mapping[str, Any],
         return {}
     block: dict[str, Any] = {}
     if population is not None:
-        if not isinstance(population, Mapping) or population.get("schema") != POPULATION_SCHEMA:
+        if not isinstance(population, Mapping) or population.get("schema") not in {
+                POPULATION_SCHEMA, LEGACY_POPULATION_SCHEMA}:
             raise ExpertProjectionError(
                 f"cost table population block is not {POPULATION_SCHEMA}; the allocation "
                 "cannot say which population was priced")
         block[POPULATION_KEY] = json.loads(json.dumps(population, sort_keys=True))
+        if population.get("schema") == POPULATION_SCHEMA:
+            unpriced = population.get("unpriced")
+            if not isinstance(unpriced, Mapping) or set(unpriced) != {"dense", "routed_experts"}:
+                raise ExpertProjectionError("cost table population needs explicit unpriced units")
+            priced = population.get("priced")
+            if not isinstance(priced, Mapping):
+                raise ExpertProjectionError("cost table population needs explicit priced units")
+            enumerated = population.get("enumerated")
+            if not isinstance(enumerated, Mapping):
+                raise ExpertProjectionError("cost table population needs explicit enumerated units")
+            priced_names = set()
+            for kind in ("dense", "routed_experts"):
+                names = priced.get(kind)
+                if (not isinstance(names, list) or
+                        any(not isinstance(name, str) or not name for name in names) or
+                        len(set(names)) != len(names) or priced_names.intersection(names)):
+                    raise ExpertProjectionError("population priced units must be unique names")
+                priced_names.update(names)
+            costs = payload.get("costs", {})
+            if not isinstance(costs, Mapping):
+                raise ExpertProjectionError("campaign cost rows must be an object")
+            actual_priced = {name for name, rows in costs.items()
+                             if isinstance(rows, Mapping) and rows}
+            if priced_names != actual_priced:
+                raise ExpertProjectionError(
+                    "population priced units disagree with nonempty campaign cost rows")
+            retained = []
+            for kind in ("dense", "routed_experts"):
+                if not isinstance(unpriced[kind], Mapping):
+                    raise ExpertProjectionError(f"population unpriced.{kind} must name units")
+                targets = enumerated.get(kind)
+                if (not isinstance(targets, list) or
+                        any(not isinstance(name, str) or not name for name in targets) or
+                        len(set(targets)) != len(targets) or
+                        set(targets) != set(priced[kind]) | set(unpriced[kind])):
+                    raise ExpertProjectionError(
+                        f"population enumerated.{kind} must equal its priced and unpriced units")
+                for name, reason in sorted(unpriced[kind].items()):
+                    if (not isinstance(name, str) or not name or reason not in
+                            {"no_admitted_menu", "no_successful_anchor"}):
+                        raise ExpertProjectionError("population has an invalid unpriced unit")
+                    if name in priced_names or name in retained:
+                        raise ExpertProjectionError(
+                            f"population priced/unpriced units must be disjoint: {name}")
+                    if assignment.get(name) != "BF16":
+                        raise ExpertProjectionError(
+                            f"unpriced campaign unit {name} ({reason}) must be explicitly "
+                            "retained at BF16; absent or quantized assignments have no price")
+                    retained.append(name)
+            if retained:
+                block[POPULATION_KEY]["retained_bf16"] = sorted(retained)
     if carried is None:
         if wires:
             raise ExpertProjectionError(

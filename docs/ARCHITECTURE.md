@@ -1,7 +1,21 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `measurement/pq208-2026-09-05`. Stamps
+As of: 2026-09-05 · `codex/pq183-coverage`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq183-measurement`) for Tessera campaign
+population v2 (#183). Enumerated targets and emitted prices are distinct:
+empty admitted menus and targets without a successful anchor are recorded
+as in-scope unpriced units, with their reason. Only nonempty emitted cost
+rows establish priced coverage; a packed stack is priced whole only when
+every projected unit has a price. Stride and profile omissions remain
+separate. An allocation consuming v2 must explicitly retain each unpriced
+unit at BF16, records those retained names, and refuses missing or quantized
+choices. Intake checks priced names against nonempty cost rows and refuses
+overlapping priced/unpriced declarations or an enumerated target without
+either disposition. Legacy v1 receipts remain readable.
+This preserves partial
+campaign evidence without certifying coverage from attempted work.
 
 Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for the opt-in
 paired Qwen3-0.6B campaign's explicit vLLM startup memory budget (#208).
@@ -60,6 +74,7 @@ existing cache directory's `render_identity.json` has no
 `levers.nvfp4_input_global_scale_policy`, so the first fill that resumes it
 refuses with that field named; the shards themselves are policy-independent,
 but the fix for a resume is a fresh `--cache-dir`.
+
 
 Re-stamped (2026-09-05, `codex/237-integration`) for the joint probe-count
 contract: joint harvesting and row admission require at least two probes.
@@ -6747,9 +6762,13 @@ Two properties make the numbers comparable with the rest of the menu:
   cost rows are **measured only** (`campaign_cost_payload(...,
   wire_backed=)`), because an interpolated rung on a wire-backed unit would
   be a price with no bytes behind it. The payload says what it priced:
-  `provenance.population` (`prismaquant.tessera_campaign_population.v1`:
-  priced dense / routed experts / packed parameters / stacks; omitted
-  dense-outside-stride, packed-outside-stride, pinned; counts),
+  `provenance.population` (`prismaquant.tessera_campaign_population.v2`:
+  enumerated dense / routed experts / packed parameters / stacks; priced
+  units with emitted rows and completely priced stacks; in-scope unpriced
+  units with reasons; omitted dense-outside-stride, packed-outside-stride,
+  pinned; counts). Allocation retains every unpriced unit explicitly at
+  BF16 and records `retained_bf16`; a missing or quantized choice refuses.
+  The other carried records are
   `provenance.tessera_expert_projection` (the producer's answer verbatim
   beside the request and the exact binding) and top-level
   `tessera_expert_wires` (`{unit: {rung: receipt}}`). The checkpoint identity

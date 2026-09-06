@@ -1181,23 +1181,43 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
     return carried, projected
 
 
-def _population_block(*, dense_priced, expert_priced, dense_all, pinned,
-                      population: ExpertPopulation, layer_stride: int) -> dict:
-    """Which population the payload prices and which it omits, by name."""
+def _population_block(*, dense_targets, expert_targets, dense_all, pinned,
+                      population: ExpertPopulation, layer_stride: int,
+                      costs, menus) -> dict:
+    """Distinguish selected targets from units with actual emitted prices."""
     from .tessera_expert_projection import POPULATION_SCHEMA
 
-    dense_omitted = sorted(set(dense_all) - set(dense_priced))
+    dense_omitted = sorted(set(dense_all) - set(dense_targets))
+    priced = {name for name, rows in costs.items() if rows}
+    dense_priced = sorted(set(dense_targets) & priced)
+    expert_priced = sorted(set(expert_targets) & priced)
+    unpriced = {
+        kind: {name: ("no_admitted_menu" if not menus.get(name)
+                      else "no_successful_anchor")
+               for name in sorted(set(targets) - priced)}
+        for kind, targets in (("dense", dense_targets),
+                              ("routed_experts", expert_targets))
+    }
+    complete_stacks = sorted(stack for stack, units in population.declared.items()
+                             if set(units) <= priced)
+    packed = {name: list(shape) for name, shape
+              in sorted(population.packed_in_scope.items())}
     packed_omitted = {name: list(shape) for name, shape
                       in sorted(population.omitted_outside_layer_stride.items())}
     return {
         "schema": POPULATION_SCHEMA,
         "layer_stride": int(layer_stride),
+        "enumerated": {"dense": sorted(dense_targets),
+                       "routed_experts": sorted(expert_targets),
+                       "packed_parameters": packed,
+                       "stacks": sorted(population.declared)},
+        "unpriced": unpriced,
         "priced": {
-            "dense": sorted(dense_priced),
-            "routed_experts": sorted(expert_priced),
-            "packed_parameters": {name: list(shape) for name, shape
-                                  in sorted(population.packed_in_scope.items())},
-            "stacks": sorted(population.declared),
+            "dense": dense_priced,
+            "routed_experts": expert_priced,
+            "packed_parameters": {name: shape for name, shape in packed.items()
+                                  if name.rsplit(".", 1)[0] in complete_stacks},
+            "stacks": complete_stacks,
         },
         "omitted": {
             "dense_outside_layer_stride": dense_omitted,
@@ -1207,6 +1227,8 @@ def _population_block(*, dense_priced, expert_priced, dense_all, pinned,
         "counts": {
             "dense_priced": len(dense_priced),
             "routed_experts_priced": len(expert_priced),
+            "dense_unpriced": len(unpriced["dense"]),
+            "routed_experts_unpriced": len(unpriced["routed_experts"]),
             "dense_omitted": len(dense_omitted),
             "packed_omitted": len(packed_omitted),
             "pinned": len(pinned),
@@ -1909,15 +1931,6 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             "seqlen": int(args.seqlen),
             "max_act_rows": int(args.max_act_rows),
             "layer_stride": int(args.layer_stride),
-            # Which population this table prices and which it omits, by name
-            # (PrismaQuant #183).  ``priced`` is what reached the anchor loop;
-            # ``omitted`` is what the stride left out or the profile pins.
-            # A reader of the payload does not have to infer coverage from
-            # the row keys.
-            POPULATION_KEY: _population_block(
-                dense_priced=dense_targets, expert_priced=expert_targets,
-                dense_all=all_dense, pinned=pinned, population=population,
-                layer_stride=int(args.layer_stride)),
             **({PROJECTION_KEY: expert_projection}
                if expert_projection is not None else {}),
             "anchors_round_one": int(args.anchors),
@@ -2022,6 +2035,12 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     payload = campaign_cost_payload(
         measured, menus, loo=loo, provenance=provenance,
         wire_backed=frozenset(projected_units))
+    # Empty menus, failed anchors and interrupted work do not establish a
+    # price. Publish coverage only after the cost rows have been constructed.
+    payload["provenance"][POPULATION_KEY] = _population_block(
+        dense_targets=dense_targets, expert_targets=expert_targets,
+        dense_all=all_dense, pinned=pinned, population=population,
+        layer_stride=int(args.layer_stride), costs=payload["costs"], menus=menus)
     if projected_units:
         # The producer's receipts for every priced expert wire, keyed by unit
         # then rung; the allocator carries the selected rung's receipt into

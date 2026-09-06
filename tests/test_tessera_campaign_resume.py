@@ -59,7 +59,7 @@ def _main_fixture(monkeypatch, tmp_path, *, priced=False):
 
     def unverified_anchors_reached_payload(anchors, *_args, **_kwargs):
         assert not anchors, "unverified checkpoint anchors reached the current cost payload"
-        return {"costs": {}, "formats": []}
+        return {**_kwargs["provenance"], "costs": {}, "formats": []}
 
     if not priced:
         monkeypatch.setattr(tessera_campaign, "campaign_cost_payload",

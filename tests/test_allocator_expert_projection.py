@@ -99,6 +99,8 @@ def _receipt(name: str, unit: dict, fmt: str = FMT) -> dict:
 def _population() -> dict:
     return {
         "schema": POPULATION_SCHEMA, "layer_stride": 1,
+        "enumerated": {"dense": [DENSE], "routed_experts": _units()},
+        "unpriced": {"dense": {}, "routed_experts": {}},
         "priced": {"dense": [DENSE], "routed_experts": _units(),
                    "packed_parameters": {f"{STACK}.gate_up_proj": [2, 2 * N, N],
                                          f"{STACK}.down_proj": [2, N, N]},
@@ -229,6 +231,75 @@ def test_main_carries_projection_population_and_selected_receipts(tmp_path, monk
                                       for name in _units()}
     assert meta["tessera_expert_stack_formats"] == {STACK: FMT}
     assert meta["tessera_expert_wire_dir"] == str(tmp_path / "wire")
+
+
+@pytest.mark.parametrize("selected", [None, FMT, "NVFP4"])
+def test_allocation_requires_explicit_bf16_for_unpriced_campaign_unit(selected):
+    payload = {"provenance": {POPULATION_KEY: _unpriced_population()}}
+    assignment = {} if selected is None else {DENSE: selected}
+    with pytest.raises(ExpertProjectionError, match="unpriced.*BF16"):
+        allocation_expert_projection_block(payload, assignment)
+
+
+def test_allocation_records_explicit_bf16_retention_for_unpriced_campaign_unit():
+    population = _unpriced_population()
+    payload = {"provenance": {POPULATION_KEY: population}}
+    block = allocation_expert_projection_block(payload, {DENSE: "BF16"})
+    assert block[POPULATION_KEY]["retained_bf16"] == [DENSE]
+    assert "retained_bf16" not in population
+
+
+def _unpriced_population():
+    return {"schema": POPULATION_SCHEMA, "layer_stride": 1,
+            "enumerated": {"dense": [DENSE], "routed_experts": [],
+                           "packed_parameters": {}, "stacks": []},
+            "priced": {"dense": [], "routed_experts": [],
+                       "packed_parameters": {}, "stacks": []},
+            "unpriced": {"dense": {DENSE: "no_admitted_menu"}, "routed_experts": {}},
+            "omitted": {"dense_outside_layer_stride": [],
+                        "packed_outside_layer_stride": {}, "pinned": []},
+            "counts": {"dense_priced": 0, "routed_experts_priced": 0,
+                       "dense_unpriced": 1, "routed_experts_unpriced": 0,
+                       "dense_omitted": 0, "packed_omitted": 0, "pinned": 0}}
+
+
+def test_allocation_refuses_claimed_prices_without_rows():
+    population = _unpriced_population()
+    population["priced"]["dense"] = [DENSE]
+    population["unpriced"]["dense"] = {}
+    with pytest.raises(ExpertProjectionError, match="disagree.*cost rows"):
+        allocation_expert_projection_block({"provenance": {POPULATION_KEY: population}}, {})
+
+
+def test_allocation_refuses_overlapping_priced_and_unpriced_units():
+    population = _unpriced_population()
+    population["priced"]["dense"] = [DENSE]
+    payload = {"provenance": {POPULATION_KEY: population},
+               "costs": {DENSE: {FMT: {"output_mse": 0.1}}}}
+    with pytest.raises(ExpertProjectionError, match="must be disjoint"):
+        allocation_expert_projection_block(payload, {DENSE: "BF16"})
+
+
+def test_allocation_refuses_stripped_unpriced_disposition():
+    population = _unpriced_population()
+    population["unpriced"]["dense"] = {}
+    with pytest.raises(ExpertProjectionError, match="enumerated.dense.*priced and unpriced"):
+        allocation_expert_projection_block({"provenance": {POPULATION_KEY: population}}, {})
+
+
+def test_allocation_preserves_legacy_population_receipts():
+    population = _population()
+    population["schema"] = tep.LEGACY_POPULATION_SCHEMA
+    population.pop("unpriced")
+    payload = {"provenance": {POPULATION_KEY: population}}
+    assert allocation_expert_projection_block(payload, {}) == {POPULATION_KEY: population}
+
+
+def test_allocation_refuses_v2_without_unpriced_disposition():
+    population = _population()
+    population.pop("unpriced")
+    with pytest.raises(ExpertProjectionError, match="explicit unpriced"):
+        allocation_expert_projection_block({"provenance": {POPULATION_KEY: population}}, {})
 
 
 def test_main_refuses_a_selected_rung_with_no_priced_wire(tmp_path, monkeypatch):

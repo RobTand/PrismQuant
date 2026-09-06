@@ -147,6 +147,8 @@ def _receipt(name: str, unit: dict, fmt: str = FMT) -> dict:
 def _population() -> dict:
     return {
         "schema": POPULATION_SCHEMA, "layer_stride": 1,
+        "enumerated": {"dense": [DENSE], "routed_experts": _units()},
+        "unpriced": {"dense": {}, "routed_experts": {}},
         "priced": {"dense": [DENSE], "routed_experts": _units(),
                    "packed_parameters": {f"{STACK}.gate_up_proj": [2, 2 * N, N],
                                          f"{STACK}.down_proj": [2, N, N]},
@@ -477,6 +479,8 @@ def _allocator_metadata(case, assignment):
     """
     meta = _meta(case)
     payload = {
+        "costs": {name: {FMT: {"output_mse": 1e-4}}
+                  for name in [DENSE, *_units()]},
         "provenance": {
             POPULATION_KEY: meta[POPULATION_KEY],
             PROJECTION_KEY: meta[PROJECTION_KEY],

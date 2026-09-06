@@ -473,6 +473,50 @@ def test_main_refuses_a_live_view_that_disagrees_with_the_producer_source(monkey
     assert not (tmp_path / "cost.pkl").exists()
 
 
+@pytest.mark.parametrize("failure", ["empty_menu", "failed_anchor", "failed_expert"])
+def test_main_reports_unpriced_targets_without_claiming_coverage(monkeypatch, tmp_path, failure):
+    campaign, argv, _model, _encoded = _bridge_main_fixture(monkeypatch, tmp_path)
+    dense = "model.layers.0.attention"
+    target = _expert_unit_names()[0] if failure == "failed_expert" else dense
+    if failure == "empty_menu":
+        expand = campaign.expand_menus_for_targets
+
+        def menus(*args, **kwargs):
+            result = expand(*args, **kwargs)
+            result[dense] = []
+            return result
+
+        monkeypatch.setattr(campaign, "expand_menus_for_targets", menus)
+    else:
+        measure = campaign._measure_anchor
+
+        def failing_measure(**kwargs):
+            if kwargs["qname"] == target:
+                raise RuntimeError("synthetic encode failure")
+            return measure(**kwargs)
+
+        monkeypatch.setattr(campaign, "_measure_anchor", failing_measure)
+    assert campaign.main(argv) == 0
+    payload = pickle.loads((tmp_path / "cost.pkl").read_bytes())
+    population = payload["provenance"]["population"]
+    assert target not in payload["costs"]
+    if failure == "failed_expert":
+        assert target not in population["priced"]["routed_experts"]
+        assert population["enumerated"]["routed_experts"] == sorted(_expert_unit_names())
+        assert population["unpriced"]["routed_experts"] == {target: "no_successful_anchor"}
+        assert population["priced"]["stacks"] == []
+        assert population["priced"]["packed_parameters"] == {}
+        assert population["counts"]["routed_experts_priced"] == len(_expert_unit_names()) - 1
+        return
+    assert population["priced"]["dense"] == []
+    assert population["enumerated"]["dense"] == [dense]
+    assert population["unpriced"]["dense"] == {
+        dense: "no_admitted_menu" if failure == "empty_menu" else "no_successful_anchor"}
+    assert population["counts"]["dense_priced"] == 0
+    assert population["counts"]["dense_unpriced"] == 1
+    assert population["priced"]["routed_experts"] == sorted(_expert_unit_names())
+
+
 def test_wire_backed_units_keep_only_measured_rows():
     """A priced expert wire IS the exported wire, so no rung without bytes is offered.
 
