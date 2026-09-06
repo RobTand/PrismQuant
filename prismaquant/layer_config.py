@@ -120,7 +120,7 @@ def canonicalize_format(entry: dict | str | int) -> str:
             # and for legality by ``get_format`` (which parses the rung and
             # refuses an illegal one); this module stays a mapper.
             name = str(entry.get("tessera_format", ""))
-            if not _TESSERA_FORMAT_NAME.match(name):
+            if not _TESSERA_FORMAT_NAME.fullmatch(name):
                 raise ValueError(f"unsupported tessera scheme: {entry!r}")
             return name
         if dt == "nv_fp" and bits == 4:
@@ -181,6 +181,10 @@ def canonicalize_format(entry: dict | str | int) -> str:
         raise ValueError(f"unsupported scheme: {entry!r}")
     if isinstance(entry, str):
         value = entry.lower()
+        if _TESSERA_FORMAT_NAME.fullmatch(value.upper()):
+            # Saved campaign strings and dictionary recipes name the same
+            # rung. Legality and target admission remain downstream gates.
+            return value.upper()
         if value.upper() in _GGUF_FORMAT_NAMES:
             return value.upper()
         if value.upper() in _NVFP4_CB_FORMAT_NAMES:
