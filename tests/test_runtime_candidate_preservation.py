@@ -10,7 +10,7 @@ from prismaquant.allocator_solver import Candidate
 
 
 def _candidate(index, size, loss):
-    return Candidate(f"TESSERA_E4M3_K1_R{100 + index}", size / 100,
+    return Candidate(f"TESSERA_E4M3_K1_R{256 + index}", size / 100,
                      size, loss)
 
 
@@ -62,3 +62,27 @@ def test_runtime_group_fold_refuses_cap_instead_of_dropping_alternatives(monkeyp
         ac.tessera_group_composites(
             list(rows), rows, 1600, licence=_licence(),
             preserve_runtime_frontier=True)
+
+
+def test_runtime_aggregation_has_one_option_per_expanded_operator(monkeypatch):
+    from types import SimpleNamespace
+    from prismaquant import format_registry as fr, tessera_menu
+
+    monkeypatch.setattr(tessera_menu, "fused_module_licence", _licence)
+    members = ["layer.q_proj", "layer.k_proj"]
+    rows = {name: [_candidate(0, 100, 1.0), _candidate(1, 100, 2.0)]
+            for name in members}
+    stats = {name: {"n_params": 800, "in_features": 20,
+                    "out_features": 40, "h_trace": 1.0} for name in members}
+    costs = {name: {c.fmt: {"predicted_dloss": c.predicted_dloss}
+                   for c in options} for name, options in rows.items()}
+    specs = [fr.get_format(c.fmt) for c in rows[members[0]]]
+    profile = SimpleNamespace(fused_sibling_group=lambda name: "layer.qkv")
+    grouped_stats, _, grouped = ac.aggregate_fused_siblings(
+        stats, costs, specs, rows, profile, preserve_runtime_frontier=True)
+    unit, options = next(iter(grouped.items()))
+    recipes = [tuple(sorted(ac.expand_fused_sibling_assignment(
+        {unit: candidate.fmt}, grouped_stats).items())) for candidate in options]
+    # A uniform per-name choice and its composite twin execute the same
+    # operator. Retaining both makes final runtime re-binding ambiguous.
+    assert len(recipes) == len(set(recipes)) == 4

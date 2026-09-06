@@ -3486,7 +3486,15 @@ def aggregate_fused_siblings(
                     members, None, member_formats=member_formats)
             stats_ext[super_name]["_fused_member_formats"] = (
                 member_formats_by_option)
-            cands.extend(composites)
+            # Runtime binding names the expanded recipe, so its uniform
+            # per-NAME option and the byte/cost-checked composite twin must
+            # not both survive. No distinct member recipe is discarded.
+            cands.extend(
+                composite for composite in composites
+                if not preserve_runtime_frontier
+                or len(set((composite.member_formats or {}).values())) != 1
+                or next(iter(composite.member_formats.values())) not in uniform_by_name
+            )
         # Written whether or not the fold produced anything. A report kept
         # only on success cannot record why a group has one rung, which is
         # the one case a receipt has to be able to read: the ablation stamp

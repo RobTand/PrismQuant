@@ -3,6 +3,14 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for unambiguous measured
+operator binding. Runtime-mode fused aggregation keeps one canonical
+choice for a uniform per-NAME option and its already verified composite
+twin; all distinct member recipes remain. Measured cost intake hashes and
+parses the same owned bytes, so an in-place rewrite cannot verify different
+prices from those admitted. Both integration corrections have regression
+tests. Legacy candidate reduction and cost loading are unchanged.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for allocator CLI wiring
 of joint quality and measured runtime search (#237). `--measured-runtime-table`
 and `--measured-runtime-context` reuse the prefill/decode/device budget flags,
