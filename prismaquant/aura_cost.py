@@ -2038,7 +2038,7 @@ def compute_aura_cost_streamed(
         from prismaquant.cost_streaming import validate_streamed_model_identity
         from prismaquant.joint_aura import (
             SignedJointProjectionLease, activation_identity, arithmetic_identity,
-            identity_sha256, make_joint_aura_entry, prefetch_joint_cache,
+            identity_sha256, make_joint_aura_entry, prefetch_joint_cache, squared_signed,
             validate_joint_aura_entry,
         )
         from prismaquant.production_weight_cache import _cb_cache_tensor_identity
@@ -2900,7 +2900,9 @@ def compute_aura_cost_streamed(
                     if joint_lease is not None:
                         for key, terms in joint_lease.finish_probe().items():
                             joint_components[key].append(terms)
-                            value = terms["total"] ** 2
+                            # Same squaring as make_joint_aura_entry: the
+                            # checkpoint reload compares both lists exactly.
+                            value = squared_signed(terms["total"])
                             s2[key] += value
                             s4[key] += value * value
                             x2_probe[key].append(value)

@@ -317,10 +317,23 @@ def validate_joint_aura_entry(entry: Mapping) -> bool:
     return True
 
 
+def squared_signed(total) -> float:
+    """The one squaring of a signed joint projection.
+
+    ``x ** 2`` goes through C ``pow`` and ``x * x`` is a correctly rounded
+    multiply; on glibc they differ by one ulp for some inputs. The streamed
+    accumulator and this row must square identically, because checkpoint
+    reload compares the two sample lists exactly (PQ #261, run-02: 9 of 128
+    samples of ``model.layers.0.mlp.down_proj@TESSERA_E4M3_K1_R896`` differed).
+    """
+    total = float(total)
+    return total * total
+
+
 def make_joint_aura_entry(*, operator_identity, probe_identity, signed_components) -> dict:
     """Publish one complete, aligned cost row, also used by checkpoint replay."""
     signed = [float(value["total"]) for value in signed_components]
-    squared = [value * value for value in signed]
+    squared = [squared_signed(value) for value in signed]
     n = len(squared)
     if not n:
         raise ValueError("joint AURA needs at least one signed probe")
