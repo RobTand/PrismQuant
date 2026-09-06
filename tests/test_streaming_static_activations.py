@@ -7,6 +7,7 @@ from torch import nn
 
 from prismaquant import format_registry as fr
 from prismaquant.joint_aura import activation_identity
+from prismaquant.tessera_hessian import calibration_identity
 from prismaquant.model_profiles.default import DefaultProfile
 from prismaquant.streaming_production_cache import StreamedProductionAnchorRenderer
 from test_streamed_cost_checkpoints import _model_identity
@@ -59,7 +60,12 @@ def test_tessera_only_transient_anchor_keeps_fused_static_identity(
     plan = {name: (fmt,) for name in modules}
     renderer = StreamedProductionAnchorRenderer(
         model, act_index=Activations(), formats_by_qname=plan,
-        levers={'gptq': False, 'joint_scale_opt': False}, profile=profile,
+        levers={
+            'gptq': False, 'joint_scale_opt': False,
+            'tessera_hessian_identity': calibration_identity(
+                'synthetic four-row fused-static-scale fixture',
+                [torch.arange(4)], fit_tokens=4),
+        }, profile=profile,
         device=device, col_weights={}, cb_serialization_context=None,
         calibration_hash='c' * 64, arm_identity={'arm': 'static-anchor-regression'},
         model_identity=_model_identity('static-anchor-source'), max_act_rows=4,

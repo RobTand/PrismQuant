@@ -66,3 +66,27 @@ Both use the known producer container image
 with four CPUs, one GPU and 16 GiB reserved through PB; actual terminal results
 must be checked separately. At this record's creation neither had completed.
 No GPU correctness, served quality, performance or promotion result is claimed.
+
+## Follow-up: GPU fixture provenance and documentation checks
+
+The GPU baseline action
+`d06916b9c894f63d2f167af216d0ca0f471dacf8540a23e5a389782debd28cfd`
+finished with exit 1: four failures, no skips. Its two CPU failures reproduce
+missing static activation maxima. Its two CUDA cases instead stopped earlier:
+`HessianContractError`: activation rows were supplied without the
+`tessera_hessian_identity` lever. This is a missing input in the new test fixture,
+not evidence of the activation-scale defect on the real GPU renderer.
+The fixture now supplies provenance through the existing `calibration_identity`
+helper for its synthetic four-row capture. Hessian-aware rendering remains on.
+The corrected container regression action is
+`a8430eb1534c8648a7339a7ad5faf7089cf67f6c1e2af39738d1fb119148748c`;
+its result remains pending. The earlier container action60172 is retained as
+an attempt using the incomplete fixture, not substituted as corrected evidence.
+
+Documentation checks on the implementation commit, action
+`2c8fa21586f804eea450cf8da5400c5a0c6d2afcbbc739163f32b1486d31b6bf`,
+finished exit 0: **19 passed, zero skips**, 4.55 seconds pytest time, four workers,
+CPU-only on sparky. Files: `tests/test_docs_staleness.py` and
+`tests/test_architecture_doc.py`. No collection errors. Same host dependency
+warnings noted above. Independently verified output CAS SHA-256:
+`6008ddc2d64c7bfbbe8e5f8aff433406991ebe36997eb442ed98dca7899a4f28`.
