@@ -163,8 +163,30 @@ def cleanup_owned(name, cidpath, owner):
                     for kind in ("object", "container")), "container inspection failed")
         result = {"safe": True, "already_absent": True, "container_id": cid}
     require(result["safe"], "owned container cleanup incomplete")
+    result["name_release_wait_s"] = wait_container_name_released(name)
     require_container_name_available(name)
     return result
+
+
+# ``docker run --rm`` releases the container NAME after the removal that
+# ``docker stop`` triggers, so the name can still resolve for a moment after
+# ``cleanup_container`` saw the ID gone (serve-02, 2026-09-06: bf16 phase
+# complete, cleanup safe, then "validation container name already exists").
+# The bound is the daemon's own stop grace (``--time 10``) plus removal.
+NAME_RELEASE_TIMEOUT_S = 30.0
+
+
+def wait_container_name_released(name, timeout_s=NAME_RELEASE_TIMEOUT_S):
+    """Return seconds waited until ``name`` no longer resolves; bounded."""
+    started = time.monotonic()
+    while True:
+        try:
+            require_container_name_available(name)
+            return time.monotonic() - started
+        except ValueError:
+            if time.monotonic() - started >= timeout_s:
+                raise
+            time.sleep(0.5)
 
 
 def classify_strict(observed, strict, rc):

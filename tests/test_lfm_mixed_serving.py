@@ -253,6 +253,37 @@ class ServingTests(unittest.TestCase):
                 self.assertTrue(m.cleanup_owned("reusable-name", cidfile, "ours")["safe"])
                 stop.assert_called_once_with("a" * 64)
 
+    def test_cleanup_waits_for_the_name_to_be_released(self):
+        # docker run --rm frees the name after the ID is gone; cleanup must
+        # wait (bounded) instead of refusing on the first still-resolving look.
+        with tempfile.TemporaryDirectory() as directory:
+            cidfile = Path(directory) / "cid"
+            cidfile.write_text("a" * 64)
+            result = subprocess.CompletedProcess([], 0, json.dumps([self.inspected()]), "")
+            looks = iter([ValueError("validation container name already exists"),
+                          ValueError("validation container name already exists"), None, None])
+            def look(name):
+                outcome = next(looks)
+                if outcome is not None:
+                    raise outcome
+            with patch.object(m.subprocess, "run", return_value=result), \
+                 patch.object(m, "require_container_name_available", side_effect=look) as available, \
+                 patch.object(m.time, "sleep"), \
+                 patch.object(m, "cleanup_container", return_value={"safe": True}):
+                cleaned = m.cleanup_owned("name", cidfile, "ours")
+            self.assertTrue(cleaned["safe"])
+            self.assertIn("name_release_wait_s", cleaned)
+            self.assertEqual(available.call_count, 4)  # 2 refusals, release, final check
+
+    def test_cleanup_name_release_wait_is_bounded(self):
+        clock = iter([0.0, 0.0, 31.0, 31.0])
+        with patch.object(m, "require_container_name_available",
+                          side_effect=ValueError("validation container name already exists")), \
+             patch.object(m.time, "monotonic", side_effect=lambda: next(clock)), \
+             patch.object(m.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                m.wait_container_name_released("name", timeout_s=30.0)
+
     def test_missing_cid_requires_name_absence(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(m, "require_container_name_available", side_effect=ValueError("name exists")), \
