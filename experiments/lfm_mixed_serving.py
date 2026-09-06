@@ -93,6 +93,24 @@ def validate_handoff(plan, manifest, source_identity, calibration):
     return identity
 
 
+def admission():
+    """How this observation was admitted, stamped into ``host-status.json``.
+
+    Batch work is admitted by PrismaBuild and carries ``PRISMABUILD_CONTAINER_OWNER``.
+    Serving vLLM is exempt from PrismaBuild (Rob, 2026-09-06): a direct run
+    declares itself with ``PRISMAQUANT_DIRECT_SERVE=<reason>`` and is stamped
+    ``direct`` so it can never be read as an admitted action. Exactly one of
+    the two must be declared; an undeclared run is refused as before.
+    """
+    action = os.environ.get("PRISMABUILD_CONTAINER_OWNER")
+    direct = os.environ.get("PRISMAQUANT_DIRECT_SERVE")
+    require(bool(action) != bool(direct),
+            "declare exactly one admission: a PrismaBuild action or PRISMAQUANT_DIRECT_SERVE=<reason>")
+    if action:
+        return {"mode": "prismabuild", "action": action}
+    return {"mode": "direct", "reason": direct, "policy": "vLLM serving is exempt from PrismaBuild (2026-09-06)"}
+
+
 def verify_owned(container, cid, owner, cpus):
     require(container["Id"] == cid and container["Config"]["Labels"].get(LABEL) == owner,
             "refusing container with different ownership")
@@ -211,8 +229,7 @@ def main():
     parser.add_argument("--preflight-only", action="store_true",
                         help="verify the complete CPU handoff and seal, then stop before Docker")
     args = parser.parse_args()
-    require(os.environ.get("PRISMABUILD_CONTAINER_OWNER"),
-            "batch validation requires PrismaBuild admission")
+    admitted = admission()
     require(60 <= args.seconds <= 7200 and 1024 <= args.port < 65536, "invalid bounds")
     cpus = sorted(os.sched_getaffinity(0))
     require(1 <= len(cpus) <= 4, "reserve at most four CPUs and preserve PB affinity")
@@ -279,6 +296,7 @@ def main():
     for name in names:
         require_container_name_available(name)
     state = {"schema": "prismaquant.lfm-mixed-serving.v1", "status": "running", "owner": owner,
+             "admission": admitted,
              "source_snapshot": subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip(),
              "image": {"Id": image["Id"], "RepoDigests": image["RepoDigests"],
                        **{key + "_sha256": hashlib.sha256(json.dumps(image[key], sort_keys=True,

@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from experiments.lfm_mixed_serving import require, sha, read, verify_encoder
+from experiments.lfm_mixed_serving import admission, require, sha, read, verify_encoder
 
 
 def extract_source(archive, manifest_path, digest, destination):
@@ -41,7 +41,7 @@ def main():
     parser.add_argument("--encoder-manifest-sha256", required=True)
     parser.add_argument("wrapper_arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    require(os.environ.get("PRISMABUILD_CONTAINER_OWNER"), "source staging requires admitted PB action")
+    admission()
     rest = args.wrapper_arguments
     if rest[:1] == ["--"]:
         rest = rest[1:]

@@ -194,6 +194,20 @@ class ServingTests(unittest.TestCase):
             self.assertEqual(receipt["artifact_seal_sha256"], m.sha(root / "out/artifact-seal.json"))
             self.assertFalse(receipt["gpu_or_container_launched"])
 
+    def test_admission_is_exactly_one_of_prismabuild_or_declared_direct_serve(self):
+        with patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "", "PRISMAQUANT_DIRECT_SERVE": ""}):
+            with self.assertRaisesRegex(ValueError, "exactly one admission"):
+                m.admission()
+        with patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "abc", "PRISMAQUANT_DIRECT_SERVE": "x"}):
+            with self.assertRaisesRegex(ValueError, "exactly one admission"):
+                m.admission()
+        with patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "abc", "PRISMAQUANT_DIRECT_SERVE": ""}):
+            self.assertEqual(m.admission(), {"mode": "prismabuild", "action": "abc"})
+        with patch.dict(m.os.environ, {"PRISMABUILD_CONTAINER_OWNER": "", "PRISMAQUANT_DIRECT_SERVE": "serve-02"}):
+            direct = m.admission()
+            self.assertEqual(direct["mode"], "direct")
+            self.assertEqual(direct["reason"], "serve-02")
+
     def test_archive_preserves_output_bytes_excludes_build_caches_and_refuses_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
