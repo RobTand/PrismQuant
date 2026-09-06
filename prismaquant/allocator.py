@@ -173,6 +173,7 @@ from .serve_constraints import (
     ServeSLOs,
     WorkloadMix,
     evaluate_assignment as evaluate_serve_constraints,
+    evaluate_measured_assignment,
     fastest_feasible_summary,
     rejection_record,
 )
@@ -2085,6 +2086,14 @@ def main():
                          "archive/gridbook_lane_2026-09-02/ with that lane. "
                          "Point this at a table measured on your own "
                          "hardware.")
+    ap.add_argument("--measured-runtime-table", default=None,
+                    help="Research-only measured whole-operator runtime table. "
+                         "Uses exact discrete bytes/quality/prefill/decode/residency "
+                         "search. Requires --measured-runtime-context and a prefill "
+                         "budget. Operator sums do not certify p95 or end-to-end SLOs.")
+    ap.add_argument("--measured-runtime-context", default=None,
+                    help="Independent expected runtime/workload identity JSON, "
+                         "including exact operator routes for each unit and format.")
     ap.add_argument("--serve-workload-mix", default=None,
                     help="Workload M-regime mix, e.g. "
                          "'prefill:dense_prefill_1400=1.0,"
@@ -2114,6 +2123,28 @@ def main():
                          "device memory constraint (not modelled by the "
                          "allocator).")
     args = ap.parse_args()
+
+    if args.measured_runtime_context and not args.measured_runtime_table:
+        ap.error("--measured-runtime-context requires --measured-runtime-table")
+    if args.measured_runtime_table:
+        if args.serve_dispatch_table or args.serve_workload_mix:
+            ap.error("--measured-runtime-table is mutually exclusive with "
+                     "--serve-dispatch-table and --serve-workload-mix")
+        if not args.measured_runtime_context:
+            ap.error("--measured-runtime-table requires --measured-runtime-context")
+        if args.slo_prefill_p95_ttft_ms is None:
+            ap.error("--measured-runtime-table requires --slo-prefill-p95-ttft-ms "
+                     "as an operator-sum proposal budget")
+        if args.slo_decode_p05_tps is not None:
+            ap.error("measured operator sums cannot certify --slo-decode-p05-tps; "
+                     "use --slo-decode-p95-itl-ms as a proposal budget")
+        for flag, value in (("--slo-prefill-p95-ttft-ms", args.slo_prefill_p95_ttft_ms),
+                            ("--slo-decode-p95-itl-ms", args.slo_decode_p95_itl_ms),
+                            ("--serve-device-budget-bytes", args.serve_device_budget_bytes)):
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                ap.error(f"{flag} must be positive and finite")
+        if args.serve_kv_bytes < 0 or args.serve_peak_scratch_bytes < 0:
+            ap.error("measured runtime KV and scratch reserves must be nonnegative")
 
     effective_cb_source_scope = args.cb_codebook_source_scope
     if effective_cb_source_scope is None:
@@ -2158,6 +2189,26 @@ def main():
     # line rather than after a multi-minute solve. An INACTIVE context (no
     # table / no SLOs) makes every downstream call a no-op that only stamps
     # "constraints were absent" — the pre-P5c behaviour, byte for byte.
+    measured_runtime_table = None
+    serve_slos = ServeSLOs(
+        p95_ttft_ms=args.slo_prefill_p95_ttft_ms,
+        p95_itl_ms=args.slo_decode_p95_itl_ms,
+        p05_tps=args.slo_decode_p05_tps,
+        device_budget_bytes=args.serve_device_budget_bytes,
+        kv_bytes=int(args.serve_kv_bytes or 0),
+        peak_scratch_bytes=int(args.serve_peak_scratch_bytes or 0),
+    )
+    if args.measured_runtime_table:
+        from .measured_runtime_prices import load_runtime_context, load_measured_runtime_table
+        try:
+            expected_runtime = load_runtime_context(args.measured_runtime_context)
+            with open(args.costs, "rb") as cost_file:
+                expected_cost_sha256 = hashlib.file_digest(cost_file, "sha256").hexdigest()
+            measured_runtime_table = load_measured_runtime_table(
+                args.measured_runtime_table, expected_context=expected_runtime,
+                expected_cost_sha256=expected_cost_sha256)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(f"[alloc] ERROR: measured runtime: {exc}") from None
     try:
         serve_dispatch = (
             load_dispatch_table(args.serve_dispatch_table)
@@ -2166,19 +2217,18 @@ def main():
         serve_context = ServeConstraintContext(
             table=serve_dispatch,
             mix=WorkloadMix.parse(args.serve_workload_mix),
-            slos=ServeSLOs(
-                p95_ttft_ms=args.slo_prefill_p95_ttft_ms,
-                p95_itl_ms=args.slo_decode_p95_itl_ms,
-                p05_tps=args.slo_decode_p05_tps,
-                device_budget_bytes=args.serve_device_budget_bytes,
-                kv_bytes=int(args.serve_kv_bytes or 0),
-                peak_scratch_bytes=int(args.serve_peak_scratch_bytes or 0),
-            ),
+            slos=ServeSLOs() if measured_runtime_table is not None else serve_slos,
         )
         serve_context.validate()
     except (DispatchTableError, ServeConstraintError) as exc:
         raise SystemExit(f"[alloc] ERROR: {exc}") from None
-    if serve_context.active:
+    serving_constraints_active = measured_runtime_table is not None or serve_context.active
+    if measured_runtime_table is not None:
+        print("[alloc] measured runtime search ACTIVE (research): exact discrete "
+              "bytes/quality/prefill/decode/residency frontier. Whole-operator sums "
+              "cannot certify p95 or end-to-end SLOs; fixed-teacher held-out KL "
+              "and end-to-end serving validation remain required.", flush=True)
+    elif serve_context.active:
         print(
             "[alloc] serving constraints ACTIVE (ultraplan P5c): table="
             f"{serve_dispatch.table_id!r} status={serve_dispatch.status!r}, "
@@ -2285,6 +2335,10 @@ def main():
         probe = pickle.load(f)
     with open(args.costs, "rb") as f:
         cost_data = pickle.load(f)
+        if measured_runtime_table is not None:
+            f.seek(0)
+            if hashlib.file_digest(f, "sha256").hexdigest() != expected_cost_sha256:
+                raise SystemExit("[alloc] ERROR: cost payload changed after measured runtime admission")
     validate_probe_payload(probe, args.probe)
     validate_cost_payload(cost_data, args.costs)
     # One DP prices in one currency: a cost table carrying Tessera-currency
@@ -2957,6 +3011,7 @@ def main():
         bit_precision=float(args.bit_precision),
         tessera_menu_report=tessera_menu_report,
         context_by_unit=tessera_context_by_unit,
+        **({"preserve_runtime_frontier": True} if measured_runtime_table is not None else {}),
     )
     print(f"[alloc] candidates built for {len(candidates)} Linears")
 
@@ -3357,7 +3412,8 @@ def main():
         stats, costs, candidates = aggregate_packed_serving_groups(
             stats, costs, specs_sorted, candidates, profile=model_profile,
             calibrated_gains=calibrated_gains,
-            activation_pricing=activation_pricing)
+            activation_pricing=activation_pricing,
+            **({"preserve_runtime_frontier": True} if measured_runtime_table is not None else {}))
         packed_groups = sum(
             1 for n in candidates if _PACKED_GROUP_MARKER in n)
         packed_member_rows = sum(
@@ -3389,7 +3445,8 @@ def main():
         stats, costs, candidates = aggregate_fused_siblings(
             stats, costs, specs_sorted, candidates, profile=model_profile,
             calibrated_gains=calibrated_gains,
-            activation_pricing=activation_pricing)
+            activation_pricing=activation_pricing,
+            **({"preserve_runtime_frontier": True} if measured_runtime_table is not None else {}))
         sib_groups = sum(1 for n in candidates if _FUSED_SIBLING_MARKER in n)
         print(f"[alloc] fused-sibling aggregation: {sib_groups} groups "
               f"(qkv_proj / gate_up_proj / ...)")
@@ -3434,6 +3491,7 @@ def main():
         candidates, stats,
         bit_precision=float(args.bit_precision),
         report=tessera_menu_report_agg,
+        **({"preserve_runtime_frontier": True} if measured_runtime_table is not None else {}),
     )
 
     post_aggregation_availability = {
@@ -3549,6 +3607,59 @@ def main():
             legal_formats=per_linear_legal_formats,
         )
 
+    measured_runtime_resources = {}
+    measured_option_assignments = {}
+    if measured_runtime_table is not None:
+        from dataclasses import replace
+        from .measured_runtime_prices import RuntimeBinding, build_runtime_resources
+        from .joint_aura import validate_joint_aura_entry
+        try:
+            if dict(measured_runtime_table.fixed_assignment) != fixed_format_assignment:
+                raise ValueError("measured table fixed auxiliary assignment differs "
+                                 "from allocator fixed formats/source visual overrides")
+            expected_bindings = {}
+            for unit, options in sorted(candidates.items()):
+                for option in options:
+                    if option.serialized_sidecar_identity is not None:
+                        raise ValueError("measured runtime search requires additive serialized "
+                                         "candidate bytes; shared candidate sidecars are unsupported")
+                    members = expand_fused_sibling_assignment(
+                        expand_packed_group_assignment({unit: option.fmt}, stats), stats)
+                    measured_option_assignments[(unit, option.fmt)] = members
+                    identities = {}
+                    shapes = {}
+                    for name, fmt in members.items():
+                        row = cost_data["costs"].get(name, {}).get(fmt, {})
+                        digest = row.get("joint_operator_identity_sha256")
+                        if not validate_joint_aura_entry(row) or not digest:
+                            raise ValueError(f"{name}:{fmt}: measured runtime requires "
+                                             "an identity-bound joint AURA cost row")
+                        probe_identity = row["probe_identity"]
+                        if (probe_identity["calibration_sha256"] != measured_runtime_table.context.calibration_sha256
+                                or probe_identity["source_model"]["content_sha256"] != measured_runtime_table.context.source_sha256):
+                            raise ValueError(f"{name}:{fmt}: measured runtime source/calibration "
+                                             "differs from the joint AURA evidence")
+                        identities[name] = digest
+                        entry = _stats_entry_for_assignment_name(name)
+                        if entry is None:
+                            raise ValueError(f"{name}: measured runtime has no independent shape")
+                        shapes[name] = _shape_from_stats(entry)
+                        if tuple(row["joint_operator_identity"]["source_weight"]["shape"]) != shapes[name]:
+                            raise ValueError(f"{name}:{fmt}: joint AURA shape differs from probe stats")
+                    expected_bindings[(unit, option.fmt)] = RuntimeBinding(
+                        member_formats=members,
+                        member_operator_identity_sha256=identities,
+                        member_shapes=shapes,
+                        operator_route=measured_runtime_table.context.operator_route(unit, option.fmt),
+                    )
+            measured_runtime_resources = build_runtime_resources(
+                measured_runtime_table,
+                {unit: [replace(option, member_formats=measured_option_assignments[(unit, option.fmt)])
+                        for option in options] for unit, options in candidates.items()},
+                expected_bindings=expected_bindings)
+        except (ValueError, KeyError) as exc:
+            raise SystemExit(f"[alloc] ERROR: measured runtime: {exc}") from None
+
     _serve_lane_cache: dict[tuple, object] = {}
 
     def _serve_lane_for(name: str, fmt: str):
@@ -3584,6 +3695,19 @@ def main():
         accounting uses, so a super-item-expanded name resolves to real
         parameter counts (the aggregation is parameter-share weighted).
         """
+        if measured_runtime_table is not None:
+            try:
+                return evaluate_measured_assignment(
+                    expanded_assignment,
+                    option_assignments=measured_option_assignments,
+                    resources=measured_runtime_resources,
+                    fixed_assignment=fixed_format_assignment,
+                    fixed_resources=measured_runtime_table.fixed_resources,
+                    slos=serve_slos,
+                    table_identity=measured_runtime_table.identity(),
+                )
+            except ServeConstraintError as exc:
+                raise SystemExit(f"[alloc] ERROR: measured runtime: {exc}") from None
         return evaluate_serve_constraints(
             expanded_assignment,
             {**accounting_stats, **fixed_stats, **stats},
@@ -3712,6 +3836,62 @@ def main():
     def _solve_for_target_uncached(target_bits: float):
         requested_target = float(target_bits)
         mutable_target_bits = requested_target
+        if measured_runtime_table is not None:
+            from .allocator_solver import solve_runtime_frontier
+            fixed = measured_runtime_table.fixed_resources
+            fixed_device = (fixed.resident_bytes + fixed.activation_bytes
+                            + fixed.peak_scratch_bytes + fixed.kv_bytes
+                            + serve_slos.kv_bytes + serve_slos.peak_scratch_bytes)
+            max_prefill = serve_slos.p95_ttft_ms - fixed.prefill_ms
+            max_decode = None
+            if serve_slos.p95_itl_ms is not None:
+                if fixed.decode_ms is None:
+                    raise SystemExit("[alloc] ERROR: fixed runtime decode work is unpriced")
+                max_decode = serve_slos.p95_itl_ms - fixed.decode_ms
+            diag = {"solver_contract": "exact_discrete_runtime_frontier_then_expanded_assignment_check",
+                    "global_optimality_claimed": False, "solver_calls": 1,
+                    "exact_filter_trace": []}
+            _solve_diagnostics[round(requested_target, 9)] = diag
+            if (requested_target < 0 or max_prefill < 0
+                    or (max_decode is not None and max_decode < 0)):
+                diag["reason"] = "fixed_runtime_resources_exceed_budget"
+                return None, float("nan"), float("inf"), float("inf")
+            start = _time.perf_counter()
+            try:
+                frontier = solve_runtime_frontier(
+                    candidates, measured_runtime_resources,
+                    max_memory_bytes=math.floor(requested_target * mutable_total_params / 8),
+                    max_prefill_ms=max_prefill, max_decode_ms=max_decode,
+                    max_device_bytes=serve_slos.device_budget_bytes,
+                    fixed_device_bytes=fixed_device, diagnostics=diag)
+            except (ValueError, RuntimeError) as exc:
+                raise SystemExit(f"[alloc] ERROR: measured runtime search: {exc}") from None
+            diag["solver_seconds"] = _time.perf_counter() - start
+            for proposal in frontier:
+                raw_expanded = {}
+                for unit, fmt in proposal.assignment.items():
+                    raw_expanded.update(measured_option_assignments[(unit, fmt)])
+                raw_expanded.update(fixed_format_assignment)
+                expanded = _expand_assignment_for_seed_json(proposal.assignment)
+                if expanded != raw_expanded:
+                    raise SystemExit("[alloc] ERROR: serving promotion changed a measured "
+                                     "runtime proposal; aggregate coupled units and measure "
+                                     "their exact whole-operator options before selection")
+                exact = _assignment_payload_totals(
+                    {name: fmt for name, fmt in expanded.items()
+                     if name not in fixed_format_assignment}, require_all_stats=True)
+                achieved = float(exact["bits_per_param"])
+                verdict = _serve_feasibility(expanded)
+                feasible = achieved <= requested_target and verdict.feasible
+                diag["exact_filter_trace"].append({
+                    "exact_assignment_payload_bpp": achieved,
+                    "feasible": feasible, "serve_constraints": verdict.as_dict()})
+                if feasible:
+                    diag["achieved_bits"] = achieved
+                    return (dict(proposal.assignment), achieved,
+                            proposal.predicted_dloss, proposal.predicted_dloss)
+            diag["reason"] = "no_runtime_frontier_assignment_passed_exact_checks"
+            return None, float("nan"), float("inf"), float("inf")
         if mutable_total_params <= 0:
             if fixed_total_params > 0 and mutable_target_bits >= 0.0:
                 return {}, 0.0, 0.0, 0.0
@@ -4271,6 +4451,8 @@ def main():
                 **({
                     "whole_artifact_budget": record_budget_stamp,
                 } if record_budget_stamp is not None else {}),
+                **({"serve_constraints": _serve_feasibility(assignment).as_dict()}
+                   if measured_runtime_table is not None else {}),
             }
             path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
             manifest_rows.append({
@@ -4802,7 +4984,7 @@ def main():
 
         def _record_serve(cand, target: float, stage: str) -> None:
             """Note a probe's serving verdict; nothing when constraints are off."""
-            if cand is None or not serve_context.active:
+            if cand is None or not serving_constraints_active:
                 return
             serve = cand["serve"]
             serve_probe_rows.append({
@@ -4854,7 +5036,7 @@ def main():
                     "serve_violated_constraints": (
                         list(cand["serve"].violation_names())
                         if cand is not None else None),
-                } if serve_context.active else {}),
+                } if serving_constraints_active else {}),
             })
             if accepted:
                 best, emit_target = cand, float(target)
@@ -5069,6 +5251,10 @@ def main():
                         chosen_info["serve"].binding_constraint),
                     "fastest_feasible_reference": fastest_feasible_summary(
                         serve_probe_rows,
+                        prediction_metrics=(
+                            ("operator_sum_prefill_ms", "operator_sum_decode_ms")
+                            if measured_runtime_table is not None
+                            else ("p95_ttft_ms", "p95_itl_ms")),
                         scope_note=(
                             "Scope: the assignments this byte-budget ratchet "
                             "PROBED (grid rungs, the near-lossless cap, and "
@@ -5079,7 +5265,7 @@ def main():
                         ),
                     ),
                 }
-                if serve_context.active
+                if serving_constraints_active
                 else serve_context.stamp_inactive()
             ),
         })
@@ -5105,7 +5291,7 @@ def main():
             + f" -> {sel_path}",
             flush=True,
         )
-        if serve_context.active:
+        if serving_constraints_active:
             chosen_serve = chosen_info["serve"]
             print(
                 "[alloc] serving constraints: "
@@ -5130,6 +5316,11 @@ def main():
         # floor clears but serving-group promotion overshoots needs a slightly
         # looser target. The solver recorded both; report them.
         d = _solve_diagnostics.get(round(float(args.target_bits), 9), {})
+        if measured_runtime_table is not None:
+            raise SystemExit(
+                f"[alloc] measured runtime proposal infeasible at target_bits={args.target_bits}: "
+                f"{d.get('reason', 'no assignment meets the declared resource budgets')}. "
+                "Inspect the independent prefill/decode/device budgets and measured menu.")
         floor = d.get("min_bits")
         raise SystemExit(
             f"Infeasible at target_bits={args.target_bits}."
@@ -5351,9 +5542,9 @@ def main():
     # deployment constraint the operator stated. Inactive -> no evaluation, no
     # stamp, no behaviour change.
     final_serve_feasibility = None
-    if serve_context.active:
+    if serving_constraints_active:
         final_serve_feasibility = _serve_feasibility(
-            final_body_assignment,
+            assignment_expanded if measured_runtime_table is not None else final_body_assignment,
             resident_bytes=int(
                 round(float(final_body_payload["bits_total"]) / 8.0)),
         )
@@ -5533,6 +5724,11 @@ def main():
         **({
             "serve_constraints": final_serve_feasibility.as_dict(),
         } if final_serve_feasibility is not None else {}),
+        **({"measured_runtime_search": {
+                "research_only": True,
+                "promotion_status": "requires_fixed_teacher_and_end_to_end_validation",
+                "target_diagnostics": _solve_diagnostics.get(round(float(args.target_bits), 9), {}),
+            }} if measured_runtime_table is not None else {}),
     }
     # What this allocation carries about the priced expert population
     # (PrismaQuant #183): the campaign's population statement (which units

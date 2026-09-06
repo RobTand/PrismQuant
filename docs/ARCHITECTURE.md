@@ -3,6 +3,16 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for allocator CLI wiring
+of joint quality and measured runtime search (#237). `--measured-runtime-table`
+and `--measured-runtime-context` reuse the prefill/decode/device budget flags,
+preserve unpruned alternatives, bind source/calibration and operator recipes,
+and recheck the expanded assignment including fixed auxiliary resources.
+Legacy relative dispatch inputs are separate. Unsupported shared sidecars,
+changed promotion and missing measurements refuse. Final artifacts and
+Pareto seeds explicitly identify research operator-sum predictions without
+p95 or end-to-end certification. The default allocator path is unchanged.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA's resolved
 activation projection groups. Static served QDQ identity names the shared
 static owner and its actual no-preclip policy. Compatible candidates share

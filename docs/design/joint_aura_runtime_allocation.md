@@ -49,7 +49,10 @@ measurements. A throughput floor cannot be inferred from operator medians.
 
 The versioned table binds the actual cost-payload digest, source/calibration,
 GPU and full runtime identity, prompt length, batch, TP, graph/residency mode,
-and exact operator routes. Every row binds actual joint operator identities,
+and exact operator routes. `source_sha256` equals the streamed source model
+identity's `content_sha256`; `calibration_sha256` equals the joint AURA probe
+identity's calibration digest. The CLI compares these against the cost rows.
+Every row binds actual joint operator identities,
 member formats and shapes. Timings are repeated GPU measurements with raw
 receipt hashes; the stored price is their median. Fused-group options need
 whole-group timing. Encoder time, activation width and relative speed hints
