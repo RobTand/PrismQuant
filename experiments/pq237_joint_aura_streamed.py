@@ -118,6 +118,24 @@ def _probe_summary(values):
             "uncertainty_scope": "probe_sampling_conditional_on_fixed_calibration"}
 
 
+def unit_activation_source_recorder(captured_source, activation_source):
+    """Record only the activation source built for ``captured_source["unit"]``.
+
+    The encoder also builds unit-less sources while encoding (an empty one and
+    an identity probe, ``tessera_render._encoder_kwargs_for_plane``), AFTER
+    the renderer built the unit's own source. Keeping the last source handed
+    the probe to the wire receipt, which then refused for lack of an exact
+    Hessian key (PQ #261). Only the source carrying THIS unit's Hessian is the
+    production activation source the receipt must name.
+    """
+    def record(hessians, *args, **kwargs):
+        source = activation_source(hessians, *args, **kwargs)
+        if captured_source.get("unit") in hessians:
+            captured_source["value"] = source
+        return source
+    return record
+
+
 def retain_production_wire(weight, rendered, blob, *, qname, fmt, activation_source, wire_dir):
     """Retain the original bytes using the existing campaign/producer grammar."""
     from prismaquant.production_weight_cache import _cb_cache_tensor_identity
@@ -223,10 +241,7 @@ def _capture_and_render(model, calibration, plan, out, *, calibration_text):
     encode = render_owner.encode_tessera_unit
     activation_source = hessian_owner.activation_source
 
-    def record_activation_source(*args, **kwargs):
-        source = activation_source(*args, **kwargs)
-        captured_source["value"] = source
-        return source
+    record_activation_source = unit_activation_source_recorder(captured_source, activation_source)
 
     def record_encode(weight, fmt, **kwargs):
         rendered, blob = encode(weight, fmt, **kwargs)
@@ -246,6 +261,7 @@ def _capture_and_render(model, calibration, plan, out, *, calibration_text):
             for fmt in formats:
                 emitted.clear()
                 captured_source.clear()
+                captured_source["unit"] = name
                 with torch.no_grad():
                     rendered = render_production_weight(source, fmt, qname=name,
                                                         activations=activations, levers=levers)
