@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq183-tessera-reader`. Stamps
+As of: 2026-09-06 · `codex/pq262-static-anchor`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-06, `codex/pq262-static-anchor`) for streamed static
@@ -12,6 +12,22 @@ fused-sibling maxima before scoring any member, so render batching/order cannot
 change the activation identity consumed by joint AURA. Existing calibration,
 source, render-lever and transient-consumer bindings remain required; no new
 cache, serving route, numerical promotion or production default is introduced.
+
+Re-stamped (2026-09-06, `codex/237-paired-diagnostics`) for validated paired
+assignment diagnostics (#257, research groundwork for #237). The shared joint
+AURA row contract establishes probe/calibration/source/currency and actual
+operator bindings before covariance is reported as aligned. Legacy equal-length
+arrays retain an explicitly unverified diagnostic. Assignment comparisons
+declare additive unary loss or the quadratic of summed signed projections;
+unchanged units remain in the latter's cross terms. Empirical probe uncertainty
+conditional on fixed calibration and caller-supplied held-out sequence
+uncertainty stay separate. Measured KL must be finite, and its supplied standard
+error must be finite and nonnegative; finite negative sample KL estimates remain
+valid. The existing additivity report CLI exposes the
+comparison without allocator refinement or serving admission. Gates:
+`tests/test_joint_aura_assignment_diagnostics.py`,
+`tests/test_aura_additivity_identity.py`. See
+`docs/design/joint_aura_runtime_allocation.md`.
 
 Re-stamped (2026-09-06, `codex/lfm-mixed-preparation`) for the opt-in
 LFM full-body mixed-family sanity input preparation (#253). The producer's
