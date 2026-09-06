@@ -4355,7 +4355,7 @@ class TestNvfp4InputGlobalScale(unittest.TestCase):
                 enc._nvfp4_input_global_scale_from_max_abs(3.0),
                 7.25,
             )
-            resolve.assert_called_once_with()
+            resolve.assert_called_once_with(None)
             calibrate.assert_called_once_with(
                 3.0,
                 policy=policy,
