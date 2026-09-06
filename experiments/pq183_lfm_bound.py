@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,23 @@ EXPECTED_UNITS = {f"{STACK}.{expert}.{role}" for expert in range(32)
                   for role in ("w1", "w3", "w2")}
 SCOPE = ["--tessera-platform", "sm_121", "--tessera-runtime-image", IMAGE,
          "--tessera-execution-mode", "eager", "--tessera-residency", "resident"]
+
+# Actual direct dependencies of tessera_campaign.main/_calibration_tokens and
+# the existing cached-export/wire-audit handoff. Importing them performs no
+# checkpoint construction, calibration draw, encoding or CUDA work.
+PRODUCER_DEPENDENCIES = {
+    "datasets": ("load_dataset",),
+    "torch": ("Generator", "bfloat16", "cuda"),
+    "transformers": ("AutoModelForCausalLM", "AutoTokenizer"),
+    "numpy": ("ndarray",),
+    "safetensors": ("safe_open",),
+    "safetensors.torch": ("load_file", "save_file"),
+    "tessera.export": ("ActivationSource", "encode_linear_planes"),
+    "tessera.cached_unit": ("make_unit_record", "verify_cached_unit"),
+    "tessera.fused": ("parse_fused",),
+    "prismaquant.tessera_campaign": ("main", "_calibration_tokens"),
+    "prismaquant.tessera_export_lane": ("main",),
+}
 
 
 def require(condition, message):
@@ -94,6 +112,7 @@ def payload(args):
 
 
 def campaign(args):
+    producer_preflight(args)
     validate_topology(args)
     require(not (args.out / "cost.pkl").exists(), "campaign output exists; use a new attempt")
     run(args, [sys.executable, "-m", "cProfile", "-o", args.out / "campaign.pstats",
@@ -104,6 +123,29 @@ def campaign(args):
                "--nsamples", 8, "--seqlen", 512, "--seed", 0,
                "--max-act-rows", 512, "--layer-stride", 12,
                "--hessian", "require", "--tp-degree", 1, *SCOPE], "campaign")
+
+
+def producer_preflight(args):
+    """Refuse unavailable campaign APIs before constructing the full model."""
+    record = {"schema": "prismaquant.pq183-producer-dependencies.v1",
+              "checked_unix": time.time(), "modules": {}, "problems": [],
+              "checkpoint_construction_attempted": False,
+              "calibration_contract": "unchanged tessera_campaign._calibration_tokens"}
+    for name, symbols in PRODUCER_DEPENDENCIES.items():
+        entry = record["modules"][name] = {"required_symbols": list(symbols)}
+        try:
+            module = importlib.import_module(name)
+            missing = [symbol for symbol in symbols if not hasattr(module, symbol)]
+            require(not missing, f"{name}: missing required APIs {missing}")
+            entry.update(imported=True, version=getattr(module, "__version__", None),
+                         source=getattr(module, "__file__", None))
+        except Exception as exc:
+            entry.update(imported=False, error=repr(exc))
+            record["problems"].append(f"{name}: {exc}")
+    record["passed"] = not record["problems"]
+    write(args.out / "producer-dependencies.json", record)
+    require(record["passed"], "producer dependency preflight failed before model load: "
+            + "; ".join(record["problems"]))
 
 
 def allocate(args):
@@ -643,7 +685,8 @@ def host(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("host", "producer", "campaign", "build", "seal", "check", "commands"))
+    parser.add_argument("stage", choices=("host", "producer", "producer-preflight", "campaign",
+                                           "build", "seal", "check", "commands"))
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--tessera-repo", type=Path, required=True)
@@ -670,7 +713,7 @@ def main():
          os.environ.get("PYTHONPATH", "")])
     os.environ["TESSERA_REPO"] = str(args.tessera_repo)
     os.environ["TESSERA_COMMIT"] = args.tessera_commit
-    return globals()[args.stage](args)
+    return globals()[args.stage.replace("-", "_")](args)
 
 
 if __name__ == "__main__":

@@ -213,3 +213,43 @@ payload is
 The three absolute calibration symlinks were removed only while each PB input
 was sealed and restored immediately afterward. GPU execution is still pending
 the coordinator's combined-source admission.
+
+## Producer dependency preflight after the first actual attempt
+
+The first actual attempt reached model construction before discovering that
+the producer image lacked `datasets`: the import lives inside the campaign's
+`_calibration_tokens`, after model loading. The opt-in driver now checks the
+actual calibration/campaign/export dependency APIs before calling the campaign
+entry point. Its `producer-dependencies.json` records module source paths,
+available versions, required APIs and every failure. Missing dependencies or
+APIs raise before checkpoint construction; no alternate calibration source,
+synthetic tokens or numerical fallback is introduced.
+
+`producer-preflight` is also an independent CLI stage with the usual model,
+output and pinned Tessera arguments. It imports and checks dependencies only;
+it does not load a checkpoint or sample the corpus. Use a fresh output directory
+for that check. The real campaign always performs it again, rather than trusting
+an earlier image's receipt. A successful check does not prove corpus download
+or tokenization; the derivative-image qualification separately runs the existing
+`_calibration_tokens` with the same 8 samples, sequence length 512 and seed zero.
+
+The ordering regression passed via CPU PB action
+`2117a64c17012a82085cd35b364d4000df89fa91bfb9487d145c0199f7d19360`
+(sparky, exit 0, 0.50 seconds, no skips, no GPU). Dependency fixtures demonstrate
+that missing `datasets` and a missing `load_dataset` API both prevent the
+campaign/model stage, while the available-dependency fixture reaches that stage
+only after every preflight import. Fixtures are explicitly not installed-package
+qualification. Terminal stdout and actual CAS payload
+`/mnt/shared/prismabuild-fleet/cas/blobs/cd/cdd06c484b6da83bca2713341f99d23ec2682825b8756fcb4d01d1bba281ddcf`
+were inspected (receipt
+`6b68923318bccfdb6a8d4811cfe660bda9bcc1e022453f0473ee100cf8eb9411`).
+The existing producer image identity constants remain unchanged in this fix;
+any derivative image must supply separately measured identity evidence before
+the next GPU admission.
+
+The final source syntax and successful standalone preflight return status also
+passed CPU PB action
+`cf9c2a2d70521c3011c58c312cc7dd2a18b004cd39571807a3f944fc54429093`
+(sparky, exit 0, no skips, dependency fixtures, no GPU). Its terminal/CAS payload
+was inspected at
+`/mnt/shared/prismabuild-fleet/cas/blobs/5a/5a76cd9d7c45e6e695f2f3d624dbb41bb5bfaf93ef4fc9793026f00c930823cc`.
