@@ -202,7 +202,8 @@ def _replay_down_proj_col_weights(
     else:
         top_k_index, _tw = _packed_router_topk(
             router, Xd, e_score_correction_bias=getattr(
-                parent_mod, "e_score_correction_bias", None))
+                parent_mod, "e_score_correction_bias", None),
+            expert_bias=getattr(parent_mod, "expert_bias", None))
     out = torch.zeros(E, inter, dtype=torch.float32, device=dev)
     hit = torch.zeros(E, dtype=torch.bool)
     for e in range(E):

@@ -1513,12 +1513,16 @@ def _packed_router_topk(
     router: nn.Module,
     hidden_states: torch.Tensor,
     e_score_correction_bias: torch.Tensor | None = None,
+    *,
+    expert_bias: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return (top_k_index, top_k_weights) for a Qwen/DeepSeek-style router.
 
     Some routers (HYV3TopKRouter) take the parent MoE block's
-    e_score_correction_bias buffer as a required positional — callers pass
-    it from ``parent_mod`` so routing matches the model's real forward."""
+    e_score_correction_bias buffer as a required positional. Newer LFM routers
+    similarly take the parent's expert_bias. Callers supply the original
+    buffer so capture and replay follow the model's real token assignments.
+    """
     import inspect
     try:
         fwd_params = inspect.signature(router.forward).parameters
@@ -1533,6 +1537,13 @@ def _packed_router_topk(
             hidden_states,
             e_score_correction_bias.to(hidden_states.device),
         )
+    elif "expert_bias" in fwd_params:
+        if expert_bias is None and getattr(router, "use_expert_bias", True):
+            raise ValueError(
+                f"{type(router).__name__}.forward requires expert_bias; "
+                "the parent module must supply it")
+        out = router(hidden_states, expert_bias=(
+            expert_bias.to(hidden_states.device) if expert_bias is not None else None))
     else:
         out = router(hidden_states)
     if isinstance(out, (tuple, list)):
@@ -1689,6 +1700,7 @@ def derive_per_expert_activations(
                 router, Xf,
                 e_score_correction_bias=getattr(
                     parent_mod, "e_score_correction_bias", None),
+                expert_bias=getattr(parent_mod, "expert_bias", None),
             )
         expert_mask = F.one_hot(
             top_k_index.to(torch.long), num_classes=num_experts).permute(2, 1, 0)
@@ -1835,6 +1847,7 @@ def _measure_packed_experts(
                             router, X,
                             e_score_correction_bias=getattr(
                                 parent_mod, "e_score_correction_bias", None),
+                            expert_bias=getattr(parent_mod, "expert_bias", None),
                         )
                     y_ref = _packed_experts_forward_with_weights(
                         experts_mod,

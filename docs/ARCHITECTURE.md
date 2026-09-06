@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq208-stack-contract`. Stamps
+As of: 2026-09-05 · `codex/pq183-parent-router-bias`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/pq183-router-bias`) for packed LFM routing
+compatibility (#183). Activation capture, packed-cost replay and empirical
+down-input statistics pass the parent MoE block's `expert_bias` to routers
+whose forward signature declares it, alongside existing HYV3
+`e_score_correction_bias` handling. A bias-enabled router without its required
+parent buffer fails before routing; explicitly bias-disabled LFM routers remain
+valid. Capture follows actual biased expert selection and gate weights rather
+than recomputing an uncorrected assignment. Gate:
+`tests/test_lfm_parent_router_bias.py`, including the real Transformers 5.15.1
+router and derived input rows.
 
 Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for the opt-in paired
 stack treatment contract: validation manifest v2 declares one immutable image
