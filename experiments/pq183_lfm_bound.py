@@ -236,9 +236,7 @@ def export_from_build(args, hessian, build_sha):
     """The existing plan/export/seal handoff, also used by a frozen continuation."""
     build_record = read(args.out / "build.json")
     require(build_record.get("cached_expert_units"), "preflight did not bind cached expert units")
-    run(args, [sys.executable, args.tessera_repo / "experiments/plan_from_layer_config.py",
-               args.out / "layer_config.json", args.model, args.out / "plan.json",
-               "--cover", "as-allocated", "--prismaquant", REPO], "plan")
+    serving_plan_from_projection(args, build_record)
     run(args, [sys.executable, args.tessera_repo / "experiments/export_tessera_serving.py",
                args.model, args.out / "exported", "--plan-json", args.out / "plan.json",
                "--priced-inputs", args.out / "build.json",
@@ -246,6 +244,72 @@ def export_from_build(args, hessian, build_sha):
                "--hessian", hessian, "--cached-expert-units", build_record["cached_expert_units"],
                "--device", "cuda"], "export")
     seal(args)
+
+
+def serving_plan_from_projection(args, build_record):
+    """Use the producer's stack unit and source classification, without allocation."""
+    from prismaquant.layer_config import load_assignment
+    from prismaquant.tessera_expert_projection import PROJECTION_KEY, stack_plan_request
+    from prismaquant.tessera_formats import parse_tessera_format_name
+
+    sys.path.insert(0, str(args.tessera_repo / "experiments"))
+    import export_tessera_serving as producer
+    require(Path(producer.__file__).resolve() ==
+            (args.tessera_repo / "experiments/export_tessera_serving.py").resolve(),
+            "serving plan imported a different producer checkout")
+    assignment_path = args.out / "layer_config.json"
+    assignment_sha = sha(assignment_path)
+    assignment = load_assignment(assignment_path)
+    metadata = read(assignment_path)["__prismaquant__"]
+    carried = metadata[PROJECTION_KEY]["producer"]
+    formats = metadata["tessera_expert_stack_formats"]
+    require(formats == build_record["tessera_expert_stack_formats"]
+            == {STACK: "TESSERA_E4M3_K1_R1024"}, "shared build stack assignment drift")
+    require({name for name, fmt in assignment.items() if fmt != "BF16"} == EXPECTED_UNITS
+            and all(assignment[name] == formats[STACK] for name in EXPECTED_UNITS),
+            "serving plan changed the fixed selected/unpriced assignment")
+    require(set(carried["stacks"]) == {STACK}, "cached producer stack population drift")
+    for name, record in carried["stacks"].items():
+        parsed = parse_tessera_format_name(formats[name])
+        require(parsed is not None and record["q256"] == parsed[1]
+                and record["grid"] == parsed[0].payload_grid().name,
+                "cached producer grid/rung differs from the selected format")
+    request = stack_plan_request({name: (record["grid"], record["q256"])
+                                  for name, record in carried["stacks"].items()})
+    require(all(request[name]["source_layout"] == record["source_layout"]
+                for name, record in carried["stacks"].items()), "cached producer source layout drift")
+    shards, dense, packed, routed = producer.quantizable(args.model)
+    unpacked_stacks = producer.expert_stacks(routed)
+    packed_stacks = producer.packed_expert_stacks(packed)
+    require(not set(unpacked_stacks) & set(packed_stacks), "ambiguous packed/unpacked source stacks")
+    all_stacks = set(unpacked_stacks) | set(packed_stacks)
+    require(set(request) <= all_stacks, "selected stack is absent from producer source roster")
+    projected = producer.project_expert_plan({**dense, **packed, **routed},
+                                            read(args.model / "config.json"), request)
+    require(projected == {key: value for key, value in carried.items() if key != "source"},
+            "producer source projection differs from the priced projection")
+    selected_tensors = {unit["tensor"] for record in projected["stacks"].values()
+                        for unit in record["units"]}
+    require(selected_tensors == {name + ".weight" for name in EXPECTED_UNITS},
+            "producer plan does not cover exactly the 96 priced matrices")
+    routers = {name for name in dense if producer.MOE_ROUTER.match(name)}
+    plan = {name: "BF16" for name in dense if name not in routers}
+    plan.update({name: "BF16" for name in sorted(all_stacks - set(request))})
+    plan.update(request)
+    require(not set(plan) & (set(routed) | set(packed) | routers),
+            "serving plan contains a routed leaf, packed tensor or router override")
+    require(sha(assignment_path) == assignment_sha, "assignment changed while building serving plan")
+    write(args.out / "plan.json", plan)
+    write(args.out / "serving-plan-provenance.json", {
+        "schema": "prismaquant.pq183-projected-serving-plan.v1",
+        "layer_config_sha256": assignment_sha, "plan_sha256": sha(args.out / "plan.json"),
+        "source_shards": shards, "selected_stacks": sorted(request), "selected_units": len(selected_tensors),
+        "bf16_dense_tensors": sorted(set(dense) - routers),
+        "bf16_stacks": sorted(all_stacks - set(request)), "implicit_bf16_routers": sorted(routers),
+        "routed_source_tensors": sorted(routed), "packed_source_tensors": sorted(packed),
+        "producer_projection_equal": True, "assignment_unchanged": True,
+        "producer_source": carried["source"], "tessera_commit": TESSERA_COMMIT})
+    return plan
 
 
 def campaign_input_description(root, *, hash_files=True):
@@ -484,9 +548,13 @@ def wire_audit(args):
 
 def seal(args):
     from tessera.serving_parts import source_identity
+    from pq183_direct_export import supplement_direct_export
     audit = wire_audit(args)
     write(args.out / "wire-audit.json", audit)
-    manifest = read(args.out / "exported/tessera_serving_manifest.json")
+    source = read(args.out / "layer_config.json")["__prismaquant__"][
+        "tessera_expert_projection"]["producer"]["source"]
+    manifest = supplement_direct_export(args, expected_source=source,
+        producer_image_id=PRODUCER_IMAGE, serving_target_image=IMAGE, tessera_commit=TESSERA_COMMIT)
     write(args.out / "artifact-seal.json", {
         "checkpoint": str(args.out / "exported"),
         "checkpoint_identity": source_identity(args.out / "exported"),
@@ -778,6 +846,7 @@ def host(args):
                   if args.campaign_input else []),
                 "-v", f"{args.out}:{args.out}", "-w", str(REPO),
                 "-e", "OMP_NUM_THREADS=1", "-e", "MKL_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1",
+                "-e", f"TESSERA_GIT={TESSERA_COMMIT}",
                 "-e", "MAX_JOBS=4", "-e", "CMAKE_BUILD_PARALLEL_LEVEL=4",
                 "-e", "NINJAFLAGS=-j4", "-e", "MAKEFLAGS=-j4",
                 "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONNOUSERSITE=1",
@@ -932,6 +1001,7 @@ def main():
          os.environ.get("PYTHONPATH", "")])
     os.environ["TESSERA_REPO"] = str(args.tessera_repo)
     os.environ["TESSERA_COMMIT"] = args.tessera_commit
+    os.environ["TESSERA_GIT"] = args.tessera_commit
     return globals()[args.stage.replace("-", "_")](args)
 
 

@@ -74,6 +74,8 @@ class ContinuationTests(unittest.TestCase):
                     campaign_input_manifest=self.seal, campaign_input_manifest_sha256=self.ns["sha"](self.seal),
                     model=Path("/model"))
         self.host_source = "b" * 40
+        self.pq_package = types.ModuleType("prismaquant")
+        self.pq_package.__path__ = [str(Path(__file__).resolve().parents[1] / "prismaquant")]
         (self.out / "host-status.json").write_text(json.dumps({
             "schema": "prismaquant.pq183-host-observation.v1", "source_snapshot": self.host_source,
             "campaign_source_snapshot": "a" * 40,
@@ -209,6 +211,109 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual(before, self.ns["verify_campaign_inputs"](self.args))
         self.assertEqual(json.loads((self.out / "continuation.json").read_text())[
             "continuation_source_snapshot"], self.host_source)
+
+    def plan_fixture(self):
+        self.args.model = self.base / "model"
+        self.args.model.mkdir()
+        (self.args.model / "config.json").write_text("{}")
+        self.args.tessera_repo = self.base / "tessera"
+        units = [{"tensor": name + ".weight"} for name in sorted(self.ns["EXPECTED_UNITS"])]
+        self.projected = {"schema": "tessera.expert_projection.v1", "stacks": {
+            self.ns["STACK"]: {"grid": "E4M3", "q256": 1024,
+                               "source_layout": "unpacked_per_expert", "units": units}}}
+        meta = self.assignment["__prismaquant__"]
+        meta["tessera_expert_projection"] = {"producer": {**self.projected, "source": {"fixture": "source"}}}
+        self.other_stack = "model.layers.14.feed_forward.experts"
+        self.router = "model.layers.13.feed_forward.gate.weight"
+        self.dense = "model.layers.0.feed_forward.w1.weight"
+        self.routed = {unit["tensor"]: (32, 32) for unit in units}
+        self.routed[self.other_stack + ".0.w1.weight"] = (32, 32)
+        (self.out / "layer_config.json").write_text(json.dumps(self.assignment))
+        self.plan_build = {"tessera_expert_stack_formats": meta["tessera_expert_stack_formats"]}
+        producer = types.SimpleNamespace(
+            __file__=str(self.args.tessera_repo / "experiments/export_tessera_serving.py"),
+            quantizable=lambda _: (["model.safetensors"], {self.router: (32, 32), self.dense: (32, 32)}, {}, self.routed),
+            expert_stacks=lambda _: {self.ns["STACK"]: {}, self.other_stack: {}},
+            packed_expert_stacks=lambda _: {},
+            project_expert_plan=lambda *args: json.loads(json.dumps(self.projected)),
+            MOE_ROUTER=self.g["re"].compile(self.g["re"].escape(self.router) + "$"))
+        family = types.SimpleNamespace(payload_grid=lambda: types.SimpleNamespace(name="E4M3"))
+        formats = types.SimpleNamespace(parse_tessera_format_name=lambda _: (family, 1024))
+        return patch.dict("sys.modules", {"prismaquant": self.pq_package,
+                          "prismaquant.tessera_formats": formats, "export_tessera_serving": producer})
+
+    def test_serving_plan_uses_stack_and_preserves_unpriced_population(self):
+        with self.plan_fixture():
+            original = (self.out / "layer_config.json").read_bytes()
+            plan = self.ns["serving_plan_from_projection"](self.args, self.plan_build)
+        self.assertEqual(plan, {self.ns["STACK"]: {"grid": "E4M3", "q256": 1024,
+                              "source_layout": "unpacked_per_expert"},
+                              self.other_stack: "BF16", self.dense: "BF16"})
+        self.assertFalse(set(plan) & set(self.routed))
+        self.assertNotIn(self.router, plan)
+        self.assertEqual((self.out / "layer_config.json").read_bytes(), original)
+        receipt = json.loads((self.out / "serving-plan-provenance.json").read_text())
+        self.assertEqual(receipt["selected_units"], 96)
+        self.assertEqual(receipt["implicit_bf16_routers"], [self.router])
+        self.assertEqual(receipt["plan_sha256"], self.ns["sha"](self.out / "plan.json"))
+
+    def test_serving_plan_refuses_changed_rung(self):
+        with self.plan_fixture():
+            self.projected["stacks"][self.ns["STACK"]]["q256"] = 2048
+            (self.out / "layer_config.json").write_text(json.dumps(self.assignment))
+            with self.assertRaisesRegex(ValueError, "grid/rung differs"):
+                self.ns["serving_plan_from_projection"](self.args, self.plan_build)
+        self.assertFalse((self.out / "plan.json").exists())
+
+    def test_serving_plan_refuses_incomplete_projection(self):
+        with self.plan_fixture():
+            self.projected["stacks"][self.ns["STACK"]]["units"].pop()
+            (self.out / "layer_config.json").write_text(json.dumps(self.assignment))
+            with self.assertRaisesRegex(ValueError, "exactly the 96 priced"):
+                self.ns["serving_plan_from_projection"](self.args, self.plan_build)
+        self.assertFalse((self.out / "plan.json").exists())
+
+    def test_direct_manifest_is_finalized_before_seal_and_teacher_check(self):
+        source, checkpoint = {"fixture": "teacher"}, {"fixture": "checkpoint"}
+        self.assignment["__prismaquant__"]["tessera_expert_projection"] = {
+            "producer": {"source": source}}
+        (self.out / "layer_config.json").write_text(json.dumps(self.assignment))
+        exported = self.out / "exported"
+        exported.mkdir()
+        (exported / "tessera_serving_manifest.json").write_text(json.dumps({"source": str(self.args.model)}))
+        events = []
+        def supplement(args, **kwargs):
+            events.append("finalize")
+            self.assertEqual(kwargs["expected_source"], source)
+            self.assertEqual(kwargs["producer_image_id"], self.ns["PRODUCER_IMAGE"])
+            self.assertEqual(kwargs["serving_target_image"], self.ns["IMAGE"])
+            return {"export_identity": {"source": source}}
+        def identity(path):
+            self.assertIn("finalize", events)
+            return checkpoint if Path(path) == exported else source
+        modules = {"pq183_direct_export": types.SimpleNamespace(supplement_direct_export=supplement),
+                   "tessera.serving_parts": types.SimpleNamespace(source_identity=identity),
+                   "tessera.serving.contract": types.SimpleNamespace(derive_smoke_status=lambda _: "recorded"),
+                   "tessera.serving.build_identity": types.SimpleNamespace(
+                       is_complete=lambda _: True, incomplete_reason=lambda _: "")}
+        (self.out / "census").mkdir()
+        (self.out / "census/check.json").write_text(json.dumps({"verdict": "passed", "require_attested": True}))
+        smoke = self.out / "smoke"
+        smoke.mkdir()
+        (smoke / "pair.json").write_text(json.dumps({"contract_record": {"record": True}}))
+        for arm, expected in (("bf16", source), ("tessera", checkpoint)):
+            (smoke / f"smoke_{arm}.build.json").write_text(json.dumps({"identity": {
+                "image": self.ns["IMAGE"], "eager": True, "compiled_forward": False, "serve_mode": "resident"}}))
+            for when in ("before", "after"):
+                (smoke / f"identity_{arm}_{when}.json").write_text(json.dumps(expected))
+        with patch.dict("sys.modules", modules), patch.dict(self.g, wire_audit=lambda _: {"passed": True}):
+            self.ns["seal"](self.args)
+            (smoke / "identity_bf16_before.json").write_text(json.dumps({"fixture": "wrong teacher"}))
+            with self.assertRaisesRegex(ValueError, "served checkpoint differs"):
+                self.ns["check"](self.args)
+            (smoke / "identity_bf16_before.json").write_text(json.dumps(source))
+            self.ns["check"](self.args)
+        self.assertTrue(json.loads((self.out / "artifact-after.json").read_text())["accepted"])
 
 
 if __name__ == "__main__":

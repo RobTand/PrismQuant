@@ -377,3 +377,29 @@ resolves the admitted snapshot before container launch, and the producer
 requires its schema, full snapshot ID, prior campaign snapshot and phase input
 manifest binding before any copied output or export. Missing or malformed
 identity refuses; the producer image and numerical environment stay unchanged.
+
+Attempt 07 reached the pinned planner, whose string branch accepts BF16 but
+classifies canonical Tessera rung strings as unsupported. A portable regression
+reproduced this seam. A dictionary-only adapter was considered, then superseded
+before execution: that planner emits routed leaf targets while the exporter and
+census require whole expert stacks. No dictionary-only export was qualified.
+
+The bounded handoff now uses the existing producer `quantizable`,
+`expert_stacks`, `packed_expert_stacks` and `project_expert_plan` APIs with
+PrismaQuant's `stack_plan_request`. The shared parsed format must agree with
+cached grid/rung, and the newly projected stack must equal the immutable priced
+projection with exactly 96 matrices. The plan names the selected stack once,
+keeps all other producer-discovered stacks and ordinary dense weights explicitly
+BF16, and records routers as the producer's implicit BF16 population. It never
+names a routed leaf, packed source tensor or router as an override. Original
+assignment and calibration bytes remain unchanged; plan provenance records
+source populations, full producer pin and assignment/plan hashes.
+
+Direct-export manifest finalization is a separate bounded helper invoked after
+the actual wire audit and before artifact sealing. It retains the producer's
+raw manifest and supplies transparent direct-export identity for the unchanged
+census gate; actual producer image and serving target stay separate. The host
+passes the full pinned `TESSERA_GIT` to the producer. Offline fixtures exercise
+stack-plan translation, corruption refusal and direct-shaped seal/teacher-check
+handoff; actual producer classification, export bytes and serving remain gated
+by the next admitted continuation.
