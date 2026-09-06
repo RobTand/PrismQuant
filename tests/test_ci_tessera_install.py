@@ -71,13 +71,18 @@ def test_ci_pin_step_propagates_resolver_status(tmp_path, job_name, valid_pin):
         f"TESSERA_DEV_PIN_COMMIT = {pin!r}\n", encoding="utf-8"
     )
     output = tmp_path / "github-output"
+    # setup-python supplies this name on CI. Reproduce that contract even
+    # when the local interpreter is only installed as python3.
+    python_bin = tmp_path / "bin"
+    python_bin.mkdir()
+    (python_bin / "python").symlink_to(sys.executable)
     completed = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
         cwd=tmp_path,
         env={
             **os.environ,
             "GITHUB_OUTPUT": str(output),
-            "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+            "PATH": f"{python_bin}{os.pathsep}{os.environ['PATH']}",
         },
         capture_output=True,
         text=True,
