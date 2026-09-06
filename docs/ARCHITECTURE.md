@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq183-coverage`. Stamps
+As of: 2026-09-05 · `codex/pq208-preflight-receipts`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for retained
+paired-client preflight evidence and the opt-in `--stack-preflight` diagnostic
+(#208). The client writes its raw observed server manifest before any
+identity refusal. The paired controller's diagnostic reuses the same frozen
+inputs, sequential servers, warmups and owned-container cleanup, but runs no
+policy/PPL clients and ends as `preflight_completed`, never a completed
+validation. Raw full performance fingerprints and all pairing guards remain
+unchanged. This diagnoses cross-arm stack differences without repeating
+the control's cap search.
 
 Re-stamped (2026-09-05, `codex/pq183-measurement`) for Tessera campaign
 population v2 (#183). Enumerated targets and emitted prices are distinct:

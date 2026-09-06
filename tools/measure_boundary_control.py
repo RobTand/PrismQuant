@@ -78,6 +78,12 @@ def main(argv=None):
     artifact_pre, weight_stats_pre = _capture_artifact(args.model_dir)
     before = sf.collect_manifest(image=args.image, base_url=args.base_url,
                                  attestation_phase="pre")
+    # A refused pairing still needs the actual observed stack for diagnosis.
+    # This raw preflight is not a completed measurement receipt, and a fresh
+    # exclusive file prevents a new attempt from overwriting old evidence.
+    with output.with_name(output.stem + "-serve-pre.json").open("x") as stream:
+        json.dump(before, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        stream.write("\n")
     if not before["residency_readable"] or not before.get("serve_session_id"):
         raise ValueError("serve process/residency attestation is incomplete")
     model = before["models_endpoint_binding"]["model"]

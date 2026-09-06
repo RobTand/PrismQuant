@@ -124,3 +124,25 @@ def test_offline_replay_refuses_content_manifest_inconsistent_with_identity(camp
     manifest["files"][weight.name]["sha256"] = "b" * 64
     with pytest.raises(ValueError, match="artifact_id"):
         bc.replay_control(measurement)
+
+
+def test_pairing_refusal_preserves_the_observed_candidate_preflight(campaign, monkeypatch):
+    model, _weight, run, _post, requests = campaign
+    control = run("control.json")
+    observed = copy.deepcopy(control["serve_pre"])
+    observed["performance_stack_fingerprint"] = "b" * 64
+    monkeypatch.setattr(sf, "collect_manifest", lambda **_kwargs: copy.deepcopy(observed))
+    requests.clear()
+    output = model.parent / "candidate.json"
+    with pytest.raises(ValueError, match="paired serve_fingerprint differs"):
+        tool.main([
+            "candidate", "--base-url", "http://fixture", "--model-name", "nonce",
+            "--model-dir", str(model), "--image", "fixture@sha256:" + "a" * 64,
+            "--control", str(model.parent / "control.json"),
+            "--campaign-id", "same-campaign", "--out", str(output),
+        ])
+    assert not output.exists()
+    assert not any(url.endswith("/chat/completions") for url in requests)
+    retained = output.with_name("candidate-serve-pre.json")
+    assert retained.exists(), "pairing refusal lost its observed server manifest"
+    assert json.loads(retained.read_text()) == observed

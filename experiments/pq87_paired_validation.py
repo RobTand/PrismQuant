@@ -226,6 +226,7 @@ def inside(args):
     _root, _client, _bc = instrument.bootstrap()
     import serve_fingerprint as sf
     manifest = validate_manifest(json.loads(Path("/run/manifest.json").read_text()))
+    stack_preflight = getattr(args, "stack_preflight", False)
     deadline = time.monotonic() + args.seconds
     signal.signal(signal.SIGTERM, _interrupt)
     status = {"status": "inconclusive", "advisory_only": True, "started": time.time(), "phases": {}}
@@ -267,7 +268,12 @@ def inside(args):
                     endpoint = "completions" if raw else "chat/completions"
                     instrument.dump(Path(f"/run/warm-{role}-{raw}.json"), instrument._http(
                         "http://127.0.0.1:8187/v1/" + endpoint, body, timeout=min(60, instrument.remaining(deadline))))
-                for population in ("screen", "heldout", "ppl"):
+                if stack_preflight:
+                    observed = sf.collect_manifest(image=manifest["image"],
+                        base_url="http://127.0.0.1:8187", attestation_phase="pre")
+                    instrument.dump(Path(f"/run/{role}-stack-preflight.json"), observed)
+                    role_status["stack_preflight"] = observed["performance_stack_fingerprint"]
+                for population in (() if stack_preflight else ("screen", "heldout", "ppl")):
                     instrument.dump(Path("/run/inside-status.json"), status)
                     with open(f"/run/{role}-{population}-client.log", "x") as client_log:
                         result = subprocess.run([sys.executable, "-P", __file__, "--client", "--role", role,
@@ -293,7 +299,7 @@ def inside(args):
                 # The subsequent arm must not coexist with an orphaned engine.
                 if sf.find_server_pids():
                     raise ValueError(f"{role} left a serving process after shutdown")
-        status["status"] = "completed"
+        status["status"] = "preflight_completed" if stack_preflight else "completed"
     except BaseException as exc:
         status["error"] = repr(exc)
     finally:
@@ -393,6 +399,8 @@ def host(args):
             "--entrypoint", "/usr/bin/env", manifest["image"], "-u", "PYTHONPATH", "python3", "-P",
             "/repo/experiments/pq87_paired_validation.py", "--inside", "--seconds",
             str(max(1, int(instrument.remaining(deadline)) - 30)), "--nonce", out.name]
+        if getattr(args, "stack_preflight", False):
+            command.append("--stack-preflight")
         status["docker_argv"] = command
         instrument.dump(out / "campaign.json", status)
         with (out / "container.log").open("x") as log:
@@ -425,6 +433,8 @@ def main():
     parser.add_argument("--population", choices=("screen", "heldout", "ppl"))
     parser.add_argument("--nonce")
     parser.add_argument("--seconds", type=int)
+    parser.add_argument("--stack-preflight", action="store_true",
+                        help="warm both servers and retain stack manifests; no policy or PPL measurement")
     args = parser.parse_args()
     if args.client:
         return client_phase(args)
