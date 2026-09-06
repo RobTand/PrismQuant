@@ -25,6 +25,8 @@ from prismaquant.memory_management import env_truthy
 JOINT_CURRENCY = "joint_aura_predicted_dloss"
 JOINT_AURA_COST_CURRENCY = JOINT_CURRENCY
 JOINT_AURA_COST_SOURCE = "joint_aura"
+PROBE_UNCERTAINTY_SCOPE = "probe_sampling_conditional_on_fixed_calibration"
+ASSIGNMENT_OBJECTIVES = ("additive", "joint_quadratic")
 
 
 def identity_sha256(value) -> str:
@@ -347,7 +349,7 @@ def paired_candidate_difference(entry_a: Mapping, entry_b: Mapping) -> dict:
     """A minus B with common-probe covariance retained, conditional on calibration."""
     if not validate_joint_aura_entry(entry_a) or not validate_joint_aura_entry(entry_b):
         raise ValueError("paired joint AURA requires joint rows")
-    if entry_a["probe_identity"] != entry_b["probe_identity"] or entry_a["probe_ids"] != entry_b["probe_ids"]:
+    if not _same_probe_identity(entry_a, entry_b):
         raise ValueError("paired joint AURA probe alignment mismatch")
     values = [0.5 * (a - b) for a, b in zip(entry_a["x2_per_probe"], entry_b["x2_per_probe"])]
     n = len(values)
@@ -357,3 +359,132 @@ def paired_candidate_difference(entry_a: Mapping, entry_b: Mapping) -> dict:
             "difference_per_probe": values, "probe_ids": list(entry_a["probe_ids"]),
             "probe_identity_sha256": entry_a["probe_identity_sha256"],
             "uncertainty_scope": "probe_sampling_conditional_on_fixed_calibration"}
+
+
+def _same_probe_identity(left: Mapping, right: Mapping) -> bool:
+    # Hashes have already been checked against canonical JSON by the row
+    # validator. Python equality would conflate distinct JSON true/1/1.0.
+    return (left["probe_identity_sha256"] == right["probe_identity_sha256"]
+            and identity_sha256(left["probe_ids"]) == identity_sha256(right["probe_ids"]))
+
+
+def _validated_assignment(rows: Mapping, objective: str) -> dict:
+    if objective not in ASSIGNMENT_OBJECTIVES:
+        raise ValueError(f"unsupported joint AURA assignment objective: {objective!r}")
+    if not isinstance(rows, Mapping) or not rows:
+        raise ValueError("joint AURA assignment requires a nonempty unit roster")
+    if any(not isinstance(name, str) or not name for name in rows):
+        raise ValueError("joint AURA assignment requires named units")
+    ordered = {name: rows[name] for name in sorted(rows)}
+    reference = None
+    for name, row in ordered.items():
+        if not isinstance(row, Mapping) or not validate_joint_aura_entry(row):
+            raise ValueError("joint AURA assignment requires complete joint rows")
+        if row["joint_operator_identity"]["qname"] != name:
+            raise ValueError(f"joint AURA assignment operator coordinate mismatch: {name}")
+        if reference is None:
+            reference = row
+        elif not _same_probe_identity(row, reference):
+            raise ValueError("joint AURA assignment probe alignment mismatch")
+    return ordered
+
+
+def _probe_moments(values: list[float]) -> tuple[float, float]:
+    """Empirical sample SE; the measured calibration remains fixed."""
+    if len(values) < 2 or any(not math.isfinite(value) for value in values):
+        raise ValueError("joint AURA diagnostic requires finite aligned samples")
+    mean = math.fsum(value / len(values) for value in values)
+    # hypot avoids overflow in the sum of squared deviations.
+    stderr = math.hypot(*(value - mean for value in values)) / math.sqrt(
+        len(values) * (len(values) - 1))
+    if not math.isfinite(mean) or not math.isfinite(stderr):
+        raise ValueError("joint AURA diagnostic sample moments overflow")
+    return mean, stderr
+
+
+def _assignment_metadata(rows: Mapping, objective: str) -> dict:
+    reference = next(iter(rows.values()))
+    identities = {name: row["joint_operator_identity_sha256"]
+                  for name, row in rows.items()}
+    return {
+        "objective": objective, "cost_currency": JOINT_CURRENCY,
+        "probe_ids": list(reference["probe_ids"]),
+        "probe_identity_sha256": reference["probe_identity_sha256"],
+        "operator_identity_sha256_by_unit": identities,
+        "assignment_identity_sha256": identity_sha256(identities),
+        "uncertainty_scope": PROBE_UNCERTAINTY_SCOPE,
+        "measurement_status": "research",
+    }
+
+
+def assignment_probe_summary(rows: Mapping, *, objective: str = "additive") -> dict:
+    """Summarize one complete assignment on validated, common signed probes.
+
+    ``additive`` is the allocator's sum of local quadratic prices:
+    0.5 sum_i(a_i[k]**2). ``joint_quadratic`` is 0.5 (sum_i a_i[k])**2,
+    retaining cross-unit terms in the baseline's local linearization. Neither
+    updates the background model nor measures held-out assignment quality.
+    """
+    rows = _validated_assignment(rows, objective)
+    samples = zip(*(row["signed_per_probe"] for row in rows.values()))
+    values = [0.5 * (math.fsum(x * x for x in sample) if objective == "additive"
+                     else math.fsum(sample) ** 2) for sample in samples]
+    mean, stderr = _probe_moments(values)
+    return {"schema": "prismaquant.joint_aura.assignment_summary.v1",
+            **_assignment_metadata(rows, objective),
+            "mean": mean, "standard_error": stderr, "per_probe": values}
+
+
+def paired_assignment_difference(
+    rows_a: Mapping, rows_b: Mapping, *, objective: str = "additive",
+) -> dict:
+    """A minus B, retaining common-probe covariance conditional on calibration.
+
+    Both arms must name the complete same unit roster, including unchanged
+    units (which still contribute cross terms to ``joint_quadratic``). Each
+    candidate binds its own actual render/activation operator. Different
+    formats may differ there, but the same candidate cannot silently change
+    operator identity, and each unit must retain the same source weight.
+    """
+    a, b = _validated_assignment(rows_a, objective), _validated_assignment(rows_b, objective)
+    if a.keys() != b.keys():
+        raise ValueError("paired joint AURA requires the same complete unit roster")
+    pairs = []
+    for name in a:
+        left, right = a[name], b[name]
+        operator_a, operator_b = left["joint_operator_identity"], right["joint_operator_identity"]
+        if not _same_probe_identity(left, right):
+            raise ValueError("paired joint AURA assignment probe alignment mismatch")
+        if identity_sha256(operator_a["source_weight"]) != identity_sha256(operator_b["source_weight"]):
+            raise ValueError(f"paired joint AURA source weight identity mismatch: {name}")
+        if (operator_a["format"] == operator_b["format"]
+                and left["joint_operator_identity_sha256"] != right["joint_operator_identity_sha256"]):
+            raise ValueError(f"paired joint AURA changed operator identity for the same candidate: {name}")
+        pairs.append((left, right))
+    if objective == "additive":
+        # The candidate-difference algebra, with every signed squared term
+        # retained until fsum: neither rounded assignment totals nor rounded
+        # per-unit differences may erase a small residual across unit changes.
+        values = [math.fsum(sign * 0.5 * row["x2_per_probe"][k]
+                            for pair in pairs for sign, row in zip((1, -1), pair))
+                  for k in range(len(pairs[0][0]["probe_ids"]))]
+    else:
+        values = []
+        for k in range(len(pairs[0][0]["probe_ids"])):
+            # Difference of squares, factored before summing the background.
+            delta = math.fsum(sign * row["signed_per_probe"][k]
+                              for pair in pairs for sign, row in zip((1, -1), pair))
+            total = math.fsum(row["signed_per_probe"][k]
+                              for pair in pairs for row in pair)
+            values.append(0.5 * delta * total)
+    mean, stderr = _probe_moments(values)
+    metadata_a, metadata_b = _assignment_metadata(a, objective), _assignment_metadata(b, objective)
+    return {
+        "schema": "prismaquant.joint_aura.paired_assignment_difference.v1",
+        "objective": objective, "cost_currency": JOINT_CURRENCY,
+        "mean_difference": mean, "paired_standard_error": stderr,
+        "difference_per_probe": values, "probe_ids": metadata_a["probe_ids"],
+        "probe_identity_sha256": metadata_a["probe_identity_sha256"],
+        "assignment_a": metadata_a, "assignment_b": metadata_b,
+        "uncertainty_scope": PROBE_UNCERTAINTY_SCOPE, "measurement_status": "research",
+    }
