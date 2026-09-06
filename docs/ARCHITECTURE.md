@@ -3,6 +3,22 @@
 As of: 2026-09-06 · `codex/lfm-mixed-serving`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-06, `codex/lfm-mixed-serving`, second pass) for the
+mixed-LFM observation's admission and encoder pin (#253). vLLM serving is
+exempt from PrismaBuild (Rob, 2026-09-06): the wrapper admits exactly one of a
+PrismaBuild action (`PRISMABUILD_CONTAINER_OWNER`) or a declared direct run
+(`PRISMAQUANT_DIRECT_SERVE=<reason>`), and stamps the mode into
+`host-status.json`; batch work (tests, export quanta) still goes through the
+pool. The wrapper's Tessera pin moved to master `d19e3ad` (tessera#382: the
+census roster counts a row-sliced owner's source tensor once, not per role).
+That change is `experiments/`-only, so an artifact encoded at `5ac9b72` keeps
+its encoder fixture id and serves under the new pin; the artifact seal records
+both `artifact_encoder_git` and the serving `encoder.commit`, and the runtime
+compares the fixture id at load. The census gate's population is resolved
+from the runtime's attested construction entry (tessera#377). No export
+scheduler, runtime pin or production default changes. Gate:
+`tests/test_lfm_mixed_serving.py`.
+
 Re-stamped (2026-09-06, `codex/lfm-mixed-serving`) for the opt-in mixed-LFM
 assembled-artifact observation (#253). A bounded host action verifies the actual
 PB assembly stdout CAS blob and its unique completion record, plus immutable

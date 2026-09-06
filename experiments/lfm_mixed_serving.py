@@ -32,7 +32,11 @@ from experiments.pq87_paired_validation import require_container_name_available
 # tessera master 5ac9b72 (#378): a dense owner's roles are the runtime's attested
 # output partitions, so the 18 quantized ShortConv in_proj tensors are emitted as
 # three row-window roles each (serving_gate.geometry.row_sliced_modules).
-ENCODER = "5ac9b72ff3a1f39f96603b37b479011eac9fe439"
+# tessera master d19e3ad (#381/#382): the census roster counts a row-sliced
+# owner's source tensor once, not once per role. experiments/ only, so the
+# encoder fixture id of an artifact encoded at 5ac9b72 is unchanged and such
+# an artifact serves under this pin; the seal records both commits.
+ENCODER = "d19e3ad9aec3648f42a76f4d6bb88aa79e288144"
 CALIBRATION_SEAL = "d302740baa39a484135a5de73abfcf9d5c3ec91eb419cb59a3d4af94c2704952"
 SCALES = "08bce65811467a0620f1140c17d4a01a8198b49fa18c32b9603faefb5bc5bbe6"
 PROMPTS = "1d280c010c23d156493e89d015afaad04cf94f434b3f4f60e6e797a0adb88375"
@@ -278,7 +282,13 @@ def main():
     require(sha(ts / "experiments/moe_greedy_smoke_prompts.json") == PROMPTS, "fixed smoke prompts changed")
     checkpoint = source_identity(args.artifact)
     seal = {"checkpoint": str(args.artifact), "checkpoint_identity": checkpoint, "export_identity": identity,
-            "encoder": bound_encoder(), "assembly_stdout_sha256": args.assembly_result_sha256,
+            "encoder": bound_encoder(),
+            # The artifact was encoded at manifest["git"]; the serving checkout
+            # is ENCODER. They may differ when only experiments/ moved: the
+            # runtime compares the encoder fixture id at load
+            # (tessera.serving.sharding), so the stamp records both commits.
+            "artifact_encoder_git": manifest.get("git"),
+            "assembly_stdout_sha256": args.assembly_result_sha256,
             "assembly_record_sha256": hashlib.sha256(json.dumps(assembly_record, sort_keys=True,
                 separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
             "calibration_seal_sha256": CALIBRATION_SEAL, "plan_sha256": sha(args.plan)}

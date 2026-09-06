@@ -195,6 +195,11 @@ class ServingTests(unittest.TestCase):
             receipt = original_read(root / "out/preflight.json")
             self.assertEqual(receipt["status"], "verified")
             self.assertEqual(receipt["artifact_seal_sha256"], m.sha(root / "out/artifact-seal.json"))
+            seal = json.loads((root / "out/artifact-seal.json").read_text())
+            # The seal names both the commit the artifact was encoded at and
+            # the serving pin; they may legitimately differ (experiments/ only).
+            self.assertEqual(seal["artifact_encoder_git"], manifest.get("git"))
+            self.assertEqual(seal["encoder"]["commit"], m.ENCODER)
             self.assertFalse(receipt["gpu_or_container_launched"])
 
     def test_admission_is_exactly_one_of_prismabuild_or_declared_direct_serve(self):
