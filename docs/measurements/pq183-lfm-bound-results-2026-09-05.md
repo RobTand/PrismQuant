@@ -700,7 +700,9 @@ The before/after source and artifact identities passed around serving.
 All six host phases exited zero. The final PB action exited zero after
 731.19 seconds, with cleanup complete, no OOM, no monitor errors and all five
 exact owned containers safely absent. Its 4-CPU, 64-GiB exclusive physical-GPU
-reservation preserved PB affinity `[5,6,7,8]` and one native thread per worker.
+reservation preserved PB affinity `[5,6,7,8]`. Producer and census native
+threads were bounded to one; smoke retained its existing launcher policy within
+the same four-CPU cpuset.
 PB scope telemetry records 776.00 CPU seconds and peak accounted memory
 24,325,054,464 bytes. This is PB's scope accounting; independent host memory
 telemetry is retained separately and is not equated to that peak.
@@ -748,3 +750,24 @@ stack; general producer/reader integration remains
 [Tessera #363](https://github.com/RobTand/tessera/issues/363). The separate Tessera
 owner handles upstream repairs without changing this measurement's ba582d47
 pin. No further numerical run is required to support this bounded observation.
+
+
+## Final delivery review
+
+The root review checked all 32 publication files against their archived originals,
+including permitted token redactions, and read/hash-checked all 96 fused containers
+from the accessible final checkpoint against the wire-audit receipt. It also
+verified the actual CAS payload, canonical receipt digest, all six zero-exit
+phases, five safe container dispositions, final census/manifest/plan hashes,
+post-serve artifact seal and both-host telemetry status. This is an independent
+receipt and artifact review, without repeating the numerical campaign.
+
+The initial PR 250 broad CPU CI run is not green: two existing E4M3 rendering
+integration cases exceeded the 300-second limit, with 5,630 passes, 152 skips,
+3 xfails and 182 passing subtests. The import-surface check passed. Neither
+failing test nor its rendering implementation is changed by this PR. Actual
+stacks and workload are retained in
+[PrismaQuant #251](https://github.com/RobTand/prismaquant/issues/251); their cause
+has not been established by an isolated reproduction. This is separate from the
+24 passing targeted continuation/finalization regressions and the completed
+actual GPU observation.
