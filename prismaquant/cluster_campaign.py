@@ -1396,7 +1396,21 @@ def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
 
 
 def _terminate_recorded_owned_process(pid: int, ticks: int, owner_token: str) -> bool:
-    if _owned_process_state(pid, ticks, owner_token) != "owned":
+    """Stop the recorded process; report whether it is definitely not running.
+
+    That is the question the callers ask, and an already-ended process answers
+    it as completely as a kill does -- which is why `ProcessLookupError` from
+    the signal below already returns True.  Reading the same fact one moment
+    earlier used to return False instead, and the caller turns False into
+    `process was not killed`, a terminal stage failure.  Only an ownership that
+    was never established -- a recycled pid, another owner, an unreadable
+    `/proc` -- leaves the question open, and only that refuses.
+    """
+
+    state = _owned_process_state(pid, ticks, owner_token)
+    if state == "gone":
+        return True
+    if state != "owned":
         return False
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -1796,6 +1810,33 @@ def _ready_stages(
     return ready
 
 
+def _terminal_failure_report(
+    state: Mapping[str, object], terminal: Sequence[str]
+) -> str:
+    """Say why each terminal stage is terminal, in the exception itself.
+
+    A campaign that stops names the stages; what a reader needs is the
+    transition that stopped them.  That has always been recorded in the state
+    file's attempt `detail`, and a CI job that keeps only the traceback threw
+    it away -- twice, in #244, for a failure nobody could then account for.
+    """
+
+    parts: list[str] = []
+    for stage_id in terminal:
+        record = state["stages"][str(stage_id)]  # type: ignore[index]
+        attempts = record["attempts"]  # type: ignore[index]
+        if not attempts:
+            parts.append(f"{stage_id}: no attempt was recorded")
+            continue
+        attempt = attempts[-1]
+        detail = str(attempt["detail"]) or "(no detail recorded)"
+        parts.append(
+            f"{stage_id} attempt {attempt['number']}: {detail} "
+            f"(worker log: {attempt['log_path']})"
+        )
+    return "; ".join(parts)
+
+
 def _terminal_stage_ids(state: Mapping[str, object]) -> list[str]:
     return sorted(
         str(stage_id)
@@ -1900,7 +1941,8 @@ def run_campaign_v2(
                     )
                     terminal = _terminal_stage_ids(state)
                 raise CampaignTerminalFailure(
-                    f"campaign has terminal failed stages: {terminal}"
+                    f"campaign has terminal failed stages: {terminal}; "
+                    + _terminal_failure_report(state, terminal)
                 )
             if all(
                 record["status"] == "succeeded"

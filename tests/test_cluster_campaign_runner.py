@@ -95,6 +95,43 @@ def _wait_until(
         time.sleep(poll_interval)
 
 
+def _campaign_diagnosis(state_path: Path) -> str:
+    """Everything the state file and its attempt logs know about a failure.
+
+    `CampaignTerminalFailure` names the stages that stopped; the transition
+    that stopped them lives in the state file, and the worker's own account of
+    it lives in that attempt's log.  A CI job keeps neither.  #244 spent three
+    runs on a recovery failure that could not be accounted for because the only
+    surviving record was the traceback, so every campaign this file resumes
+    reports both when it fails.
+    """
+
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"state at {state_path} could not be read: {exc!r}"
+    lines = [f"state {state_path}:"]
+    for stage_id, record in sorted(raw.get("stages", {}).items()):
+        lines.append(f"  {stage_id}: status={record['status']}")
+        for attempt in record["attempts"]:
+            lines.append(
+                f"    attempt {attempt['number']}: status={attempt['status']} "
+                f"pid={attempt['pid']} start_ticks={attempt['pid_start_ticks']} "
+                f"detail={attempt['detail']!r}"
+            )
+            log = Path(str(attempt["log_path"]))
+            try:
+                text = log.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                lines.append(f"      worker log {log} unreadable: {exc!r}")
+                continue
+            lines.append(f"      worker log {log}:")
+            lines.extend(
+                f"        {line}" for line in (text.splitlines() or ["(empty)"])
+            )
+    return "\n".join(lines)
+
+
 def _nonempty(path: Path) -> Callable[[], bool]:
     """Predicate for "this file exists *and* its bytes have landed".
 
@@ -938,9 +975,16 @@ def test_resume_after_coordinator_death_recovers_owned_helper_receipt(tmp_path):
                 ),
             )
 
-            state = campaign.run_campaign_v2(
-                manifest, state_path, poll_interval=0.02
-            )
+            try:
+                state = campaign.run_campaign_v2(
+                    manifest, state_path, poll_interval=0.02
+                )
+            except campaign.CampaignTerminalFailure as exc:
+                raise AssertionError(
+                    "the resume terminal-failed instead of adopting the "
+                    f"completed helper's work: {exc}\n"
+                    + _campaign_diagnosis(state_path)
+                ) from exc
 
             attempts = state["stages"]["slow-stage"]["attempts"]
             assert len(attempts) == 1, (
@@ -1225,6 +1269,37 @@ def test_a_live_process_with_no_environment_is_still_owned():
     )
 
 
+def test_terminating_a_process_that_already_ended_is_not_ambiguous():
+    """"Gone" answers "is the recorded process stopped?" -- it does not refuse.
+
+    A zombie is the deterministic way to ask: the process has ended, and its
+    pid cannot be recycled underneath the question while it stays unreaped.
+    `_recover_running_stages` turns a False here into a terminal stage failure,
+    so a helper that ended between the ownership check and the kill used to end
+    the campaign.
+    """
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", ""],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    snapshot = campaign._proc_snapshot(child.pid)
+    assert snapshot is not None, "the child was reaped before it was recorded"
+    ticks = snapshot[0]
+    try:
+        _wait_until(
+            lambda: (campaign._proc_snapshot(child.pid) or (0, "Z"))[1] == "Z",
+            unmet="the child never became an unreaped zombie",
+        )
+        assert campaign._owned_process_state(child.pid, ticks, "owner") == "gone"
+        assert campaign._terminate_recorded_owned_process(
+            child.pid, ticks, "owner"
+        )
+    finally:
+        child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
+
+
 @pytest.mark.parametrize("state", ["S", "Z"])
 def test_recorded_process_pid_reuse_is_never_owned_or_killed(monkeypatch, state):
     monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (43, state))
@@ -1312,7 +1387,13 @@ def test_ambiguous_recorded_pid_fails_closed_without_killing_it(
         os, "killpg", lambda *a: pytest.fail("ambiguous ownership must not be killed")
     )
 
-    with pytest.raises(campaign.CampaignTerminalFailure, match="ambiguous"):
+    # The message has to name the transition, not only the stage: "ambiguous"
+    # is also the stage id here, and a CI job that keeps the traceback and
+    # nothing else has to be able to explain the failure from it (#244).
+    with pytest.raises(
+        campaign.CampaignTerminalFailure,
+        match="recorded PID ownership is ambiguous",
+    ):
         campaign.run_campaign_v2(manifest, state_path, poll_interval=0.01)
 
     assert os.getpid() > 0
