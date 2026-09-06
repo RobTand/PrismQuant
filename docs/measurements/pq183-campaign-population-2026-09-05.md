@@ -75,3 +75,25 @@ dense FFN units in layer 0 and 96 expert projections in layer 12. A real
 producer projection must verify that population during the admitted run.
 No actual-model, GPU or served measurement is claimed by this correction;
 #183 acceptance item 4 remains a separate measurement obligation.
+
+## Integration on the delivered main branch
+
+The final code was integrated with merged PRs #230 and #242 (main
+`015b67b19f21db2497f2fedc13c2777a4ac4676f`). PrismaBuild action
+`97858e8ae052447622994737c1b5f53506040d945bb86019e533aee42f4d7ce1` tested
+source `379e2f21c99e265771b3c6febf9ad72ae80f1ff5` on sparklina with CUDA
+hidden, four pytest workers, native threads bounded to one, and a 24 GiB
+reservation. The six files covering campaign population, allocator projection,
+export projection, activation policy, architecture, and documentation staleness
+passed: **95 passed, zero skips**, 100.69 seconds. Measured action memory peak
+was 16,034,717,696 bytes; there were no OOM events.
+
+The coordinator inspected the terminal exit status and independently hashed the
+actual 743-byte result payload
+`9faf232c5b24153dba979b2aceffe73e0af3a0695d8e68321c55fce5f96f1f96`;
+receipt SHA-256 is
+`1034b506db5e8e6a4dd3609284de0c425ab7aa8a41fa33cfe45da636b14f94fd`.
+Submission, terminal, receipt, and result are retained under
+`/home/rob/tessera-runs/measurement-208-183-2026-09-05/coverage-integration-*`.
+Only this evidence paragraph was added after that code validation. Actual GPU
+campaign/export/serve measurement for #183 remains separate and pending.
