@@ -48,6 +48,9 @@ def main():
     name = f"lfm-mixed-native-{owner[:12]}"
     cidfile = args.out / "container.cid"
     local_out = Path(tempfile.mkdtemp(prefix="lfm-mixed-native-"))
+    # The admitted host must own the directory containing root-written files
+    # so it can archive and remove them after the container exits.
+    (local_out / "probe").mkdir()
     record = {"schema": "prismaquant.lfm_mixed_native_host.v1", "source_manifest_sha256": args.source_sha256,
               "tessera_commit": source["commit"], "image_reference": args.image, "image_id": image["Id"],
               "source_snapshot": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
@@ -99,11 +102,15 @@ def main():
             record["container_id"] = cid
             record["cleanup_safe"] = not subprocess.check_output(
                 ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], text=True).strip()
-        record["finished_unix"] = time.time()
-        (args.out / "host.json").write_text(json.dumps(record, indent=2) + "\n")
-        if (local_out / "probe").exists():
-            shutil.copytree(local_out / "probe", args.out / "probe")
-        shutil.rmtree(local_out)
+        record["artifact_cleanup_complete"] = False
+        try:
+            if (local_out / "probe").exists():
+                shutil.copytree(local_out / "probe", args.out / "probe")
+            shutil.rmtree(local_out)
+            record["artifact_cleanup_complete"] = True
+        finally:
+            record["finished_unix"] = time.time()
+            (args.out / "host.json").write_text(json.dumps(record, indent=2) + "\n")
     if not record["cleanup_safe"] or record["telemetry_errors"]:
         raise RuntimeError("preflight cleanup or host telemetry is incomplete")
     print(json.dumps({"passed": True, "cleanup_safe": True, "out": str(args.out)}))

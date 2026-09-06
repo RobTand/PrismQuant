@@ -25,9 +25,9 @@ def main():
     from safetensors import safe_open
     from tessera.serving import native_ops
 
-    if args.out.exists():
+    if args.out.exists() and any(args.out.iterdir()):
         raise ValueError("preflight output exists; retain it and use a new attempt")
-    args.out.mkdir(parents=True)
+    args.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(1)
     torch.manual_seed(253)
     if torch.cuda.get_device_capability() != (12, 1):
