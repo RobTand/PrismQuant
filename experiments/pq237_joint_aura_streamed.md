@@ -6,6 +6,12 @@ It exercises the actual streamed producer, durable checkpoints, persisted
 joint currency, and production candidate constructor. No model inference or
 GPU qualification has been executed for this protocol as of preparation.
 
+This preserves the earlier ranking panel's E2M1 K1 and calibrated FP8
+preclipping contracts. Tessera 7018's serving panel uses different E2M1 K2
+and unclipped FP8 operators. Neither the retained bytes nor these quality
+measurements provide runtime prices or serving qualification for those
+different operators; that panel must be declared separately.
+
 The source-inspected prerequisite is the materialized `ProductionWeightCache`
 path. It supplies the five actual tensors and captured static activation
 maxima. The transient-anchor Tessera A4 scale omission is separately tracked
@@ -73,6 +79,11 @@ identities are constructed from the frozen inputs before the producer runs.
 The same cached renders and activation QDQ serve every diagnostic and actual
 candidate forward. The Hessian text identity hashes newline-joined original
 calibration paragraphs in frozen order, alongside actual fitting-token hashes.
+The driver explicitly sets `PRISMAQUANT_PROD_ACT_SCALES=1`,
+`PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES=0`, and
+`PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE=0`, fixing the earlier diagnostic
+policy instead of inheriting an ambient process setting.
+Tessera A4 continues to use its mandatory static contract under those values.
 
 For each L0 background, the declared contrast is L21 A4 **minus** L21 A16.
 The background interaction subtracts the A16-background contrast from the
@@ -111,6 +122,13 @@ It records source/render/blob identities and blob lengths. The producer's
 normal per-layer prefetch/adjoint/checkpoint path owns the work. This dense
 experiment does not claim packed 3D routed-expert support.
 
+Original wire bytes are retained in the existing campaign's `wire/` naming
+and atomic publication convention. Producer `cached_unit` records bind each
+blob to the actual production `ActivationSource`, source weight and encoding
+recipe. A second bytes-only decode must hash to the exact PWC tensor. These
+are original encoded outputs beside the one rendered-weight cache; they do
+not require re-encoding or a new cache mechanism for a later investigation.
+
 The driver then replays the exact durable checkpoints, checks unchanged
 signed rows, persists the payload, and validates it through
 `require_run_currency` and `build_candidates(preserve_runtime_frontier=True)`.
@@ -146,13 +164,23 @@ that preserves these calibration, probe and cache identities.
 
 The shared immutable input root is
 `/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs`.
-The exact Tessera source root is the adjacent
-`inputs/tessera-6faa5ce`, with `inputs/tessera-source-manifest.json`.
+The exact Tessera source root is
+`joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906`, with `joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906-source-manifest.json`.
+The full source manifest has SHA-256
+`81dbf9c1ee123b5bdd8bdf3b09f2705b414e5070f70ee40e5779bbaa935f545c`
+and binds all 1,029 source files. Its map matches the immutable Git archive
+`07ee4eb51a7fa23051e0615313e6057bb016c6806ce0aefbb41cb61b56410b4a`.
+This changes producer/render identity from the earlier prepared 6faa source;
+the frozen corpus and probe manifest is unchanged.
+
 Launch only after the coordinating task releases the mixed-LFM sanity gate.
 Do not treat this prepared command as a GPU result.
 
 The known image ID is
 `sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88`.
+Read-only inventory found it on Sparky and absent on Sparklina, so the launch
+declares the actual `sparky` image dependency. Remove that host restriction
+only after the same image has been staged and qualified on another worker.
 The PB Docker shim preserves its assigned CPU affinity and process ownership.
 Native threads remain one; two prefetch workers share the four-CPU admission.
 The 48 GiB reservation/container limit retains the prior small-model screen's
@@ -182,7 +210,7 @@ try:
     command = r'''docker run --rm --gpus all --network none --memory 48g --shm-size 8g \
       -v "$PWD:/workspace:ro" -v /mnt/shared:/mnt/shared \
       -w /workspace -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
-      -e PYTHONPATH=/workspace:/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/inputs/tessera-6faa5ce/src \
+      -e PYTHONPATH=/workspace:/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906/src \
       sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88 \
       python3 experiments/pq237_joint_aura_streamed.py \
       --model /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/Qwen3-0.6B \
@@ -190,12 +218,12 @@ try:
       --protocol-sha256 f2268edac42bcaed2e0f4a0766357822bdf84c78db36b3488bd715d29f2e22f6 \
       --corpus-arrow /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-validation.arrow \
       --source-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/source-manifest.json \
-      --tessera-root /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/inputs/tessera-6faa5ce \
-      --tessera-source-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/inputs/tessera-source-manifest.json \
+      --tessera-root /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906 \
+      --tessera-source-manifest /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-inputs/tessera-7018fa2222925416b4c88cc8b6afab834dcac906-source-manifest.json \
       --image-id sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88 \
       --out /mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-streamed-run-01'''
     subprocess.run(['python3', '/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py',
-                    '--cwd', str(root), '--gpu', '--tag', 'gb10', '--cpus', '4',
+                    '--cwd', str(root), '--gpu', '--tag', 'gb10', '--tag', 'sparky', '--cpus', '4',
                     '--demand', 'mem_gb=48', '--gpu-memory-gb', '32', '--exclusive',
                     '--timeout-s', '7200', '--detach', '--', 'bash', '-c', command], check=True)
 finally:
@@ -226,13 +254,32 @@ fixture used one CPU. No skip was counted as a pass.
 | Revised protocol helper | 25 passed, zero skips | `c1da73c9b6dd572fda3978a4f4a974a54d3d1f7a36f9e60741cac9108fdb07da` / `a02deb1d7b7b8fdb15c6793eb5c24b6fed3f558d4bee10b05c93d5cf02aab3e6` |
 | Helper compile and source-only article census | Exit 0 | `ce38012238519d642db1ef3c52b3809c980888772029a20c19eac7b043102c45` |
 | Frozen corpus/token preparation | Exit 0, expected 2/4/32 sequences | `1a8f6778430934fb215957a718df85b4f764834ce60bb57b5e42a2cb356bf8c7` / `726272fb67ba2a19b57f884bdc8848e2bdeded5df3478b36fc87971a745e0086` |
+| Rebased handoff and assignment diagnostics | 2 passed, zero skips | `06d3297981982f01c8234406616e73429cf8d38909f0f13b447c1b11076df78c` / `40cb0ef7a0000d398526c6759e378cd322787219dfe9a0a210155e7278eab453` |
+| Rebased compile and frozen-protocol verification | Exit 0; 2/4/32 sequences and 128 probes | `16a3e849854421076f88e256e595f01c1f2d1b098545ae3dbc5aa102926d6a3f` / `b884602c58b5f53a9b66a1721f32ea17601f827ee6f5d974cd502583d58fac92` |
 
 Terminal records live under `/mnt/shared/prismabuild-fleet/pb-queue/{done,failed}/ACTION.json`;
 CAS payloads/receipts are linked by those records. The protocol test report is
 `/home/rob/tessera-runs/mixed-lfm-237-2026-09-06/protocol-pbtest-final.json`.
 Static review found and resolved two driver provenance defects before GPU
 execution: self-derived expected probe digests and a placeholder Hessian text
-hash. The final targeted validation must include those corrections.
+hash. The rebased handoff checks include coherent full probe-identity rebinding,
+bound source-shape/stat mismatch refusal, and all four assignment comparison
+labels. PR #260 is merged at `fa229becf6a82752179a38189904209c0f5e8ad6`.
+
+A separate CPU-only image preflight ran on Sparky using exact image 337dae
+and verified Tessera 7018. Runtime imports, Qwen3 class import, Hessian API
+acceptance and both CLI help checks passed: Torch 2.13.0+cu130, Transformers
+5.15.1 and compressed-tensors 0.17.0. Action
+`1673c5ca74cc5c08ed78502607edd4ff4c8ba44392f069ff9f8e258a08a83c53`
+exited 1 because preparation-only `pyarrow` is absent. The frozen execution
+path uses only standard-library protocol loading; it does not import
+`pyarrow`, retokenize, or prepare another corpus. This preflight is retained
+as a failed diagnostic, not a passing qualification. CUDA was uninitialized,
+no GPU devices were exposed, and the PB/container CPU affinity matched.
+Evidence is under
+`/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06/joint-cpu-preflight-01`;
+`preflight.json` SHA-256 is
+`2a0cf14d04592dc235de4400a1fdab763cad6ecff3e68b103340fcd2ca5cb626`.
 
 This protocol leaves sparse-anchor validation, broader models/layers/rungs,
 actual serving-route timings, whole-model uniform controls, downstream tasks,

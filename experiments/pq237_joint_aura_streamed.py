@@ -118,6 +118,33 @@ def _probe_summary(values):
             "uncertainty_scope": "probe_sampling_conditional_on_fixed_calibration"}
 
 
+def retain_production_wire(weight, rendered, blob, *, qname, fmt, activation_source, wire_dir):
+    """Retain the original bytes using the existing campaign/producer grammar."""
+    from prismaquant.production_weight_cache import _cb_cache_tensor_identity
+    from prismaquant.tessera_campaign import _wire_path
+    from prismaquant.tessera_formats import parse_tessera_format_name
+    from tessera import cached_unit
+    from tessera.unit_artifact import read_unit_artifact
+
+    family, rung = parse_tessera_format_name(fmt)
+    input_identity = cached_unit.encoding_input_identity(
+        weight, qname, family.payload_grid(), int(rung), activation=activation_source)
+    path = _wire_path(Path(wire_dir), qname, fmt)
+    record = cached_unit.make_unit_record(blob, input_identity, filename=path.name)
+    temporary = path.with_suffix(".tessera.tmp")
+    temporary.write_bytes(blob)
+    os.replace(temporary, path)
+    persisted = path.read_bytes()
+    cached_unit.verify_cached_unit(persisted, record, input_identity)
+    decoded = read_unit_artifact(persisted, device=str(rendered.device)).to(rendered.dtype)
+    decoded_identity = _cb_cache_tensor_identity(decoded)
+    if decoded_identity != _cb_cache_tensor_identity(rendered):
+        raise ValueError("retained wire does not decode to the production cache tensor")
+    return {"blob_bytes": len(blob), "blob_sha256": record["blob_sha256"],
+            "wire_record": record, "wire_path": str(path.relative_to(Path(wire_dir).parent)),
+            "wire_decoded_weight": decoded_identity}
+
+
 def compare_assignments(payload, candidates, assignments):
     from prismaquant.joint_aura import assignment_probe_summary, paired_assignment_difference
 
@@ -166,6 +193,7 @@ def _capture_and_render(model, calibration, plan, out, *, calibration_text):
     from prismaquant.production_weight_cache import ProductionWeightCache, render_production_weight, _cb_cache_tensor_identity
     from prismaquant.tessera_hessian import calibration_identity
     import prismaquant.tessera_render as render_owner
+    import prismaquant.tessera_hessian as hessian_owner
 
     modules = {name: model.get_submodule(name) for name in plan}
     capture = PerturbedActivationCache(
@@ -189,25 +217,39 @@ def _capture_and_render(model, calibration, plan, out, *, calibration_text):
     cache = ProductionWeightCache(weights={}, levers=levers,
                                   activation_max_abs={name: float(x.abs().max())
                                                       for name, x in activations.items()})
-    rows, emitted = {}, {}
+    rows, emitted, captured_source = {}, {}, {}
+    wire_dir = out / "wire"
+    wire_dir.mkdir()
     encode = render_owner.encode_tessera_unit
+    activation_source = hessian_owner.activation_source
+
+    def record_activation_source(*args, **kwargs):
+        source = activation_source(*args, **kwargs)
+        captured_source["value"] = source
+        return source
 
     def record_encode(weight, fmt, **kwargs):
         rendered, blob = encode(weight, fmt, **kwargs)
-        emitted.update(blob_bytes=len(blob), blob_sha256=hashlib.sha256(blob).hexdigest())
+        source = captured_source.get("value")
+        if bool(kwargs.get("activation_kwargs")) != (source is not None):
+            raise ValueError("wire receipt lost the actual production activation source")
+        emitted.update(retain_production_wire(weight, rendered, blob,
+            qname=name, fmt=fmt, activation_source=source, wire_dir=wire_dir))
         return rendered, blob
 
     render_owner.encode_tessera_unit = record_encode
+    hessian_owner.activation_source = record_activation_source
     try:
         for name, formats in plan.items():
             rows[name] = {}
             source = modules[name].weight.detach()
             for fmt in formats:
                 emitted.clear()
+                captured_source.clear()
                 with torch.no_grad():
                     rendered = render_production_weight(source, fmt, qname=name,
                                                         activations=activations, levers=levers)
-                if set(emitted) != {"blob_bytes", "blob_sha256"}:
+                if set(emitted) != {"blob_bytes", "blob_sha256", "wire_record", "wire_path", "wire_decoded_weight"}:
                     raise RuntimeError("production renderer did not expose exactly one serialized blob")
                 cache.weights[name, fmt] = rendered
                 rows[name][fmt] = {**emitted, "rendered_weight": _cb_cache_tensor_identity(rendered),
@@ -217,6 +259,8 @@ def _capture_and_render(model, calibration, plan, out, *, calibration_text):
                 print("RENDER", name, fmt, emitted["blob_bytes"], flush=True)
     finally:
         render_owner.encode_tessera_unit = encode
+        hessian_owner.activation_source = activation_source
+        captured_source.clear()
     # The small five-render cache is deliberately resident and is persisted as
     # the actual ProductionWeightCache object. There is no shadow render store.
     cache_path = out / "production.pkl"
@@ -405,6 +449,12 @@ def main():
         raise ValueError("imported Tessera differs from verified producer root")
     os.environ["PRISMAQUANT_COST_UCB_Z"] = "0"
     os.environ["PRISMAQUANT_TESSERA_MENU"] = "research"
+    # Retain the historical rank-reversal screen's QDQ policy. Native FP8
+    # serving has a separately qualified, unclipped policy; this pilot cannot
+    # supply a timing price for that different activation operator.
+    os.environ["PRISMAQUANT_PROD_ACT_SCALES"] = "1"
+    os.environ["PRISMAQUANT_NVFP4_ACT_EMULATE_SERVED_SCALES"] = "0"
+    os.environ["PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE"] = "0"
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.manual_seed(protocol["seed_base"])
