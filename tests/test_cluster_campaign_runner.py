@@ -1074,31 +1074,39 @@ def test_abrupt_worker_death_leaves_stage_lock_owned_by_child(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "second_stat, expected",
+    "second_stat, expected_empty_env, expected_env_error",
     [
-        ("42 Z", "gone"),
-        (FileNotFoundError(), "gone"),
-        (ProcessLookupError(), "gone"),
-        ("42 S", "mismatch"),
-        ("43 S", "mismatch"),
-        ("43 Z", "mismatch"),
-        (PermissionError(), "mismatch"),
-        (OSError("stat I/O failed"), "mismatch"),
-        ("malformed", "mismatch"),
-        ("invalid S", "mismatch"),
+        ("42 Z", "gone", "gone"),
+        (FileNotFoundError(), "gone", "gone"),
+        (ProcessLookupError(), "gone", "gone"),
+        # The one cell #244 changes.  An environ that reads as nothing, with
+        # the recorded start time intact, is our own helper on its way out --
+        # a task releases its address space before it becomes a zombie.  It is
+        # not a recycled pid, and calling it one terminal-failed a recovery for
+        # watching its helper exit.  An `ESRCH` from the same read still needs
+        # the zombie or the absence, because a live identity contradicts it.
+        ("42 S", "owned", "mismatch"),
+        ("43 S", "mismatch", "mismatch"),
+        ("43 Z", "mismatch", "mismatch"),
+        (PermissionError(), "mismatch", "mismatch"),
+        (OSError("stat I/O failed"), "mismatch", "mismatch"),
+        ("malformed", "mismatch", "mismatch"),
+        ("invalid S", "mismatch", "mismatch"),
     ],
     ids=[
-        "zombie", "missing", "esrch", "live-owner-mismatch", "pid-reused",
+        "zombie", "missing", "esrch", "still-live-same-identity", "pid-reused",
         "pid-reused-zombie", "permission-denied", "io-error", "malformed",
         "invalid-ticks",
     ],
 )
 @pytest.mark.parametrize("owner_read_error", [False, True], ids=["empty-env", "env-error"])
 def test_owned_process_state_rechecks_exit_after_failed_owner_read(
-    monkeypatch, second_stat, expected, owner_read_error
+    monkeypatch, second_stat, expected_empty_env, expected_env_error,
+    owner_read_error,
 ):
     # Force the exact exit window: stat reports our live helper, then environ
     # loses its owner as the helper exits. No scheduling or sleep is involved.
+    expected = expected_env_error if owner_read_error else expected_empty_env
     snapshots = iter(["42 S", second_stat])
 
     def read_stat(path, **kwargs):
@@ -1122,18 +1130,106 @@ def test_owned_process_state_rechecks_exit_after_failed_owner_read(
     assert campaign._owned_process_state(424242, 42, "owner") == expected
 
 
-@pytest.mark.parametrize("owner_matches, expected", [(True, "owned"), (False, "mismatch")])
-def test_owned_process_state_live_identity(monkeypatch, owner_matches, expected):
+@pytest.mark.parametrize(
+    "observation, expected",
+    [
+        ("owned", "owned"),
+        ("other-owner", "mismatch"),
+        ("unreadable", "mismatch"),
+    ],
+)
+def test_owned_process_state_live_identity(monkeypatch, observation, expected):
     monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (42, "S"))
-    monkeypatch.setattr(campaign, "_proc_has_owner", lambda *a: owner_matches)
+    monkeypatch.setattr(
+        campaign, "_proc_owner_observation", lambda *a: observation
+    )
     assert campaign._owned_process_state(424242, 42, "owner") == expected
+
+
+@pytest.mark.parametrize(
+    "environ, expected",
+    [
+        (f"{campaign._RESERVED_OWNER_ENV}=owner\0".encode("utf-8"), "owned"),
+        (b"", "no-address-space"),
+        (b"PATH=/usr/bin\x00", "other-owner"),
+    ],
+    ids=["carries-the-token", "no-address-space", "someone-else"],
+)
+def test_proc_owner_observation_tells_empty_from_absent(
+    monkeypatch, environ, expected
+):
+    # An environ that reads as nothing and an environ that names somebody else
+    # are different facts about a pid, and #244 turned on telling them apart.
+    monkeypatch.setattr(Path, "read_bytes", lambda self: environ)
+    assert campaign._proc_owner_observation(424242, "owner") == expected
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (FileNotFoundError(), "no-process"),
+        (ProcessLookupError(), "no-process"),
+        (PermissionError(), "unreadable"),
+        (OSError("environ I/O failed"), "unreadable"),
+    ],
+    ids=["missing", "esrch", "permission-denied", "io-error"],
+)
+def test_proc_owner_observation_tells_absent_from_unreadable(
+    monkeypatch, error, expected
+):
+    def read_bytes(self):
+        raise error
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert campaign._proc_owner_observation(424242, "owner") == expected
+
+
+def test_a_live_process_with_no_environment_is_still_owned():
+    """A real process, with a real empty environ, is not a recycled pid.
+
+    This is the observation `_owned_process_state` gets from a helper that has
+    released its address space on the way out: `/proc/<pid>/environ` reads as
+    zero bytes while `/proc/<pid>/stat` still reports the recorded start time
+    and a state that is not `Z`.  A process execed with an empty environment
+    produces exactly that observation on demand, with no window to hit and
+    nothing patched, so the verdict can be asserted rather than caught.
+    """
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={},
+    )
+    try:
+        _wait_until(
+            lambda: campaign._proc_snapshot(child.pid) is not None,
+            unmet="the child never appeared in /proc",
+            alive=lambda: child.poll() is None,
+        )
+        snapshot = campaign._proc_snapshot(child.pid)
+        assert snapshot is not None
+        assert campaign._proc_owner_observation(child.pid, "owner") == (
+            "no-address-space"
+        ), "the kernel no longer reports an empty environ for env={}"
+        assert campaign._owned_process_state(
+            child.pid, snapshot[0], "owner"
+        ) == "owned"
+    finally:
+        assert child.stdin is not None
+        child.stdin.close()
+        child.wait(timeout=_WEDGE_BACKSTOP_SECONDS)
+    assert campaign._owned_process_state(child.pid, snapshot[0], "owner") == (
+        "gone"
+    )
 
 
 @pytest.mark.parametrize("state", ["S", "Z"])
 def test_recorded_process_pid_reuse_is_never_owned_or_killed(monkeypatch, state):
     monkeypatch.setattr(campaign, "_proc_snapshot", lambda *a, **kw: (43, state))
     monkeypatch.setattr(
-        campaign, "_proc_has_owner",
+        campaign, "_proc_owner_observation",
         lambda *a: pytest.fail("a reused PID must not be checked for ownership"),
     )
     monkeypatch.setattr(

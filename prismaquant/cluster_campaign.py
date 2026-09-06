@@ -1319,13 +1319,38 @@ def _proc_snapshot(pid: int, *, strict: bool = False) -> tuple[int, str] | None:
     return ticks, state
 
 
-def _proc_has_owner(pid: int, owner_token: str) -> bool:
+def _proc_owner_observation(pid: int, owner_token: str) -> str:
+    """Report what ``/proc/<pid>/environ`` establishes about ownership.
+
+    Four answers, because they are four different facts:
+
+    ``owned``
+        The reserved token is in the process environment.
+    ``no-process``
+        There is no process with this pid to ask.
+    ``no-address-space``
+        The read succeeded and returned nothing.  A task keeps its environment
+        inside its address space, so this says the task currently has none:
+        it was execed with an empty environment, or it is on its way out of
+        ``do_exit`` -- past the point where the address space is released and
+        before the point where the task becomes a zombie.  It is not evidence
+        that this pid now belongs to somebody else.
+    ``other-owner``
+        An environment was read and the reserved token is not in it.
+    ``unreadable``
+        The read failed for some other reason, so nothing was established.
+    """
+
     try:
         data = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return "no-process"
     except OSError:
-        return False
+        return "unreadable"
+    if not data:
+        return "no-address-space"
     expected = f"{_RESERVED_OWNER_ENV}={owner_token}".encode("utf-8")
-    return expected in data.split(b"\0")
+    return "owned" if expected in data.split(b"\0") else "other-owner"
 
 
 def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
@@ -1337,16 +1362,36 @@ def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
             return "mismatch"
         if snapshot[1] == "Z":
             return "gone"
-        if _proc_has_owner(pid, owner_token):
+        observation = _proc_owner_observation(pid, owner_token)
+        if observation == "owned":
             return "owned"
-        # Exit can empty/remove environ after stat still showed a live helper.
-        # Only disappearance or a zombie with the same start time proves this
-        # attempt ended. PID reuse and unreadable state remain ambiguous.
+        if observation in {"other-owner", "unreadable"}:
+            # Ownership is unestablished either way, and this guard is
+            # fail-closed.
+            return "mismatch"
+        # Exit can empty/remove environ after stat still showed a live helper,
+        # so look at the identity again.
         snapshot = _proc_snapshot(pid, strict=True)
     except (OSError, ValueError):
         return "mismatch"
     if snapshot is None or snapshot == (ticks, "Z"):
         return "gone"
+    if snapshot[0] == ticks and observation == "no-address-space":
+        # The recorded start time still holds, so this IS the recorded process
+        # rather than a recycled pid, and what the empty environ says about it
+        # is that it has released its address space -- which a task does on its
+        # way out, before it becomes the zombie that would prove it ended.
+        # Nothing here proves this attempt ended, so it stays owned and the
+        # caller's bounded wait looks again; the zombie or the absence that
+        # does prove it is the next observation.  Calling this "mismatch"
+        # refused a recovery for watching its own helper exit.
+        #
+        # Being wrong here is bounded and points the safe way: a pid recycled
+        # inside one clock tick, by a process carrying no environment at all,
+        # would be terminated at the recorded deadline rather than refused.
+        return "owned"
+    # PID reuse, and an ``ESRCH`` that a live identity contradicts, stay
+    # ambiguous.
     return "mismatch"
 
 
