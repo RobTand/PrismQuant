@@ -49,7 +49,11 @@ The experiment does not manufacture Fisher statistics or unmeasured cost rows.
 
 Use one exclusive GB10 GPU, four physical CPU cores, and a 64 GiB aggregate
 memory reservation/cap. Bind native OMP/MKL/OpenBLAS thread counts to one and
-preserve PB-assigned CPU affinity. Expected selected expert H storage is about
+preserve PB-assigned CPU affinity in producer/census. The unchanged upstream
+paired smoke launcher has no native-thread injection option; PB's four-CPU
+cpuset bounds all its threads, and the runner checks/records the actual Docker
+cpuset and environment. Its default thread count is not claimed to be one.
+Expected selected expert H storage is about
 1.45 GiB, capped raw expert activations about 0.36 GiB, selected expert weights
 about 0.67 GiB, plus the dense capture and roughly 16 GiB full BF16 model.
 Loader copies, CUDA context, factorization and temporary tensors must fit the
@@ -70,8 +74,58 @@ absolute path in the producer and serving containers. NFS parents with mode
 Use PB's Docker shim throughout. Do not set ownership/admission variables by
 hand. Source snapshots must resolve the external Tessera dependency explicitly;
 scope any removal/restoration of absolute calibration symlinks to PB sealing.
+The outer wrapper must verify the actual Tessera source snapshot against its
+sealed file manifest from the full pinned commit before each container launch.
+The driver's exact `--tessera-commit` equality rejects a wrong declaration but
+does not establish the identity of an arbitrary source directory by itself.
+The generated census and both smoke arms explicitly use GPU-memory fraction
+0.35, inside the 64 GiB aggregate envelope; no image default is relied on.
 
 ## Stage commands
+
+The `host` stage is the deterministic entry point for the admitted GPU action.
+It executes producer campaign/build, before/after artifact binding, census,
+census replay, the existing paired smoke, and final producer verification in
+that fixed order. It verifies the external Tessera source before every phase,
+records both-host Netdata/power/CPU/memory, checks each container's PB ownership
+label and CPU/memory envelope, and cleans up exact container IDs on every exit.
+Timeouts and any failed phase leave an inconclusive receipt and a nonzero exit.
+
+```bash
+"$PY" "$PQ/experiments/pq183_lfm_bound.py" host \
+  --model /mnt/shared/models/LFM2.5-8B-A1B-BF16 --out "$OUT" \
+  --tessera-repo "$TS" \
+  --tessera-commit ba582d476a3b6db9057ebd1385dc52926f171451 \
+  --tessera-source-manifest "$TS_MANIFEST" \
+  --tessera-source-manifest-sha256 "$TS_MANIFEST_SHA256" \
+  --producer-image sha256:79cb5c9a8cd696f30cb0d8b5803d67d65906de4df91741c9811f3de088a13846 \
+  --seconds 7200 --netdata-url http://sparky:19999 --netdata-url http://sparklina:19999
+```
+
+That image ID is the transferred image's local ID on sparklina. The runner
+requires an explicit immutable local ID and verifies the inspected canonical
+JSON hashes of `Config` and `RootFS` against, respectively,
+`83d0dcabcd3b6d259e9dea48bb67b5bf36108e22d03a7abb2209d73a2adc9e53` and
+`d97ec6de925255c82642f99bc250a3e5a554002583b276aa8eacfd15166c7592`.
+This handles the older Docker engine reporting a config-image ID after
+save/load while sparky reports an OCI-index identity, without substituting a
+different numerical environment. Both complete image inspections are retained.
+
+`TS_MANIFEST` is a PB-sealed input outside the Tessera directory, with exactly
+`schema: "prismaquant.pq183-tessera-source.v1"`, `commit` equal to the full pin,
+and `files` mapping every relative source file to SHA-256. Build that manifest
+from the clean pinned checkout. The runner verifies its supplied SHA-256 and
+the complete actual source file roster (excluding `.git` only); symlinks,
+changed bytes, extra files and missing files refuse before launch. Source is
+mounted read-only, at its existing absolute path. The source seal is checked
+again before every subsequent phase.
+
+Set PB's action timeout at least 120 seconds beyond `--seconds` for cleanup.
+The driver is a child inside admission and never resubmits itself. Its host
+interpreter must provide `requests`, `tokenizers` and `numpy`; that preflight
+runs before GPU containers. The producer campaign retains an in-process
+`cProfile` artifact at `campaign.pstats` for Python/capture/encode attribution;
+this is not CUDA kernel timing or a performance comparison.
 
 The following are **commands inside admitted actions**, not permission to run
 on a coordinator GPU. Set `PQ`, `TS`, and `OUT` to the mounted sealed snapshots
@@ -136,5 +190,26 @@ written to `artifact-after.json` before failing; do not promote it to success.
    receipts, final source identities and exact-container cleanup evidence.
    A stage wrapper or submission acknowledgement is not acceptance.
 
-Validation pending coordinator scheduling: syntax/import checks of the driver,
-the separately owned coverage-regression tests, then this real observation.
+The initial stage driver passed stdlib syntax, CLI, argv generation, explicit
+GPU-memory fraction, artifact-seal path and argv-roundtrip checks through PB
+action `0af1c6b9423d029a53f55f80e422b6b34de745d013c9baceffdd01b99d562a30`
+(sparky, exit 0, no skips, no GPU launch). The exact-pin rejection update passed
+portable PB action
+`19fc6aec105296ff5dcc1fd6ce061a4f56dcbc5eedea8d6d8105c95e6b080cc4`
+(dl380g10, exit 0, no skips, no GPU launch). Terminal records and CAS payloads
+were inspected. Final host-runner CPU checks and the real GPU observation are
+recorded separately when completed; neither initial check establishes them.
+
+The completed host-runner CPU check is PB action
+`df564370757104cc3da15981a6ef1be2c70f1d8e6bc3cb3fe476e991f52f9883`:
+dl380g10, exit 0, 1.18 seconds, 50,421,760-byte peak, no skips and no GPU
+launch. It checks syntax/host CLI, the fixed serving argv and resource flags,
+short/wrong pin refusals, source content/roster/missing-file/symlink/manifest
+mutations, and changed producer Config/local-ID refusal. Its terminal record,
+stdout and actual CAS payload were inspected. Receipt SHA-256 is
+`4b5f0c4ed621bdad1382446c6f95149278ea8230f81a9f5526d0db9c478f0c7e`;
+payload is
+`/mnt/shared/prismabuild-fleet/cas/blobs/25/25a69c17288f1b136bb3bbf565e34fbfc8fdbdea8823da651ed5b79a1442548d`.
+The three absolute calibration symlinks were removed only while each PB input
+was sealed and restored immediately afterward. GPU execution is still pending
+the coordinator's combined-source admission.

@@ -16,15 +16,20 @@ from pathlib import Path
 import pickle
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
+import uuid
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 IMAGE = "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c"
 PRODUCER_IMAGE = "sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88"
-TESSERA_COMMIT = "ba582d47"
+PRODUCER_CONFIG_SHA = "83d0dcabcd3b6d259e9dea48bb67b5bf36108e22d03a7abb2209d73a2adc9e53"
+PRODUCER_ROOTFS_SHA = "d97ec6de925255c82642f99bc250a3e5a554002583b276aa8eacfd15166c7592"
+TESSERA_COMMIT = "ba582d476a3b6db9057ebd1385dc52926f171451"
 STACK = "model.layers.12.feed_forward.experts"
 EXPECTED_UNITS = {f"{STACK}.{expert}.{role}" for expert in range(32)
                   for role in ("w1", "w3", "w2")}
@@ -91,7 +96,8 @@ def payload(args):
 def campaign(args):
     validate_topology(args)
     require(not (args.out / "cost.pkl").exists(), "campaign output exists; use a new attempt")
-    run(args, [sys.executable, "-m", "prismaquant.tessera_campaign",
+    run(args, [sys.executable, "-m", "cProfile", "-o", args.out / "campaign.pstats",
+               "-m", "prismaquant.tessera_campaign",
                "--model", args.model, "--out", args.out / "cost.pkl",
                "--cache-dir", args.out / "cache", "--menu-mode", "attested",
                "--anchors", 1, "--max-rounds", 1, "--anchor-budget", 1,
@@ -289,8 +295,8 @@ def check(args):
     require(smoke_status == "recorded", f"bounded serving observation failed: {smoke_status}")
 
 
-def commands(args):
-    """Print reviewable host commands; execution remains coordinator-owned."""
+def serving_commands(args):
+    """The fixed serving phase graph shared by preview and admitted execution."""
     out, ts = args.out, args.tessera_repo
     name = args.container_prefix
     census_body = shlex.join(["python3", "tools/tessera_route_census.py", str(out / "exported"),
@@ -301,7 +307,11 @@ def commands(args):
     census = ["env", f"TS={ts}", f"RUNS={out}", f"EXT={out / 'ext'}", f"IMG={IMAGE}",
               str(ts / "experiments/tessera_plugin_run.sh"), "--name", f"{name}-census",
               "--memory=64g", "--memory-swap=64g", "--ipc=host",
-              "-e", "TESSERA_SERVE_MODE=resident", "-v", "/mnt/shared:/mnt/shared:ro",
+              "-e", "TESSERA_SERVE_MODE=resident", "-e", "OMP_NUM_THREADS=1",
+              "-e", "MKL_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1",
+              "-e", "MAX_JOBS=4", "-e", "CMAKE_BUILD_PARALLEL_LEVEL=4",
+              "-e", "NINJAFLAGS=-j4", "-e", "MAKEFLAGS=-j4",
+              "-v", "/mnt/shared:/mnt/shared:ro",
               "-v", f"{out / 'exported'}:{out / 'exported'}:ro",
               "-v", f"{out / 'census'}:/census", "--", census_body]
     gate = [sys.executable, str(ts / "experiments/ts5_census_check.py"),
@@ -309,10 +319,11 @@ def commands(args):
             "--census", str(out / "census/census.json"), "--runtime-image", IMAGE,
             "--require-attested", "--out", str(out / "census/check.json")]
     smoke = ["env", f"TS={ts}", f"IMAGE={IMAGE}", f"EXT={out / 'ext'}",
+             "TESSERA_GPU_MEM_UTIL=0.35",
              f"VLLM_CACHE={out / 'vllm-cache'}", f"NAME_PREFIX={name}-smoke", f"PORT={args.port}",
              f"PY={sys.executable}", str(ts / "experiments/moe_greedy_smoke_pair.sh"),
              str(args.model), str(out / "exported"), str(out / "artifact-seal.json"), str(out / "smoke")]
-    print(json.dumps({"schema": "prismaquant.pq183-served-commands.v1",
+    return {"schema": "prismaquant.pq183-served-commands.v1",
                       "commands": {"census": census, "census_gate": gate, "smoke_pair": smoke},
                       "owned_container_names": [f"{name}-census", f"{name}-smoke-bf16",
                                                 f"{name}-smoke-tessera"],
@@ -325,33 +336,342 @@ def commands(args):
                                        "run check stage after census and smoke before releasing evidence"],
                       "producer_image_id": PRODUCER_IMAGE,
                       "serving_image": IMAGE, "serving_mode": "eager", "residency": "resident",
-                      "tp_degree": 1}, indent=2))
+                      "tp_degree": 1}
+
+
+def commands(args):
+    print(json.dumps(serving_commands(args), indent=2))
+
+
+def verify_tessera_source(root, manifest_path, expected_sha):
+    """Bind a complete external source snapshot to the seal in the PB input."""
+    require(sha(manifest_path) == expected_sha, "Tessera source manifest digest changed")
+    manifest = read(manifest_path)
+    require(set(manifest) == {"schema", "commit", "files"}
+            and manifest["schema"] == "prismaquant.pq183-tessera-source.v1"
+            and manifest["commit"] == TESSERA_COMMIT, "invalid pinned Tessera source seal")
+    files = manifest["files"]
+    require(isinstance(files, dict) and bool(files), "empty Tessera source seal")
+    actual = {}
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if ".git" in rel.parts:
+            continue
+        require(not path.is_symlink(), f"source symlink is not sealed: {rel}")
+        if path.is_file():
+            actual[str(rel)] = sha(path)
+    require(actual == files, "Tessera source files differ from the complete pinned seal")
+    return {"commit": manifest["commit"], "manifest_sha256": expected_sha, "files": len(files)}
+
+
+def verify_producer_image(inspected, image):
+    require(re.fullmatch(r"sha256:[0-9a-f]{64}", image) and inspected["Id"] == image,
+            "producer requires the explicit local immutable Docker image ID")
+    for key, expected in (("Config", PRODUCER_CONFIG_SHA), ("RootFS", PRODUCER_ROOTFS_SHA)):
+        digest = hashlib.sha256(json.dumps(inspected[key], sort_keys=True,
+                                          separators=(",", ":")).encode()).hexdigest()
+        require(digest == expected, f"producer {key} differs from the verified numerical environment")
+
+
+def producer(args):
+    campaign(args)
+    build(args)
+
+
+def host(args):
+    """One deterministic admitted action, with no agent between runtime phases."""
+    sys.path.insert(0, str(REPO / "experiments"))
+    from pq87_paired_validation import require_container_name_available
+    from pq87_physical_ab import _http, cleanup_container, dump, remaining
+
+    owner = os.environ.get("PRISMABUILD_CONTAINER_OWNER")
+    require(owner and os.environ.get("CUDA_VISIBLE_DEVICES") != "",
+            "host stage requires an admitted PrismaBuild GPU action")
+    require(args.tessera_source_manifest and args.tessera_source_manifest_sha256,
+            "host stage requires the sealed Tessera source manifest and digest")
+    require(len(args.netdata_url) == 2 and len(set(args.netdata_url)) == 2,
+            "declare both distinct Netdata URLs")
+    require(args.seconds > 0, "deadline must be positive")
+    require(args.producer_image, "host stage requires the host's explicit immutable producer image ID")
+    require(not args.out.exists(), "host output exists; use a fresh attempt")
+    args.out.mkdir(parents=True)
+    deadline = time.monotonic() + args.seconds
+    nonce = uuid.uuid4().hex[:12]
+    args.container_prefix += "-" + nonce
+    serve = serving_commands(args)
+    names = [args.container_prefix + "-producer", *serve["owned_container_names"],
+             args.container_prefix + "-check"]
+    state = {"schema": "prismaquant.pq183-host-observation.v1", "status": "inconclusive",
+             "started_unix": time.time(), "deadline_seconds": args.seconds,
+             "source_snapshot": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                                         cwd=REPO, text=True).strip(),
+             "owner": owner, "names": names, "phases": {}, "observed_containers": {},
+             "producer_image_id": args.producer_image, "serving_image": IMAGE,
+             "memory_cap_gib": 64,
+             "native_thread_policy": {"producer": 1, "census": 1,
+                                       "smoke": "unchanged producer launcher; PB four-CPU cpuset bounds all threads"},
+             "cpu_affinity": sorted(os.sched_getaffinity(0)), "netdata_urls": args.netdata_url}
+    require(len(state["cpu_affinity"]) <= 4, "action affinity exceeds declared four-CPU envelope")
+    stop = threading.Event()
+    telemetry_ok = {url: False for url in args.netdata_url}
+    monitor_errors = []
+
+    def inspect_name(name):
+        got = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, timeout=10)
+        if got.returncode:
+            require(any(f"no such {kind}: {name}" in (got.stdout + got.stderr).lower()
+                        for kind in ("object", "container")), f"cannot inspect owned name {name}")
+            return None
+        record = json.loads(got.stdout)[0]
+        labels = record.get("Config", {}).get("Labels") or {}
+        require(record["Name"] == "/" + name and labels.get("prismabuild.action") == owner,
+                f"container ownership mismatch: {name}")
+        cid = record["Id"]
+        require(re.fullmatch(r"[0-9a-f]{64}", cid), f"invalid exact container ID: {name}")
+        previous = state["observed_containers"].get(name)
+        require(previous is None or previous["id"] == cid, f"container identity changed: {name}")
+        mask = record["HostConfig"].get("CpusetCpus", "")
+        cpus = set()
+        for part in mask.split(","):
+            if "-" in part:
+                first, last = map(int, part.split("-"))
+                cpus.update(range(first, last + 1))
+            elif part:
+                cpus.add(int(part))
+        require(cpus and cpus <= set(state["cpu_affinity"]), "container widened or omitted the admitted CPU mask")
+        require(0 < record["HostConfig"].get("Memory", 0) <= 64 * 2**30,
+                "container memory limit exceeds declared envelope")
+        state["observed_containers"][name] = {
+            "id": cid, "labels": labels, "image": record["Image"],
+            "running": record["State"]["Running"], "cpu_set": record["HostConfig"].get("CpusetCpus"),
+            "memory_limit": record["HostConfig"].get("Memory"),
+            "host_pid": record["State"].get("Pid"),
+            "native_environment": [value for value in record["Config"].get("Env", [])
+                                   if value.split("=", 1)[0] in
+                                   {"OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MAX_JOBS"}],
+        }
+        return record
+
+    def collect():
+        with (args.out / "telemetry.jsonl").open("x", buffering=1) as log:
+            tick = 0
+            while not stop.is_set():
+                row = {"time": time.time(), "meminfo": Path("/proc/meminfo").read_text()}
+                try:
+                    for name in names:
+                        inspect_name(name)
+                    if tick % 5 == 0:
+                        row["gpu_power_w"] = subprocess.check_output(
+                            ["nvidia-smi", "--query-gpu=power.draw", "--format=csv,noheader,nounits"],
+                            text=True, timeout=3).strip()
+                        row["cpu_stat"] = Path("/proc/stat").read_text()
+                        row["container_processes"] = {}
+                        for name, observed in list(state["observed_containers"].items()):
+                            pid = observed.get("host_pid")
+                            if pid:
+                                process = row["container_processes"][name] = {"pid": pid}
+                                for field in ("status", "io"):
+                                    try:
+                                        process[field] = Path(f"/proc/{pid}/{field}").read_text()
+                                    except OSError as exc:
+                                        process[field + "_error"] = repr(exc)
+                        for url in args.netdata_url:
+                            try:
+                                row[url] = _http(url.rstrip("/") + "/api/v1/allmetrics?format=json", timeout=2)
+                                require(bool(row[url]), "empty Netdata reply")
+                                telemetry_ok[url] = True
+                            except Exception as exc:
+                                row[url] = {"error": repr(exc)}
+                except Exception as exc:
+                    row["error"] = repr(exc)
+                    monitor_errors.append(repr(exc))
+                log.write(json.dumps(row) + "\n")
+                tick += 1
+                stop.wait(2)
+
+    def bound_source():
+        return verify_tessera_source(args.tessera_repo, args.tessera_source_manifest,
+                                     args.tessera_source_manifest_sha256)
+
+    def phase(label, argv):
+        state["phases"][label] = {"argv": list(map(str, argv)), "source": bound_source(),
+                                   "started_unix": time.time()}
+        dump(args.out / "host-status.json", state)
+        proc = None
+        try:
+            with (args.out / f"host-{label}.log").open("x") as log:
+                proc = subprocess.Popen(list(map(str, argv)), stdout=log, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+                code = proc.wait(timeout=remaining(deadline))
+            state["phases"][label]["exit_code"] = code
+            require(code == 0, f"phase {label} exited {code}")
+        finally:
+            if proc is not None and proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=10)
+            state["phases"][label]["finished_unix"] = time.time()
+            dump(args.out / "host-status.json", state)
+
+    def producer_command(stage, name):
+        return ["docker", "run", "--rm", "--pull=never", "--name", name,
+                "--cidfile", str(args.out / f"{name}.cid"),
+                "--label", "prismaquant.pq183.campaign=" + nonce,
+                "--gpus", "all", "--memory=64g", "--memory-swap=64g", "--cpus=4",
+                "--ipc=host", "--network=host", "-v", f"{REPO}:{REPO}:ro",
+                "-v", f"{args.tessera_repo}:{args.tessera_repo}:ro",
+                "-v", "/mnt/shared:/mnt/shared:ro", "-v", f"{args.model}:{args.model}:ro",
+                "-v", f"{args.out}:{args.out}", "-w", str(REPO),
+                "-e", "OMP_NUM_THREADS=1", "-e", "MKL_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1",
+                "-e", "MAX_JOBS=4", "-e", "CMAKE_BUILD_PARALLEL_LEVEL=4",
+                "-e", "NINJAFLAGS=-j4", "-e", "MAKEFLAGS=-j4",
+                "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONNOUSERSITE=1",
+                "-e", f"HF_HOME={args.out / 'hf-cache'}", "-e", f"TORCH_EXTENSIONS_DIR={args.out / 'ext'}",
+                "-e", f"TRITON_CACHE_DIR={args.out / 'triton'}", "--entrypoint", "python3",
+                args.producer_image, str(Path(__file__).resolve()), stage,
+                "--model", str(args.model), "--out", str(args.out),
+                "--tessera-repo", str(args.tessera_repo), "--tessera-commit", TESSERA_COMMIT]
+
+    def verify_artifact(label):
+        from tessera.serving_parts import source_identity
+        bound_source()
+        seal_record = read(args.out / "artifact-seal.json")
+        require(seal_record["checkpoint"] == str(args.out / "exported"), "artifact seal path differs")
+        require(source_identity(args.out / "exported") == seal_record["checkpoint_identity"],
+                "artifact differs from seal")
+        write(args.out / f"{label}-artifact-binding.json", {
+            "unchanged": True, "artifact_seal_sha256": sha(args.out / "artifact-seal.json"),
+            "checked_unix": time.time()})
+
+    def interrupted(signum, _frame):
+        raise TimeoutError(f"host action interrupted by signal {signum}")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGALRM, interrupted)
+    signal.setitimer(signal.ITIMER_REAL, args.seconds)
+    thread = None
+    try:
+        state["tessera_source"] = bound_source()
+        for name in names:
+            require_container_name_available(name)
+        for image in (args.producer_image, IMAGE):
+            inspected = json.loads(subprocess.check_output(["docker", "image", "inspect", image],
+                                                           text=True, timeout=10))[0]
+            if image == args.producer_image:
+                verify_producer_image(inspected, image)
+            else:
+                require(image in inspected.get("RepoDigests", []), "serving runtime digest mismatch")
+            write(args.out / ("producer-image.json" if image == args.producer_image else "serving-image.json"), inspected)
+        for directory in ("census", "ext", "vllm-cache", "triton", "hf-cache"):
+            (args.out / directory).mkdir()
+        # Host tools must import the pinned tree without mutating its seal.
+        os.environ.update(PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1",
+                          MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
+        phase("instrument-preflight", [sys.executable, "-c", "import requests, tokenizers, numpy"])
+        thread = threading.Thread(target=collect, daemon=True)
+        thread.start()
+        phase("producer", producer_command("producer", names[0]))
+        verify_artifact("before-census")
+        census = serve["commands"]["census"]
+        boundary = census.index("--")
+        census[boundary:boundary] = ["--cidfile", str(args.out / f"{names[1]}.cid"),
+                                     "--label", "prismaquant.pq183.campaign=" + nonce]
+        phase("census", census)
+        verify_artifact("after-census")
+        phase("census-gate", serve["commands"]["census_gate"])
+        verify_artifact("before-smoke")
+        phase("smoke", serve["commands"]["smoke_pair"])
+        verify_artifact("after-smoke")
+        phase("check", producer_command("check", names[-1]))
+        require(all(telemetry_ok.values()), "missing both-host Netdata evidence")
+        require(not monitor_errors, "container/host telemetry inspection failed")
+        state["status"] = "observed"
+    except BaseException as exc:
+        state["error"] = repr(exc)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=45)
+        state["cleanup"] = {}
+        for name in names:
+            cleanup = {"safe": False}
+            try:
+                record = inspect_name(name)
+                cidfile = args.out / f"{name}.cid"
+                cid = (record["Id"] if record else
+                       state["observed_containers"].get(name, {}).get("id"))
+                if cidfile.exists():
+                    recorded_cid = cidfile.read_text().strip()
+                    require(re.fullmatch(r"[0-9a-f]{64}", recorded_cid), "invalid Docker cidfile")
+                    require(cid is None or cid == recorded_cid, "cidfile differs from observed container")
+                    cid = recorded_cid
+                cleanup = {"safe": True, "never_created": True}
+                if cid is not None:
+                    exact = subprocess.run(["docker", "inspect", cid], capture_output=True,
+                                           text=True, timeout=10)
+                    if exact.returncode:
+                        require(any(f"no such {kind}: {cid}" in (exact.stdout + exact.stderr).lower()
+                                    for kind in ("object", "container")), "cannot verify exact container absence")
+                        cleanup = {"safe": True, "already_absent": True}
+                    else:
+                        obj = json.loads(exact.stdout)[0]
+                        require(obj["Id"] == cid and obj["Name"] == "/" + name
+                                and (obj.get("Config", {}).get("Labels") or {}).get("prismabuild.action") == owner,
+                                "exact container ownership differs during cleanup")
+                        cleanup = cleanup_container(cid)
+                cleanup["container_id"] = cid
+                if state["status"] == "observed":
+                    require(cid is not None, "completed phase lacks exact container ID evidence")
+            except Exception as exc:
+                cleanup = {"safe": False, "error": repr(exc)}
+            state["cleanup"][name] = cleanup
+        if not all(item["safe"] for item in state["cleanup"].values()):
+            state["status"] = "inconclusive"
+        state["telemetry_success"] = telemetry_ok
+        state["monitor_errors"] = monitor_errors
+        state["finished_unix"] = time.time()
+        dump(args.out / "host-status.json", state)
+        print(json.dumps({"status": state["status"], "out": str(args.out),
+                          "cleanup_safe": all(item["safe"] for item in state["cleanup"].values())}), flush=True)
+    return 0 if state["status"] == "observed" else 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("campaign", "build", "seal", "check", "commands"))
+    parser.add_argument("stage", choices=("host", "producer", "campaign", "build", "seal", "check", "commands"))
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--tessera-repo", type=Path, required=True)
     parser.add_argument("--tessera-commit", required=True)
     parser.add_argument("--container-prefix", default="pq183-lfm-r1")
     parser.add_argument("--port", type=int, default=8196)
+    parser.add_argument("--tessera-source-manifest", type=Path)
+    parser.add_argument("--tessera-source-manifest-sha256")
+    parser.add_argument("--producer-image", help="immutable local Docker ID; Config and RootFS are verified")
+    parser.add_argument("--seconds", type=int, default=7200)
+    parser.add_argument("--netdata-url", action="append", default=[])
     args = parser.parse_args()
-    require(args.tessera_commit.startswith(TESSERA_COMMIT), "requires pinned Tessera ba582d47")
+    sys.dont_write_bytecode = True
+    require(args.tessera_commit == TESSERA_COMMIT, f"requires pinned Tessera {TESSERA_COMMIT}")
     require(args.model.is_absolute() and args.out.is_absolute() and args.tessera_repo.is_absolute(),
             "model, output and producer paths must be absolute")
     require(str(args.out).startswith("/home/rob/tessera-runs/"), "use task-owned local output")
     require(all(c.isalnum() or c in "_-" for c in args.container_prefix), "invalid container prefix")
-    args.out.mkdir(parents=True, exist_ok=True)
+    if args.stage != "host":
+        args.out.mkdir(parents=True, exist_ok=True)
     sys.path[:0] = [str(args.tessera_repo / "src"), str(args.tessera_repo)]
     os.environ["PYTHONPATH"] = os.pathsep.join(
         [str(REPO), str(args.tessera_repo / "src"), str(args.tessera_repo),
          os.environ.get("PYTHONPATH", "")])
     os.environ["TESSERA_REPO"] = str(args.tessera_repo)
     os.environ["TESSERA_COMMIT"] = args.tessera_commit
-    globals()[args.stage](args)
+    return globals()[args.stage](args)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
