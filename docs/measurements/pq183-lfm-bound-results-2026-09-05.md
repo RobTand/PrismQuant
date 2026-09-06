@@ -293,3 +293,87 @@ its 1,630-byte payload SHA-256
 `c3fee81522061838c30835c22e340831e84801f4e4fc2e20799050b355e97bad`
 was independently verified. The diagnostic establishes this scope-selection
 criterion only; actual campaign/export/serving acceptance remains open.
+
+## Attempt 05: complete bounded pricing, followed by an assignment-reader refusal
+
+PB action `e9e2588f14bf9d4663b9a95ab0662407bf8a757682036a38c925e2947fab718b`
+ran source `6ccb97e0ea8482353ab014e263a53dbeae076c06`, materialized snapshot
+`07a9771e57e6442bc6ae2ed5de16b40f4e4adb68`, bundle SHA-256
+`14b47d22982398de9a824e58b28fc013a767a18405e848be48a8b54ac2884002`.
+The source includes the coverage correction delivered as PR 243
+(`195f3ba754f4f4efdcbcfcc7a5aecd76d7b9acda`) and the routing correction delivered
+as PR 247. The frozen layer-13 scope, 32-by-512 seed-zero calibration,
+maximum 512 stored activation rows, required Hessians and qualified offline
+producer image remained unchanged. PB admitted one exclusive physical GB10
+GPU, four CPUs and 64 GiB on sparklina; the runtime target was TP1, eager,
+resident, on the pinned EUGR image.
+
+The campaign exited zero and priced all **96** expert projections at the
+predeclared `TESSERA_E4M3_K1_R1024` rung. Its population receipt separates
+96 priced routed units, zero unpriced routed units, three enumerated but
+unpriced dense units, 27 dense targets outside the stride, 42 packed parameter
+tensors outside the stride, and 36 pinned targets. The 42 count refers to
+packed tensors, not stacks. The saved assignment explicitly retains 2,104
+other body matrix units in BF16, including the three in-scope dense units.
+There is no claim that those retained or omitted units were empirically priced.
+
+The 96 selected projections contain **352,321,536 quantizable parameters**.
+Their priced cached wire blobs total **178,161,760 bytes**, corresponding to
+**4.0454355875651045 bpp over those selected parameters only**. This excludes
+BF16 regions and export framing and is not a whole-model bpp figure. A
+read-only SHA-256/length audit of all 96 actual cache blobs matched their
+unchanged assignment records exactly; its roster is
+`pq183-evidence/run05-priced-cache-readback.json`. The original assignment
+SHA-256 is `d9b07632f6aebb3e9a29722312ae68e064de5925ac2accf5c262d1444036e66c`;
+`cost.pkl` is 434,319 bytes with SHA-256
+`45b3d9307a16a031445fa61d5e6e8374da6f0c893937384d9414c07648fe4656`.
+These are priced cache bytes; exported and served byte identity remains
+unmeasured at this point.
+
+The subsequent fresh export process exited 2 with
+`unsupported format string: 'TESSERA_E4M3_K1_R1024'`. The shared layer-config
+reader accepted Tessera dictionary entries but omitted their saved string
+representation. No `build.json`, export, census or paired serving result was
+produced. The overall PB action exited 1 after 356.74 seconds and has no
+successful CAS receipt. Campaign, preflight and host logs, cProfile, both-host
+Netdata telemetry and exact cleanup evidence remain under `run183-05/`,
+mirrored in `pq183-evidence/`. Both telemetry endpoints succeeded without
+monitor errors; all exact-container cleanup records were safe and PB resource
+cleanup completed. The successful campaign cache is retained for a separately
+sealed continuation; quantization need not be repeated to repair this reader.
+The first logged anchor took 78.8 seconds; subsequent logged anchors at indices
+10 through 90 took approximately 2.3 seconds each. These phase observations
+are not a comparative performance claim.
+
+## Shared assignment-reader regression evidence
+
+The repair is production commit `08d372be79312effe7ced43cb1bfd404f80dcdff`.
+It accepts the saved Tessera rung string through the existing torch-free
+reader and requires a full grammar match in both string and dictionary paths.
+Rung legality and target admission remain with the existing downstream gates.
+A malformed dictionary ending in a newline previously passed the anchored
+regular expression; that adjacent reader defect is corrected in the same
+commit without changing valid dictionary case policy.
+
+The first two attempted test launches (`aeeecb4451c1` and `02e65c3d2d2c`)
+failed on missing numerical dependencies during collection and are retained
+as environment failures, not regression results. The isolated torch-free
+reader regression then demonstrated two intended failures and one pass in
+PB `2bd7dbaeab5a5fd7e64134f88275f520f99f54781d7c21e31a0bbbe4d6055ac0`.
+Its initial string fix passed all three tests in PB
+`43740749b568ed9e1e10b9035c0f2290542e325794ef24a7be5b703885562c39`.
+
+The added malformed-dictionary regression failed specifically on the trailing
+newline in PB `3060a29289e9d86bb9879c95601d8f17fb7efcbc22268d126ab47bd8f6d55a1d`
+(three passes, one intended failure). After the full-match correction, PB
+`3dfef54a381f9fb4348ea3c87d1a3b6195d2db076418588fa2f3c15392f0fedd`
+passed all four tests with zero skips and compiled both touched Python files.
+This portable CPU action requested one CPU and 1 GiB, bounded native threads
+to one, and was placed by PB on dl380g10. Actual terminal logs and CAS payload
+were inspected: receipt
+`62aacfa7d2160faabcde5acef69584461da70cdde136a68e589f1785aeba1ce9`,
+102-byte payload SHA-256
+`8446de9e69a8e2e2a9f5bf70c127c4f325e091ab1d98b3489fdd8b8d2d912b19`.
+The tests isolate the actual reader from the package's numerical initializer;
+actual assignment/export preflight remains a required first stage of the
+continuation. Acceptance 4 remains open pending export, census and serving.
