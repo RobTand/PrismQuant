@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `claude/pq-227`. Stamps
+As of: 2026-09-05 · `measurement/pq208-2026-09-05`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for the opt-in
+paired Qwen3-0.6B campaign's explicit vLLM startup memory budget (#208).
+Both native BF16 and NVFP4 servers pass `--gpu-memory-utilization 0.2`,
+about 24.3 GiB on the campaign's 121.63 GiB GB10, inside its 28 GiB
+container and 32 GiB PrismaBuild reservation. Fixed 1 GiB KV bytes alone
+do not bypass the pinned image's startup fraction check; its inherited
+0.92 default refused before any prompt ran. The sequential servers,
+numerical contracts and production shipping defaults are unchanged.
+Gate: `tests/test_pq87_paired_validation.py`.
 
 Re-stamped (2026-09-05, `claude/pq-227`) for integration of the cache
 activation-scale policy guard with joint AURA and the current producer pin.

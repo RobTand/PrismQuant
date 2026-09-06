@@ -22,6 +22,17 @@ The manifest's 2400-second wall deadline is an inconclusive backstop, not a
 predicted completion time. An enclosing `timeout` must retain cleanup grace.
 No GPU action may be submitted without the coordinator allocating that box.
 
+Resource correction for #208 (2026-09-05): both paired servers explicitly
+pass `--gpu-memory-utilization 0.2`. This is about 24.3 GiB on the 121.63 GiB
+GB10, within the existing 28 GiB container envelope. The pinned image's
+inherited 0.92 startup check requested 111.9 GiB despite the explicit 1 GiB
+KV allocation and refused with 111.87 GiB free before any model observation.
+The KV, sequence, prompt, seed, cap, PPL and candidate-decision contracts
+remain unchanged. Use a fresh task-owned local output directory for the
+Docker bind mounts, then archive receipts to shared storage after safe
+cleanup: the first #208 action's new NFS parent was mode 0700 and Docker
+could not traverse it. Retain both infrastructure-inconclusive attempts.
+
 The BF16 serve derives an uncensored schedule separately for the existing
 30-pair screen and a disjoint 30-pair heldout set. Both prompt sets and seeds
 are committed before either model is observed; no candidate outcome selects
