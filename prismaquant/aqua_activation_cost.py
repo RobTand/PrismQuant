@@ -30,8 +30,8 @@ from overshooting the other way. ``activation_dloss_table`` therefore REQUIRES
 the lane's ``served_activation_quantization.executes`` (glob patterns over
 format names) and refuses to guess it.
 
-This stage exists as its own step, rather than inside the cost stage, because
-the A-side is genuinely separable:
+This stage uses a diagonal approximation that treats the activation term
+separately from the weight term:
 
   * It needs NO render. ``activation_dloss`` reads the DENSE weight (as
     ``W[o,j]^2``), the card's ``g_sq_sum``, and the format's activation grid.
@@ -41,7 +41,13 @@ the A-side is genuinely separable:
     ``W^2 @ var`` per unit -- minutes, not the hours a render costs -- and it can
     be recomputed against any existing cost artifact without rebuilding it.
 
-That separability is also the reason the term matters MORE than its size on an
+This computational separation does not establish that the actual errors are
+independent. The approximation omits weight/activation interference and
+channel correlations; its sensitivity card is not the KL/Gauss-Newton
+adjoint used by AURA. Joint downstream pricing must project the full served
+output residual before squaring (tracked in PrismaQuant #237).
+
+That separate accounting is also the reason the term matters MORE than its size on an
 RTN basis suggests: GPTQ and JSO shrink the W-side substantially and do nothing
 whatever to the A-side. Measured on Qwen3.8-27B, production rendering cut
 NVFP4's median W-side to 0.13x its RTN value while the A-side was unchanged, so

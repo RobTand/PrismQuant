@@ -1125,6 +1125,7 @@ def require_priced_export_inputs(
         "input_scales_required": False, "input_scales": None,
         "static_activation_contract_units": 0,
         "input_scales_bound_units": 0,
+        "input_global_scales": {},
     }
     if not selected:
         return report
@@ -1341,6 +1342,7 @@ def require_priced_export_inputs(
                         "capture) or re-allocate from a table priced under "
                         "this file."
                     )
+                report["input_global_scales"][name + ".input_global_scale"] = priced
         report["input_scales"] = str(input_scales_path)
         report["input_scales_bound_units"] = len(static_contract_units)
     return report
@@ -1388,6 +1390,11 @@ def preflight(model_path: str | Path, *, target=None,
         build = {
             "source_model": str(model_path), "layer_config": str(assignment_path),
             "layer_config_sha": assignment_sha,
+            "priced_inputs": {
+                "schema": "tessera.priced_export_inputs.v1",
+                "hessian_capture_sha256": priced_inputs["hessian_capture_sha256"],
+                "input_global_scales": priced_inputs["input_global_scales"],
+            },
         }
         if scope is not None:
             build["tessera_serving_scope"] = read_layer_config_metadata(
@@ -1487,6 +1494,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="serving profile supplying or cross-checking the exact platform")
     parser.add_argument("--write-build-json", default=None,
                         help="write validated allocation facts for lane_shipcard open --build-json")
+    parser.add_argument("--print-build-sha256", action="store_true",
+                        help="print only the SHA-256 of the build bytes written; "
+                             "send diagnostics to stderr for the exporter handoff")
     parser.add_argument("--write-cached-expert-units", action="store_true",
                         help="bundle the priced expert wires this allocation "
                              "selected into the campaign's wire directory "
@@ -1498,6 +1508,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     add_serving_scope_arguments(parser)
     args = parser.parse_args(argv)
     try:
+        if args.print_build_sha256 and args.write_build_json is None:
+            raise TesseraExportLaneError("--print-build-sha256 requires --write-build-json")
         if args.write_build_json is not None and args.assignment is None:
             raise TesseraExportLaneError("--write-build-json requires --assignment")
         if args.write_cached_expert_units and args.assignment is None:
@@ -1527,33 +1539,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             destination = Path(args.write_build_json)
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".tmp")
-            temporary.write_text(json.dumps(report["build"], indent=2, sort_keys=True) + "\n",
-                                 encoding="utf-8")
+            build_bytes = (json.dumps(report["build"], indent=2, sort_keys=True) + "\n").encode("utf-8")
+            temporary.write_bytes(build_bytes)
             temporary.replace(destination)
     except (TesseraExportLaneError, OSError, ValueError) as exc:
         print(f"[preflight] ERROR: EXPORT_CONTAINER=tessera: {exc}",
               file=sys.stderr)
         return 2
+    # The hash is derived from the exact owned bytes, never a reopen of the
+    # mutable destination. The driver retains it in argv across the handoff.
+    output = sys.stderr if args.print_build_sha256 else sys.stdout
+    if args.print_build_sha256:
+        import hashlib
+
+        print(hashlib.sha256(build_bytes).hexdigest())
     print("[preflight] tessera lane OK: "
           f"structure={report['structure']} "
           f"executes={report['executes']} "
-          f"pin={report['pinned_version']}@{report['pinned_commit'][:12]}")
+          f"pin={report['pinned_version']}@{report['pinned_commit'][:12]}", file=output)
     print("[preflight] ship record this artifact must close: "
-          + ", ".join(report["shipcard_slots"]))
+          + ", ".join(report["shipcard_slots"]), file=output)
     if "serving_target" in report:
-        print("[preflight] explicit serving target: " + json.dumps(report["serving_target"], sort_keys=True))
+        print("[preflight] explicit serving target: " + json.dumps(report["serving_target"], sort_keys=True), file=output)
     if "selected_serving_scope" in report:
         print("[preflight] scoped selected units: "
-              + str(len(report["selected_serving_scope"]["by_unit"])))
+              + str(len(report["selected_serving_scope"]["by_unit"])), file=output)
     if "cached_expert_units" in report.get("build", {}):
         print("[preflight] priced expert wires handed to the exporter: "
-              + report["build"]["cached_expert_units"])
+              + report["build"]["cached_expert_units"], file=output)
     for gate in report["unrecorded_gates"]:
         print(f"[preflight] gate {gate['gate']} is ADVISORY BY DECLARATION "
-              f"(closes no shipcard slot): {gate['reason']}")
+              f"(closes no shipcard slot): {gate['reason']}", file=output)
     for tool in report["unsupported_producer_tools"]:
         print(f"[preflight] producer-tool debt: {tool} has no stability "
-              "promise")
+              "promise", file=output)
     return 0
 
 

@@ -442,7 +442,8 @@ def test_an_allocation_with_no_tessera_units_needs_nothing(tmp_path):
                       "hessian_capture_seal_crosscheck": None,
                       "input_scales_required": False, "input_scales": None,
                       "static_activation_contract_units": 0,
-                      "input_scales_bound_units": 0}
+                      "input_scales_bound_units": 0,
+                      "input_global_scales": {}}
 
 
 def test_the_priced_input_triple_matches_tesseras_roster():
@@ -700,6 +701,8 @@ def test_the_shipping_arm_hands_the_priced_inputs_to_the_exporter():
     exporter = driver.index("experiments/export_tessera_serving.py")
     invocation = driver[exporter:driver.index("2>&1 | tee", exporter)]
     assert '"${TESSERA_PRICED_INPUT_ARGS[@]}"' in invocation
+    assert '--priced-inputs "$TESSERA_BUILD_JSON"' in invocation
+    assert '--priced-inputs-sha256 "$TESSERA_BUILD_SHA256"' in invocation
     translator = driver.index(
         'python3 "${TESSERA_REPO%/}/experiments/plan_from_layer_config.py"')
     preflight = driver.rfind(
@@ -707,6 +710,8 @@ def test_the_shipping_arm_hands_the_priced_inputs_to_the_exporter():
     gate = driver[preflight:driver.index("; then", preflight)]
     assert '--assignment "${WORK_DIR}/artifacts/layer_config.json"' in gate
     assert '"${TESSERA_PRICED_INPUT_ARGS[@]}"' in gate
+    assert '--print-build-sha256' in gate
+    assert 'TESSERA_BUILD_SHA256=$(python3 -m prismaquant.tessera_export_lane' in driver
     # Built inside the arm, before the preflight consumes it -- the refusal
     # must fire before the plan translation, let alone the encode.
     built = driver.index("TESSERA_PRICED_INPUT_ARGS+=(--hessian")

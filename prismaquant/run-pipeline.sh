@@ -2519,12 +2519,13 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   if [[ -n "${TESSERA_INPUT_SCALES:-}" ]]; then
     TESSERA_PRICED_INPUT_ARGS+=(--input-scales "$TESSERA_INPUT_SCALES")
   fi
-  if ! python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
+  if ! TESSERA_BUILD_SHA256=$(python3 -m prismaquant.tessera_export_lane --model "$MODEL_PATH" \
       --assignment "${WORK_DIR}/artifacts/layer_config.json" \
       --write-build-json "$TESSERA_BUILD_JSON" \
+      --print-build-sha256 \
       --write-cached-expert-units \
       --target-profile "$TARGET_PROFILE_RESOLVED" "${TESSERA_SCOPE_ARGS[@]}" \
-      "${TESSERA_PRICED_INPUT_ARGS[@]}"; then
+      "${TESSERA_PRICED_INPUT_ARGS[@]}"); then
     exit 2
   fi
   TESSERA_PLAN="${WORK_DIR}/artifacts/tessera_plan.json"
@@ -2574,6 +2575,9 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   fi
 
   echo "[pipeline] [4/4] exporting to the Tessera wire ..."
+  # The capture and scale paths can be republished by another campaign. The
+  # build digest came directly from preflight's owned bytes; the exporter
+  # checks that expectation and its actual loaded H/scales before publication.
   # The same priced inputs the preflight just validated, handed to the encode:
   # the Hessian that shaped the priced bytes and the static activation scales
   # the W4A4 costs were scored under. Omitting them here while the preflight
@@ -2583,6 +2587,8 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   python3 "${TESSERA_REPO%/}/experiments/export_tessera_serving.py" \
     "$MODEL_PATH" "${WORK_DIR}/exported" \
     --plan-json "$TESSERA_PLAN" \
+    --priced-inputs "$TESSERA_BUILD_JSON" \
+    --priced-inputs-sha256 "$TESSERA_BUILD_SHA256" \
     --device "$EXPORT_DEVICE" \
     "${TESSERA_PRICED_INPUT_ARGS[@]}" \
     "${TESSERA_CACHED_UNIT_ARGS[@]}" \

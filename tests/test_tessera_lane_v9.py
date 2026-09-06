@@ -27,10 +27,10 @@ published value disagrees with what they return, and reads
 ``EVIDENCE_SMOKE_INTERFACES`` / ``EVIDENCE_SMOKE_FORMS`` from Tessera rather
 than typing them beside it.
 
-These tests therefore pin the DELEGATION, not the rule: the fixtures make
-Tessera's derivation disagree with the published value on purpose and require
-the reader to refuse. That is checkable today, against the installed contract
-up-converted to v9, and stays true whatever rule Tessera settles on.
+Delegation tests make Tessera's derivation disagree with the published value
+and require the reader to refuse. Differential grammar tests also compare the
+real producer validator with this reader on valid and malformed records, so
+derivation cannot hide a disagreement about which observations are legal.
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ RECORD = {
         {"prompt": "capital-of-france", "form": "pure_greedy",
          "interface": "chat_template", "status": "recorded",
          "reference_status": "recorded"},
-        {"prompt": "capital-of-france", "form": "campaign",
+        {"prompt": "capital-of-france-raw", "form": "campaign",
          "interface": "raw_completion", "status": "repetitive",
          "reference_status": "repetitive"},
     ],
@@ -464,7 +464,7 @@ def test_the_export_gate_gives_a_routed_moe_unit_a_real_route_under_v9(tessera_v
 
 
 def test_a_record_beside_a_control_is_refused_by_name(tessera_v9):
-    """Tessera's validator refuses the pair; this reader mirrors the refusal.
+    """The reader delegates the pair refusal to Tessera's validator.
 
     A v9 cell that was re-measured records its rows and RETIRES the v7
     control.  Carrying both would put one derivation in two places, which is
@@ -479,7 +479,7 @@ def test_a_record_beside_a_control_is_refused_by_name(tessera_v9):
     with pytest.raises(lane.LaneEligibilityError) as excinfo:
         _table(_settle_attribution(payload))
     message = str(excinfo.value)
-    assert "BOTH a record and a control" in message
+    assert "BOTH a control and a record" in message
     assert "drift" in message
 
 
@@ -531,3 +531,140 @@ def test_the_record_key_sets_come_from_tessera_and_are_not_typed_here(tessera_v9
         tessera_v9, "EVIDENCE_SMOKE_RECORD_KEYS",
         frozenset(set(tessera_v9.EVIDENCE_SMOKE_RECORD_KEYS) | {"sampler"}))
     assert _table(payload).schema == lane.LANE_ELIGIBILITY_SCHEMA_TESSERA_V9
+
+
+# Full producer/consumer differential cases use the packaged contract and the
+# real validator. No stub can turn a malformed observation into a valid fixture.
+@pytest.mark.parametrize("case", ["packaged", "unreferenced", "shared_cycle"])
+def test_real_producer_valid_smoke_grammar_and_route(case):
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    smoke = _cell(payload, MOE_DECODE)["evidence"]["smoke"]
+    record = smoke["record"]
+    if case == "unreferenced":
+        record["reference"] = None
+        record["rows"] = [copy.deepcopy(next(
+            row for row in record["rows"] if row["status"] == "recorded"))]
+        record["rows"][0]["reference_status"] = None
+    elif case == "shared_cycle":
+        record["rows"] = [copy.deepcopy(next(
+            row for row in record["rows"] if row["status"] == "repetitive"))]
+    smoke["status"] = ts.derive_smoke_status(smoke)
+    smoke["attribution"] = ts.derive_smoke_attribution(smoke)
+    ts.validate_serving_contract(payload)
+    table = _table(payload)
+    parsed = _parsed_cell(table, MOE_DECODE).evidence.smoke_record
+    assert parsed.as_dict() == record
+    # JSON serialization must retain null, including in the reviewed answer.
+    assert json.loads(json.dumps(parsed.as_dict())) == record
+    assert lane._parse_smoke_record(parsed.as_dict(), "roundtrip") == parsed
+    if case == "unreferenced":
+        assert parsed.reference is None
+        assert parsed.rows[0].reference_status is None
+        assert parsed.answer()[2] is None
+
+    facts = lane.UnitStructuralFacts(
+        qname="model.layers.0.mlp.experts.gate_up_proj.weight",
+        format_name="TESSERA_E4M3_K1_R1024", payload_family="TESSERA_E4M3_K1",
+        k=None, n_sub=None, rate_q256=1024, structure="routed_moe",
+        role_split=False, in_features=1024, out_features=1024)
+    route = lane.resolve_unit_route(
+        facts, table, platform="sm_121", residency="resident",
+        runtime_image=_cell(payload, MOE_DECODE)["runtime"]["image"],
+        execution_mode="eager")
+    assert route.route_status == (lane.ROUTE_STATUS_UNATTESTED
+                                  if case == "shared_cycle"
+                                  else lane.ROUTE_STATUS_BACKED_WITH_SERVE_FLAG)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("instrument", "/tmp/outside.py"),
+    ("instrument", "../outside.py"),
+    ("instrument", "tools/../outside.py"),
+    ("instrument", "tools/./smoke.py"),
+    ("instrument", "tools//smoke.py"),
+    ("instrument", "tools/smoke.py/"),
+    ("instrument", "tools/back\\slash.py"),
+    ("instrument", "tools/white space.py"),
+    ("instrument", ""),
+    ("instrument", None),
+    ("rule", " "),
+    ("rule", None),
+    ("reference", "unpublished_reference"),
+    ("reference", ""),
+    ("rows", []),
+    ("rows", None),
+    ("rows", [None]),
+])
+def test_real_producer_and_consumer_refuse_invalid_record_heads(field, value):
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    _cell(payload, MOE_DECODE)["evidence"]["smoke"]["record"][field] = value
+    with pytest.raises(ValueError, match=field):
+        ts.validate_serving_contract(payload)
+    with pytest.raises(lane.LaneEligibilityError, match=field):
+        _table(payload)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("prompt", " "), ("prompt", None),
+    ("form", "unknown"), ("interface", "unknown"),
+    ("status", None), ("status", "unknown"),
+    ("reference_status", None), ("reference_status", "unknown"),
+])
+def test_real_producer_and_consumer_refuse_invalid_observations(field, value):
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    _cell(payload, MOE_DECODE)["evidence"]["smoke"]["record"]["rows"][0][field] = value
+    with pytest.raises(ValueError, match=field):
+        ts.validate_serving_contract(payload)
+    with pytest.raises(lane.LaneEligibilityError, match=field):
+        _table(payload)
+
+
+def test_real_producer_and_consumer_refuse_verdict_without_reference():
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    _cell(payload, MOE_DECODE)["evidence"]["smoke"]["record"]["reference"] = None
+    with pytest.raises(ValueError, match="reference_status"):
+        ts.validate_serving_contract(payload)
+    with pytest.raises(lane.LaneEligibilityError, match="reference_status"):
+        _table(payload)
+
+
+@pytest.mark.parametrize("change", [{}, {"interface": "other_interface"},
+                                 {"status": "recorded", "reference_status": "recorded"}])
+def test_real_producer_and_consumer_refuse_duplicate_prompt_form(change):
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    smoke = _cell(payload, MOE_DECODE)["evidence"]["smoke"]
+    row = copy.deepcopy(next(row for row in smoke["record"]["rows"]
+                             if row["status"] == "repetitive"))
+    change = dict(change)
+    if "interface" in change:
+        change["interface"] = ("chat_template" if row["interface"] == "raw_completion"
+                               else "raw_completion")
+    smoke["record"]["rows"] = [row, dict(row, **change)]
+    # The contradictory positive row can change the derived admission status;
+    # input grammar must refuse it before that derivation becomes evidence.
+    smoke["status"] = ts.derive_smoke_status(smoke)
+    smoke["attribution"] = ts.derive_smoke_attribution(smoke)
+    with pytest.raises(ValueError, match="repeats"):
+        ts.validate_serving_contract(payload)
+    with pytest.raises(lane.LaneEligibilityError, match="repeats"):
+        _table(payload)
+
+
+def test_v9_refuses_a_runtime_missing_the_owning_record_validator(monkeypatch):
+    from tessera.serving import contract as ts
+
+    payload = _installed()
+    monkeypatch.delattr(ts, "_evidence_smoke_record")
+    with pytest.raises(lane.LaneEligibilityError,
+                       match="needs Tessera's _evidence_smoke_record"):
+        _table(payload)

@@ -550,8 +550,12 @@ def test_route_admission_refuses_a_drifted_a_side(tmp_path, monkeypatch):
     for cell in contract["lane_eligibility"]["cells"]:
         if cell["family"] == "TESSERA_E2M1_K2":
             cell["activation_contract"] = "fp8_per_token_dynamic"
-    table, formats = _load(_write(tmp_path, contract, "a_side_drift.json"))
+    path = _write(tmp_path, contract, "a_side_drift.json")
+    table, formats = _load(path)
     monkeypatch.setattr(tr, "_pinned_serving_table", lambda: (table, formats))
+    # All metadata must come from this fixture's bytes, including the TP
+    # ceiling. Otherwise digest consistency refuses before the A-side check.
+    monkeypatch.setattr(tr, "tessera_serving_contract_path", lambda: path)
     with pytest.raises(tm.TesseraMenuError, match="not what the attesting cells execute"):
         tm.route_admission("TESSERA_E2M1_K2_R896", serving_context=_dense_context())
 

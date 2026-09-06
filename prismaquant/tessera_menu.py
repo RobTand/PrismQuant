@@ -21,22 +21,18 @@ Three gates, and they are deliberately separate
 3. **A pinned runtime executes it.**  :func:`route_admission` -- ONE lookup,
    against the pinned serving release's own published contract (principle 14).
 
-Gate 3 is closed for every Tessera rung today
----------------------------------------------
+Gate 3 reads the current pinned runtime and serving scope
+--------------------------------------------------------
 The table that answers is **Tessera's own** packaged
-``tessera/serving/runtime_contract.json`` -- the plugin Tessera ships under
-``vllm.general_plugins`` since 2026-09-02, when Gridbook's Tessera lane was
-withdrawn (``archive/gridbook_lane_2026-09-02/``).  It publishes
-``TESSERA_E2M1_K2`` and ``TESSERA_E4M3_K1``, and it carries device-qualified
-native cells for the two receipted rungs, so the family and the rate are *not*
-what refuses.  **The pin is.**  Since 2026-09-04 ``tessera_serving_runtime_pin``
-names an exact Tessera commit and the SHA-256 of the ``runtime_contract.json``
-that commit packages; ``require_pinned_tessera_runtime`` admits only the
-Tessera whose installed contract hashes to it, and any other tree on
-``PYTHONPATH`` -- including a master that has moved past the pin -- answers
-:data:`ROUTE_STATUS_UNATTESTED`.  Moving the pin is ONE reviewed commit that
-edits the JSON and the module constants together; an edit here cannot flip it,
-and that is the point.
+``tessera/serving/runtime_contract.json``. Its native cells declare the
+families, rates and serving contexts that are qualified. Since 2026-09-04,
+``tessera_serving_runtime_pin`` names an exact Tessera commit and the SHA-256
+of the contract it packages. Matching cells can be admitted when the installed
+contract matches that digest and the requested scope; an absent cell or a
+different contract remains unattested. Reader support for a wider rate range
+does not qualify every rate for serving. Moving the pin edits the JSON and
+module constants together, including when a new producer API requires a newer
+commit with unchanged contract bytes.
 
 Which is why the ``detail`` on an unattested rung names the conjunct that
 actually refused (``tessera_render.tessera_lane_admission`` returns it beside
@@ -434,6 +430,21 @@ def check_tessera_activation_agreement(name, route, cell_contracts) -> None:
         )
 
 
+def _attested_cell_conditions(name: str, cells) -> tuple[str, tuple[str, ...]]:
+    """Keep the same cell-derived serving conditions on both pin paths."""
+    statuses = {cell.route_status for cell in cells}
+    if len(statuses) != 1:
+        named = ", ".join(
+            f"{getattr(cell, 'cell_id', getattr(cell, 'id', 'unknown'))}={cell.route_status}"
+            for cell in cells)
+        raise TesseraMenuError(
+            f"{name}: the pinned contract's native cells disagree about "
+            f"route status ({sorted(statuses)}): {named}; "
+            "one rung cannot be two routes and this reader will not pick one")
+    return next(iter(statuses)), tuple(dict.fromkeys(
+        flag for cell in cells for flag in cell.requires_serve_flags))
+
+
 def route_admission(
     name: str, *, serving_context: "ServingContext | None" = None,
 ) -> RouteAdmission:
@@ -520,26 +531,12 @@ def route_admission(
             if not legacy_scope_reason and contract.governs(family.name) else ()
         )
         if cells:
-            # The status is the CELL's, not a constant. A cell that says
-            # ``backed_with_serve_flag`` is not a ``backed`` one, and the flags
-            # it names travel with it -- typing ``backed`` here would drop the
-            # ``TESSERA_SERVE_MODE`` the serve needs and read as a stronger
-            # claim than the runtime made.
-            status = cells[0].route_status
-            flags = tuple(dict.fromkeys(
-                flag for cell in cells for flag in cell.requires_serve_flags))
+            status, flags = _attested_cell_conditions(name, cells)
             detail = (
                 f"the pinned Tessera contract attests {len(cells)} native "
                 f"cell(s) naming this rate: "
                 f"{', '.join(cell.cell_id for cell in cells)}"
             )
-            if len({cell.route_status for cell in cells}) > 1:
-                raise TesseraMenuError(
-                    f"{name}: the pinned contract's native cells disagree about "
-                    f"route status ({sorted({c.route_status for c in cells})}); "
-                    "one rung cannot be two routes and this reader will not "
-                    "pick one"
-                )
             check_tessera_activation_agreement(
                 name, route,
                 [cell.activation_contract for cell in cells],
@@ -569,8 +566,17 @@ def route_admission(
         # gate consults and the one the tests substitute.  The REASON is read
         # separately and only when the verdict is False, so patching the
         # verdict cannot invent a rationale the contract never gave.
+        attesting = tessera_attesting_cells(name, table=table, formats=formats, **scope)
         if bool(tessera_lane_attested(name, table=table, formats=formats, **scope)):
-            status = ROUTE_STATUS_BACKED
+            if not attesting:
+                raise TesseraMenuError(f"{name}: admission has no attesting native cells")
+            status, flags = _attested_cell_conditions(name, attesting)
+            from .tessera_runtime_contract import published_tensor_parallel_limits
+            from .tessera_render import tessera_serving_contract_path
+            from importlib.resources import as_file
+            with as_file(tessera_serving_contract_path()) as path:
+                world = published_tensor_parallel_limits(
+                    str(path), table.contract_sha256).get(family.name)
             detail = (
                 "the packaged Tessera contract attests a device-qualified "
                 "native cell naming this rate, under a reviewed release pin"
@@ -578,7 +584,6 @@ def route_admission(
         else:
             status = ROUTE_STATUS_UNATTESTED
             detail = tessera_lane_admission(name, table=table, formats=formats, **scope)[1]
-        attesting = tessera_attesting_cells(name, table=table, formats=formats, **scope)
         if attesting:
             check_tessera_activation_agreement(
                 name, route,

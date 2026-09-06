@@ -776,24 +776,46 @@ def test_a_rung_that_renders_can_still_be_unwritable():
     clear_serialisable_cache()
 
 
-def test_an_attested_lane_cannot_admit_an_unwritable_rung():
-    """``producer_eligible`` is the AND of "the wire can carry it" and "a
-    runtime serves it".  The second is one lookup against the pinned serving
-    contract, so the whole point of the AND is that a route attestation --
-    the deliberate act that follows a serve receipt -- must not quietly put a
-    rung on the menu that the exporter will refuse."""
-    from unittest import mock
+def test_an_attested_lane_cannot_admit_an_unwritable_rung(monkeypatch):
+    """A real route attestation cannot admit bytes the writer cannot carry."""
+    from tessera import alphabet
 
-    from prismaquant import tessera_render as tr
+    from prismaquant import tessera_menu as tm, tessera_render as tr
+    from prismaquant.lane_eligibility import ServingContext
+    from prismaquant.tessera_runtime_contract import TESSERA_DEV_PIN_ENV
+    from prismaquant.tessera_serving_runtime_pin import require_pinned_tessera_runtime
 
-    with mock.patch.object(tr, "tessera_lane_attested", lambda name, **kw: True):
-        assert tr.synthesize_tessera_spec("TESSERA_E2M1_K2_R896").producer_eligible
-        assert tr.synthesize_tessera_spec(
-            "TESSERA_E4M3_K1_R1024"
-        ).producer_eligible
-        assert not tr.synthesize_tessera_spec(
-            "TESSERA_LM16_K1_R768"
-        ).producer_eligible
+    monkeypatch.delenv(TESSERA_DEV_PIN_ENV, raising=False)
+    monkeypatch.delenv(tm.MENU_MODE_ENV, raising=False)
+    require_pinned_tessera_runtime()
+    context = ServingContext(
+        platform="sm_121", structure="dense", residency="resident",
+        runtime_image=_default_serve_image(), execution_mode="eager")
+    name = "TESSERA_E4M3_K1_R1024"
+    control = "TESSERA_E2M1_K2_R896"
+    for rung in (name, control):
+        assert tr.tessera_lane_attested(rung, serving_context=context)
+        assert tr.synthesize_tessera_spec(rung, serving_context=context).producer_eligible
+
+    without = {digest: grid for digest, grid in alphabet.SERIALISABLE_GRIDS.items()
+               if grid.name != "E4M3"}
+    assert len(without) == len(alphabet.SERIALISABLE_GRIDS) - 1
+    try:
+        with monkeypatch.context() as writer:
+            writer.setattr(alphabet, "SERIALISABLE_GRIDS", without)
+            tr.clear_serialisable_cache()
+            # The runtime still attests this route; only the writer's
+            # ability to serialize it changed. A False result cannot be
+            # explained by absent cells, missing context, or a failed pin.
+            admission = tm.route_admission(name, serving_context=context)
+            assert admission.attested
+            assert not admission.serialisable
+            assert not tr.synthesize_tessera_spec(
+                name, serving_context=context).producer_eligible
+            assert tr.synthesize_tessera_spec(
+                control, serving_context=context).producer_eligible
+    finally:
+        tr.clear_serialisable_cache()
 
 
 def test_tessera_rungs_are_producer_eligible_by_the_pin_and_only_by_it():

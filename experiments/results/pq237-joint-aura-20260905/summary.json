@@ -1,0 +1,195 @@
+{
+  "assignment_count": 27,
+  "baseline": {
+    "assignment": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "bytes": 4219032,
+    "joint_additive": 0.0005218381899718187,
+    "kl_per_text": [
+      0.008334669284522533,
+      0.007646555546671152,
+      0.00668323552235961,
+      0.006753141526132822
+    ],
+    "mean_kl": 0.007354400120675564,
+    "mean_nll": 4.147291660308838,
+    "nll_per_text": [
+      4.51861047744751,
+      4.0308051109313965,
+      4.069647312164307,
+      3.9701037406921387
+    ],
+    "signed_joint": [
+      0.04999506042804569,
+      0.003924561897292733,
+      0.0037150774151086807,
+      0.04124116280581802,
+      0.008845879579894245,
+      0.06316375848837197,
+      -0.0668303876882419,
+      -0.014691729564219713,
+      -0.03251010039821267,
+      0.0006746472790837288,
+      -0.036561681277817115,
+      0.06021124706603587,
+      -0.013949717860668898,
+      0.033879655646160245,
+      -0.011888606240972877,
+      0.02570835640653968
+    ],
+    "weight_additive": 0.0005088183932485685
+  },
+  "baseline_regret": 0.0,
+  "budget_bytes": 4306135,
+  "budget_rule": "min + floor((max-min)/2), bytes only",
+  "candidate": {
+    "assignment": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "bytes": 4219032,
+    "joint_additive": 0.0005218381899718187,
+    "kl_per_text": [
+      0.008334669284522533,
+      0.007646555546671152,
+      0.00668323552235961,
+      0.006753141526132822
+    ],
+    "mean_kl": 0.007354400120675564,
+    "mean_nll": 4.147291660308838,
+    "nll_per_text": [
+      4.51861047744751,
+      4.0308051109313965,
+      4.069647312164307,
+      3.9701037406921387
+    ],
+    "signed_joint": [
+      0.04999506042804569,
+      0.003924561897292733,
+      0.0037150774151086807,
+      0.04124116280581802,
+      0.008845879579894245,
+      0.06316375848837197,
+      -0.0668303876882419,
+      -0.014691729564219713,
+      -0.03251010039821267,
+      0.0006746472790837288,
+      -0.036561681277817115,
+      0.06021124706603587,
+      -0.013949717860668898,
+      0.033879655646160245,
+      -0.011888606240972877,
+      0.02570835640653968
+    ],
+    "weight_additive": 0.0005088183932485685
+  },
+  "candidate_regret": 0.0,
+  "end_unix": 1788655902.0215456,
+  "feasible_count": 20,
+  "heldout_oracle_diagnostic": {
+    "assignment": {
+      "model.layers.0.mlp.down_proj": "TESSERA_BF16_K1_R896",
+      "model.layers.21.mlp.down_proj": "TESSERA_E4M3_K1_R896",
+      "model.layers.7.mlp.down_proj": "TESSERA_BF16_K1_R896"
+    },
+    "bytes": 4219032,
+    "joint_additive": 0.0005218381899718187,
+    "kl_per_text": [
+      0.008334669284522533,
+      0.007646555546671152,
+      0.00668323552235961,
+      0.006753141526132822
+    ],
+    "mean_kl": 0.007354400120675564,
+    "mean_nll": 4.147291660308838,
+    "nll_per_text": [
+      4.51861047744751,
+      4.0308051109313965,
+      4.069647312164307,
+      3.9701037406921387
+    ],
+    "signed_joint": [
+      0.04999506042804569,
+      0.003924561897292733,
+      0.0037150774151086807,
+      0.04124116280581802,
+      0.008845879579894245,
+      0.06316375848837197,
+      -0.0668303876882419,
+      -0.014691729564219713,
+      -0.03251010039821267,
+      0.0006746472790837288,
+      -0.036561681277817115,
+      0.06021124706603587,
+      -0.013949717860668898,
+      0.033879655646160245,
+      -0.011888606240972877,
+      0.02570835640653968
+    ],
+    "weight_additive": 0.0005088183932485685
+  },
+  "joint_neighbor_order_correct": 65,
+  "limitations": [
+    "Three selected units only; other weights remain BF16.",
+    "Authored calibration and heldout texts are a bounded numerical screen, not a benchmark dataset.",
+    "Probe stderr does not represent calibration generalization uncertainty.",
+    "Heldout oracle is retrospective and is never used to choose the proposed assignment.",
+    "QDQ model execution is not an actual served operator route; no TTFT/decode/runtime price supplied.",
+    "No sparse-anchor fit, second model, serving smoke, downstream task suite or promotion gate."
+  ],
+  "neighbor_pairs": 81,
+  "paired_candidate_minus_baseline": {
+    "mean_difference": 0.0,
+    "per_probe_difference": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "probe_stderr": 0.0
+  },
+  "pricing_crossovers": 9,
+  "profile_windows": {
+    "joint": {
+      "end_unix": 1788655902.012034,
+      "forwards": 3,
+      "start_unix": 1788655900.6326632
+    },
+    "weight_only": {
+      "end_unix": 1788655900.602982,
+      "forwards": 3,
+      "start_unix": 1788655899.2279794
+    }
+  },
+  "projection_telemetry": {
+    "operator_gemms": 96,
+    "persistent_cache_entries": 0,
+    "qdq_calls": 96
+  },
+  "quantizable_parameters": 9437184,
+  "teacher_nll_per_text": [
+    4.493748664855957,
+    3.995694875717163,
+    4.064876079559326,
+    3.9410014152526855
+  ],
+  "teacher_selected_weights_restored": true,
+  "wall_seconds": 144.7853331565857,
+  "weight_neighbor_order_correct": 66
+}

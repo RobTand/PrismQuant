@@ -29,6 +29,12 @@ from prismaquant.allocator_candidates import (
     ANCHORED_AURA_COST_SOURCE,
     SOURCE_PASSTHROUGH_COST_SOURCE,
 )
+from prismaquant.anchored_shape import (
+    AnchoredShapeError,
+    LogShapeObservation,
+    fit_centered_log_shape,
+    rank_and_solve as _shape_rank_and_solve,
+)
 from prismaquant.cost_stage_checkpoint import (
     atomic_write_bytes,
     canonical_json,
@@ -954,78 +960,11 @@ def _rank_and_solve(
     x_rows: Sequence[Sequence[float]],
     y_rows: Sequence[float],
 ) -> tuple[int, tuple[float, ...]]:
-    """Solve centered least squares through normal equations with pivoting."""
-    if not x_rows:
-        raise AnchoredCostError("shape design is empty")
-    width = len(x_rows[0])
-    if width < 1 or any(len(row) != width for row in x_rows):
-        raise AnchoredCostError("shape feature width is invalid")
-    # Plugin features have no prescribed unit.  Normalize every column before
-    # rank detection/solving so a plugin expressing the same coordinate in
-    # 1e-7 rather than 1 cannot turn an identifiable design into rank zero.
-    column_scales = [
-        math.sqrt(math.fsum(row[index] * row[index] for row in x_rows))
-        for index in range(width)
-    ]
-    active = [scale > 0.0 and math.isfinite(scale) for scale in column_scales]
-    if not all(active):
-        return sum(active), tuple()
-    normalized = [
-        [row[index] / column_scales[index] for index in range(width)]
-        for row in x_rows
-    ]
-    gram = [
-        [math.fsum(row[i] * row[j] for row in normalized) for j in range(width)]
-        for i in range(width)
-    ]
-    rhs = [
-        math.fsum(row[i] * value for row, value in zip(normalized, y_rows))
-        for i in range(width)
-    ]
-    scale = max((abs(value) for row in gram for value in row), default=1.0)
-    tolerance = scale * 1e-12
-    augmented = [gram[index] + [rhs[index]] for index in range(width)]
-    rank = 0
-    for column in range(width):
-        pivot = max(
-            range(rank, width), key=lambda row: abs(augmented[row][column]),
-        )
-        if abs(augmented[pivot][column]) <= tolerance:
-            continue
-        augmented[rank], augmented[pivot] = augmented[pivot], augmented[rank]
-        divisor = augmented[rank][column]
-        augmented[rank] = [value / divisor for value in augmented[rank]]
-        for row in range(width):
-            if row == rank:
-                continue
-            factor = augmented[row][column]
-            if abs(factor) <= tolerance:
-                continue
-            augmented[row] = [
-                value - factor * pivot_value
-                for value, pivot_value in zip(
-                    augmented[row], augmented[rank],
-                )
-            ]
-        rank += 1
-    if rank != width:
-        return rank, tuple()
-    solution = [0.0] * width
-    for row in range(width):
-        pivot_columns = [
-            column for column in range(width)
-            if abs(augmented[row][column] - 1.0) <= 1e-9
-            and all(
-                abs(augmented[other][column]) <= 1e-9
-                for other in range(width) if other != row
-            )
-        ]
-        if len(pivot_columns) != 1:
-            raise AnchoredCostError("shape solve pivot reconstruction failed")
-        solution[pivot_columns[0]] = augmented[row][-1]
-    return rank, tuple(
-        solution[index] / column_scales[index] for index in range(width)
-    )
+    """Compatibility wrapper around the shared, format-neutral solver."""
+    try:
+        return _shape_rank_and_solve(x_rows, y_rows)
+    except AnchoredShapeError as exc:
+        raise AnchoredCostError(str(exc)) from exc
 
 
 def _fit_currency(
@@ -1039,8 +978,7 @@ def _fit_currency(
     widths = {len(candidate.shape_features) for candidate in candidates}
     if len(widths) != 1:
         raise AnchoredCostError("segment candidates use mixed shape bases")
-    width = next(iter(widths))
-    by_unit: dict[str, list[tuple[tuple[float, ...], float]]] = defaultdict(list)
+    panel: list[LogShapeObservation] = []
     for observation in observations:
         if observation.format_name not in by_format:
             raise AnchoredCostError(
@@ -1054,46 +992,24 @@ def _fit_currency(
             raise AnchoredCostError(
                 f"{currency_name} fit requires positive finite cells"
             )
-        by_unit[observation.qname].append((
-            by_format[observation.format_name].shape_features,
-            math.log10(value),
+        panel.append(LogShapeObservation(
+            observation.qname, observation.format_name, value,
         ))
-    x_rows: list[tuple[float, ...]] = []
-    y_rows: list[float] = []
-    for qname, rows in sorted(by_unit.items()):
-        if len(rows) < 2:
-            raise AnchoredCostError(
-                f"panel unit {qname!r} has fewer than two rungs"
-            )
-        feature_means = tuple(
-            math.fsum(features[index] for features, _value in rows) / len(rows)
-            for index in range(width)
-        )
-        value_mean = math.fsum(value for _features, value in rows) / len(rows)
-        for features, value in rows:
-            x_rows.append(tuple(
-                features[index] - feature_means[index]
-                for index in range(width)
-            ))
-            y_rows.append(value - value_mean)
-    rank, coefficients = _rank_and_solve(x_rows, y_rows)
-    if rank != width:
-        raise AnchoredCostError(
-            f"{currency_name} panel design rank is {rank} of {width}"
-        )
     reference = min(candidates, key=lambda item: (
         item.bits, item.coordinate, item.format_name,
     ))
-    g = {
-        candidate.format_name: 10.0 ** math.fsum(
-            coefficient * (feature - reference.shape_features[index])
-            for index, (coefficient, feature) in enumerate(zip(
-                coefficients, candidate.shape_features,
-            ))
+    try:
+        fit = fit_centered_log_shape(
+            panel,
+            {candidate.format_name: candidate.shape_features for candidate in candidates},
+            reference_key=reference.format_name,
         )
-        for candidate in candidates
-    }
-    return g, coefficients, rank
+    except AnchoredShapeError as exc:
+        raise AnchoredCostError(f"{currency_name} {exc}") from exc
+    # Preserve the established AURA representation and numerical order. The
+    # generic fitter knows no currency; all receipt/segment checks stay here.
+    g = {name: 10.0 ** value for name, value in fit.log_shape_by_key.items()}
+    return g, fit.coefficients, fit.design_rank
 
 
 def fit_segment_shape(

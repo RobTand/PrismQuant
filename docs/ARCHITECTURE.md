@@ -3,6 +3,10 @@
 As of: 2026-09-05 · `claude/pq-227`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `claude/pq-227`) for integration of the cache
+activation-scale policy guard with joint AURA and the current producer pin.
+Both sets of contracts and their qualification limits remain in force.
+
 Re-stamped (2026-09-05, `claude/pq-227`) for **the resolved activation-scale
 policy travelling with the cache whose costs it priced** (§5.4, §5.6;
 RobTand/prismaquant#227, P1). `PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE` is a
@@ -46,6 +50,183 @@ existing cache directory's `render_identity.json` has no
 `levers.nvfp4_input_global_scale_policy`, so the first fill that resumes it
 refuses with that field named; the shards themselves are policy-independent,
 but the fix for a resume is a fresh `--cache-dir`.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the joint probe-count
+contract: joint harvesting and row admission require at least two probes.
+One sample cannot estimate sampling variance and must not publish a zero
+standard error as if it established certainty. The default remains 16;
+legacy weight-only harvesting is unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the current-model
+qualification result of joint AURA. The Qwen3-0.6B three-unit fixed-teacher
+screen verifies the residual projection, but establishes no selection
+quality gain: both estimators choose the same assignment, joint neighboring
+rankings are slightly worse, and selected NLL regresses against the
+selected-unit uniform controls. This remains research; actual served
+operator timings, end-to-end SLOs and broader quality gates are still open
+in #237. Evidence: `docs/measurements/pq237-joint-aura-screen-2026-09-05.md`.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for unambiguous measured
+operator binding. Runtime-mode fused aggregation keeps one canonical
+choice for a uniform per-NAME option and its already verified composite
+twin; all distinct member recipes remain. Measured cost intake hashes and
+parses the same owned bytes, so an in-place rewrite cannot verify different
+prices from those admitted. Both integration corrections have regression
+tests. Legacy candidate reduction and cost loading are unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for allocator CLI wiring
+of joint quality and measured runtime search (#237). `--measured-runtime-table`
+and `--measured-runtime-context` reuse the prefill/decode/device budget flags,
+preserve unpruned alternatives, bind source/calibration and operator recipes,
+and recheck the expanded assignment including fixed auxiliary resources.
+Legacy relative dispatch inputs are separate. Unsupported shared sidecars,
+changed promotion and missing measurements refuse. Final artifacts and
+Pareto seeds explicitly identify research operator-sum predictions without
+p95 or end-to-end certification. The default allocator path is unchanged.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA's resolved
+activation projection groups. Static served QDQ identity names the shared
+static owner and its actual no-preclip policy. Compatible candidates share
+one activation projection even when unused dynamic registry callables
+differ. Group resolution occurs outside the output-gradient hook. Tests
+also cover transient anchor consumption and complete signed checkpoint
+replay. No activation quantizer, format default or serving gate changes.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for joint AURA allocator
+currency admission (#237). Complete joint rows are validated before generic
+MSE/weight/exactness branches and consumed directly, with no scalar Fisher,
+calibrated gain or activation transfer. One table must share a joint
+calibration/probe identity and bind each operator to its unit/format key;
+malformed or mixed-currency rows refuse. Optional UCB uses the measured probe
+standard error once, and grouped uncertainty does not reapply a family
+activation penalty. Legacy tables keep their existing pricing branches.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for opt-in streamed joint
+AURA (`compute_aura_cost_streamed(..., joint_activation=True)` and
+`aura_cost --streaming --joint-activation`, #237). The existing resident
+render/cache path supplies full weight and activation perturbations. Output
+cotangents project their signed weight, activation and mixed terms; repeated
+invocations sum before one square. Complete BF16 controls, aligned probe
+components and source/render/activation/arithmetic identities persist through
+checkpoint replay. This is a research quadratic price, not a new served
+quality result. See `docs/design/joint_aura_runtime_allocation.md`.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the opt-in discrete
+`allocator_solver.solve_runtime_frontier` (#237). Its declared additive
+model keeps nondominated bytes, quality and prefill time, with optional
+decode and separate terminal-residency/activation/scratch coordinates. It
+uses exact integer byte charges and retains nonconvex choices. Finite state
+and transition limits refuse rather than return incomplete allocations.
+The legacy solver is unchanged; timing provenance, nonadditive artifact
+overheads, serving-group composition and end-to-end validation remain
+caller responsibilities. Exactness here describes this supplied resource
+model, not a claim of global model-quality or served-latency optimality.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for measured runtime price
+inputs (`measured_runtime_prices`, #237). The optional versioned table binds
+an independently supplied workload context and cost-payload digest to exact
+whole-operator recipes, repeated GPU timing samples and their raw receipts.
+It accounts separately for serialized bytes, terminal residency, activation
+and scratch peaks, and fixed resources. Operator medians remain proposal
+prices; they do not certify end-to-end TTFT/decode quantiles. No runtime
+measurement table or serving promotion ships with this contract.
+
+Re-stamped (2026-09-05, `codex/237-integration`) for the optional runtime
+frontier preservation contract (#237). Candidate construction and fused
+Tessera folding accept `preserve_runtime_frontier=True`: byte/loss dominance
+and DP-bin collapse are deferred until whole-operator timings are attached.
+The fold keeps every licensed coherent member recipe under its existing
+explicit combination cap; it refuses excess work instead of truncating the
+menu. Defaults retain the previous byte/loss reductions. This plumbing does
+not supply timing measurements or establish an end-to-end SLO.
+
+Re-stamped (2026-09-05, `codex/cluster-recovery-delivery`) for coordinator
+recovery across helper exit (PrismaQuant #239). A failed owner-environment
+read now rechecks process identity: disappearance or a zombie with the same
+start time means the helper ended, permitting exact receipt recovery. PID
+reuse, unreadable/malformed process state and live owner mismatch remain
+ambiguous and fail closed; they never authorize killing that process.
+The same refusal applies when ownership becomes ambiguous during recovery
+polling, before any receipt probe or retry.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for opt-in,
+receipt-bound Tessera anchored-shape replay (§4.10). A declared shared pilot
+and one/two per-unit anchors predict a curve; separate audit rungs, exact
+measured values, a PWL comparison and deterministic measurement requests
+make its limitations inspectable. The CLI emits a research report only and
+imports the campaign's actual output-MSE currency. It does not qualify an
+AURA price, publish allocator rows or replace the campaign scheduler.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for the shared
+`anchored_shape` numerical core. The existing AURA receipt/currency wrappers
+delegate centered log-shape fitting without changing their numerical result
+or admission. The neutral core additionally supports a per-unit level and
+slope correction from sparse anchors, with exact measured values and frozen
+independent audit predictions. This adds no production interpolation policy.
+
+Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for correlated
+group uncertainty (PrismaQuant #236). Uniform fused/packed groups retain the
+sum of scaled standard errors as a conservative bound; shared AURA probes
+do not establish independence. Default `PRISMAQUANT_COST_UCB_Z=0` candidate
+prices are unchanged, while grouped uncertainty metadata can increase even
+at zero. The mixed-rung Tessera fold still refuses opt-in UCB pricing.
+
+Re-stamped (2026-09-05, `codex/two-anchor-bootstrap`) for campaign
+bootstrapping from two endpoints (§4.10). A requested initial count of one
+or two retains both endpoints; subsequent rounds use the existing widest-gap
+fallback until leave-one-out can be evaluated, subject to the existing budget,
+round limit and available rungs. This repairs scheduling without qualifying
+interpolation quality or changing production defaults.
+
+Re-stamped (2026-09-05, `codex/audit4-integration`) for the coordinated
+producer API pin following Tessera #356: `ba582d476a3b6db9057ebd1385dc52926f171451`.
+PrismaQuant #231 now passes a digest-bound priced-input snapshot to the
+exporter, so a checkout predating those arguments cannot operate this driver.
+The runtime contract SHA-256, v22/v9 schemas, reviewed admission answer and
+serving evidence are unchanged. The complete Tessera checkout supplies the
+producer scripts; installing only its wheel does not supply `experiments/`.
+
+Re-stamped (2026-09-05, `codex/audit4-input-handoff`) for **retaining the
+priced-input binding across producer intake** (§5.7; PrismaQuant #231).
+The build anchor carries `priced_inputs` with schema
+`tessera.priced_export_inputs.v1`, the expected capture SHA-256 (null for a
+weights-only allocation), and the exact selected F32 `input_global_scales`.
+`--print-build-sha256` returns the digest of the preflight's serialized build
+bytes directly to the driver; diagnostics go to stderr. The exporter receives
+`--priced-inputs` and `--priced-inputs-sha256`, reads and verifies that build
+snapshot once, and checks the actual loaded `ActivationSource` seal and
+owned scalar values before creating output. The existing per-unit H seal
+continues to guard consumption. Same-path campaign republishing remains
+supported: replacement before intake refuses; replacement afterwards leaves
+the owned inputs unchanged. No Hessian copy/cache, wire recipe or serving gate
+changes. CPU regressions exercise H, scale and build replacement, successful
+unchanged inputs and the existing no-H/no-scale/all-BF16 controls.
+
+Re-stamped (2026-09-05, `codex/audit4-admission`) for production route
+conditions (PrismaQuant #234). After the production pin and admission gates
+succeed, `route_admission` derives status and required serving flags from the
+matched cells, using the same conflict refusal as the dev-pin path. Resolved
+serving-lane serialization retains those conditions. Admission also reports
+the family's published closed-world TP ceiling; this metadata does not grant
+TP admission or change release, evidence, or export gates.
+
+Re-stamped (2026-09-05, `codex/audit4-census`) for **replaying scoped census
+runtime-image declarations at fill and publication** (PrismaQuant #232,
+§7.1). A v2 image label alone is legacy evidence. Both consumers require the
+supported launcher declaration and replay its image, resolved reference,
+RepoDigests membership and non-refusal through Tessera's pure
+`runtime_image.declared_reference` helper. No launcher evidence is invented
+for historical receipts; the missing declaration receives a named refusal.
+
+Re-stamped (2026-09-05, `codex/audit4-smoke-grammar`) for producer/consumer
+v9 smoke-record grammar parity (PrismaQuant #233). Before deriving admission,
+the reader delegates the entire record grammar to the pinned producer's pure
+`_evidence_smoke_record` validator. Nullable references and reference statuses
+survive parsed provenance and JSON round trips; unknown reference arms,
+nonportable instrument paths and duplicate `(prompt, form)` observations
+refuse. A missing validator is a named runtime mismatch. This changes no
+status policy, serving format, pin or GPU execution path.
+
 
 Re-stamped (2026-09-05, `claude/tessera-pin-v0.1.0`) for **reading the lane
 table Tessera publishes at the pinned commit** (§5.7, §9.4). Tessera released
@@ -100,23 +281,19 @@ two-homes defect #327 reports one level down — so on a v9 table the status
 and the attribution are re-derived by calling Tessera's own
 `derive_smoke_status` / `derive_smoke_attribution`, and a published value
 that disagrees with what they return is refused as a contract defect rather
-than resolved. The `interface` and `form` vocabularies are read from
-`tessera.serving.contract` for the same reason, never transcribed beside the
-parser — as are the record's and the row's own member sets
-(`EVIDENCE_SMOKE_RECORD_KEYS`, `EVIDENCE_SMOKE_ROW_KEYS`), so a member Tessera
-adds widens this reader on the re-pin that installs it. Whether a cell's word
-was DERIVED or merely asserted is likewise asked, not inferred: Tessera names
-that state `smoke_status_is_derived`, and a reader that spelled it `record is
-not None` would be restating the rule one level up from the one it refuses to
-restate. It reaches provenance, so a shipcard can tell an attested status from
-an asserted one. One refusal is mirrored rather than re-derived — a `record`
-beside a non-null v7 `control` is refused by name, as Tessera's validator
-refuses it, because two homes for one derivation is how they drift; a v9 cell
-that was re-measured records its rows and retires the control. Two shape rules
-this reader does add, both #327's finding in the grammar: a record must name a
-non-empty `instrument`, `rule` and `reference`, and its `rows` must be
-non-empty — a status derived over zero observations is the empty completion
-wearing a schema.
+than resolved. The record grammar is also owned by Tessera:
+`_parse_smoke_record` calls the pinned metadata module's
+`_evidence_smoke_record` validator before converting its result to immutable
+consumer dataclasses. This validates closed record and row members, known
+forms, interfaces and statuses, a portable repository-relative instrument
+path, a nonempty rule and nonempty rows. The reference is a known arm or
+`null`; each row's reference status must be null exactly when no reference
+arm is named. Observation identity is `(prompt, form)`, so changing an
+interface or verdict cannot manufacture a second observation of that pair.
+A record beside a non-null v7 control is refused by the same owning validator.
+The immutable pin binds this private metadata API; its absence is a named
+refusal rather than a fallback grammar. Whether a cell's status was derived
+is asked through `smoke_status_is_derived` and carried into provenance.
 
 **The pin names v22, so v9 is the CURRENT grammar, not one this reader merely
 accepts.** `LANE_ELIGIBILITY_SCHEMA_TESSERA` is `tessera.lane-eligibility.v9`,
@@ -150,20 +327,14 @@ nothing here restates it. Nothing on the pinned table is refused by it today
 (only the two streamed dense E4M3 cells launch through the window-GEMV lane,
 and their plan is what the lane reads); a BF16 cell claiming that launch at
 1792 (column rate 7, outside `[1,2,4]`) would be, by name. **Third, the
-pin itself moved**: `TESSERA_DEV_PIN_COMMIT`, `TESSERA_DEV_PIN_CONTRACT_SHA256`,
-the serving pin JSON and its module constants all name `8ed1d9a…` /
-`719daa02…` (contract v22, lane schema v9) in one commit, and
-`TESSERA_DEV_PIN_ANSWER` was re-derived from what that contract publishes;
-the answer's diff against the v17 review is exactly the four moves above
-(schema, evidence fields, lane rows, the routed-MoE smoke `repetitive` →
-`recorded`) and no family, rung, route status, launch, image or version — the
-same ten cell ids in the same order. The pin names master's TIP at review time
-(`8ed1d9a`, the merge of Tessera #332) rather than `b8b1cb38`, the commit that
-first published this answer: the 56 commits between them (11 PR merges,
-Tessera #312 and #314–#324) package byte-identical contract bytes, so the
-answer and the digest did not move when the commit did — which is the property
-a digest-enforced pin is for. No tag names the pinned
-commit, so `version_is_release` stays `false`. **The admission flip, stated
+pin names one reviewed producer/runtime revision**: `TESSERA_DEV_PIN_COMMIT`,
+the serving pin JSON and its module constants now name `ba582d4…` (Tessera
+#356). The contract SHA-256 remains `719daa02…` (v22, lane schema v9), with
+`TESSERA_DEV_PIN_ANSWER` unchanged from the `8ed1d9a` review. The new revision
+supplies the priced-input exporter snapshot API used by PrismaQuant #231;
+a producer API dependency requires a re-pin even when the contract digest is
+unchanged. No tag names the pinned commit, so `version_is_release` stays
+`false`. **The admission flip, stated
 once:** before this branch `tessera_lane_attested` answered `False` for every
 rung by the PENDING sentinel — no pin, so nothing admitted. After it the
 answer is digest-gated: under the pinned v21 table, with an explicit serving
@@ -178,11 +349,11 @@ through `--tessera-platform/--tessera-runtime-image/--tessera-execution-mode/
 **Fourth, two gates the pin used to hold shut are now reachable** (§7.1).
 The scoped `route.census` leg — dormant under `1221d2a` because the packaged
 table was v4 and the producer emitted `route_census/1` — replays against the
-pinned v8 table, and Tessera's `tools/tessera_route_census.py` at the pinned
+pinned v9 table, and Tessera's `tools/tessera_route_census.py` at the pinned
 commit emits `route_census/2`; no comparison has yet run against a real serve, so
 the strictness caveat below stands. And `verify` on an UNSCOPED card now
 refuses a flat legacy census by the schema that refused it (`current
-tessera.lane-eligibility.v8 cells cannot attest an unbound legacy flat
+tessera.lane-eligibility.v9 cells cannot attest an unbound legacy flat
 census`) — the rule was on main, comparing the packaged schema to
 `LANE_ELIGIBILITY_SCHEMA_TESSERA`, and never fired while the two differed;
 its only remaining positive path is a historical card verified where no
@@ -4793,10 +4964,11 @@ remains a post-export shipcard gate
 **Residual CB-family activation blindness (reported; terminal shortcut gated).** Every rung of `nvfp4_cb` and
 `fp8_cb` has `act_quant_changes_input = True`, and an anchored table carries no measured
 `output_mse`, so P5a has no calibration sample and `penalty_for` already returns exactly 1.0 —
-skipping it is a provenance statement, not a number change. Two facts bound the exposure. The
-activation path is **constant across K within each CB family**, so the blindness cannot reorder
-rungs *inside* a family; it can only shift the `nvfp4_cb`-vs-`fp8_cb` family-choice margin. And
-AURA's validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
+skipping it is a provenance statement, not a number change. The activation operator can be
+constant across K while its joint residual still varies with the rendered weight: activation/weight
+cross terms can reorder rungs within a family. The optional joint path above measures those
+terms; legacy anchored weight-only rows retain this limitation.
+AURA's historical validated wins (−38%/−39.5% @4B, −17.9% @27B on served KL) were measured **against**
 `h_trace × output_mse` — a baseline that *did* carry the A side, since `measure_quant_cost`
 applies `activation_quantize_dequantize(X)` — on menus already mixing W4A4 NVFP4, W8A8 FP8 and
 BF16, i.e. the same family-choice margin. This is carried exactly like the route-flip limitation
@@ -6390,8 +6562,11 @@ while the family constraint itself costs 1.008x / 1.000x / 1.000x against an
 unconstrained bound. Exactness is enforced, not claimed: the fold is pinned
 against brute force on a menu with a non-convex pocket, a uniform-rung option
 must price identically through both constructions or the aggregation refuses,
-and the fold refuses outright at `PRISMAQUANT_COST_UCB_Z > 0` because
-`z*sqrt(sum stderr^2)` is not additive. Measured again on a cost table whose
+and the fold still refuses at `PRISMAQUANT_COST_UCB_Z > 0`: mixed-rung UCB
+repricing remains unsupported. Uniform fused/packed groups use a conservative
+sum of scaled standard errors (#236), since shared AURA probes do not imply
+independent estimates. This does not promote mixed-rung uncertainty support.
+Measured again on a cost table whose
 anchors were placed per group (the correct placement) the one-rung constraint
 costs **1.237x / 1.558x / 1.113x**, and at 4.0 the fold is shown to *contain*
 the unconstrained arm's own rung triple, so the family constraint there is free
@@ -6416,9 +6591,10 @@ inside one run. Four consequences, all of them enforced rather than described:
 
 * `q256: per_member` is the licence for the fold at all. Withdraw it and the
   fold enumerates nothing, so the group keeps the per-NAME intersection, which
-  asserts nothing per member. **With no contract pinned -- production today,
-  since no Tessera RELEASE tag exists -- there is no licence to read and the
-  fold likewise declines, where before this change it folded.** Either way it
+  asserts nothing per member. With no verified contract pin there is no
+  licence to read and the fold likewise declines. The current exact-commit
+  pin supplies the packaged contract; a release tag is no longer required.
+  Either way it
   stamps `__licence__` into the group report, so a receipt can tell "the
   runtime says one rung" from "nothing was asked" -- but only where the
   question arises: a group with no Tessera rung on any member's menu returns
@@ -6470,7 +6646,21 @@ how far the worst surface could be improved -- the opposite of the loop's
 purpose. Each surface records its anchors, encode seconds and which of the two
 stopped it.
 
+`--anchors 1` and `--anchors 2` both start with the two endpoints when the
+legal range has more than one rung. Before three anchors are available, the
+next round splits the widest gap using the shared legal grid. Budget, round
+and available-rung limits still apply; fewer than three measurements cannot
+close the leave-one-out gate and report its error as null.
+
 **Cost is an anchor campaign, not an enumeration** (`prismaquant/tessera_campaign.py`).
+
+The separate `tools/tessera_surface_replay.py` research command can compare
+the existing PWL model with shared-shape transfer from one/two anchors. It
+binds current campaign payload and journal identities, checks recorded wire
+hashes, and keeps activation/recipe segments distinct. A successful replay is
+not fresh source/producer attestation or serving qualification. Details and
+the pending joint-AURA/prefill extension (#237) are in
+[`docs/design/tessera_anchored_replay.md`](design/tessera_anchored_replay.md).
 
 Resume is an identity check, not a name match. The JSON checkpoint manifest
 uses `cost_stage_checkpoint` and stores checksummed per-unit anchor shards in
@@ -7386,7 +7576,7 @@ so the pin now names an exact commit and the digest of the contract that commit
 packages, and the dense rungs are ADMITTED under it. What is refused instead is
 any *other* Tessera: `require_pinned_tessera_runtime` hashes
 `tessera/serving/runtime_contract.json` as installed and refuses when it is not
-`719daa02…824927` (Tessera master `8ed1d9a…`, contract v22; the release
+`719daa02…824927` (Tessera master `ba582d4…`, contract v22; the release
 `e78959ed…` carried v20 at `374ce4a9…625dd4`, and the first pin, 2026-09-04,
 was `ba3a3c69…e055e6` at `5acc2a6f…`, contract v17). A stray
 checkout on `PYTHONPATH` is refused exactly as a
@@ -7491,6 +7681,18 @@ and a by-name refusal when the two rosters disagree — #216) and the
 exporter loads and reads each scalar from the safetensors file, refusing a
 payload, sidecar or value that is not what priced the row, and an allocation
 that carries no binding at all as unbound. The campaign writes those two
+files at replaceable paths, so the successful check also travels in the
+build's `priced_inputs` block: `hessian_capture_sha256` and
+`input_global_scales` keyed by `<unit>.input_global_scale`, under
+`tessera.priced_export_inputs.v1`. The driver captures the build digest
+directly from `--print-build-sha256` and hands both the build path and that
+digest to Tessera's `--priced-inputs` / `--priced-inputs-sha256` intake. Tessera
+compares the digest to the exact build bytes it reads once, then compares the
+expectations to its loaded capture seal and copied float scales before any
+output creation. A second campaign may republish the paths; an export either
+retains the already loaded priced inputs or refuses the replacement. The
+capture's existing per-unit consumption seal still protects cached expert
+source/H checks and dense encoding. The campaign writes those two
 files at one point in `main()`: **after** the resume identity has accepted
 this run's inputs and **before** the anchor loop (#211). Before the loop, so a
 deadline-stopped campaign still leaves them (#193); after the gate, because
@@ -8366,6 +8568,19 @@ paths are not identity. The raw producer's `checkpoint_sidecars` hashes must
 match the retained texts and the actual artifact files, so host/container
 checkpoint path aliases are valid but an artifact-free replay is not.
 
+The raw census must also carry `runtime_image_declaration` from Tessera's
+post-#132 launcher protocol. Its schema, source and environment-variable names
+must match Tessera's exported declaration constants, and its record must
+explicitly declare boolean non-refusal and a RepoDigests string list. The
+shared fill/publication predicate replays that record through Tessera's
+stdlib `runtime_image.declared_reference`: the selected image must equal the
+declared image and resolved reference and occur in RepoDigests. It never
+consults the publisher's environment, daemon or box-local image ID. Unsupported
+or contradictory declarations refuse; a missing declaration is named
+`image_declaration_missing` legacy v2 evidence and requires a fresh census.
+This checks the launcher's declaration, not an unforgeable image attestation,
+and imports no serving execution implementation.
+
 **Reachable at the current pin, by the pin rather than by a flag.** The scoped
 path takes the packaged contract's lane table through
 `lane_eligibility.load_eligibility_table` and refuses anything that is not the
@@ -8375,8 +8590,8 @@ schema is not `tessera.serving.route_census/2`. Under
 `tessera.lane-eligibility.v4` and the producer's `tools/tessera_route_census.py`
 emitted `route_census/1`, so no scoped receipt could be filled or replayed and
 `route.census` on a scoped card stayed `UNFILLED` by the pin. At the pin this
-document is stamped for (`8ed1d9a`, contract v22) the packaged table is
-`tessera.lane-eligibility.v8` -- the schema the constant names -- and the
+document is stamped for (`ba582d4`, contract v22) the packaged table is
+`tessera.lane-eligibility.v9` -- the schema the constant names -- and the
 producer at that commit emits `route_census/2`, so both refusals lift and the
 comparison below is the live gate on a scoped card. What has NOT changed: no
 scoped receipt from a real serve has been replayed yet (nothing has been
@@ -8415,7 +8630,7 @@ never hardcoded), without a decoder, empty, or disagreeing with the priced
 routes in either direction -- plus a hand-set `passed` flag that disagrees
 with the replay; explicit scope fields cannot be flattened into those rows.
 A scoped card, or a current table of the scoped schema
-(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v8 at the pin), refuses a flat legacy
+(`LANE_ELIGIBILITY_SCHEMA_TESSERA`; v9 at the pin), refuses a flat legacy
 receipt instead of inventing the missing runtime, naming the schema that
 refused; flat rows stay attestable only where no `tessera` is installed to
 publish a current table (`tests/test_tessera_route_receipt.py`). At the `1221d2a`
@@ -10723,8 +10938,8 @@ per-rank wires rather than a byte range. `expert_parallel.units` is empty.
 Both residency modes are receipted and both must be exercised.
 
 **Admission is pinned to an exact commit and contract digest.** The pin names
-Tessera `8ed1d9a78b3f0c7036dcbe14d7df3a89f398812a` (master's tip at review
-time, the merge of Tessera #332; version `0.1.0`, contract v22, lane schema
+Tessera `ba582d476a3b6db9057ebd1385dc52926f171451` (master's tip at review
+time, the merge of Tessera #356; version `0.1.0`, contract v22, lane schema
 v9 — v21 landed at `b8b1cb38` in Tessera #313 and the release `e78959ed…`
 carried v20; first pinned 2026-09-04 at `5acc2a6f…`, contract v17)
 and the SHA-256 of the `runtime_contract.json` it packages
@@ -11107,7 +11322,7 @@ New with the 2026-07-30 merge:
 | D30 | **The Sensitivity Card's non-scalar tiers are screening surrogates, and its probe wiring has two soft spots** (added 2026-08-14, §4.8). Four honest gaps, none of them closed: (1) **No served A/B.** The `MARGINAL` tier and AQUA-AURA have never been measured on exact full-vocab vLLM KL-vs-BF16 or direct WikiText PPL. `SCALAR` is a byte-identical reproduction of today's model and carries no such debt; the other two must not be cited as results (§2.5). (2) **The rank-1 reconstruction's error is unquantified on real layers.** `H = Σ_t outer(g_t², x_t²)` is exactly rank-1 only when one token dominates; `outer(row, col)/h_trace_raw` is provably exact in that case (`rtol=1e-10`) and an approximation of unknown magnitude everywhere else. Nothing has compared it against a materialized `H` on a real Linear. (3) **The marginal identity is exact only at the two streaming sites.** `sum(fisher_row) == sum(fisher_col) == h_trace_raw` holds by construction where `h_trace_raw` is literally `chunk_h.sum()` in fp32 (`incremental_probe.py:2520`, `:2751`). On the **resident** path `h_trace_raw` comes from the bf16 outer-product-norm identity `(gy2_sq.sum(1) · x2_sq.sum(1)).sum()` (`:1667-1668`) while the marginals reduce the fp32 `chunk_h`, so the two agree mathematically but not bitwise; `SensitivityUnit.validate`'s `rtol=1e-3` is what absorbs that, and nothing measures the actual spread. (4) **One accumulation site is dead on the shipping path and therefore untested.** The batched MoE block-flush hook (`:2276-2362`) fires only for blocks whose immediate children are per-expert containers exposing the profile's projection names as `nn.Linear` — the *unpacked*-expert layout. The shipping recipe's MoE models do not take it, and `tests/test_probe_marginals.py` covers the helpers and the two streaming sites but not that branch, so its marginal emission has never executed. A transposed axis or a wrong merge rule there would surface first on a new unpacked-expert architecture, which is exactly the class of silent-garbage failure §8.5 L3 is about. | §4.8; `prismaquant/sensitivity_card.py`, `format_cost_protocol.py`, `sensitivity_card_allocate.py`; `incremental_probe.py:97-199,1667-1672,2276-2360,2501-2520,2735-2751`; `tests/test_sensitivity_card.py`, `tests/test_probe_marginals.py`; `docs/design/sensitivity_card_contract.md` §8 | MED | (1)-(2) run the rank-agreement check against measured `output_mse` on Qwen3-0.6B and an allocation-churn check against a shipped `cost.pkl` before any tier but `SCALAR` is proposed for a default; (3) record the resident-vs-streaming identity spread on one real probe, or tighten the resident path to reduce `chunk_h` for both; (4) cover the MoE block flush with a synthetic unpacked-expert fixture, or state that the branch is retired. |
 | D31 | **Shipcard replay binds recorded evidence to the serving pin at HEAD** (added 2026-08-18). Every gate slot records the runtime that actually gated it (serve-manifest `gridbook_distribution`, endpoint-contract stack), but the replay compares those records against `load_gridbook_serving_runtime_pin()` at HEAD — so the 0.8.9 pin bump made the already-published DSv4 flagship unpublishable for a docs-only README update: six slot refusals, all "is not the tracked pin", on evidence that exactly matches the pin that was tracked when it was measured. Worked around honestly for the 0.8.9 card update by running the publisher from a worktree at `0266662` (the pre-bump commit; publisher and verifier code there are byte-identical to HEAD — the bump commit `6a883bc` touched pin data and docs only — so this verifies the card against the pin that gated it, with zero tool divergence). Recurs on every serving-pin bump for every historical artifact. | `prismaquant/shipcard.py:1225,2374,2521`; `tools/publish_artifact.py` dry-run refusal 2026-08-18 | MED | Decision for Robert: accept a declarative superseded-pins record in `gridbook_serving_runtime_pin.py` (version/commit/wheel of prior released pins; replay accepts recorded == current OR recorded ∈ superseded, and the verdict names which) — keeps fail-closed against unreviewed runtimes without rotting history — or rule that docs updates to historical artifacts always re-run the publisher at the artifact's pin era. |
 | D32 | **The Fisher probe is not bit-reproducible, and nothing in the tree said so** (added 2026-08-20). Two runs of `incremental_probe` with byte-identical calibration, the same commit and the same `--layers-per-shard` differ on **379/402 units**, median `|Δh_trace|/h_trace` **2.5e-4** (max 1.1e-2); `n_tokens_seen` and the per-expert Fisher *support* are bit-identical on every unit, so the forward and the routing are exactly deterministic and only the backward moves. Mechanism: 30 of Ornith-1.5-35B-A3B's 40 layers are Gated DeltaNet, whose `fla` Triton kernels reduce over chunks in a non-deterministic order. **Why it is debt rather than a bug:** the jitter is unbiased (signed mean +6.5e-5 against its own sd 5.7e-4) and three orders below the 23% cost CV that §9 records as producing 3% assignment churn and 0σ served — but a probe-side change gated on bit-identity refuses for reasons that have nothing to do with the change, and `--layers-per-shard auto` (sized from free RAM at launch) adds a second, *avoidable* source on top. **Consequence for provenance:** probe-derived artifacts (`cost_baseline.pkl`, `cost_aura.pkl`, `cost.pkl`, the sensitivity card) must be rebuilt together from one probe run rather than half-reused, or `cost.pkl`'s stamped provenance names a probe that produced only some of its numbers. | `incremental_probe.py`; `sensitivity_probe.py` `_accumulate_packed_per_token_fisher`; measured Ornith-1.5-35B-A3B 2026-08-20 | LOW | Gate probe changes on what is invariant (`n_tokens_seen`, per-expert support, an unbiased signed mean within a *measured* floor), never on bit-identity; pin `--layers-per-shard` for any A/B. |
-| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. **Producer eligibility is no longer what is missing**: since 2026-09-04 the pin names an exact Tessera commit plus the SHA-256 of the `runtime_contract.json` it packages (re-pinned 2026-09-05 to Tessera master's tip `8ed1d9a…`, contract v22, lane schema v9; v21 landed at `b8b1cb38…` in Tessera #313 and the release `e78959ed…` carried v20), and the packaged contract's dense `device_qualified` cells are ADMITTED under it — what the pin now withholds is any *other* Tessera, which is also what the driver's preflight refuses on. Two residues are the honest remainder of the eligibility half. **First**, the contract's two `routed_moe` cells are decided by their own published `evidence.smoke.status`, which this repository reads and does not second-guess — a measured serving property, not a structural ban here; v17–v20 published `repetitive` and the status-only predicate refused them; v21 and the pinned v22 publish `recorded`. **What that status rests on became checkable at lane schema v9**: RobTand/tessera#327 (P1) reported that v21's `recorded` rested on a repetition rule that lived only in a dated measurements file, derived and checked by nothing and satisfiable by an empty completion; v9 puts the rule, the instrument, the reference and the rows in `smoke.record`, and this reader re-derives status and attribution through Tessera's own functions and refuses a published value they do not derive (`lane_eligibility._parse_smoke_record`, `tests/test_tessera_lane_v9.py`). **Second**, three dense `decode` cells carry `evidence.grade: "route_only"` — a route with no KL at all — which is admitted today and is a promotion question for Rob rather than a gate this repository may tighten on its own. No ship gate has been run on the lane, and no runner exists to run one: the lane's six declared gates are now RECORDED — `route.census` names a shipcard slot and the arm opens a lane-gated card (§7.1, §9.4, 2026-09-03) — so an un-run gate is an unfilled slot the publisher refuses on rather than a sentence nothing reads, but nothing spawns the container that would fill it. The `experiments/` boundary is likewise declared rather than fixed: both tools carry `stability: "unsupported_experiments"` and a `tracking_issue` on `lane_specs/tessera.json`, which makes the debt visible to a reader and a gate without promoting anything. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's four gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (commit + `contract_sha256`), `tessera_serving_runtime_pin.py` | Med | Moving the pin forward is ONE reviewed commit that edits the pin JSON and the reader's three pinned constants together, verified against a clean Tessera tree; the arm can build today at the pinned commit. Independently, and both still open under RobTand/prismaquant#119: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path — after which their `stability` becomes `supported` and the `tracking_issue` goes — and build the lane runner that executes a lane's declared gates in a fresh plugin container and fills the slots the card already opens. |
+| D33 | **OPEN 2026-09-02, narrowed twice.** Tessera is priced and rendered by name (§5.7), has a *declared* lane (§9.4, `lane_specs/tessera.json`), a real serving runtime of its own (`tessera.serving`, `quant_method: "tessera"`), and since **2026-09-03** a real `EXPORT_CONTAINER=tessera` arm in `run-pipeline.sh` that plans and encodes through Tessera's OWN tools under `TESSERA_REPO` (`plan_from_layer_config.py`, `export_tessera_serving.py`). **The "no exporter codec" half is re-scoped, not closed**: this repository still writes no Tessera bytes and deliberately never will — a wire recipe with two homes is how the two halves of one format drift apart — so the debt is now *the boundary*, not *the absence*: the two Tessera scripts the arm names live in `experiments/`, which their own README calls drivers rather than a supported interface. **Producer eligibility is no longer what is missing**: since 2026-09-04 the pin names an exact Tessera commit plus the SHA-256 of the `runtime_contract.json` it packages (re-pinned 2026-09-05 to Tessera master's tip `ba582d4…`, contract v22, lane schema v9; v21 landed at `b8b1cb38…` in Tessera #313 and the release `e78959ed…` carried v20), and the packaged contract's dense `device_qualified` cells are ADMITTED under it — what the pin now withholds is any *other* Tessera, which is also what the driver's preflight refuses on. Two residues are the honest remainder of the eligibility half. **First**, the contract's two `routed_moe` cells are decided by their own published `evidence.smoke.status`, which this repository reads and does not second-guess — a measured serving property, not a structural ban here; v17–v20 published `repetitive` and the status-only predicate refused them; v21 and the pinned v22 publish `recorded`. **What that status rests on became checkable at lane schema v9**: RobTand/tessera#327 (P1) reported that v21's `recorded` rested on a repetition rule that lived only in a dated measurements file, derived and checked by nothing and satisfiable by an empty completion; v9 puts the rule, the instrument, the reference and the rows in `smoke.record`, and this reader re-derives status and attribution through Tessera's own functions and refuses a published value they do not derive (`lane_eligibility._parse_smoke_record`, `tests/test_tessera_lane_v9.py`). **Second**, three dense `decode` cells carry `evidence.grade: "route_only"` — a route with no KL at all — which is admitted today and is a promotion question for Rob rather than a gate this repository may tighten on its own. No ship gate has been run on the lane, and no runner exists to run one: the lane's six declared gates are now RECORDED — `route.census` names a shipcard slot and the arm opens a lane-gated card (§7.1, §9.4, 2026-09-03) — so an un-run gate is an unfilled slot the publisher refuses on rather than a sentence nothing reads, but nothing spawns the container that would fill it. The `experiments/` boundary is likewise declared rather than fixed: both tools carry `stability: "unsupported_experiments"` and a `tracking_issue` on `lane_specs/tessera.json`, which makes the debt visible to a reader and a gate without promoting anything. Gridbook's Tessera lane (contract v14) is withdrawn and was never released. | `tessera_render.py` (`tessera_lane_attested`), `tessera_export_lane.py` (the arm's four gates), `run-pipeline.sh` (`EXPORT_CONTAINER=tessera`), `tessera_runtime/tessera_serving_runtime_pin.json` (commit + `contract_sha256`), `tessera_serving_runtime_pin.py` | Med | Moving the pin forward is ONE reviewed commit that edits the pin JSON and the reader's three pinned constants together, verified against a clean Tessera tree; the arm can build today at the pinned commit. Independently, and both still open under RobTand/prismaquant#119: promote the two named Tessera scripts from `experiments/` to a supported entry point so the boundary is an interface rather than a path — after which their `stability` becomes `supported` and the `tracking_issue` goes — and build the lane runner that executes a lane's declared gates in a fresh plugin container and fills the slots the card already opens. |
 | D34 | **The Gridbook lane is retired but its format/cost/render plumbing is not** (added 2026-09-02). The lane, its pins, exporter, serving profiles, ship-gate slots, 73 test modules (1,691 node IDs) and 27 documents were archived at `archive/gridbook_lane_2026-09-02/` and `EXPORT_CONTAINER=nvfp4_cb` now `exit 2`s (§3.5, §9.2) — so no CB rung can be exported or served, which is the property principle 9 cares about. What remains is the machinery that *prices and renders* those rungs: `cb_layout.py`, `nvfp4_cb_formats.py`, `nvfp4_cb_footprint.py`, `cb_ldlq*.py`, `cb_minchain.py`, `cb_warm_state.py`, `cb_banked_books.py`, `cb_learned_promotion.py`, `cb_anchored_cost.py`, `cb_ladder_cross_family.py`, `routed_moe_codebooks.py`, `mxfp4_widen.py`, `source_class_format_plan.py`, plus CB branches inside `production_weight_cache.py`, `allocator.py`, `format_registry.py`, `export_native_compressed.py`, `layer_config.py`, `lane_spec.py`, `serve_constraints.py` and `model_profiles/*`, and roughly 60 tests that exercise them. **Why it was left:** the excision is several hundred diffuse edits concentrated in exactly the files the continuous-menu branch is rewriting, and merging that against a live branch is more dangerous than the debt. **The risk it carries:** a `FORMATS` menu can still name a `*_CB_*` rung, the DP can still price it, and the only thing that stops it is the exporter and the `production-render-score` pairing guard — a *refusal*, not an *absence*. Four consequences are recorded separately because they are capability losses, not debt. (i) `FP8_BLOCK_UE8M0_SOURCE` is now `ROUTE_STATUS_BLOCKED` — its only route was the plugin. (ii) `MXFP4_SOURCE` keeps a backed stock-Marlin route but has no writer and no serving profile, and `MXFP8_UE8M0_G32` is the same shape — never a compressed-tensors scheme, written only by the CB *streaming* exporter, which is archived. Both keep a live `FormatSpec` and a working render; neither has a writer. (iii) **The `serving_lanes` block of a serving-profile spec now has zero live declarations.** `serving_profile_specs/nvfp4_cb.json` was the only spec that ever declared one (verified against `d263f54`), so the per-lane structured `route_status` / `activation_contract` / `fused_mid_m` table that principle 9 reads is a parser with nothing left to parse; the native lane's route status has always come from the source-passthrough contracts instead. The parser and its `route_status_source` machinery are kept because that is the shape the Tessera lane must declare in. (iv) **The sample-parallel incremental probe is unavailable**: its `prepare-run-contract` minter and its per-worker source-census revalidation were both built on `prismaquant/rtx4090_artifact_census.py`, the strict-Ada FP8-CB campaign's closed Qwen3.8-27B layout. `incremental_probe.py --global-calibration-tensor` now refuses up front rather than admitting a pre-retirement contract with one leg of its identity replay missing (`docs/design/sample_parallel_probe.md` carries the banner). Reviving it means giving the census a lane-independent source of truth. Two production observations were surfaced by the removal, deferred at the time, and **both fixed 2026-09-03** (RobTand/tessera#20): `check_serving_shape` failed **open** on an unknown profile id — it caught `FileNotFoundError` and resolved silently to `research`, which permits every shape, while `serving_lane_route`/`serving_lane_catalog`/`check_serving_format` all fail **closed**. It now returns the same `profile_mismatch` refusal `check_serving_format` does; `profile_id=None` still resolves to `research`, which is the declared default and loads, so no legal call changed. And `activation_pricing_branches["unrecorded"]` is re-homed as its own profile-independent test in `tests/test_serving_lane_metadata.py` rather than left riding a deleted CB test. A fifth item is dead-but-kept rather than lost: `shipcard.py`'s `safetensors_content_receipt` trio has no live caller since the strict-RTX4090 publication gate retired, and is kept so receipts already on disk stay readable. `ROLE_COMPOSITE_FUSED_SOURCE_EXEMPT` still exempts `DeepseekV4Profile` from declaring a fused-sibling source, but the lane that justified the exemption is gone; discharging it is a producer-behaviour decision, not a removal. | `archive/gridbook_lane_2026-09-02/README.md`; `docs/measurements/gridbook-lane-retired-2026-09-02.md`; §9.2 | MED | Excise the CB plumbing after the continuous-menu branch merges, in one commit whose diff is deletions plus the tests that go with them; or, if a codebook rung is wanted again for the Tessera lane, port the parts worth keeping deliberately rather than inheriting them. |
 
 **Open items carried from session handovers.** Of the 41 items the handover census could not

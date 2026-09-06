@@ -1,0 +1,65 @@
+[
+  {
+    "absolute_error": 2.9103830456733704e-08,
+    "decomposed": 0.07225191523320973,
+    "direct": 0.07225188612937927,
+    "format": "TESSERA_E2M1_K1_R768",
+    "unit": "model.layers.0.mlp.down_proj"
+  },
+  {
+    "absolute_error": 7.729977369308472e-08,
+    "decomposed": 0.001907222904264927,
+    "direct": 0.00190730020403862,
+    "format": "TESSERA_E4M3_K1_R896",
+    "unit": "model.layers.0.mlp.down_proj"
+  },
+  {
+    "absolute_error": 4.0978193283081055e-08,
+    "decomposed": 0.008893590420484543,
+    "direct": 0.00889354944229126,
+    "format": "TESSERA_BF16_K1_R896",
+    "unit": "model.layers.0.mlp.down_proj"
+  },
+  {
+    "absolute_error": 9.872019290924072e-08,
+    "decomposed": 0.027661960572004318,
+    "direct": 0.02766186185181141,
+    "format": "TESSERA_E2M1_K1_R768",
+    "unit": "model.layers.7.mlp.down_proj"
+  },
+  {
+    "absolute_error": 2.9336661100387573e-08,
+    "decomposed": 0.04155584378167987,
+    "direct": 0.04155581444501877,
+    "format": "TESSERA_E4M3_K1_R896",
+    "unit": "model.layers.7.mlp.down_proj"
+  },
+  {
+    "absolute_error": 2.421438694000244e-08,
+    "decomposed": 0.013175713829696178,
+    "direct": 0.013175738044083118,
+    "format": "TESSERA_BF16_K1_R896",
+    "unit": "model.layers.7.mlp.down_proj"
+  },
+  {
+    "absolute_error": 1.2398231774568558e-07,
+    "decomposed": 0.029154566233046353,
+    "direct": 0.029154442250728607,
+    "format": "TESSERA_E2M1_K1_R768",
+    "unit": "model.layers.21.mlp.down_proj"
+  },
+  {
+    "absolute_error": 2.685701474547386e-07,
+    "decomposed": 0.02792575617786497,
+    "direct": 0.027925487607717514,
+    "format": "TESSERA_E4M3_K1_R896",
+    "unit": "model.layers.21.mlp.down_proj"
+  },
+  {
+    "absolute_error": 1.6205012798309326e-07,
+    "decomposed": -0.026238229125738144,
+    "direct": -0.026238391175866127,
+    "format": "TESSERA_BF16_K1_R896",
+    "unit": "model.layers.21.mlp.down_proj"
+  }
+]

@@ -1,0 +1,125 @@
+{
+  "model.layers.0.mlp.down_proj": {
+    "TESSERA_BF16_K1_R896": {
+      "activation_bits": 16,
+      "blob_bytes": 1411807,
+      "blob_sha256": "4cebc13ee3443ed6287053f2184d4c90f72a3527ac5dca0fb995f48f7678ac9c",
+      "registry_bits": 11288576.0,
+      "render_seconds": 2.4529580530070234,
+      "render_sha256": "042039d82db0ac359fdcd5d3b313d10cc7685982c977facff8805ff68368878e",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "01cc5c354c8ac9cf4917157d74beceb0b3ce3f38d9bdec271ae691bded0b2e3b"
+    },
+    "TESSERA_E2M1_K1_R768": {
+      "activation_bits": 4,
+      "blob_bytes": 1475339,
+      "blob_sha256": "fd2fd125113172a629256c7c792670aac0197a4648fda5cce56b3f0c6c929d35",
+      "registry_bits": 11796736.0,
+      "render_seconds": 84.63121123400924,
+      "render_sha256": "5e4e596f8c02bcb744a701e62fbbbb196a1402f6de010fa01f2d22660033f6f8",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "01cc5c354c8ac9cf4917157d74beceb0b3ce3f38d9bdec271ae691bded0b2e3b"
+    },
+    "TESSERA_E4M3_K1_R896": {
+      "activation_bits": 8,
+      "blob_bytes": 1395418,
+      "blob_sha256": "8fbcd2f0633e0d0c33b74af223122489e768507a14cd1c3cf82718ddc77a95bc",
+      "registry_bits": 11157504.0,
+      "render_seconds": 2.7006297929910943,
+      "render_sha256": "3de1febe9030c41dc890f2ab1e75be6c092eeaaf316daaadfb2c5c210490eb3e",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "01cc5c354c8ac9cf4917157d74beceb0b3ce3f38d9bdec271ae691bded0b2e3b"
+    }
+  },
+  "model.layers.21.mlp.down_proj": {
+    "TESSERA_BF16_K1_R896": {
+      "activation_bits": 16,
+      "blob_bytes": 1411807,
+      "blob_sha256": "994064a3ff0277ad1ab6e28539d43e6292c7817676dc8d11b032a1e73beb951e",
+      "registry_bits": 11288576.0,
+      "render_seconds": 2.449353058997076,
+      "render_sha256": "3dd6e063e9c4f3a3c8b89fddc3850f2d921964ca8cb7a419ab12bcb69ba305c2",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "e5549575ca9b672770a6c82915702ae4bfc73cc6f8e16158213fd29e46b0a2b0"
+    },
+    "TESSERA_E2M1_K1_R768": {
+      "activation_bits": 4,
+      "blob_bytes": 1475339,
+      "blob_sha256": "4af6466b9457fe7ca0e4631dcd15ff12a5cf5aa031ae62372a32838d9eab2e24",
+      "registry_bits": 11796736.0,
+      "render_seconds": 19.66801709900028,
+      "render_sha256": "2909969174f2a62938aee760f668712fc2885604812dbc4949a017e1844ca401",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "e5549575ca9b672770a6c82915702ae4bfc73cc6f8e16158213fd29e46b0a2b0"
+    },
+    "TESSERA_E4M3_K1_R896": {
+      "activation_bits": 8,
+      "blob_bytes": 1395418,
+      "blob_sha256": "66e8456ec565b3ce117bbba299cec9f0f41cf151d8f4dea52fcd5a331bd28c7f",
+      "registry_bits": 11157504.0,
+      "render_seconds": 2.396408500004327,
+      "render_sha256": "d0e8344e13d831498ba2306ddf417d14d22b14b540bb555b7f5ada5149b60864",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "e5549575ca9b672770a6c82915702ae4bfc73cc6f8e16158213fd29e46b0a2b0"
+    }
+  },
+  "model.layers.7.mlp.down_proj": {
+    "TESSERA_BF16_K1_R896": {
+      "activation_bits": 16,
+      "blob_bytes": 1411807,
+      "blob_sha256": "96bfba8410352bec14b23bdcc40f7b947bd36fd99f7101138173b6d935ecf1b4",
+      "registry_bits": 11288576.0,
+      "render_seconds": 2.459015558997635,
+      "render_sha256": "b8353c77476385679fa20ca8978da3140c6b8219987278f6339977a86bdd188f",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "9b92a55611466c64394bd3c677b734464aba5de65462411f4a3597da341c01b4"
+    },
+    "TESSERA_E2M1_K1_R768": {
+      "activation_bits": 4,
+      "blob_bytes": 1475339,
+      "blob_sha256": "5c38e10b3c1005dbed51f99c295cdf592c099568431376fd2f92cb5e9f4a5932",
+      "registry_bits": 11796736.0,
+      "render_seconds": 19.23960461599927,
+      "render_sha256": "4a0085108e3d20668fc401082ec13a5a59e4239309df3ae777b55e0759f68f58",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "9b92a55611466c64394bd3c677b734464aba5de65462411f4a3597da341c01b4"
+    },
+    "TESSERA_E4M3_K1_R896": {
+      "activation_bits": 8,
+      "blob_bytes": 1395418,
+      "blob_sha256": "4af1de84f4da7f24aeb6e96d9ad7d75bf3a9fa4f9269aa36827e655767f48873",
+      "registry_bits": 11157504.0,
+      "render_seconds": 2.393454160002875,
+      "render_sha256": "86e7180b9309619193e93d9f3412ddb58e70f57215b69d4d8da038d7cba16c9f",
+      "shape": [
+        1024,
+        3072
+      ],
+      "source_sha256": "9b92a55611466c64394bd3c677b734464aba5de65462411f4a3597da341c01b4"
+    }
+  }
+}

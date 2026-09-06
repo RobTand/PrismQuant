@@ -1387,6 +1387,13 @@ def cost_entry_weight_only_dloss(
     )
 
 
+def cost_entry_is_joint_aura(cost_entry: dict) -> bool:
+    """Validate any joint claim before interpreting generic cost fields."""
+    from .joint_aura import validate_joint_aura_entry
+
+    return validate_joint_aura_entry(cost_entry)
+
+
 def cost_entry_is_anchored_aura_supersurrogate(cost_entry: dict) -> bool:
     """Whether one row was priced by the anchored-AURA campaign.
 
@@ -1412,11 +1419,12 @@ def cost_entry_is_anchored_aura_supersurrogate(cost_entry: dict) -> bool:
     every family is uncalibrated and ``penalty_for`` already returns exactly
     1.0. Skipping the penalty is a provenance statement, not a number change.
 
-    Two facts bound the exposure, which is why this is reported and not gated:
+    The exposure remains explicitly bounded by its measurement scope:
 
-      * the activation path is CONSTANT across K within each CB family, so the
-        blindness cannot reorder rungs INSIDE a family — it can only shift the
-        nvfp4_cb-vs-fp8_cb family-choice margin;
+      * a constant activation operator across K does not make the joint
+        residual constant: its cross terms depend on each rendered weight and
+        can reorder rungs inside a family. The opt-in joint AURA path prices
+        those terms; these legacy weight-only rows retain that limitation;
       * AURA's validated wins (-38%/-39.5% @4B, -17.9% @27B on served KL) were
         measured against ``h_trace x output_mse``, and THAT baseline carried
         the A side (``measure_quant_cost`` applies
@@ -1461,6 +1469,8 @@ def cost_entry_activation_pricing_branch(
     question is answerable from the artifact rather than from the code
     version that produced it.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        return "joint_aura"
     if cost_entry_is_source_passthrough(cost_entry, format_name):
         # Neither measured nor weight-only: the row was never priced from an
         # error estimate at all. It gets its own label so the artifact can
@@ -1542,6 +1552,16 @@ def cost_entry_predicted_dloss(
     price off zero — ``cost_entry_prices_unmeasured_activation_at_zero``
     keeps its full strength.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        if float(gain) != 1.0 or cost_entry.get(APPLIED_MARKER_KEY) is True:
+            raise ValueError("joint AURA refuses calibrated gain or a second activation transfer")
+        if (format_name is not None and
+                cost_entry["joint_operator_identity"]["format"] != format_name):
+            raise ValueError("joint AURA row cannot price a different format")
+        # Its signed full residual already contains weight, activation and
+        # mixed terms under one downstream KL Fisher. Only probe uncertainty
+        # may change the proposal price; no scalar sensitivity is applied.
+        return cost_entry_weight_only_dloss(stats_entry, cost_entry, gain=1.0)
     if cost_entry_is_exact_by_construction(cost_entry, format_name):
         # Zero cost by construction, in one of two ways: a lossless re-encode
         # END TO END (weights verbatim AND identity activation path,
@@ -1610,14 +1630,15 @@ def cost_entry_act_dloss(cost_entry: dict) -> float:
     weights BIT-IDENTICALLY (T1) -- so the DP was pricing a W4A4 format as if it
     were weight-only and systematically over-buying 4-bit.
 
-    The term is a Δloss in the same currency as the weight term (both are
-    mean-Δloss over the calibration), derived from the layer's own activation
-    statistics, so it is a SUM. It is deliberately not a multiplicative penalty:
+    The term is a diagonal activation Δloss approximation derived from the
+    layer's own activation statistics and is added to the weight estimate.
+    A shared Δloss label does not establish equivalence to AURA's KL-adjoint
+    currency or capture weight/activation cross terms (PrismaQuant #237).
+    It is deliberately not a multiplicative penalty:
     ``ActivationFairPricing`` (P5a) is the multiplicative, per-FAMILY, fitted
     transfer of a weight-space number onto the measured output scale, and this
-    is a per-UNIT, mechanistic, already-output-space quantity. They compose --
-    the penalty scales the weight term it was fitted on, then the A-side is
-    added -- and they are not substitutes.
+    is a per-UNIT, mechanistic, already-output-space quantity. The current
+    weight-only branches add this term before applying the family penalty.
 
     It is added ONLY on the weight-only branches. The ``_prices_from_output_mse``
     branch is already activation-inclusive by construction (the row's own
@@ -1689,6 +1710,8 @@ def cost_entry_prices_unmeasured_activation_at_zero(
         stay free to take the cheapest format instead of being forced onto
         BF16.
     """
+    if cost_entry_is_joint_aura(cost_entry):
+        return False
     if format_name is None:
         return False
     if cost_entry_is_anchored_aura_supersurrogate(cost_entry):
@@ -1787,6 +1810,8 @@ def collect_activation_calibration_rows(
             entry, _entry_fmt = _resolve_cost_entry(costs[name], spec.name)
             if entry is None or "error" in entry:
                 continue
+            if cost_entry_is_joint_aura(entry):
+                continue
             if cost_entry_is_bit_exact(entry, spec.name):
                 continue
             if cost_entry_is_anchored_aura_supersurrogate(entry):
@@ -1865,33 +1890,27 @@ def _resolve_cost_entry(cost_rows: dict, fmt_name: str) -> tuple[dict | None, st
 
 
 def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
-    """Convert a super item's per-member UCB hedge into the independence one.
+    """Separate member hedges and retain a conservative group stderr bound.
 
-    A super item (fused-sibling group, packed serving group) prices one
-    format as the SUM of its members' ``cost_entry_predicted_dloss``. With
-    ``PRISMAQUANT_COST_UCB_Z > 0`` every member term already carries its own
-    ``z·stderr·gain``, so the sum carries a LINEAR ``z·Σ(stderr·gain)``
-    hedge — up to a √N OVER-hedge on an N-member group. The member dloss
-    estimates are independent measurements, so the stderr of the group SUM is
-    ``sqrt(Σ (stderr·gain)²)``.
+    AURA rows share probe samples, so distinct members do not establish
+    independent estimator errors. Without verified joint sample identities
+    or an explicit independence contract, the standard deviation of a sum is
+    bounded by the SUM of its scaled standard deviations. Quadrature can
+    underprice positive covariance; physical perturbation additivity does not
+    establish independence of the cost estimates.
 
-    ``member_terms`` yields ``(stats_entry, cost_entry, member_dloss, scale)``
-    where ``scale`` is every multiplicative factor already applied to that
-    member's dloss but NOT to the raw ``predicted_dloss_stderr`` in the cost
-    row — the calibrated gain and, since ultraplan P5a, the per-family
-    activation penalty. Both scale the point estimate and its stderr
-    identically, so a member whose price was penalized must have its stderr
-    penalized too or the conversion would over-subtract the linear hedge it
-    exists to undo.
+    ``member_terms`` yields ``(stats_entry, cost_entry, member_dloss, scale)``.
+    The scale includes calibrated gain and activation penalty already applied
+    to the member price. Only terms priced with a stderr hedge contribute.
+    Raw per-probe arrays alone do not establish alignment here.
 
-    Returns ``(hedge_linear, stderr_agg)``: subtract ``hedge_linear`` from the
-    member sum and add ``ucb_z * stderr_agg`` to get the independence
-    aggregate. At ``ucb_z == 0`` ``hedge_linear`` is exactly 0.0, so the
-    conversion is a bit-for-bit identity on the sum.
-
-    Both aggregation paths call this so the two constructions cannot drift.
+    Returns ``(hedge_linear, stderr_bound)``: remove the member hedges to
+    recover the base cost, and retain the conservative bound in the grouped
+    cost row for repricing. At ``ucb_z == 0`` the removed hedge is exactly
+    zero, preserving the accumulated candidate price bit for bit. Both fused
+    and packed aggregation use this same policy.
     """
-    stderr_eff_sq = 0.0
+    stderr_bound = 0.0
     hedge_linear = 0.0
     for stats_entry, cost_entry, member_dloss, gain in member_terms:
         if float(member_dloss) <= 0.0:
@@ -1900,6 +1919,10 @@ def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
             continue
         if cost_entry is None or "error" in cost_entry:
             continue
+        if cost_entry_is_joint_aura(cost_entry):
+            # The family transfer never scaled the full-residual member, so
+            # it must not scale the hedge removed from that member either.
+            gain = 1.0
         # Mirror cost_entry_predicted_dloss: the stderr hedge is only applied
         # on the explicit predicted_dloss branch. This must track the PRICING
         # predicate, not the provenance one — a band-interpolated member priced
@@ -1916,9 +1939,9 @@ def _super_item_ucb_hedge(member_terms, ucb_z: float) -> tuple[float, float]:
             stderr = 0.0
         if stderr <= 0.0:
             continue
-        stderr_eff_sq += (stderr * float(gain)) ** 2
+        stderr_bound += abs(stderr * float(gain))
         hedge_linear += ucb_z * stderr * float(gain)
-    return hedge_linear, math.sqrt(stderr_eff_sq)
+    return hedge_linear, stderr_bound
 
 
 def reduce_continuous_menu(
@@ -1927,6 +1950,7 @@ def reduce_continuous_menu(
     *,
     bit_precision: float | None = None,
     report: dict | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> dict[str, list[Candidate]]:
     """Shrink a continuous per-unit menu without changing the DP's answer.
 
@@ -1954,6 +1978,18 @@ def reduce_continuous_menu(
     Tessera rung on the menu is byte-identical to one built before this
     function existed.
     """
+    # Until whole-operator measurements are attached, no byte/loss comparison
+    # can prove runtime dominance. The measured solver owns that reduction.
+    if preserve_runtime_frontier:
+        if report is not None:
+            report.update({
+                "runtime_frontier_preserved": True,
+                "reduction": "deferred_to_measured_runtime_solver",
+                "bit_precision": None,
+                "units": len(candidates),
+                "rungs_menu": sum(map(len, candidates.values())),
+            })
+        return {name: list(rows) for name, rows in candidates.items()}
     from .tessera_formats import format_promotion_class
     from .tessera_menu import collapse_to_dp_bins, prune_dominated
 
@@ -2077,6 +2113,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
                      bit_precision: float | None = None,
                      tessera_menu_report: dict | None = None,
                      context_by_unit: Mapping[str, ServingContext] | None = None,
+                     preserve_runtime_frontier: bool = False,
                      ) -> dict[str, list[Candidate]]:
     """Build runtime-legal format candidates for every measured Linear.
 
@@ -2387,6 +2424,7 @@ def build_candidates(stats: dict, costs: dict, formats: list[fr.FormatSpec],
         stats,
         bit_precision=bit_precision,
         report=tessera_menu_report,
+        preserve_runtime_frontier=preserve_runtime_frontier,
     )
     return out
 
@@ -2832,6 +2870,7 @@ def tessera_group_composites(
     licence,
     ucb_z: float = 0.0,
     report: dict | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> list["Candidate"]:
     """The group's exact knapsack, over the fields the CONTRACT frees (#132).
 
@@ -2841,9 +2880,9 @@ def tessera_group_composites(
     parsed (``tessera_runtime_contract.FusedModuleLicence``), read through
     ``tessera_menu.fused_module_licence`` and checked on the Tessera side
     against the loader's own ``scheme.FUSED_MODULE_FIELDS``.  It is **never** a
-    literal in this file, and ``None`` -- no contract pinned, which is
-    production, since no Tessera RELEASE tag exists -- is the absence of a
-    licence rather than a permissive default.
+    literal in this file. ``None`` means no applicable licence was supplied,
+    rather than a permissive default. Production can supply the licence from
+    the reviewed commit-and-contract pin; a release tag is not required.
     This function used to assert the licence in its own docstring ("they can
     disagree about the rate"), which is the field shape principle 14 forbids:
     no gate can read a docstring, so nothing refused when the runtime changed
@@ -2891,9 +2930,9 @@ def tessera_group_composites(
       the same numbers the DP would charge if the members were separate units,
       so a uniform-rung option prices identically to the old per-NAME
       aggregation (asserted by the caller);
-    * summing is exact only while the UCB hedge is linear. The group hedge is
-      ``z*sqrt(sum stderr^2)``, which is not additive, so this refuses at
-      ``z > 0`` rather than quietly pricing the hedge wrong.
+    * mixed-rung composites retain their existing ``z > 0`` refusal. The
+      conservative uncertainty bound on uniform groups does not establish
+      support for uncertainty repricing across this separate option path.
     """
     from .tessera_formats import (
         format_promotion_class, fused_shared_signature,
@@ -2973,25 +3012,31 @@ def tessera_group_composites(
     # classes to fold and must be untouched by this path.
     if shared_classes and float(ucb_z) > 0.0:
         raise NotImplementedError(
-            "Tessera group composites are exact by summing member costs, and "
-            "the UCB hedge z*sqrt(sum stderr^2) is not additive: at "
-            f"PRISMAQUANT_COST_UCB_Z={ucb_z} the Minkowski fold would price "
-            "the hedge as if it were linear. Set the hedge to 0 for a "
-            "Tessera group run, or extend the fold to carry sum(stderr^2) as "
-            "a third coordinate."
+            "Tessera mixed-rung group composites do not support UCB pricing: "
+            f"PRISMAQUANT_COST_UCB_Z={ucb_z}. Set the hedge to 0 for a "
+            "Tessera group run; uniform-group uncertainty support does not "
+            "enable uncertainty repricing for mixed-rung options."
         )
 
+    # A fused runtime measurement prices the complete member recipe. Without
+    # that measurement even an intermediate byte/loss-dominated combination
+    # may be uniquely fastest. Preserve all coherent combinations, with the
+    # existing explicit memory guard, until the runtime solver can price them.
+    reduce_rows = (
+        (lambda rows: sorted(rows, key=lambda row: (row[0], row[1], row[2])))
+        if preserve_runtime_frontier else _pareto_frontier
+    )
     out: list["Candidate"] = []
     index = 0
     for cell in sorted(shared_classes):
         family, signature = cell
         frontier = [
             (bytes_, cost, (fmt,))
-            for bytes_, cost, fmt in _pareto_frontier(by_member[0][cell])
+            for bytes_, cost, fmt in reduce_rows(by_member[0][cell])
         ]
         sizes = [len(frontier)]
         for cells in by_member[1:]:
-            member_rows = _pareto_frontier(cells[cell])
+            member_rows = reduce_rows(cells[cell])
             pairs = len(frontier) * len(member_rows)
             if pairs > _GROUP_FOLD_MAX_PAIRS:
                 raise AssertionError(
@@ -3003,7 +3048,7 @@ def tessera_group_composites(
                     "menu first (reduce_continuous_menu) -- truncating here "
                     "would make an exact construction silently approximate."
                 )
-            frontier = _pareto_frontier([
+            frontier = reduce_rows([
                 (a_bytes + b_bytes, a_cost + b_cost, a_fmts + (b_fmt,))
                 for a_bytes, a_cost, a_fmts in frontier
                 for b_bytes, b_cost, b_fmt in member_rows
@@ -3027,6 +3072,8 @@ def tessera_group_composites(
                 "member_menu": [len(c[cell]) for c in by_member],
                 "fold_frontier": sizes,
                 "options": len(frontier),
+                **({"runtime_frontier_preserved": True}
+                   if preserve_runtime_frontier else {}),
             }
     if report is not None:
         report["__licence__"] = _fused_licence_stamp(
@@ -3050,6 +3097,7 @@ def aggregate_fused_siblings(
     profile,
     calibrated_gains: dict[str, float] | None = None,
     activation_pricing: ActivationFairPricing | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> tuple[dict, dict, dict]:
     """Aggregate fused siblings into single DP items.
 
@@ -3193,13 +3241,9 @@ def aggregate_fused_siblings(
                     activation_pricing=activation_pricing)
                 sum_pred += member_pred
                 member_terms.append((stats[m], c, member_pred, act_penalty))
-            # Same UCB conversion as aggregate_packed_serving_groups: the
-            # LINEAR z·Σ(stderr) baked into sum_pred becomes the independence
-            # z·sqrt(Σ stderr²) (a qkv triple over-hedged at 3x linear now
-            # hedges at √3), and the aggregated stderr is stored so consumers
-            # of the aggregated cost table keep the hedge instead of silently
-            # reading stderr 0. weight_mse is derived from the UN-hedged sum
-            # so the super entry's mse is not z-contaminated.
+            # Recover the unhedged sum for weight_mse, and store the shared
+            # conservative stderr bound so grouped-table consumers preserve
+            # the uncertainty price. Shared probes do not justify quadrature.
             hedge_linear, stderr_agg = _super_item_ucb_hedge(
                 member_terms, ucb_z)
             base_pred = sum_pred - hedge_linear
@@ -3302,7 +3346,7 @@ def aggregate_fused_siblings(
             stats_ext[super_name]["_memory_bytes_by_format"][spec.name] = total_bytes
             entry_fmt = super_cost_entry_fmt.get(spec.name, spec.name)
             gain = float(gains.get(spec.name, gains.get(entry_fmt, 1.0)))
-            # gain·(base + z·stderr_agg) == gain·base + z·sqrt(Σ (stderr·gain)²)
+            # gain·(base + z·stderr_agg) == gain·base + z·Σ (stderr·gain)
             # for the single group-wide gain this path applies, i.e. exactly the
             # packed path's construction. At z == 0 this is gain·sum_pred,
             # bit-for-bit what this path produced before the hedge fix.
@@ -3373,7 +3417,8 @@ def aggregate_fused_siblings(
         composites = (
             tessera_group_composites(
                 members, candidates, n_params, licence=fused_licence,
-                ucb_z=ucb_z, report=group_report)
+                ucb_z=ucb_z, report=group_report,
+                preserve_runtime_frontier=preserve_runtime_frontier)
             if fold_enabled and columns_reason is None else []
         )
         if columns_reason is not None:
@@ -3441,7 +3486,15 @@ def aggregate_fused_siblings(
                     members, None, member_formats=member_formats)
             stats_ext[super_name]["_fused_member_formats"] = (
                 member_formats_by_option)
-            cands.extend(composites)
+            # Runtime binding names the expanded recipe, so its uniform
+            # per-NAME option and the byte/cost-checked composite twin must
+            # not both survive. No distinct member recipe is discarded.
+            cands.extend(
+                composite for composite in composites
+                if not preserve_runtime_frontier
+                or len(set((composite.member_formats or {}).values())) != 1
+                or next(iter(composite.member_formats.values())) not in uniform_by_name
+            )
         # Written whether or not the fold produced anything. A report kept
         # only on success cannot record why a group has one rung, which is
         # the one case a receipt has to be able to read: the ablation stamp
@@ -3574,6 +3627,7 @@ def aggregate_packed_serving_groups(
     profile,
     calibrated_gains: dict[str, float] | None = None,
     activation_pricing: ActivationFairPricing | None = None,
+    preserve_runtime_frontier: bool = False,
 ) -> tuple[dict, dict, dict]:
     """Aggregate packed-MoE serving groups into single DP decision units.
 
@@ -3678,9 +3732,9 @@ def aggregate_packed_serving_groups(
                 for m in members
             )
             # UCB hedge (PRISMAQUANT_COST_UCB_Z > 0): each member candidate
-            # was priced independently, so the sum above carries a LINEAR
-            # z·Σ(stderr·gain) hedge. Convert it to the independence
-            # aggregate and store the aggregated stderr on the super cost
+            # was priced separately, so the sum above carries a LINEAR
+            # z·Σ(stderr·gain) hedge. Preserve this conservative bound;
+            # shared probes do not justify independence. Store it on the super cost
             # entry so consumers of the aggregated cost table keep the hedge
             # instead of silently reading stderr 0. At z == 0 this is a no-op
             # and the per-format dloss stays the exact sum of member

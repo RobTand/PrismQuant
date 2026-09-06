@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from math import inf
+from math import inf, isfinite
+from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 from . import format_registry as fr
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .measured_runtime_prices import RuntimeResources
     # Import-time-free: the solver must not depend on the serving-profile
     # loader at runtime (the lane is attached by candidate construction and
     # never read by the DP), but the annotation should still name the type.
@@ -98,9 +100,8 @@ class Candidate:
     # actually instantiates this rung, and the fallback route when it does
     # not. ``serving_profiles.ResolvedServingLane``; None where the target
     # profile declares no lane for the format. Also kept out of solver logic:
-    # latency is NOT an objective or constraint here (that is P5c), this only
-    # stops the allocator from pricing a fast path nobody backs without at
-    # least recording that it did.
+    # this is route provenance. The opt-in runtime solver reads its separate
+    # measured resource table, never a speed inferred from this lane label.
     serving_lane: ResolvedServingLane | None = None
     # For a whole-GROUP option (``tessera_formats.is_tessera_group_option``):
     # the rung each member of the fused/packed serving unit holds. One family
@@ -110,6 +111,290 @@ class Candidate:
     # provenance fields: the DP reads bytes and cost, and expansion reads
     # this.
     member_formats: dict[str, str] | None = None
+
+
+class RuntimeFrontierLimitError(ValueError):
+    """The declared exact-search bound was exceeded; no allocation is returned."""
+
+
+@dataclass(frozen=True)
+class RuntimeAllocation:
+    """One nondominated additive proposal, not an end-to-end SLO certificate.
+
+    ``memory_bytes`` is serialized candidate payload. Terminal weight residency
+    is summed independently; activation and scratch are separate sequential
+    peaks. ``device_bytes`` adds those three quantities and the caller's fixed
+    device charge (for example KV and non-quantizable resident weights).
+    """
+
+    assignment: dict[str, str]
+    chosen_candidates: dict[str, Candidate]
+    memory_bytes: int
+    predicted_dloss: float
+    prefill_ms: float
+    decode_ms: float | None
+    resident_bytes: int
+    peak_scratch_bytes: int
+    activation_bytes: int
+    device_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeState:
+    # Serialized bytes, quality, prefill, decode, resident, scratch, activation.
+    totals: tuple
+    formats: tuple[str, ...]
+    parent: _RuntimeState | None = None
+    candidate: Candidate | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeDominanceNode:
+    lower: tuple
+    upper: tuple
+    points: tuple[tuple, ...] = ()
+    left: _RuntimeDominanceNode | None = None
+    right: _RuntimeDominanceNode | None = None
+
+
+def _runtime_dominance_tree(points: list[tuple], depth: int = 0):
+    """Exact orthant index; integer byte coordinates never pass through floats."""
+    lower = tuple(map(min, zip(*points)))
+    upper = tuple(map(max, zip(*points)))
+    if len(points) <= 16:
+        return _RuntimeDominanceNode(lower, upper, tuple(points))
+    axis = depth % len(lower)
+    ordered = sorted(points, key=lambda point: point[axis])
+    mid = len(ordered) // 2
+    return _RuntimeDominanceNode(lower, upper,
+        left=_runtime_dominance_tree(ordered[:mid], depth + 1),
+        right=_runtime_dominance_tree(ordered[mid:], depth + 1))
+
+
+def _runtime_has_dominator(node: _RuntimeDominanceNode, query: tuple) -> bool:
+    if any(lo > q for lo, q in zip(node.lower, query)):
+        return False
+    if all(hi <= q for hi, q in zip(node.upper, query)):
+        return True
+    if node.points:
+        return any(all(p <= q for p, q in zip(point, query))
+                   for point in node.points)
+    return (_runtime_has_dominator(node.left, query)
+            or _runtime_has_dominator(node.right, query))
+
+
+def _runtime_int(value, label: str, *, positive: bool = False) -> int:
+    if (isinstance(value, bool) or not isinstance(value, Integral)
+            or value < (1 if positive else 0)):
+        raise ValueError(f"{label} must be a {'positive' if positive else 'nonnegative'} integer")
+    return int(value)
+
+
+def _runtime_float(value, label: str, *, nonnegative: bool = True) -> float:
+    try:
+        valid = (not isinstance(value, bool) and isinstance(value, Real)
+                 and isfinite(value) and (not nonnegative or value >= 0))
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError(f"{label} must be a finite {'nonnegative ' if nonnegative else ''}number")
+    return float(value)
+
+
+def solve_runtime_frontier(
+    candidates: dict[str, list[Candidate]],
+    resources: Mapping[tuple[str, str], RuntimeResources],
+    *,
+    max_memory_bytes: int,
+    max_prefill_ms: float,
+    max_decode_ms: float | None = None,
+    max_device_bytes: int | None = None,
+    fixed_device_bytes: int = 0,
+    max_states: int = 100_000,
+    max_transitions: int = 8_000_000,
+    diagnostics: dict | None = None,
+) -> list[RuntimeAllocation]:
+    """Exact discrete bytes/quality/prefill frontier under declared budgets.
+
+    This opt-in alternative to :func:`solve_allocation` charges exact integer
+    ``Candidate.memory_bytes`` and preserves nondominance, including nonconvex
+    pockets and faster same-byte activation routes with higher loss. Decode
+    joins the frontier only when constrained. A device budget adds THREE
+    independent coordinates: summed terminal residency, maximum scratch, and
+    maximum activation bytes. Comparing their current sum would discard valid
+    options because later operators can replace one of those maxima.
+
+    Candidate rows must already represent independent serving units with all
+    legal group options retained. A group option is atomic: its runtime row
+    must measure that whole operator. There is no leaf-latency summation,
+    serving promotion, quality rescaling, byte binning or convex-hull pruning.
+    The caller validates timing provenance/workload/group bindings, charges
+    non-additive artifact costs and fixed runtime overhead, and runs final
+    end-to-end validation. Resource sums propose assignments; they do not
+    certify TTFT/decode quantiles.
+
+    All input prices are checked before search, including infeasible rows.
+    Missing constrained decode prices refuse. Units and formats are traversed
+    lexically; equal active-coordinate vectors retain the lexically first
+    assignment. Results sort by quality, then active resources, then formats.
+    Comparisons use the supplied finite numeric values without epsilons.
+
+    Intermediate folds include canonical assignment order as a dominance
+    coordinate: a later peak can erase a strict resource difference, and a
+    floating-point sum can erase a strict loss difference. Retaining the
+    lexically earlier prefix preserves the final tie rule in those cases.
+    This auxiliary coordinate is removed for the final resource frontier.
+
+    ``max_states`` bounds each fold frontier (including that tie coordinate);
+    ``max_transitions`` bounds the total attempted cross-product pairs before
+    budget/dominance filtering. Crossing either finite bound raises
+    :class:`RuntimeFrontierLimitError`, with ``complete=False`` diagnostics;
+    it never returns a truncated or approximate frontier. An empty returned
+    list is a completed search finding no feasible assignment.
+    """
+    diag = diagnostics if diagnostics is not None else {}
+    diag.update(complete=False, feasible=False, frontier_sizes=[],
+                transitions=0, refusal=None, approximation="none")
+    max_memory_bytes = _runtime_int(max_memory_bytes, "max_memory_bytes")
+    max_prefill_ms = _runtime_float(max_prefill_ms, "max_prefill_ms")
+    if max_decode_ms is not None:
+        max_decode_ms = _runtime_float(max_decode_ms, "max_decode_ms")
+    if max_device_bytes is not None:
+        max_device_bytes = _runtime_int(max_device_bytes, "max_device_bytes")
+    fixed_device_bytes = _runtime_int(fixed_device_bytes, "fixed_device_bytes")
+    max_states = _runtime_int(max_states, "max_states", positive=True)
+    max_transitions = _runtime_int(max_transitions, "max_transitions", positive=True)
+    diag.update(max_states=max_states, max_transitions=max_transitions,
+                intermediate_tie_coordinate=True)
+
+    if any(not isinstance(name, str) or not name for name in candidates):
+        raise ValueError("candidate unit names must be nonempty strings")
+    names = sorted(candidates)
+    options = {}
+    for name in names:
+        if not candidates[name]:
+            raise ValueError(f"runtime candidate menu for {name!r} is empty")
+        seen = set()
+        unit_options = []
+        for c in candidates[name]:
+            if not isinstance(c.fmt, str) or not c.fmt:
+                raise ValueError(f"candidate format for {name!r} must be a nonempty string")
+            if c.fmt in seen:
+                raise ValueError(f"duplicate runtime candidate ({name!r}, {c.fmt!r})")
+            seen.add(c.fmt)
+            key = (name, c.fmt)
+            label = f"runtime row {key!r}"
+            if key not in resources:
+                raise ValueError(f"missing measured {label}")
+            row = resources[key]
+            memory = _runtime_int(c.memory_bytes, f"{label} memory_bytes")
+            serialized = _runtime_int(getattr(row, "serialized_bytes", None),
+                                      f"{label} serialized_bytes")
+            if serialized != memory:
+                raise ValueError(f"{label} serialized_bytes={serialized} differs from candidate memory_bytes={memory}")
+            loss = _runtime_float(c.predicted_dloss, f"{label} predicted_dloss", nonnegative=False)
+            prefill = _runtime_float(getattr(row, "prefill_ms", None), f"{label} prefill_ms")
+            decode = getattr(row, "decode_ms", None)
+            if decode is not None or max_decode_ms is not None:
+                decode = _runtime_float(decode, f"{label} decode_ms")
+            resident = _runtime_int(getattr(row, "resident_bytes", None), f"{label} resident_bytes")
+            scratch = _runtime_int(getattr(row, "peak_scratch_bytes", None), f"{label} peak_scratch_bytes")
+            activation = _runtime_int(getattr(row, "activation_bytes", None), f"{label} activation_bytes")
+            unit_options.append((c, (memory, loss, prefill, decode, resident, scratch, activation)))
+        options[name] = sorted(unit_options, key=lambda option: option[0].fmt)
+
+    axes = (0, 1, 2) + ((3,) if max_decode_ms is not None else ())
+    if max_device_bytes is not None:
+        axes += (4, 5, 6)
+    diag["dimensions"] = [
+        ("memory_bytes", "predicted_dloss", "prefill_ms", "decode_ms",
+         "resident_bytes", "peak_scratch_bytes", "activation_bytes")[axis]
+        for axis in axes]
+    frontier = [_RuntimeState((0, 0.0, 0.0, 0.0, 0, 0, 0), ())]
+    if max_device_bytes is not None and fixed_device_bytes > max_device_bytes:
+        frontier = []
+
+    for name in names:
+        if not frontier:
+            break
+        pairs = len(frontier) * len(options[name])
+        if diag["transitions"] + pairs > max_transitions:
+            diag.update(refusal="max_transitions", refused_unit=name,
+                        attempted_transitions=diag["transitions"] + pairs)
+            raise RuntimeFrontierLimitError(
+                f"runtime frontier at {name!r} requires {diag['transitions'] + pairs} "
+                f"attempted transitions, over max_transitions={max_transitions}; "
+                "exact search refused without returning a partial allocation")
+        diag["transitions"] += pairs
+        unique = {}
+        for state in frontier:
+            a = state.totals
+            for c, b in options[name]:
+                totals = (a[0] + b[0], a[1] + b[1], a[2] + b[2],
+                          None if a[3] is None or b[3] is None else a[3] + b[3],
+                          a[4] + b[4], max(a[5], b[5]), max(a[6], b[6]))
+                if any(value is not None and not isfinite(value)
+                       for value in totals[1:4]):
+                    raise ValueError(f"runtime totals overflowed at unit {name!r}")
+                if totals[0] > max_memory_bytes or totals[2] > max_prefill_ms:
+                    continue
+                if max_decode_ms is not None and totals[3] > max_decode_ms:
+                    continue
+                if (max_device_bytes is not None
+                        and sum(totals[4:]) + fixed_device_bytes > max_device_bytes):
+                    continue
+                vector = tuple(totals[axis] for axis in axes)
+                formats = state.formats + (c.fmt,)
+                prior = unique.get(vector)
+                if prior is None or formats < prior.formats:
+                    unique[vector] = _RuntimeState(totals, formats, state, c)
+        ordered = sorted(unique.items())
+        if not ordered:
+            frontier = []
+        else:
+            # Intermediate dominance must also preserve the canonical prefix:
+            # maxima or rounded sums can erase strict differences in a later
+            # fold. At the final fold resource dominance alone is sufficient.
+            # Each final coordinate is unique, so querying one less excludes
+            # self without requiring numerical epsilons on measured resources.
+            ranks = {formats: i for i, formats in enumerate(
+                sorted(state.formats for _, state in ordered))}
+            coordinates = [ranks[state.formats] if name != names[-1] else index
+                           for index, (_, state) in enumerate(ordered)]
+            tree = _runtime_dominance_tree(
+                [vector + (coordinate,) for (vector, _), coordinate
+                 in zip(ordered, coordinates)])
+            frontier = []
+            for (vector, state), coordinate in zip(ordered, coordinates):
+                if not _runtime_has_dominator(tree, vector + (coordinate - 1,)):
+                    frontier.append(state)
+                    if len(frontier) > max_states:
+                        diag.update(refusal="max_states", refused_unit=name,
+                                    frontier_size_lower_bound=len(frontier))
+                        raise RuntimeFrontierLimitError(
+                            f"runtime frontier at {name!r} exceeds max_states={max_states}; "
+                            "exact search refused without truncating nondominated states")
+        diag["frontier_sizes"].append(len(frontier))
+
+    frontier.sort(key=lambda state: (state.totals[1],
+        tuple(state.totals[axis] for axis in axes if axis != 1), state.formats))
+    result = []
+    for state in frontier:
+        chosen = {}
+        cursor = state
+        for name in reversed(names):
+            chosen[name] = cursor.candidate
+            cursor = cursor.parent
+        chosen = {name: chosen[name] for name in names}
+        a = state.totals
+        result.append(RuntimeAllocation(
+            assignment={name: c.fmt for name, c in chosen.items()},
+            chosen_candidates=chosen, memory_bytes=a[0], predicted_dloss=a[1],
+            prefill_ms=a[2], decode_ms=a[3], resident_bytes=a[4],
+            peak_scratch_bytes=a[5], activation_bytes=a[6],
+            device_bytes=sum(a[4:]) + fixed_device_bytes))
+    diag.update(complete=True, feasible=bool(result), frontier_size=len(result))
+    return result
 
 
 @dataclass(frozen=True)

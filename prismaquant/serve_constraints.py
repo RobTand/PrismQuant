@@ -794,6 +794,120 @@ def evaluate_assignment(
     )
 
 
+def evaluate_measured_assignment(
+    assignment: Mapping[str, str],
+    *,
+    option_assignments: Mapping[tuple[str, str], Mapping[str, str]],
+    resources: Mapping[tuple[str, str], Any],
+    fixed_assignment: Mapping[str, str],
+    fixed_resources: Any,
+    slos: ServeSLOs,
+    table_identity: Mapping[str, Any],
+) -> ServeFeasibility:
+    """Reprice the full expanded assignment using exact measured group rows.
+
+    A whole fused/packed operator is charged once. Its measured row must
+    describe precisely the selected member formats; leaf measurements never
+    stand in for a fused execution. Fixed resources cover the declared fixed
+    auxiliary assignment and immutable runtime work. Candidate scratch and
+    activation buffers are sequential peaks, above those fixed allocations.
+    This is an operator-sum proposal, never a p95 or end-to-end certificate.
+    """
+    if any(assignment.get(name) != fmt for name, fmt in fixed_assignment.items()):
+        raise ServeConstraintError("measured runtime fixed auxiliary assignment changed")
+    remaining = {name: fmt for name, fmt in assignment.items()
+                 if name not in fixed_assignment}
+    by_unit: dict[str, list[tuple[tuple[str, str], Mapping[str, str]]]] = {}
+    for key, members in option_assignments.items():
+        by_unit.setdefault(key[0], []).append((key, members))
+    selected = []
+    covered: set[str] = set()
+    for unit, options in sorted(by_unit.items()):
+        matches = [(key, members) for key, members in options
+                   if members and all(remaining.get(name) == fmt
+                                      for name, fmt in members.items())]
+        if len(matches) != 1:
+            raise ServeConstraintError(
+                f"measured runtime unit {unit!r} requires exactly one matching "
+                "whole-operator row after expansion/promotion")
+        key, members = matches[0]
+        if covered.intersection(members):
+            raise ServeConstraintError("measured runtime operator rows overlap")
+        covered.update(members)
+        if key not in resources:
+            raise ServeConstraintError(f"measured runtime row is missing: {key!r}")
+        selected.append(resources[key])
+    if covered != set(remaining):
+        raise ServeConstraintError(
+            "measured runtime assignment coverage mismatch: "
+            f"unpriced={sorted(set(remaining) - covered)[:12]}")
+
+    prefill = math.fsum([fixed_resources.prefill_ms]
+                        + [row.prefill_ms for row in selected])
+    decode_rows = [fixed_resources.decode_ms] + [row.decode_ms for row in selected]
+    decode = (math.fsum(decode_rows)
+              if all(value is not None for value in decode_rows) else None)
+    resident = fixed_resources.resident_bytes + sum(row.resident_bytes for row in selected)
+    activation = fixed_resources.activation_bytes + max(
+        (row.activation_bytes for row in selected), default=0)
+    scratch = fixed_resources.peak_scratch_bytes + max(
+        (row.peak_scratch_bytes for row in selected), default=0)
+    kv = fixed_resources.kv_bytes + slos.kv_bytes
+    device = resident + activation + scratch + kv + slos.peak_scratch_bytes
+    caveats = (
+        "Sum of measured operator medians under the declared runtime/workload; "
+        "this prediction cannot certify p95 TTFT, p95 ITL or an end-to-end SLO.",
+        "Research proposal: validate against a fixed teacher on shared held-out "
+        "samples, then run end-to-end serving and existing promotion gates.",
+    )
+    checks: list[ConstraintCheck] = []
+    for name, value, limit, units in (
+        ("operator_sum_prefill_ms", prefill, slos.p95_ttft_ms, "ms"),
+        ("operator_sum_decode_ms", decode, slos.p95_itl_ms, "ms"),
+        ("device_memory_bytes", device, slos.device_budget_bytes, "bytes"),
+    ):
+        if limit is not None:
+            checks.append(ConstraintCheck(
+                name=name, predicted=value, limit=limit, units=units,
+                direction="<=", satisfied=value is not None and value <= limit,
+                slack=limit - value if value is not None else None,
+                unpriced_reason="decode_not_measured" if value is None else None,
+                caveats=caveats if units == "ms" else (),
+            ))
+    if slos.p05_tps is not None:
+        raise ServeConstraintError(
+            "measured operator sums cannot certify p05 throughput; use a decode latency budget")
+    feasible = all(check.satisfied for check in checks)
+    binding = (next((check.name for check in checks if not check.satisfied), None)
+               if not feasible else min(checks, key=lambda check:
+                   (check.slack / check.limit if check.limit else float("inf"))).name
+               if checks else None)
+    return ServeFeasibility(
+        active=True, feasible=feasible, checks=tuple(checks),
+        binding_constraint=binding,
+        predicted={"operator_sum_prefill_ms": prefill,
+                   "operator_sum_decode_ms": decode,
+                   "device_memory_bytes": device},
+        coverage={"units_priced": len(selected), "members_priced": len(covered),
+                  "fixed_auxiliary_units": len(fixed_assignment),
+                  "memory": {"resident_bytes": resident, "activation_bytes": activation,
+                             "peak_scratch_bytes": scratch, "kv_bytes": kv,
+                             "operator_scratch_reserve_bytes": slos.peak_scratch_bytes,
+                             "serialized_bytes": fixed_resources.serialized_bytes
+                             + sum(row.serialized_bytes for row in selected)}},
+        provenance={"aggregation_model": "measured_whole_operator_sum",
+                    "solver_contract": "exact_discrete_runtime_frontier_then_expanded_assignment_check",
+                    "global_optimality_claimed": False,
+                    "objective": "min_predicted_dloss_subject_to_separate_resource_limits",
+                    "lambda_blended_objective": False,
+                    "evidence_status": "research_operator_sum_proposal",
+                    "certifies_end_to_end_slo": False,
+                    "certifies_p95": False,
+                    "measured_runtime_table": dict(table_identity),
+                    "slos": slos.as_dict(), "caveats": list(caveats)},
+    )
+
+
 def rejection_record(
     feasibility: ServeFeasibility,
     *,
@@ -826,6 +940,7 @@ def fastest_feasible_summary(
     probes: Sequence[Mapping[str, Any]],
     *,
     scope_note: str,
+    prediction_metrics: Sequence[str] = ("p95_ttft_ms", "p95_itl_ms"),
 ) -> dict:
     """Per-phase fastest FEASIBLE probe, with policy §1's reference rule.
 
@@ -843,7 +958,7 @@ def fastest_feasible_summary(
         "scope": scope_note,
         "per_phase": {},
     }
-    for metric, better in (("p95_ttft_ms", min), ("p95_itl_ms", min)):
+    for metric in prediction_metrics:
         rows = [
             p for p in probes
             if p.get("feasible")
@@ -852,7 +967,7 @@ def fastest_feasible_summary(
         if not rows:
             out["per_phase"][metric] = None
             continue
-        best = better(
+        best = min(
             rows,
             key=lambda p: (float(p["predicted"][metric]), str(p.get("label"))),
         )
@@ -877,6 +992,7 @@ __all__ = [
     "ServeSLOs",
     "WorkloadMix",
     "evaluate_assignment",
+    "evaluate_measured_assignment",
     "fastest_feasible_summary",
     "lane_key_for",
     "rejection_record",

@@ -113,7 +113,7 @@ _FLOAT_FIELDS = frozenset({
 # cost-entry product chain (0.5 * h_trace * mse, then the calibrated gain and
 # the per-family activation penalty) is ~5 roundings; those 9 member terms are
 # then summed (a 9-term reduction, <= 9 roundings naive, ~2 with the 3.12
-# compensated sum); the linear hedge is subtracted and ``z * sqrt(sum stderr^2)``
+# compensated sum); the linear hedge is subtracted and ``z * sum(scaled stderr)``
 # added, another ~4.  ~18 roundings at <= 0.5 ulp each, over an all-positive
 # sum whose condition number is 1, is a bound near 9 ulps; 16 is the next
 # power of two above it and matches the multiplier PR #90 derived the same way.
@@ -509,6 +509,41 @@ def compare_to_golden(current: dict, golden: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize("kind", ["fused", "packed"])
+@pytest.mark.parametrize("z", ["0", "1.5"])
+def test_group_prices_preserve_scaled_member_hedges(kind, z):
+    """Gain and activation penalties scale uncertainty on both grouping paths.
+
+    Without bound sample alignment, grouping must not discount the sum of
+    member uncertainty charges. Exercise the actual gained/priced candidates.
+    """
+    pricing = _pricing()
+    stats, costs = _dense_inputs() if kind == "fused" else _packed_inputs()
+    with mock.patch.dict(os.environ, {"PRISMAQUANT_COST_UCB_Z": z}):
+        members = build_candidates(
+            stats, costs, _specs(), calibrated_gains=GAINS,
+            activation_pricing=pricing)
+    if kind == "fused":
+        grouped_stats, _, grouped = _run_fused(z, gains=GAINS, pricing=pricing)
+        member_key = "_fused_siblings"
+    else:
+        grouped_stats, _, grouped = _run_packed(
+            z, gains=GAINS, pricing=pricing, role_split=False)
+        member_key = "_packed_group_members"
+    checked = 0
+    for name, candidates in grouped.items():
+        names = grouped_stats[name].get(member_key)
+        if not names:
+            continue
+        for candidate in candidates:
+            expected = sum(next(c.predicted_dloss for c in members[m]
+                                if c.fmt == candidate.fmt) for m in names)
+            assert candidate.predicted_dloss == pytest.approx(
+                expected, rel=_FLOAT_TOLERANCE_ULPS * _FLOAT64_EPS, abs=0.0)
+            checked += 1
+    assert checked > 0
+
+
 def test_super_item_menus_match_the_golden():
     assert GOLDEN_PATH.exists(), (
         f"{GOLDEN_PATH} is missing. It is the pre-change record of what the "
