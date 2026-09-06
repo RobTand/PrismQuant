@@ -232,6 +232,7 @@ def host(args):
     require(owner and len(args.netdata_url) == 2 and len(set(args.netdata_url)) == 2,
             'host requires PB admission and both distinct telemetry hosts')
     require(args.producer_image == IMAGE, 'wrong qualified producer image')
+    require(str(args.out).startswith('/home/rob/tessera-runs/'), 'use task-owned local output before shared archival')
     require(not args.out.exists(), 'output exists; a fresh attempt is required')
     args.out.mkdir(parents=True)
     name = 'lfm-mixed-preparation-' + uuid.uuid4().hex[:12]
@@ -252,8 +253,13 @@ def host(args):
         '--cpus=4', '--ipc=host', '--network=none']
     if args.mode == 'calibrate':
         command += ['--gpus', 'all']
+    # Bind the established shared root: Docker's daemon mount namespace need
+    # not have traversed a newly created NFS subdirectory independently.
+    shared = Path('/mnt/shared')
+    command += ['-v', f'{shared}:{shared}:ro']
     for p in (REPO, args.tessera_repo, args.model, args.tessera_source_manifest):
-        command += ['-v', f'{p}:{p}:ro']
+        if not p.is_relative_to(shared):
+            command += ['-v', f'{p}:{p}:ro']
     command += ['-v', f'{args.out}:{args.out}', '-w', str(REPO)]
     for value in ['OMP_NUM_THREADS=1', 'MKL_NUM_THREADS=1', 'OPENBLAS_NUM_THREADS=1',
                   'NUMEXPR_NUM_THREADS=1', 'PYTHONDONTWRITEBYTECODE=1', 'PYTHONNOUSERSITE=1',
