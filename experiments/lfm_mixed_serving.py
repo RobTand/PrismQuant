@@ -269,7 +269,12 @@ def main():
     manifest = read(args.artifact / "tessera_serving_manifest.json")
     teacher = source_identity(args.source)
     identity = validate_handoff(plan, manifest, teacher, calibration)
-    gate._population(plan, read(args.artifact / "config.json"), manifest)
+    config = read(args.artifact / "config.json")
+    # tessera 5ac9b72 (#377): the gate's population is the runtime's attested
+    # construction entry, resolved here exactly as check_census resolves it.
+    entry = gate.construction_entry(config.get("architectures"), gate.load_serving_contract())
+    require(entry is not None, "no attested construction entry for the checkpoint architecture")
+    gate._population(plan, config, manifest, entry)
     require(sha(ts / "experiments/moe_greedy_smoke_prompts.json") == PROMPTS, "fixed smoke prompts changed")
     checkpoint = source_identity(args.artifact)
     seal = {"checkpoint": str(args.artifact), "checkpoint_identity": checkpoint, "export_identity": identity,

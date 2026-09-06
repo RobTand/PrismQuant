@@ -165,6 +165,8 @@ class ServingTests(unittest.TestCase):
             modules["tessera.serving.contract"].derive_smoke_status = lambda p: "recorded"
             gate = types.ModuleType("fixture_gate")
             gate._population = unittest.mock.Mock()
+            gate.construction_entry = unittest.mock.Mock(return_value="attested-entry")
+            gate.load_serving_contract = unittest.mock.Mock(return_value={"construction": {}})
             loader = unittest.mock.Mock()
             spec = types.SimpleNamespace(loader=loader)
             original_read = m.read
@@ -188,7 +190,8 @@ class ServingTests(unittest.TestCase):
                  patch.object(m.importlib.util, "module_from_spec", return_value=gate), \
                  patch.object(m.subprocess, "check_output", side_effect=AssertionError("Docker/model must not start")):
                 m.main()
-            gate._population.assert_called_once_with(plan, {}, manifest)
+            gate.construction_entry.assert_called_once_with(None, {"construction": {}})
+            gate._population.assert_called_once_with(plan, {}, manifest, "attested-entry")
             receipt = original_read(root / "out/preflight.json")
             self.assertEqual(receipt["status"], "verified")
             self.assertEqual(receipt["artifact_seal_sha256"], m.sha(root / "out/artifact-seal.json"))
