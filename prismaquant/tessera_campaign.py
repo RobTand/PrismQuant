@@ -1124,10 +1124,15 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
     import torch
 
     # The producer's plan asks for a nominal rung per stack; the unit records
-    # it returns do not depend on it.  The first menu rung of the stack's
-    # first member is the nominal one (every member has the same menu shape
-    # class, and the allocator picks the served rung later).
-    stacks: dict[str, tuple[str, int]] = {}
+    # it returns do not depend on it -- the producer checks only that the
+    # family has an expert route on its build.  The menu is ordered by rate,
+    # so its first rung's family is arbitrary with respect to the route, and
+    # asking on it refuses a stack whose OTHER families are routable.  Ask the
+    # producer family by family in menu order and keep the first it accepts;
+    # every refusal is carried, because "this build has no expert route for
+    # this family" is a measured fact the payload should record rather than
+    # lose in a traceback (PrismaQuant #280).
+    ladders: dict[str, list[tuple[str, int]]] = {}
     for stack, units in sorted(population.declared.items()):
         first = sorted(units)[0]
         menu = list(menus.get(first) or [])
@@ -1136,26 +1141,58 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
                 f"Tessera campaign has no menu for projected expert unit {first} "
                 f"(stack {stack}); refusing to price a stack the allocator could "
                 "not choose a rung for (PrismaQuant #183).")
-        parsed = parse_tessera_format_name(menu[0].format_name)
-        if parsed is None:
+        ladder: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for entry in menu:
+            parsed = parse_tessera_format_name(entry.format_name)
+            if parsed is None:
+                continue
+            family, rung = parsed
+            grid = family.payload_grid().name
+            if grid in seen:
+                continue
+            seen.add(grid)
+            ladder.append((grid, int(rung)))
+        if not ladder:
             raise RuntimeError(
-                f"Tessera campaign menu for projected expert unit {first} opens with a "
-                f"non-Tessera rung {menu[0].format_name!r}; the producer cannot plan it "
-                "(PrismaQuant #183).")
-        family, rung = parsed
-        stacks[stack] = (family.payload_grid().name, int(rung))
+                f"Tessera campaign menu for projected expert unit {first} names no "
+                "Tessera rung the producer could plan (PrismaQuant #183).")
+        ladders[stack] = ladder
     out_path = Path(cache_dir) / "expert_projection.json"
     try:
         tool = producer_plan_tool()
-        projection = request_expert_projection(model_path, stacks, out_path=out_path)
-        bound = bind_expert_projection(projection, declared=population.declared)
     except ExpertProjectionError as exc:
         raise RuntimeError(
+            "Tessera campaign cannot ask the producer for its expert projection; "
+            f"refusing to price it: {exc} (PrismaQuant #183).") from exc
+    attempts: list[dict] = []
+    stacks: dict[str, tuple[str, int]] = {}
+    projection = bound = None
+    for round_index in range(max(len(ladder) for ladder in ladders.values())):
+        asked = {stack: ladder[min(round_index, len(ladder) - 1)]
+                 for stack, ladder in ladders.items()}
+        if asked == stacks:
+            break                       # every ladder exhausted; nothing new to ask
+        stacks = asked
+        try:
+            projection = request_expert_projection(model_path, stacks, out_path=out_path)
+            bound = bind_expert_projection(projection, declared=population.declared)
+        except ExpertProjectionError as exc:
+            attempts.append({"request": stack_plan_request(stacks), "refused": str(exc)})
+            projection = bound = None
+            continue
+        attempts.append({"request": stack_plan_request(stacks), "refused": None})
+        break
+    if bound is None or projection is None:
+        raise RuntimeError(
             "Tessera campaign cannot bind the producer's expert projection to the "
-            f"profile-declared population; refusing to price it: {exc} (PrismaQuant #183)."
-        ) from exc
+            "profile-declared population on any family in the menu; refusing to "
+            "price it: "
+            + " || ".join(a["refused"] for a in attempts)
+            + " (PrismaQuant #183).")
     carried = carried_projection(projection, bound, request=stack_plan_request(stacks),
                                  tool=str(tool))
+    carried["plan_attempts"] = attempts
     projected: dict[str, dict] = {}
     mismatched: list[str] = []
     for stack, units in sorted(bound.items()):
