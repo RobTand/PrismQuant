@@ -1322,7 +1322,7 @@ def _proc_snapshot(pid: int, *, strict: bool = False) -> tuple[int, str] | None:
 def _proc_owner_observation(pid: int, owner_token: str) -> str:
     """Report what ``/proc/<pid>/environ`` establishes about ownership.
 
-    Four answers, because they are four different facts:
+    Five answers, because they are five different facts:
 
     ``owned``
         The reserved token is in the process environment.
@@ -1412,8 +1412,9 @@ def _terminate_recorded_owned_process(pid: int, ticks: int, owner_token: str) ->
     the signal below already returns True.  Reading the same fact one moment
     earlier used to return False instead, and the caller turns False into
     `process was not killed`, a terminal stage failure.  Only an ownership that
-    was never established -- a recycled pid, another owner, an unreadable
-    `/proc` -- leaves the question open, and only that refuses.
+    was never established leaves the question open, and only that refuses: a
+    recycled pid, or an environment read in full that carries somebody else's
+    token.  A read that merely failed is not that -- see `_owned_process_state`.
     """
 
     state = _owned_process_state(pid, ticks, owner_token)
