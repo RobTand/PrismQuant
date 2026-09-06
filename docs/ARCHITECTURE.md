@@ -1,7 +1,55 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/237-integration`. Stamps
+As of: 2026-09-05 · `claude/pq-227`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `claude/pq-227`) for integration of the cache
+activation-scale policy guard with joint AURA and the current producer pin.
+Both sets of contracts and their qualification limits remain in force.
+
+Re-stamped (2026-09-05, `claude/pq-227`) for **the resolved activation-scale
+policy travelling with the cache whose costs it priced** (§5.4, §5.6;
+RobTand/prismaquant#227, P1). `PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE` is a
+free post-export knob for an *artifact* (§5.6) but it is not free for a
+*priced cache*: the same calibration maximum derives `G = 6/amax` under
+`legacy_6_over_calibration_amax.v1` and `G = 448*6/amax` under
+`full_e4m3_range_448x6_over_calibration_amax.v1`, and the served oracle at
+those two G is two different quantisers — measured on `TESSERA_E2M1_K2_R896`
+with amax=6, a `[1e-3]*16` block and W = rendered-W: G=1 scores
+2.5571882724761963e-4 and serves the block as 0, G=448 scores
+5.622899834634154e-7 and serves it as 1.04522705078125e-3. Each is right
+under its own policy (#205's positive control); what was wrong is that
+`StaticActivationContract.input_global_scale_from_max_abs` resolved the
+process's CURRENT policy on every call while nothing the cache persisted named
+the policy its scores were priced under, so a directory filled under one
+policy resumed, kept its scores and was KL-validated under the other with an
+**identical render identity**. One home, chosen as the resolved render levers:
+`_resolve_production_render_levers` is already where every env-valued render
+input (`nvfp4_scale_rule`, the fixed damp, act-order, JSO) becomes a stamped
+value shared by the resident and streaming fills, and the policy already
+reaches `render_production_weight` as that fill's `input_global_scale`, so it
+joins them as `nvfp4_input_global_scale_policy` and travels into
+`render_identity.json`, the CB render contract and the union per-shard
+identity — a policy change is now an identity mismatch naming that field. The
+contract object is deliberately NOT frozen: its G rule still resolves live by
+default (a screen, a fresh fill and the export legitimately read the setting)
+and takes an explicit `policy=` only from a caller that already resolved one
+for a whole operation. Two further lines, because the identity gate admits a
+pre-guard directory on trust: every retained render score now records
+`input_global_scale_policy` beside its `input_global_scale`, the fill checks
+each retained cost's recorded G against the G the current policy derives from
+the same recorded maximum and refuses **by name**
+(`ActivationScalePolicyMismatchError`, a subclass of the #205 refusal), and
+the assignment-KL hooks compare the same two numbers per unit — preflighted in
+`measure_assignment_kl` so the refusal lists every affected unit before the
+first forward. Rows scored under a dynamic quantiser (FP8/MX, stock NVFP4's
+screen default) record no policy and are invalidated by none. Gates:
+`tests/test_served_activation_contract.py`,
+`tests/test_production_cache_render_identity.py`. **Operator note:** an
+existing cache directory's `render_identity.json` has no
+`levers.nvfp4_input_global_scale_policy`, so the first fill that resumes it
+refuses with that field named; the shards themselves are policy-independent,
+but the fix for a resume is a fresh `--cache-dir`.
 
 Re-stamped (2026-09-05, `codex/237-integration`) for the joint probe-count
 contract: joint harvesting and row admission require at least two probes.
@@ -178,6 +226,7 @@ survive parsed provenance and JSON round trips; unknown reference arms,
 nonportable instrument paths and duplicate `(prompt, form)` observations
 refuse. A missing validator is a named runtime mismatch. This changes no
 status policy, serving format, pin or GPU execution path.
+
 
 Re-stamped (2026-09-05, `claude/tessera-pin-v0.1.0`) for **reading the lane
 table Tessera publishes at the pinned commit** (§5.7, §9.4). Tessera released
@@ -7121,6 +7170,16 @@ surrogate, the KL validation, and the exported bytes must be the *same* renderin
 carries a rendering confound. Levers are recorded on the cache (`:165`, `:835-858`), which is
 what makes M19 (§6.1) possible.
 
+**The A-side scale policy is one of those levers (#227).** `_resolve_production_render_levers`
+resolves `PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE` once per fill into
+`nvfp4_input_global_scale_policy`, exactly as it resolves the W-side `nvfp4_scale_rule` and the
+fixed damp beside it, and the resident and streaming fills then price every W4A4 render score —
+and the `input_global_scale` they hand the renderer — from that one resolution. The cache's
+rendered *bytes* do not depend on it, but its activation-aware *costs* do (§5.6), so it is bound
+into the render identity, the CB render contract and each `render_scores` record; a fill that
+resumes a directory under another policy refuses on that identity field, and a retained cost
+priced at another G refuses by name in the fill and in the assignment-KL preflight.
+
 **Profile-synthesized MTP is an append scope of that same cache.** Transformers does not
 instantiate the Qwen3.5/3.6 MTP sidecar, so the ordinary resident body walk cannot discover
 `mtp.*`. `mtp_production_cache.fill_profile_mtp_production_cache` asks the resolved
@@ -7301,7 +7360,7 @@ after gptq). The production lever set is §3.3.
 | **M19** | Export re-derives NVFP4 codes under the render's *recorded* scale rule, not the export-entry `static_6`. Default ON | §6.1 |
 | **M26** | Frontier KL is scored `full_sequence`, not last-token | §4.6, §7.1 |
 
-### 5.6 `input_global_scale` is a free post-export knob
+### 5.6 `input_global_scale` is a free post-export knob — and a bound cache input
 
 The NVFP4 activation global scale can be patched in place after export and re-measured — no
 re-render. `PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE` selects the compressed-tensors
@@ -7311,6 +7370,23 @@ subnormals at the cost of clipping any serve block above it. Served A/Bs 2026-07
 byte-identical: 35B-A3B MoE frontier −14.1% KL (win), LFM2.5 +5.8% (loss), 27B regen dense
 +37.5% (loss). Strongly artifact-dependent, so the default stays legacy (`0`) and any change
 requires a per-artifact served A/B.
+
+Free for the artifact's *bytes* is not free for its *costs* (#227). A W4A4 rung whose spec
+carries `measured_as_served` is scored — in the production cache and in the assignment-KL
+hooks — through the served oracle at that unit's G, so the policy decides what every one of
+those activation-aware scores MEANS. It is therefore resolved once per fill by
+`_resolve_production_render_levers` into the lever `nvfp4_input_global_scale_policy`, which
+travels into `render_identity.json`, the CB render contract, the union per-shard identity and
+each `render_scores` record (`input_global_scale_policy` beside `input_global_scale`).
+Changing the policy over an existing cache directory is an identity mismatch naming that
+lever; a pre-guard directory admitted on trust is caught one level down, where the fill and
+the KL preflight compare each retained cost's recorded G against the G the current policy
+derives from the same recorded maximum and refuse by name
+(`nvfp4_activation_contract.ActivationScalePolicyMismatchError`). Reusing the *weights* across
+a policy change is legitimate — they are policy-independent — but their activation-aware
+scores must be re-priced, so the remedy is a fresh `--cache-dir`. Rows priced under a dynamic
+quantiser (FP8/MX, and stock NVFP4 on its screen default) record no policy and are invalidated
+by none.
 
 ### 5.7 Tessera — a synthesized family, priced and rendered by name, admitted only by attestation (2026-09-02)
 

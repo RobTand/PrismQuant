@@ -42,7 +42,10 @@ from prismaquant.perturbed_x_cache import (
     PerturbedActivationCache,
     calibration_data_hash,
 )
-from prismaquant.nvfp4_activation_contract import ActivationScaleContractError
+from prismaquant.nvfp4_activation_contract import (
+    ActivationScaleContractError,
+    ActivationScalePolicyMismatchError,
+)
 from prismaquant.nvfp4_cb_footprint import (
     CBSerializationContext,
     cb_assignment_payload_breakdown,
@@ -1148,6 +1151,22 @@ def measure_assignment_kl(
                 "activation_max_abs); refusing to measure them under a "
                 f"dynamic quantiser the runtime never runs.  missing="
                 f"{len(scale_gaps)} sample={scale_gaps[:5]}"
+            )
+        # Having a maximum is not having the same G: the maximum survives a
+        # change of input-global-scale policy unchanged, while the static
+        # scale it derives -- and therefore the served quantiser these units
+        # are measured through -- does not.  A cache whose costs were priced
+        # at one G is not measurable at another (#227), and this says so
+        # before the first forward, naming the units.
+        policy_conflicts = hooks.served_activation_policy_conflicts()
+        if policy_conflicts:
+            raise ActivationScalePolicyMismatchError(
+                "assignment-KL: these units carry production-cache render "
+                "scores priced at a different static input_global_scale than "
+                "this run would apply (the resolved input-global-scale policy "
+                "changed under the cache); refusing to measure a KL against "
+                f"costs priced under another policy.  conflicting="
+                f"{len(policy_conflicts)} sample={policy_conflicts[:5]}"
             )
     values = []
     nll_values: list[float] = []

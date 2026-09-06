@@ -124,6 +124,14 @@ RENDER_IDENTITY_SCHEMA = (
     "prismaquant.production_weight_cache.render_identity.v1"
 )
 RENDER_IDENTITY_SIDECAR_FILENAME = "render_identity.json"
+#: The resolved NVFP4 input-global-scale policy, as a render lever (#227).
+#: ``_resolve_production_render_levers`` is the ONE place this process's
+#: policy is turned into a stamped value, so the directory render identity,
+#: the CB render contract, the union per-shard identity, the score records and
+#: every consumer that reads ``ProductionWeightCache.levers`` all name the same
+#: one.  The policy stays a live setting in the contract owner; what is frozen
+#: here is what THIS fill priced with.
+RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY = "nvfp4_input_global_scale_policy"
 RENDER_IDENTITY_MTP_APPEND_SCHEMA = (
     "prismaquant.production_weight_cache.mtp_append_identity.v1"
 )
@@ -1441,6 +1449,7 @@ def _render_score_record(
     rendered_weight: torch.Tensor,
     activations: torch.Tensor | None,
     activation_max_abs: float | None,
+    input_global_scale_policy: str | None = None,
 ) -> dict[str, object]:
     raw_score, raw_metric = _render_score_for_gate(
         reference_weight.detach().to(torch.float32),
@@ -1474,6 +1483,11 @@ def _render_score_record(
     served_measurement = contract is not None and contract.measured_as_served
     recorded_max_abs = activation_max_abs if contract is not None else None
     activation_clip_max = None if served_measurement else recorded_max_abs
+    # Which policy this row is priced under: the one the caller resolved for
+    # the whole fill (its render levers), else the live one.  Resolved ONCE
+    # here so the G that scores and the policy the record stamps are the same
+    # answer (#227).
+    policy = _resolve_render_input_global_scale_policy(input_global_scale_policy)
     input_global_scale: float | None = None
     if (
         activations is not None
@@ -1483,7 +1497,8 @@ def _render_score_record(
         if served_measurement:
             input_global_scale = contract.require_input_global_scale(
                 activation_max_abs, qname=qname,
-                consumer=f"production cache render score @ {fmt}")
+                consumer=f"production cache render score @ {fmt}",
+                policy=policy)
             g = float(input_global_scale)
             activation_quantize = lambda t: contract.quantize_dequantize(t, g)  # noqa: E731
         else:
@@ -1545,6 +1560,14 @@ def _render_score_record(
         # one; None for rows scored under a dynamic quantizer.
         "input_global_scale": (
             float(input_global_scale) if input_global_scale is not None else None
+        ),
+        # ... and the policy that G came out of, so a later resume or KL hook
+        # can say WHY a retained cost no longer matches (#227).  Stamped only
+        # where it priced something: a dynamically scored row does not depend
+        # on it, and claiming otherwise would invalidate FP8/MX rows for a
+        # setting that never touched them.
+        "input_global_scale_policy": (
+            str(policy) if input_global_scale is not None else None
         ),
         "out_features": int(rows),
         "in_features": int(cols),
@@ -1709,6 +1732,146 @@ def _write_render_score_sidecar(
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(_json.dumps(payload, indent=2, sort_keys=True))
     os.replace(tmp, path)
+
+
+def _render_score_record_priced_scale(
+    record: Mapping[str, object],
+    *,
+    key: str,
+    where: str,
+) -> tuple[str, float, float, str | None] | None:
+    """``(qname, priced_G, max_abs, priced_policy)`` for a served-contract row.
+
+    ``None`` for a row that carries no static G -- one scored under a dynamic
+    quantizer (FP8/MX), or scored without activations.  Nothing about those
+    rows depends on the input-global-scale policy, so nothing about them is
+    invalidated by a change to it.
+
+    A row that carries a G but no maximum to have derived it from is neither:
+    it is an inconsistent record, and it fails closed here rather than being
+    admitted as "nothing to check".
+    """
+    priced = record.get("input_global_scale")
+    if priced is None:
+        return None
+    qname = str(record.get("qname") or key)
+    max_abs = record.get("activation_max_abs")
+    try:
+        priced_value = float(priced)  # type: ignore[arg-type]
+        max_abs_value = float(max_abs)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"{where}: render score {key!r} records "
+            f"input_global_scale={priced!r} with activation_max_abs="
+            f"{max_abs!r}; refusing to reuse a cost whose static scale cannot "
+            "be checked against the current policy"
+        ) from None
+    if (
+        not math.isfinite(priced_value) or priced_value <= 0.0
+        or not math.isfinite(max_abs_value) or max_abs_value <= 0.0
+    ):
+        raise RuntimeError(
+            f"{where}: render score {key!r} records a non-positive static "
+            f"activation scale (input_global_scale={priced!r}, "
+            f"activation_max_abs={max_abs!r}); refusing to reuse it"
+        )
+    policy = record.get("input_global_scale_policy")
+    return (
+        qname,
+        priced_value,
+        max_abs_value,
+        None if policy is None else str(policy),
+    )
+
+
+def _check_resumed_render_score_policies(
+    records: Mapping[str, Mapping[str, object]],
+    *,
+    policy: str,
+    where: str,
+) -> int:
+    """Refuse retained activation-aware costs priced under another policy.
+
+    The resume loop admits a shard as rendered by file presence and keeps its
+    existing score by ``qname|FMT`` key, so without this a cache filled under
+    ``PRISMAQUANT_NVFP4_INPUT_GSCALE_FP8_RANGE=0`` (G = 6/amax) silently
+    contributes its old costs to a run that quantizes activations at
+    ``448*6/amax`` -- the same weights, the same maximum, a different served
+    A-side, and therefore a different cost (#227).
+
+    The check is the recorded G against the G this policy derives from the
+    SAME recorded maximum, so it holds for records written before the policy
+    stamp existed as well as after; the stamp only lets the refusal name the
+    two policies.  Returns how many rows carried a static G.
+    """
+    from prismaquant.nvfp4_activation_contract import (
+        input_global_scale_from_max_abs,
+        require_matching_input_global_scale,
+    )
+
+    checked = 0
+    for key in sorted(records):
+        record = records[key]
+        if not isinstance(record, Mapping):
+            continue
+        priced = _render_score_record_priced_scale(
+            record, key=key, where=where)
+        if priced is None:
+            continue
+        qname, priced_value, max_abs_value, priced_policy = priced
+        checked += 1
+        require_matching_input_global_scale(
+            priced_value,
+            input_global_scale_from_max_abs(max_abs_value, policy=policy),
+            qname=qname,
+            consumer=where,
+            priced_policy=priced_policy,
+            applied_policy=policy,
+        )
+    return checked
+
+
+def production_cache_priced_input_global_scales(
+    cache, *, where: str = "ProductionWeightCache",
+) -> dict[str, float]:
+    """The static G each unit's retained render score was priced at.
+
+    The measurement side of #227: an assignment-KL hook derives its own G from
+    the cache's calibrated maximum and the CURRENT policy, and must compare it
+    against the G the cost it is measuring against was priced at.  Read from
+    the cache's own ``render_scores`` provenance, never from the environment.
+
+    Rows without a static G (dynamic quantizers) contribute nothing.  Two rows
+    for one unit disagreeing is the very defect this guards -- G is a function
+    of the unit's maximum and one policy -- so it refuses by name rather than
+    picking one.
+    """
+    metadata = cache.metadata if isinstance(
+        getattr(cache, "metadata", None), Mapping) else {}
+    section = metadata.get("render_scores")
+    records = section.get("records") if isinstance(section, Mapping) else None
+    if not isinstance(records, Mapping):
+        return {}
+    priced_scales: dict[str, float] = {}
+    for key in sorted(records):
+        record = records[key]
+        if not isinstance(record, Mapping):
+            continue
+        priced = _render_score_record_priced_scale(
+            record, key=str(key), where=where)
+        if priced is None:
+            continue
+        qname, priced_value, _max_abs, _policy = priced
+        previous = priced_scales.get(qname)
+        if previous is not None and previous != priced_value:
+            raise RuntimeError(
+                f"{where}: {qname!r} has render scores priced at two static "
+                f"activation scales ({previous!r} and {priced_value!r}); the "
+                "cache mixes input-global-scale policies and cannot be "
+                "measured against"
+            )
+        priced_scales[qname] = priced_value
+    return priced_scales
 
 
 def _load_activation_max_abs_sidecar(path: Path) -> dict[str, float]:
@@ -4876,7 +5039,51 @@ def _resolve_production_render_levers(
     ):
         levers["nvfp4_scale_rule"] = NVFP4_SCALE_RULE_JOINT_MSE
     levers.setdefault("nvfp4_scale_rule", resolve_nvfp4_scale_rule())
+    # The A-side scale policy is a render input like the W-side scale rule
+    # beside it: it already reaches ``render_production_weight`` as this
+    # fill's ``input_global_scale``, and it decides what every
+    # activation-aware render SCORE means.  Resolve it here, once, and let it
+    # travel with the levers -- into the directory render identity, the CB
+    # render contract, the union per-shard identity and each score record --
+    # so a cache priced under one policy cannot be silently resumed, rescored
+    # or KL-validated under another (#227).  An explicit caller value wins and
+    # is canonicalized; a bad one refuses here rather than mid-fill.
+    levers[RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY] = (
+        _resolve_render_input_global_scale_policy(
+            levers.get(RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY)
+        )
+    )
     return levers
+
+
+def _resolve_render_input_global_scale_policy(
+    value: object | None = None,
+) -> str:
+    """Canonical input-global-scale policy id, from the contract owner."""
+    from prismaquant.nvfp4_activation_contract import (
+        resolve_input_global_scale_policy,
+    )
+
+    return resolve_input_global_scale_policy(
+        None if value is None else str(value)
+    )
+
+
+def _render_levers_input_global_scale_policy(
+    levers: Mapping[str, object] | None,
+) -> str:
+    """The policy a resolved lever mapping was priced under.
+
+    Falls back to the live resolution for a lever mapping built before #227
+    (or by a caller that never went through
+    :func:`_resolve_production_render_levers`), which is what those callers
+    already got.
+    """
+    value = (
+        levers.get(RENDER_LEVER_INPUT_GLOBAL_SCALE_POLICY)
+        if isinstance(levers, Mapping) else None
+    )
+    return _resolve_render_input_global_scale_policy(value)
 
 
 def _resolve_render_mechanism_plan(levers: Mapping[str, object]):
@@ -6807,6 +7014,24 @@ def fill_production_weight_cache(
                 f"{qname}@{fmt}; refusing reuse or re-render"
             )
         render_score_records[_render_score_record_key(qname, fmt)] = dict(score)
+    # Every retained cost enters the fill here -- the disk-resume branch below
+    # keeps them by key, and a fully-rendered directory never reaches that
+    # branch at all -- so this is the one place to ask whether they were
+    # priced under the activation-scale policy this run applies (#227).  A
+    # directory whose render identity was compared already refused on
+    # ``levers.nvfp4_input_global_scale_policy``; this still holds for the
+    # pre-guard directory admitted on trust, for a sidecar restored beside a
+    # fresh identity, and for in-memory callers.
+    render_score_policy = _render_levers_input_global_scale_policy(levers)
+    _check_resumed_render_score_policies(
+        render_score_records,
+        policy=render_score_policy,
+        where=(
+            "production cache resume"
+            if cache_dir_path is None
+            else f"production cache resume @ {cache_dir_path}"
+        ),
+    )
     if progress and render_score_records:
         print(
             f"[prod-cache] resume: loaded {len(render_score_records)} "
@@ -7145,7 +7370,8 @@ def fill_production_weight_cache(
             _nvfp4_input_global_scale_from_max_abs,
         )
         export_scale = (
-            _nvfp4_input_global_scale_from_max_abs(float(max_abs))
+            _nvfp4_input_global_scale_from_max_abs(
+                float(max_abs), policy=render_score_policy)
             if (max_abs is not None and max_abs > 0)
             else None
         )
@@ -7200,6 +7426,7 @@ def fill_production_weight_cache(
                                 rendered_weight=cached,
                                 activations=activations_local.get(qname),
                                 activation_max_abs=max_abs,
+                                input_global_scale_policy=render_score_policy,
                             )
                             del cached
                         except Exception:
@@ -7250,6 +7477,7 @@ def fill_production_weight_cache(
                         rendered_weight=w_dq,
                         activations=activations_local.get(qname),
                         activation_max_abs=max_abs,
+                        input_global_scale_policy=render_score_policy,
                     )
                 )
                 if gate_trace:
@@ -7867,6 +8095,7 @@ def _packed_expert_render_score_record(
     eval_rows: int,
     device: torch.device,
     score_rows_source: str,
+    input_global_scale_policy: str | None = None,
 ) -> dict[str, object]:
     """Score one packed 3-D expert cache entry honestly.
 
@@ -7910,6 +8139,7 @@ def _packed_expert_render_score_record(
                 rendered_weight=rendered[expert].detach().to(device=device),
                 activations=acts_e,
                 activation_max_abs=activation_max_abs,
+                input_global_scale_policy=input_global_scale_policy,
             )
         )
         del acts_e
@@ -7944,6 +8174,27 @@ def _packed_expert_render_score_record(
         for record in scored
         if record["activation_max_abs"] is not None
     }
+    # Every expert in the stack was priced from the one ``activation_max_abs``
+    # this entry owns, so a served-contract stack has exactly one static G and
+    # one policy.  Carry them the way the dense record does, so a packed cost
+    # is checkable against a later policy too (#227); a stack scored under a
+    # dynamic quantizer records neither.
+    scale_values = {
+        float(record["input_global_scale"])
+        for record in scored
+        if record.get("input_global_scale") is not None
+    }
+    if len(scale_values) > 1:
+        raise RuntimeError(
+            f"packed expert render score for {qname}@{fmt} mixes static "
+            f"activation scales {sorted(scale_values)}; one entry is priced "
+            "under one input_global_scale"
+        )
+    policy_values = {
+        str(record["input_global_scale_policy"])
+        for record in scored
+        if record.get("input_global_scale_policy") is not None
+    }
     return {
         "qname": str(qname),
         "format": str(fmt).upper(),
@@ -7972,6 +8223,13 @@ def _packed_expert_render_score_record(
         ),
         "activation_max_abs": (
             float(max(clip_values)) if clip_values else None
+        ),
+        "input_global_scale": (
+            float(next(iter(scale_values))) if scale_values else None
+        ),
+        "input_global_scale_policy": (
+            str(next(iter(policy_values)))
+            if scale_values and policy_values else None
         ),
         "out_features": int(reference.shape[1]),
         "in_features": int(reference.shape[2]),
@@ -8510,6 +8768,9 @@ def fill_packed_expert_cache_entries(
         for _experts_qname, _mod, _parent, _pn, full, fmt in in_scope
     }
     resolved_packed_levers = _resolve_production_render_levers(levers)
+    packed_score_policy = _render_levers_input_global_scale_policy(
+        resolved_packed_levers
+    )
     packed_mechanism_plan = _resolve_render_mechanism_plan(
         resolved_packed_levers
     )
@@ -8657,6 +8918,17 @@ def fill_packed_expert_cache_entries(
                     packed_score_records[
                         _render_score_record_key(full, fmt)
                     ] = dict(admitted_score)
+
+    # Retained packed costs are reused by key exactly as the dense ones are,
+    # so they answer the same question before this append prices anything
+    # else (#227).
+    for retained, retained_where in (
+        (existing_score_records, "packed expert cache resume"),
+        (packed_score_records, "packed expert CB pair resume"),
+    ):
+        _check_resumed_render_score_policies(
+            retained, policy=packed_score_policy, where=retained_where,
+        )
 
     if progress:
         print(
@@ -8992,6 +9264,7 @@ def fill_packed_expert_cache_entries(
                         eval_rows=eval_rows_per_expert,
                         device=device,
                         score_rows_source="fit_corpus_tail",
+                        input_global_scale_policy=packed_score_policy,
                     )
                 )
                 del resumed_render
@@ -9230,6 +9503,7 @@ def fill_packed_expert_cache_entries(
             eval_rows=eval_rows_per_expert,
             device=device,
             score_rows_source="fit_corpus_tail",
+            input_global_scale_policy=packed_score_policy,
         )
         packed_gate_records[gate_key] = _packed_expert_render_gate_record(
             qname=full,

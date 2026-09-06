@@ -166,7 +166,16 @@ def _render_dense_layer(
     """
     from prismaquant.decision_units import fused_group_key
     from prismaquant.export_native_compressed import _compute_nvfp4_joint_global
+    from prismaquant.production_weight_cache import (
+        _check_resumed_render_score_policies,
+        _render_levers_input_global_scale_policy,
+    )
 
+    # The A-side scale policy this stream was resolved under, from the same
+    # levers the resident fill stamps it in (#227): the streamed and resident
+    # renders must price identically, so neither may re-read the environment
+    # per layer.
+    stream_score_policy = _render_levers_input_global_scale_policy(levers)
     layer_formats: dict[str, tuple[str, ...]] = {}
     for qname in layer_dense_modules:
         fmts = tuple(render_formats_by_qname.get(qname, ()))
@@ -300,6 +309,14 @@ def _render_dense_layer(
                     transient_results[score_key] = dict(result)
                     completed.add(key)
                 render_score_records[score_key] = dict(score)
+                # An admitted pair's cost is being reused: it answers the
+                # activation-scale policy question like any other retained
+                # score (#227).
+                _check_resumed_render_score_policies(
+                    {score_key: dict(score)},
+                    policy=stream_score_policy,
+                    where=f"streamed CB pair resume for {qname}@{fmt}",
+                )
                 cb_pair_artifacts[score_key] = {
                     "identity": pair_identity,
                     "tensor": admitted.get("tensor"),
@@ -409,7 +426,7 @@ def _render_dense_layer(
                 _nvfp4_input_global_scale_from_max_abs,
             )
             export_scale = _nvfp4_input_global_scale_from_max_abs(
-                float(max_abs))
+                float(max_abs), policy=stream_score_policy)
         row_weights = (
             fisher_rows.get(qname)
             if (fisher_rows is not None
@@ -455,6 +472,7 @@ def _render_dense_layer(
                 rendered_weight=w_dq,
                 activations=X,
                 activation_max_abs=max_abs,
+                input_global_scale_policy=stream_score_policy,
             )
             render_score_records[score_key] = render_score
             canonical_render = _canonical_rendered_weight_tensor(
