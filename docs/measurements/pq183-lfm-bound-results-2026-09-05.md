@@ -377,3 +377,14 @@ were inspected: receipt
 The tests isolate the actual reader from the package's numerical initializer;
 actual assignment/export preflight remains a required first stage of the
 continuation. Acceptance 4 remains open pending export, census and serving.
+
+The bounded publication copies for the completed pricing and export refusal
+are retained in [the artifact roster](artifacts/pq183-lfm-bound-2026-09-05/publication-roster.json).
+They include the full fixed recipe/population, all 96 priced wire hashes,
+22-layer routing histogram, campaign/preflight commands, dependency receipt,
+host cleanup/telemetry status, failed terminal and final parser CAS receipt.
+The roster records the original archive SHA-256 and published SHA-256 for each
+file. PB scope-token values were redacted before publication, including the
+terminal's `resource_scope.token` and `detail.argv` value after `--token`;
+the unmodified terminal remains in the private archive. Binary cache/Hessian
+and profiler payloads remain archived and are not copied into Git.

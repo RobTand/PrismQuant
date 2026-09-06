@@ -1,0 +1,88 @@
+{
+  "schema": "prismaquant.pq183-publication-roster.v1",
+  "scope": "run05 priced cache and failed export; no served result",
+  "redaction": "PB scope token values replaced everywhere, including resource_scope.token and detail.argv after --token; originals preserved privately",
+  "files": [
+    {
+      "publication_file": "run05-terminal.redacted.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/e9e2588f14bf9d4663b9a95ab0662407bf8a757682036a38c925e2947fab718b.terminal.json",
+      "archive_bytes": 6158,
+      "archive_sha256": "349d985de2b972651a7bce108c6ad62e8206187c8b0f63e8688a5448ae46f1c1",
+      "publication_bytes": 7171,
+      "publication_sha256": "ffe16424dd721357de606025ff4da9a9636d2cfd03a85a7f018d9ed556e309a2",
+      "scope_tokens_redacted": true
+    },
+    {
+      "publication_file": "run05-recipe.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/recipe.json",
+      "archive_bytes": 130681,
+      "archive_sha256": "e1f8f6f93024ebdcc59fd88db02f5e17bc57efcefd2e8955ea16efc5839b5cba",
+      "publication_bytes": 130681,
+      "publication_sha256": "e1f8f6f93024ebdcc59fd88db02f5e17bc57efcefd2e8955ea16efc5839b5cba",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-priced-cache-readback.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run05-priced-cache-readback.json",
+      "archive_bytes": 26802,
+      "archive_sha256": "660308155ec7d7d8108fb0e52a6142b871ab8ae19a8cb27b9fcab31fc5e44b22",
+      "publication_bytes": 26802,
+      "publication_sha256": "c80e22db3237ea90646165cf95f98284a582bbe54157cb5e4f1ea50277bca74d",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-host-status.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/host-status.json",
+      "archive_bytes": 7586,
+      "archive_sha256": "ff9d704deaf5c9a913b6211da3b6edbc9fdc029972337ec3baf83f702dc62b26",
+      "publication_bytes": 7586,
+      "publication_sha256": "9297bcc7463243c18cd07af74f0bbc68510697a27247aadfd640fa661dbdb269",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-campaign-command.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/campaign.command.json",
+      "archive_bytes": 1132,
+      "archive_sha256": "ccee60813d040edde50a3c7799abd1c5a9e89334b507c19a1d096e28dad89d61",
+      "publication_bytes": 1132,
+      "publication_sha256": "ccee60813d040edde50a3c7799abd1c5a9e89334b507c19a1d096e28dad89d61",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-preflight-command.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/preflight.command.json",
+      "archive_bytes": 889,
+      "archive_sha256": "211c9dab49a1a16bd952c816a11063ebb1930ad3b6789274cdcd4cd689524b5f",
+      "publication_bytes": 889,
+      "publication_sha256": "211c9dab49a1a16bd952c816a11063ebb1930ad3b6789274cdcd4cd689524b5f",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "run05-producer-dependencies.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/run183-05/producer-dependencies.json",
+      "archive_bytes": 3056,
+      "archive_sha256": "c5726b93fd6c13d37d4fa8a91f95f37f390dddc90951ba803a50b9f4a24d51df",
+      "publication_bytes": 3056,
+      "publication_sha256": "c5726b93fd6c13d37d4fa8a91f95f37f390dddc90951ba803a50b9f4a24d51df",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "routing-diagnostic02-histogram.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/route-diagnostic-02/router-histogram.json",
+      "archive_bytes": 32757,
+      "archive_sha256": "d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3",
+      "publication_bytes": 32757,
+      "publication_sha256": "d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3",
+      "scope_tokens_redacted": false
+    },
+    {
+      "publication_file": "parser-final-green-receipt.json",
+      "archive_file": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/pq183-evidence/3dfef54a381f9fb4348ea3c87d1a3b6195d2db076418588fa2f3c15392f0fedd.cas-receipt.json",
+      "archive_bytes": 2488,
+      "archive_sha256": "72ad3407e077afd3d1ac8bc744f1f8f61b32f9d25975effddea58c839f5d03f3",
+      "publication_bytes": 2488,
+      "publication_sha256": "72ad3407e077afd3d1ac8bc744f1f8f61b32f9d25975effddea58c839f5d03f3",
+      "scope_tokens_redacted": false
+    }
+  ]
+}

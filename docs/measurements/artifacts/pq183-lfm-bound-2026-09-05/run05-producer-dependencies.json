@@ -1,0 +1,105 @@
+{
+  "calibration_contract": "unchanged tessera_campaign._calibration_tokens",
+  "checked_unix": 1788663916.0203674,
+  "checkpoint_construction_attempted": false,
+  "modules": {
+    "datasets": {
+      "imported": true,
+      "required_symbols": [
+        "load_dataset"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/datasets/__init__.py",
+      "version": "5.0.1"
+    },
+    "numpy": {
+      "imported": true,
+      "required_symbols": [
+        "ndarray"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/numpy/__init__.py",
+      "version": "2.2.6"
+    },
+    "prismaquant.tessera_campaign": {
+      "imported": true,
+      "required_symbols": [
+        "main",
+        "_calibration_tokens"
+      ],
+      "source": "/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout/prismaquant/tessera_campaign.py",
+      "version": null
+    },
+    "prismaquant.tessera_export_lane": {
+      "imported": true,
+      "required_symbols": [
+        "main"
+      ],
+      "source": "/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout/prismaquant/tessera_export_lane.py",
+      "version": null
+    },
+    "safetensors": {
+      "imported": true,
+      "required_symbols": [
+        "safe_open"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/safetensors/__init__.py",
+      "version": "0.8.0"
+    },
+    "safetensors.torch": {
+      "imported": true,
+      "required_symbols": [
+        "load_file",
+        "save_file"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/safetensors/torch.py",
+      "version": null
+    },
+    "tessera.cached_unit": {
+      "imported": true,
+      "required_symbols": [
+        "make_unit_record",
+        "verify_cached_unit"
+      ],
+      "source": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47/src/tessera/cached_unit.py",
+      "version": null
+    },
+    "tessera.export": {
+      "imported": true,
+      "required_symbols": [
+        "ActivationSource",
+        "encode_linear_planes"
+      ],
+      "source": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47/src/tessera/export.py",
+      "version": null
+    },
+    "tessera.fused": {
+      "imported": true,
+      "required_symbols": [
+        "parse_fused"
+      ],
+      "source": "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47/src/tessera/fused.py",
+      "version": null
+    },
+    "torch": {
+      "imported": true,
+      "required_symbols": [
+        "Generator",
+        "bfloat16",
+        "cuda"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/torch/__init__.py",
+      "version": "2.13.0+cu130"
+    },
+    "transformers": {
+      "imported": true,
+      "required_symbols": [
+        "AutoModelForCausalLM",
+        "AutoTokenizer"
+      ],
+      "source": "/usr/local/lib/python3.12/dist-packages/transformers/__init__.py",
+      "version": "5.15.1"
+    }
+  },
+  "passed": true,
+  "problems": [],
+  "schema": "prismaquant.pq183-producer-dependencies.v1"
+}

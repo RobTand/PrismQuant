@@ -1,0 +1,206 @@
+{
+  "cleanup": {
+    "pq183-lfm-r1-f8c3b1b42143-census": {
+      "container_id": null,
+      "never_created": true,
+      "safe": true
+    },
+    "pq183-lfm-r1-f8c3b1b42143-check": {
+      "container_id": null,
+      "never_created": true,
+      "safe": true
+    },
+    "pq183-lfm-r1-f8c3b1b42143-producer": {
+      "already_absent": true,
+      "container_id": "bcc8ac4d463f5ef14fc7e4d0321ff147fddf78d39222f99e127edc5f55ebe7cb",
+      "safe": true
+    },
+    "pq183-lfm-r1-f8c3b1b42143-smoke-bf16": {
+      "container_id": null,
+      "never_created": true,
+      "safe": true
+    },
+    "pq183-lfm-r1-f8c3b1b42143-smoke-tessera": {
+      "container_id": null,
+      "never_created": true,
+      "safe": true
+    }
+  },
+  "cpu_affinity": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "deadline_seconds": 7200,
+  "error": "ValueError('phase producer exited 1')",
+  "finished_unix": 1788664271.5907586,
+  "memory_cap_gib": 64,
+  "monitor_errors": [],
+  "names": [
+    "pq183-lfm-r1-f8c3b1b42143-producer",
+    "pq183-lfm-r1-f8c3b1b42143-census",
+    "pq183-lfm-r1-f8c3b1b42143-smoke-bf16",
+    "pq183-lfm-r1-f8c3b1b42143-smoke-tessera",
+    "pq183-lfm-r1-f8c3b1b42143-check"
+  ],
+  "native_thread_policy": {
+    "census": 1,
+    "producer": 1,
+    "smoke": "unchanged producer launcher; PB four-CPU cpuset bounds all threads"
+  },
+  "netdata_urls": [
+    "http://sparky:19999",
+    "http://sparklina:19999"
+  ],
+  "observed_containers": {
+    "pq183-lfm-r1-f8c3b1b42143-producer": {
+      "cpu_set": "5,6,7,8",
+      "host_pid": 685549,
+      "id": "bcc8ac4d463f5ef14fc7e4d0321ff147fddf78d39222f99e127edc5f55ebe7cb",
+      "image": "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0",
+      "labels": {
+        "ai.vllm.build.commit": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+        "ai.vllm.build.pipeline": "019d130e-464e-4ff7-b84b-492992c0c06b",
+        "ai.vllm.build.url": "https://buildkite.com/vllm/release-v2/builds/5584",
+        "ai.vllm.image.tag": "vllm/vllm-openai:v0.28.0",
+        "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+        "org.opencontainers.image.base.digest": "sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14",
+        "org.opencontainers.image.causal-conv1d.sha256": "245e314ea21064ded7a5bf6b3b842b644aa6f92e45cecfe3e935629744c35ff4",
+        "org.opencontainers.image.causal-conv1d.version": "1.6.2.post1",
+        "org.opencontainers.image.ref.name": "ubuntu",
+        "org.opencontainers.image.revision": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+        "org.opencontainers.image.source": "https://github.com/vllm-project/vllm",
+        "org.opencontainers.image.title": "Tessera LFM BF16 teacher runtime",
+        "org.opencontainers.image.url": "https://buildkite.com/vllm/release-v2/builds/5584",
+        "org.opencontainers.image.version": "vllm/vllm-openai:v0.28.0",
+        "prismabuild.action": "593acc4b07f68c48afb37fb896e1ad99abc6dfea9cba12c3ed74579af10300e9",
+        "prismabuild.scope": "prismabuild-job7a7915513859206420cd149addae78f7.slice",
+        "prismaquant.pq183.campaign": "f8c3b1b42143"
+      },
+      "memory_limit": 68719476736,
+      "native_environment": [
+        "OMP_NUM_THREADS=1",
+        "MKL_NUM_THREADS=1",
+        "OPENBLAS_NUM_THREADS=1",
+        "MAX_JOBS=4"
+      ],
+      "running": true
+    }
+  },
+  "owner": "593acc4b07f68c48afb37fb896e1ad99abc6dfea9cba12c3ed74579af10300e9",
+  "phases": {
+    "instrument-preflight": {
+      "argv": [
+        "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python",
+        "-c",
+        "import requests, tokenizers, numpy"
+      ],
+      "exit_code": 0,
+      "finished_unix": 1788663915.7195096,
+      "source": {
+        "commit": "ba582d476a3b6db9057ebd1385dc52926f171451",
+        "files": 1017,
+        "manifest_sha256": "00710fbf9f15269ae0a579c02d6ad8fae22a476ece20293d73feea56c37f211a"
+      },
+      "started_unix": 1788663915.6052074
+    },
+    "producer": {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--name",
+        "pq183-lfm-r1-f8c3b1b42143-producer",
+        "--cidfile",
+        "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/pq183-lfm-r1-f8c3b1b42143-producer.cid",
+        "--label",
+        "prismaquant.pq183.campaign=f8c3b1b42143",
+        "--gpus",
+        "all",
+        "--memory=64g",
+        "--memory-swap=64g",
+        "--cpus=4",
+        "--ipc=host",
+        "--network=host",
+        "-v",
+        "/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout:/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout:ro",
+        "-v",
+        "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47:/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47:ro",
+        "-v",
+        "/mnt/shared:/mnt/shared:ro",
+        "-v",
+        "/mnt/shared/models/LFM2.5-8B-A1B-BF16:/mnt/shared/models/LFM2.5-8B-A1B-BF16:ro",
+        "-v",
+        "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05:/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05",
+        "-w",
+        "/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout",
+        "-e",
+        "OMP_NUM_THREADS=1",
+        "-e",
+        "MKL_NUM_THREADS=1",
+        "-e",
+        "OPENBLAS_NUM_THREADS=1",
+        "-e",
+        "MAX_JOBS=4",
+        "-e",
+        "CMAKE_BUILD_PARALLEL_LEVEL=4",
+        "-e",
+        "NINJAFLAGS=-j4",
+        "-e",
+        "MAKEFLAGS=-j4",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "PYTHONNOUSERSITE=1",
+        "-e",
+        "HF_HOME=/opt/pq183-hf-cache",
+        "-e",
+        "HF_HUB_OFFLINE=1",
+        "-e",
+        "HF_DATASETS_OFFLINE=1",
+        "-e",
+        "TORCH_EXTENSIONS_DIR=/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/ext",
+        "-e",
+        "TRITON_CACHE_DIR=/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05/triton",
+        "--entrypoint",
+        "python3",
+        "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0",
+        "/home/rob/tmp/prismabuild-checkouts/e9e2588f14bf.a2p9c2jz/checkout/experiments/pq183_lfm_bound.py",
+        "producer",
+        "--model",
+        "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+        "--out",
+        "/home/rob/tessera-runs/measurement-208-183-2026-09-05/run183-05",
+        "--tessera-repo",
+        "/home/rob/tessera-runs/measurement-208-183-2026-09-05/inputs/tessera-ba582d47",
+        "--tessera-commit",
+        "ba582d476a3b6db9057ebd1385dc52926f171451"
+      ],
+      "exit_code": 1,
+      "finished_unix": 1788664271.4021442,
+      "source": {
+        "commit": "ba582d476a3b6db9057ebd1385dc52926f171451",
+        "files": 1017,
+        "manifest_sha256": "00710fbf9f15269ae0a579c02d6ad8fae22a476ece20293d73feea56c37f211a"
+      },
+      "started_unix": 1788663915.7626872
+    }
+  },
+  "producer_image_id": "sha256:47dd0e9aaa4e7a6575d21cfc661d96a47c0e35e87c64e850631e210bdf04ebc0",
+  "schema": "prismaquant.pq183-host-observation.v1",
+  "serving_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "source_snapshot": "07a9771e57e6442bc6ae2ed5de16b40f4e4adb68",
+  "started_unix": 1788663915.311834,
+  "status": "inconclusive",
+  "telemetry_success": {
+    "http://sparklina:19999": true,
+    "http://sparky:19999": true
+  },
+  "tessera_source": {
+    "commit": "ba582d476a3b6db9057ebd1385dc52926f171451",
+    "files": 1017,
+    "manifest_sha256": "00710fbf9f15269ae0a579c02d6ad8fae22a476ece20293d73feea56c37f211a"
+  }
+}
