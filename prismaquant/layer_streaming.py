@@ -2042,19 +2042,27 @@ def _embed_prefix(base_model: nn.Module, full_path: str) -> str:
     return f"{full_path}.embed_tokens." if full_path else "embed_tokens."
 
 
+#: Names a hybrid decoder layer gives its mixer child. The mixer is where a
+#: layer that carries no ``layer_type`` of its own keeps the two facts that
+#: name it: its ``layer_idx`` and the ``config`` whose ``layer_types`` the
+#: index reads. ``linear_attn`` is Qwen3.5/3.6's DeltaNet child; ``conv`` is
+#: LFM2.5's ``Lfm2MoeShortConv``, whose layers expose no attention module at
+#: all -- omitting it left every LFM conv layer unnamed, and
+#: ``_call_layer`` failing closed on a mask dict that already held its entry
+#: (RobTand/prismaquant#276).
+_MIXER_CHILD_NAMES = ("self_attn", "attention", "linear_attn", "conv")
+
+
 def _layer_attention_type(layer: nn.Module):
     # `.block_type` is the transformers>=5.13 name for what `.layer_type`
-    # was on hybrid decoder layers up to 5.12; `.linear_attn` is the
-    # recurrent child module on Qwen3.5/3.6 DeltaNet hybrid layers, which
-    # carries its own `layer_type`/`layer_idx` (the outer layer has no
-    # `self_attn`/`attention` on those layers).
-    lt = (
-        getattr(layer, "layer_type", None)
-        or getattr(layer, "block_type", None)
-        or getattr(getattr(layer, "self_attn", None), "layer_type", None)
-        or getattr(getattr(layer, "attention", None), "layer_type", None)
-        or getattr(getattr(layer, "linear_attn", None), "layer_type", None)
-    )
+    # was on hybrid decoder layers up to 5.12; the mixer children above
+    # carry their own `layer_type`/`layer_idx` on architectures whose outer
+    # layer has none (Qwen3.5/3.6 DeltaNet, LFM2.5 short-conv).
+    lt = getattr(layer, "layer_type", None) or getattr(layer, "block_type", None)
+    for child_name in _MIXER_CHILD_NAMES:
+        if lt is not None:
+            break
+        lt = getattr(getattr(layer, child_name, None), "layer_type", None)
     if lt is not None:
         return lt
     # Laguna/Gemma2/Cohere2 convention: the attention module carries a
@@ -2066,13 +2074,17 @@ def _layer_attention_type(layer: nn.Module):
                     else "full_attention")
     # Generic fallback: config.layer_types[layer_idx] when both exist.
     idx = getattr(layer, "layer_idx", None)
-    if idx is None:
-        for attn_name in ("self_attn", "attention", "linear_attn"):
-            idx = getattr(getattr(layer, attn_name, None), "layer_idx", None)
-            if idx is not None:
-                break
-    cfg = getattr(layer, "config", None) or getattr(
-        getattr(layer, "self_attn", None), "config", None)
+    cfg = getattr(layer, "config", None)
+    for child_name in _MIXER_CHILD_NAMES:
+        if idx is not None and cfg is not None:
+            break
+        child = getattr(layer, child_name, None)
+        if child is None:
+            continue
+        if idx is None:
+            idx = getattr(child, "layer_idx", None)
+        if cfg is None:
+            cfg = getattr(child, "config", None)
     lts = getattr(cfg, "layer_types", None) if cfg is not None else None
     if idx is not None and lts is not None and 0 <= int(idx) < len(lts):
         return lts[int(idx)]
