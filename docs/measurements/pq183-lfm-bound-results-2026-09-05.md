@@ -248,3 +248,48 @@ Both are mirrored in `pq183-evidence/`, along with the failed terminal record.
 Both-host telemetry succeeded with no monitor errors, all exact-container
 cleanup records were safe, and PB resource cleanup completed. Acceptance 4
 remains open.
+
+## Actual-forward coverage diagnostic and frozen layer-13 scope
+
+The first diagnostic launcher, PB
+`ad7284404af1cae07b7be070d23eaee05815fa5d3a3d34e9ad918bb2eb1cfbcb`,
+omitted the sealed Tessera import mount and failed before model loading.
+The exact container and PB resource scope were cleaned. That setup failure
+is retained in `route-diagnostic-01/`; it produced no routing observation.
+
+The corrected diagnostic, PB
+`3a2f8a9fa5483aa439f0759cf1db3bc08710e2176f13d17652793102587bb182`,
+completed in 30.0 seconds with exit zero. It observed the selected-expert tensor
+returned by every actual sparse-block gate during the same 32 calibration
+forwards. It used no router replay and retained no activation/Hessian cache:
+only 32 int64 counts for each of 22 sparse layers, plus each actual parent bias
+vector. Every layer's counts summed to 65,536 token-to-expert assignments.
+The first eight token-buffer hashes matched the qualified eight-sample draw.
+
+Among layers 13–23, every expert had nonzero support in layers
+**13, 17, 20, 22, and 23**. The criterion declared before inspecting this
+histogram was the lowest eligible index at least 13; therefore **layer 13**
+is frozen for the next quantization attempt. Existing stride 13 selects dense
+layer 0 and precisely that one sparse stack. This choice uses calibration
+population support, with no quantization costs or quality outcomes observed.
+Layer 13's least-observed expert had **13 routed rows**. Complete population
+support does not establish a full-rank Hessian or certify quantization quality.
+The existing required-Hessian and no-row gates remain in force.
+
+The full 22-layer counts, bias vectors, 32 token hashes, versions and source
+identity are in `route-diagnostic-02/router-histogram.json`, SHA-256
+`d8ab6d0816a53a715596c0f4ff2ab28cf2895270668822aa93143d96819c1fc3`.
+The actual checkpoint SHA-256 is
+`c9b9e3c4b3be50b576e6da8c02de1b4223614ffe131d812abf92bb84421f6217`.
+The qualified image remained unchanged; observed peak CUDA allocation was
+17,409,684,480 bytes. Both Netdata endpoints were captured, the exact container
+was removed, and PB resource cleanup completed. cProfile, telemetry, image and
+container inspections, and full source binding are retained alongside the JSON
+and mirrored under `pq183-evidence/`.
+
+The successful CAS receipt is
+`a1f4a3e97f1de3936772d823070ef336e407df5b96f3a335213f835bd1a24612`;
+its 1,630-byte payload SHA-256
+`c3fee81522061838c30835c22e340831e84801f4e4fc2e20799050b355e97bad`
+was independently verified. The diagnostic establishes this scope-selection
+criterion only; actual campaign/export/serving acceptance remains open.
