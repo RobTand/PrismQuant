@@ -45,6 +45,7 @@ def main(argv=None):
     parser.add_argument("--image", required=True, help="immutable repository@sha256 digest")
     parser.add_argument("--contract", help="frozen prompt/seed/cap contract JSON (control)")
     parser.add_argument("--control", help="completed BF16 control receipt (candidate)")
+    parser.add_argument("--stack-contract", help="explicit image/artifact/role extension declaration")
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--legacy-ab", action="store_true",
@@ -124,6 +125,10 @@ def main(argv=None):
         "prompt_token_ids": token_ids,
         "producer_source_sha256": bc.digest(source_hashes),
     }
+    if args.stack_contract:
+        binding["paired_stack"] = bc.bind_stack_contract(binding,
+            json.loads(Path(args.stack_contract).read_text()), before,
+            "bf16_control" if args.role == "control" else "candidate")
     context_bound = bc._validate(contract, binding)
     started = time.time()
     historical = None

@@ -1,7 +1,23 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq208-preflight-receipts`. Stamps
+As of: 2026-09-05 · `codex/pq208-stack-contract`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for the opt-in paired
+stack treatment contract: validation manifest v2 declares one immutable image
+and the exact artifact identity and resident-extension set for each role.
+Boundary-control receipt v2 retains the raw observed manifest and recomputes
+its full fingerprint before projecting only the declared extension coordinate
+out of paired comparison. Every other stack payload field uses canonical JSON
+digest equality, including JSON types. Extra/missing extensions, wrong roles,
+artifacts, images or unreadable residency refuse. The identical declaration,
+existing same-campaign binding and candidate's exact control hash compose
+through offline replay; a declaration may be reused, receipts cannot be mixed.
+Legacy v1 remains strict and cannot silently consume v2 proof. Per-arm full
+pre/post residency checks and general serving/gold guards remain unchanged.
+Gates: `tests/test_boundary_stack_contract.py`, boundary/controller/identity
+tests and architecture/doc staleness tests. This enables an explicit experiment,
+not a shipping-policy promotion or a candidate measurement claim.
 
 Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for retained
 paired-client preflight evidence and the opt-in `--stack-preflight` diagnostic

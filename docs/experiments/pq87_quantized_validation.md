@@ -41,6 +41,26 @@ manifests. It skips all policy and PPL clients and ends with
 `status: preflight_completed`; this is never a completed quantized campaign.
 Keep the full fingerprints and all their fields when diagnosing a mismatch.
 
+The #208 diagnostic observed exactly one stack-payload difference: BF16
+resident extensions were `sampling.so`, while native NVFP4 additionally
+loaded `trtllm_utils.so`. Validation manifest v2 therefore opts into
+`prismaquant.boundary_stack_contract/1`, fixed before any candidate policy
+observation. It binds the immutable image and exact content artifact IDs to
+the two declared roles and exact extension sets. This is not an extension
+wildcard: missing or additional extensions refuse. Every other existing stack
+payload field must have an identical canonical JSON digest, preserving types.
+The original raw manifests and full fingerprints remain in boundary-control
+v2 receipts and are recomputed during pairing and offline replay. Full per-arm
+pre/post residency and content checks still apply.
+
+Both receipts must contain the identical immutable declaration, have the same
+campaign ID and satisfy the existing tokenization/producer/host contracts;
+the candidate binds the exact control receipt hash. These checks allow a
+declaration to be reused in a new campaign without allowing receipt swapping
+between campaigns. Legacy v1 pairing keeps full-fingerprint equality. A v1
+receipt with added proof, or v2 with missing proof, refuses; old replay code
+rejects the new receipt schema. The production shipping policy is unchanged.
+
 The BF16 serve derives an uncensored schedule separately for the existing
 30-pair screen and a disjoint 30-pair heldout set. Both prompt sets and seeds
 are committed before either model is observed; no candidate outcome selects
@@ -100,7 +120,25 @@ and required evidence are complete.
 
 ## Controller verification, not served validation
 
-All controller checks used deployed PrismaBuild `aa6d3cfa2f77`, Sparky with
+The declared-stack correction was qualified on 2026-09-05 through PrismaBuild
+runtime `d8f82f3a48f6`. Before the correction, action `1b65696d241e8882`
+produced 6 failed / 17 passed contract regressions. The additional canonical
+type regression `4b7629a98cb42083` failed because rehashed `gpu_count: true`
+was accepted against `gpu_count: 1`. After correction, `b7ae4af16c86c2c9`
+passed all 161 tests in nine files (the eight below plus
+`tests/test_boundary_stack_contract.py`), with no skips or collection errors.
+It used two admitted Sparklina CPUs, 8 GiB, pytest `-n 2`, disabled CUDA
+visibility and OMP/MKL/OpenBLAS thread limits of one with the existing
+`/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`. Compile action
+`e33b8cd1d7ec6d47` completed with rc0 for the four touched Python files.
+Exact commands, exclusions, terminal records, CAS receipts and rehashed result
+payloads are under
+`/mnt/shared/tessera-runs/measurement-208-183-2026-09-05/pq208-stack-*`.
+Green CAS receipt: `5d2fa2ee4c956bbd0b12a35a17d1bc7cf12bd2cf42f04c3b8ac452198833cb29`;
+812-byte result: `900b9439b7c7e462cf158ef7f4644c3148580ffb76b6f5fa335cc464782de436`.
+These CPU checks do not constitute a candidate policy observation.
+
+The original controller checks below used deployed PrismaBuild `aa6d3cfa2f77`, Sparky with
 one CPU/4 GiB, `CUDA_VISIBLE_DEVICES=''`, and all three BLAS/OMP thread limits
 set to one. The serial eight-file population collected every selected module,
 with zero skips or collection errors. No master baseline or full suite ran.

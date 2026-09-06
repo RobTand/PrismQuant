@@ -29,12 +29,20 @@ import pq87_physical_ab as instrument
 
 def validate_manifest(value):
     from prismaquant import boundary_control as bc
-    if not isinstance(value, dict) or set(value) != {
+    fields = {
         "schema", "image", "models", "contracts", "deadline_seconds", "netdata_urls"
-    } or value["schema"] != "prismaquant.boundary_validation/1":
+    }
+    if isinstance(value, dict) and value.get("schema") == "prismaquant.boundary_validation/2":
+        fields.add("stack_contract")
+    if (not isinstance(value, dict) or set(value) != fields
+            or value["schema"] not in {"prismaquant.boundary_validation/1", "prismaquant.boundary_validation/2"}):
         raise ValueError("validation manifest fields differ from schema")
     if not isinstance(value["image"], str) or not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", value["image"]):
         raise ValueError("validation image must be an immutable digest")
+    if "stack_contract" in value:
+        bc.validate_stack_contract(value["stack_contract"])
+        if value["stack_contract"]["image"] != value["image"]:
+            raise ValueError("stack contract image differs from campaign image")
     models = value["models"]
     if (not isinstance(models, dict) or set(models) != {"control", "candidate"}
             or any(not isinstance(path, str) or not Path(path).is_absolute() for path in models.values())
@@ -219,6 +227,8 @@ def client_phase(args):
                 "--out", prefix + ".json"]
         argv += (["--contract", f"/run/{args.population}-contract.json"] if args.role == "control" else
                  ["--control", f"/run/control-{args.population}.json", "--decision-policy", "no-new-failures"])
+        if "stack_contract" in manifest:
+            argv += ["--stack-contract", "/run/stack-contract.json"]
         return client.main(argv)
 
 
@@ -368,6 +378,10 @@ def host(args):
             elif (config.get("quantization_config") or {}).get("quant_method") != "compressed-tensors":
                 raise ValueError("this first validation manifest requires a native compressed-tensors candidate")
             before, stats = client._capture_artifact(model)
+            if "stack_contract" in manifest:
+                role_key = "bf16_control" if role == "control" else "candidate"
+                if bc.artifact_content_id(before) != manifest["stack_contract"]["roles"][role_key]["artifact_id"]:
+                    raise ValueError(f"{role} artifact_id differs from stack treatment declaration")
             frozen = out / "models" / role
             shutil.copytree(model, frozen)
             content, _ = client._capture_artifact(frozen)
@@ -382,6 +396,8 @@ def host(args):
             frozen.chmod(0o555)
         for population, contract in manifest["contracts"].items():
             instrument.dump(out / f"{population}-contract.json", contract)
+        if "stack_contract" in manifest:
+            instrument.dump(out / "stack-contract.json", manifest["stack_contract"])
         for directory in ("tmp", "triton", "inductor", "vllm-cache"):
             (out / directory).mkdir()
         threading.Thread(target=telemetry, daemon=True).start()
