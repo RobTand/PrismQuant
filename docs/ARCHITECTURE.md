@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/tessera-anchored-surface`. Stamps
+As of: 2026-09-05 · `codex/cluster-recovery-delivery`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-05, `codex/cluster-recovery-delivery`) for coordinator
+recovery across helper exit (PrismaQuant #239). A failed owner-environment
+read now rechecks process identity: disappearance or a zombie with the same
+start time means the helper ended, permitting exact receipt recovery. PID
+reuse, unreadable/malformed process state and live owner mismatch remain
+ambiguous and fail closed; they never authorize killing that process.
+The same refusal applies when ownership becomes ambiguous during recovery
+polling, before any receipt probe or retry.
 
 Re-stamped (2026-09-05, `codex/tessera-anchored-surface`) for opt-in,
 receipt-bound Tessera anchored-shape replay (§4.10). A declared shared pilot

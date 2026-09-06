@@ -1288,24 +1288,33 @@ def _helper_argv(host: Mapping[str, object]) -> list[str]:
     ]
 
 
-def _proc_snapshot(pid: int) -> tuple[int, str] | None:
+def _proc_snapshot(pid: int, *, strict: bool = False) -> tuple[int, str] | None:
+    """Read start time/state; strict checks distinguish missing from unreadable."""
     stat_path = Path(f"/proc/{int(pid)}/stat")
     try:
         text = stat_path.read_text(encoding="utf-8")
     except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError:
+        if strict:
+            raise
         return None
     right = text.rfind(")")
     if right < 0:
+        if strict:
+            raise ValueError("malformed process stat")
         return None
     fields = text[right + 2 :].split()
     if len(fields) <= 19:
+        if strict:
+            raise ValueError("incomplete process stat")
         return None
     state = fields[0]
     try:
         ticks = int(fields[19])
     except ValueError:
+        if strict:
+            raise
         return None
     return ticks, state
 
@@ -1320,12 +1329,25 @@ def _proc_has_owner(pid: int, owner_token: str) -> bool:
 
 
 def _owned_process_state(pid: int, ticks: int, owner_token: str) -> str:
-    snapshot = _proc_snapshot(pid)
-    if snapshot is None or snapshot[1] == "Z":
-        return "gone"
-    if snapshot[0] != ticks or not _proc_has_owner(pid, owner_token):
+    try:
+        snapshot = _proc_snapshot(pid, strict=True)
+        if snapshot is None:
+            return "gone"
+        if snapshot[0] != ticks:
+            return "mismatch"
+        if snapshot[1] == "Z":
+            return "gone"
+        if _proc_has_owner(pid, owner_token):
+            return "owned"
+        # Exit can empty/remove environ after stat still showed a live helper.
+        # Only disappearance or a zombie with the same start time proves this
+        # attempt ended. PID reuse and unreadable state remain ambiguous.
+        snapshot = _proc_snapshot(pid, strict=True)
+    except (OSError, ValueError):
         return "mismatch"
-    return "owned"
+    if snapshot is None or snapshot == (ticks, "Z"):
+        return "gone"
+    return "mismatch"
 
 
 def _terminate_recorded_owned_process(pid: int, ticks: int, owner_token: str) -> bool:
@@ -1593,6 +1615,14 @@ def _recover_running_stages(
         terminal = False
         if pid is not None and ticks is not None:
             process_state = _owned_process_state(int(pid), int(ticks), owner)
+            deadline_ns = int(attempt["started_unix_ns"]) + int(
+                stage["timeout_seconds"] + _RECOVERY_KILL_GRACE_SECONDS
+            ) * 1_000_000_000
+            while process_state == "owned" and time.time_ns() < deadline_ns:
+                time.sleep(max(0.01, float(poll_interval)))
+                process_state = _owned_process_state(int(pid), int(ticks), owner)
+            # Ownership may become ambiguous while monitoring, as well as on
+            # the initial read. Refuse before probing receipts or retrying.
             if process_state == "mismatch":
                 state = _finish_attempt(
                     state,
@@ -1604,12 +1634,6 @@ def _recover_running_stages(
                     detail="recorded PID ownership is ambiguous; process was not killed",
                 )
                 continue
-            deadline_ns = int(attempt["started_unix_ns"]) + int(
-                stage["timeout_seconds"] + _RECOVERY_KILL_GRACE_SECONDS
-            ) * 1_000_000_000
-            while process_state == "owned" and time.time_ns() < deadline_ns:
-                time.sleep(max(0.01, float(poll_interval)))
-                process_state = _owned_process_state(int(pid), int(ticks), owner)
             if process_state == "owned":
                 killed = _terminate_recorded_owned_process(
                     int(pid), int(ticks), owner
