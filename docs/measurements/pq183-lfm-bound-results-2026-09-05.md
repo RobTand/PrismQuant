@@ -435,3 +435,42 @@ recorded peak memory 2,810,134,528 bytes and no OOM. Originals remain under
 `run183-06/`, with terminal and outputs mirrored under `pq183-evidence/`.
 Campaign 05 and its sealed input manifest remain unchanged. Acceptance 4
 remains open until actual export/census/paired serving complete.
+
+## Attempt 07: the pinned planner requires dictionary representations
+
+The missing-Git repair passed 11 portable PB tests with zero skips in action
+`156ee8dd45998f61f05fdad91066634a78ac92f78a520d1913feb9d393c1c4a0`.
+The 110-byte CAS payload SHA-256
+`513cf626d88cdb96b14fcef97620f886418a43dc67a946d0147db17aab19086d`
+was independently verified. Its negative cases refuse missing, malformed or
+misbound host source identity before producer work, and its transport case
+succeeds with Git explicitly unavailable.
+
+Continuation action
+`7cac236ac42bae7ceae2a3396f692ebdddfd3836f56361349f11fc084347d19d`
+ran parent `85de9773ae644d26caa5f3b5e5101b623ca020f3`, snapshot
+`26d00459662f3f7c703bab4eb7ef9c1c0315ea6a`, bundle SHA-256
+`cd41a7aa2204c78922af872d4c342a639fb171e0f394ca70cc92e0f2e8764a4c`.
+Actual shared preflight, all 96 wire copies, cached-unit build and continuation
+source receipt succeeded. The new source receipt binds that exact snapshot
+to the unchanged campaign-05 snapshot and input seal. Cost, assignment and
+recipe copies again matched their original SHA-256 values exactly.
+
+The pinned Tessera `experiments/plan_from_layer_config.py` then refused all
+96 Tessera strings as non-Tessera quantized choices. At pinned commit
+`ba582d476a3b6db9057ebd1385dc52926f171451`, `parse_entry` lines 153–154 accepts
+BF16 strings and classifies every other string as `other`; its Tessera grammar
+is reached only for dictionaries. This is a producer-reader representation
+mismatch, separate from the repaired PrismaQuant reader. The planned repair
+uses PrismaQuant's existing registered format serializer to derive a separate
+planner input and proves canonical assignment/metadata equality. The original
+assignment and pinned Tessera source remain unchanged; unsupported-format
+refusals and all numerical gates remain in force.
+
+The action exited 1 after 13.28 seconds without an export, census, serving
+result or successful CAS receipt. Both telemetry endpoints succeeded, monitor
+errors were empty, exact container cleanup was safe and PB resource cleanup
+completed. Full `plan.log`, command, source/build/preflight receipts and
+terminal remain in `run183-07/` and its `pq183-evidence/` mirror. This attempt
+performed no calibration, allocation or quantization. Acceptance 4 remains
+open pending the remaining actual stages.
