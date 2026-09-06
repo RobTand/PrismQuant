@@ -3,6 +3,15 @@
 As of: 2026-09-05 · `codex/237-integration`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-05, `codex/237-integration`) for the current-model
+qualification result of joint AURA. The Qwen3-0.6B three-unit fixed-teacher
+screen verifies the residual projection, but establishes no selection
+quality gain: both estimators choose the same assignment, joint neighboring
+rankings are slightly worse, and selected NLL regresses against the
+selected-unit uniform controls. This remains research; actual served
+operator timings, end-to-end SLOs and broader quality gates are still open
+in #237. Evidence: `docs/measurements/pq237-joint-aura-screen-2026-09-05.md`.
+
 Re-stamped (2026-09-05, `codex/237-integration`) for unambiguous measured
 operator binding. Runtime-mode fused aggregation keeps one canonical
 choice for a uniform per-NAME option and its already verified composite

@@ -1,0 +1,223 @@
+{
+  "activation_contracts": {
+    "model.layers.0.mlp.down_proj": {
+      "TESSERA_BF16_K1_R896": {
+        "act_bits": 16,
+        "act_dtype_name": "bfloat16",
+        "act_group_size": 0,
+        "activation_max_abs": null,
+        "clip_enabled": false,
+        "input_global_scale": null,
+        "quantizer": "identity",
+        "quantizes_input": false,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      },
+      "TESSERA_E2M1_K1_R768": {
+        "act_bits": 4,
+        "act_dtype_name": "fp4_e2m1",
+        "act_group_size": 16,
+        "activation_max_abs": 5.46875,
+        "clip_enabled": false,
+        "input_global_scale": 1.0971428155899048,
+        "quantizer": "prismaquant.nvfp4_activation_contract.StaticActivationContract.quantize_dequantize",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": {
+          "execution": "e2m1_group16_ue4m3_static",
+          "group_size": 16,
+          "measured_as_served": true
+        }
+      },
+      "TESSERA_E4M3_K1_R896": {
+        "act_bits": 8,
+        "act_dtype_name": "fp8_e4m3",
+        "act_group_size": 0,
+        "activation_max_abs": 5.46875,
+        "clip_enabled": true,
+        "input_global_scale": null,
+        "quantizer": "prismaquant.format_registry._make_plain_fp8_activation_vllm_rtn.<locals>.f",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      }
+    },
+    "model.layers.21.mlp.down_proj": {
+      "TESSERA_BF16_K1_R896": {
+        "act_bits": 16,
+        "act_dtype_name": "bfloat16",
+        "act_group_size": 0,
+        "activation_max_abs": null,
+        "clip_enabled": false,
+        "input_global_scale": null,
+        "quantizer": "identity",
+        "quantizes_input": false,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      },
+      "TESSERA_E2M1_K1_R768": {
+        "act_bits": 4,
+        "act_dtype_name": "fp4_e2m1",
+        "act_group_size": 16,
+        "activation_max_abs": 79.0,
+        "clip_enabled": false,
+        "input_global_scale": 0.07594936341047287,
+        "quantizer": "prismaquant.nvfp4_activation_contract.StaticActivationContract.quantize_dequantize",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": {
+          "execution": "e2m1_group16_ue4m3_static",
+          "group_size": 16,
+          "measured_as_served": true
+        }
+      },
+      "TESSERA_E4M3_K1_R896": {
+        "act_bits": 8,
+        "act_dtype_name": "fp8_e4m3",
+        "act_group_size": 0,
+        "activation_max_abs": 79.0,
+        "clip_enabled": true,
+        "input_global_scale": null,
+        "quantizer": "prismaquant.format_registry._make_plain_fp8_activation_vllm_rtn.<locals>.f",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      }
+    },
+    "model.layers.7.mlp.down_proj": {
+      "TESSERA_BF16_K1_R896": {
+        "act_bits": 16,
+        "act_dtype_name": "bfloat16",
+        "act_group_size": 0,
+        "activation_max_abs": null,
+        "clip_enabled": false,
+        "input_global_scale": null,
+        "quantizer": "identity",
+        "quantizes_input": false,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      },
+      "TESSERA_E2M1_K1_R768": {
+        "act_bits": 4,
+        "act_dtype_name": "fp4_e2m1",
+        "act_group_size": 16,
+        "activation_max_abs": 43.75,
+        "clip_enabled": false,
+        "input_global_scale": 0.1371428519487381,
+        "quantizer": "prismaquant.nvfp4_activation_contract.StaticActivationContract.quantize_dequantize",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": {
+          "execution": "e2m1_group16_ue4m3_static",
+          "group_size": 16,
+          "measured_as_served": true
+        }
+      },
+      "TESSERA_E4M3_K1_R896": {
+        "act_bits": 8,
+        "act_dtype_name": "fp8_e4m3",
+        "act_group_size": 0,
+        "activation_max_abs": 43.75,
+        "clip_enabled": true,
+        "input_global_scale": null,
+        "quantizer": "prismaquant.format_registry._make_plain_fp8_activation_vllm_rtn.<locals>.f",
+        "quantizes_input": true,
+        "schema": "prismaquant.joint_aura.activation.v1",
+        "served_scales_enabled": false,
+        "static_contract": null
+      }
+    }
+  },
+  "arithmetic": {
+    "aggregation": "sum_signed_invocations_then_square",
+    "allow_tf32": false,
+    "delta_dtype": "torch.float32",
+    "matmul_precision": "highest",
+    "measurement_dtype": "torch.bfloat16",
+    "projection_dtype": "torch.float32",
+    "residual": "X_dW_T+dX_W_T+dX_dW_T",
+    "weight_projection": "output_cotangent_fp32_gemm"
+  },
+  "compile_check": {
+    "command": "docker exec -e PYTHONPATH=/workspace:/opt/tessera/src 237validation python3 -m py_compile experiments/pq237_joint_aura_screen.py experiments/pq237_source_manifest.py",
+    "exit_code": 0
+  },
+  "container_id": "ab15beff2f3cd59c16171ce90e6d783189c94b1a7c3e58b7a8d8fd97fa676b9a",
+  "cpu_limit": 4,
+  "cuda": "13.0",
+  "gpu": "NVIDIA GB10",
+  "harness_sha256": "f318069b894c855a4e9cb05ffb31e0fdf84ec707fd9ce0f37636178d713b45c6",
+  "host_evidence": {
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation-netdata-e.json": "cbc7e7f94eaa5e62def13e243c990cb0242a9e6da84cdf1ef0100ff9171e9067",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation-screen-e.log": "3bcaa62cf0c76229f9cd43f7402543b85cd5faa15f14e60bd63d3aaf8bf3cabc",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation-tessera-source-receipt.json": "a9ecdeac61be907e9e17d48b025b94b76be49b67e8a6c3afeff2fb4ada696f56"
+  },
+  "image_id": "sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88",
+  "joint_implementation_origin_commit": "dc5337c266fddc6a820e5777352a08e85ef50bc5",
+  "joint_source_sha256": "2699cdee9e2b0112d33a65e9028926eefa2ba2d31587bff89708014fb357b944",
+  "memory_limit_gib": 48,
+  "model_files": {
+    ".gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+    "LICENSE": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+    "README.md": "1ab64a26fcb3b461423b89a433a8c858f1bf8d4086f979cbb3ff878d47cf20e9",
+    "config.json": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+    "generation_config.json": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+    "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+    "model.safetensors": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+    "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+  },
+  "native_threads": 1,
+  "raw_directory": "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e",
+  "raw_file_sha256": {
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/assignments.json": "d4da782be08e15451cca2b5a6ea6759d491ecb84471cb33bcaa313e8bea4a44b",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/identity.json": "4efb61d779b5ad73fe9488fc862b59feff44581fd31e1120d2dd2ecd84f119d0",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/joint-profile.json": "9dc2708acfb339152052980d815a2b2f0a24fd3a926e514843463d5ac55e5fea",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/joint-profile.txt": "c21da0fde71e877aa86ed47ccd0ca88f6811da4779e67e90d1d85b5aa798bf28",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/neighbors.json": "b4149640c8d27df6eade67745003ebf714b5f81013df140f8c4930a9a215831c",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/oracle.json": "24a3f647db2a8a30c903718a58ecaea684f2e5c32963beca72f526b4855c3af8",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/probes.json": "f0e0567b6a185ed4dccf9e9ca4aefd79ab21740589431e0cb5477ae9d2f172d4",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/renders.json": "b4390d880a91502a67ee2f2974ce080ca302c46cb7b9963f214dfd635ec7345f",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/summary.json": "793d114a18754fd33282fe05ab47448cde2b3a1be6e08970b456379086bd334f",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/tokens.json": "ebdeb14f872777f2f6bbdafb8be93e7d166b0c736a6427654ef8a4ed7b14676d",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/weight_only-profile.json": "053010533237b4b10ba689d2cb489659c39e86f533ed4edd98cecdb4713e48a5",
+    "/home/rob/tessera-runs/issue237-2026-09-05/validation/experiments/results/pq237-screen-20260905-e/weight_only-profile.txt": "c3640d9edf5d43773bb371924f3d0a5a67d8245f8eea61bed34f6562ab14ed70"
+  },
+  "resident_render_bytes": 56623104,
+  "schema": "prismaquant.pq237.validation_receipt.v1",
+  "source_commit": "5af973530baec22e96b5b8121a83c65f9ed7da49",
+  "superseded_runs": [
+    {
+      "exit_code": 1,
+      "reason": "GPU image lacks Git; replaced with verified host source manifest",
+      "suffix": "a"
+    },
+    {
+      "exit_code": 1,
+      "reason": "Tracked external calibration symlink unavailable; manifest now binds symlink separately; experiment uses committed texts",
+      "suffix": "b"
+    },
+    {
+      "exit_code": 1,
+      "reason": "Driver missing outer frozen_weight_cache context;9renders16probes passed, no assignment result",
+      "suffix": "c"
+    },
+    {
+      "exit_code": 0,
+      "reason": "Complete predecessor implementation run; superseded by final source e; numerical results reproduced",
+      "suffix": "d"
+    }
+  ],
+  "terminal_exit_code": 0,
+  "tessera_commit": "ba582d476a3b6db9057ebd1385dc52926f171451",
+  "torch_version": "2.13.0+cu130"
+}

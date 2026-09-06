@@ -106,3 +106,31 @@ fixed teacher remains the reference for bounded close swaps. Sparse-anchor
 interpolation requires separate joint-currency pilot and held-out evidence;
 the existing output-MSE replay and historical Gridbook coefficients do not
 qualify this currency. Until those gates pass, this feature remains research.
+
+## Explicit invocation
+
+With an existing matching production cache, probe file and measured format
+list, collect the joint table using the normal streamed producer:
+
+```bash
+python3 -m prismaquant.aura_cost --model "$MODEL" \
+  --streaming --joint-activation --production-cache production.pkl \
+  --formats "$MEASURED_FORMATS" --n-probes 16 \
+  --checkpoint-dir joint-checkpoints --output joint.pkl
+
+python3 -m prismaquant.allocator --probe probe.pkl --costs joint.pkl \
+  --formats "$MEASURED_FORMATS" --target-bits "$TARGET_BITS" \
+  --measured-runtime-table runtime.json --measured-runtime-context context.json \
+  --slo-prefill-p95-ttft-ms "$PREFILL_BUDGET_MS" \
+  --layer-config layer-config.json --pareto-csv pareto.csv
+```
+
+`runtime.json` must contain measurements of the exact supplied operator
+recipes and workload, including fixed work. The numerical screen does not
+produce those serving measurements. Menu eligibility and model-profile
+requirements still apply to these direct CLI invocations. The pipeline
+wrapper does not infer these experimental inputs or enable this mode.
+
+The [current-model screen](../measurements/pq237-joint-aura-screen-2026-09-05.md)
+verifies numerical decomposition but shows no selection-quality gain.
+Qualification remains open in #237.
