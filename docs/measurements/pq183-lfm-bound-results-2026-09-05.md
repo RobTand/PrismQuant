@@ -224,3 +224,27 @@ The existing CLI supports changing the calibration sample count but has no
 per-projected-unit exclusion flag. A later larger draw, if run, must be recorded
 as an explicit revised calibration contract, preserving the corpus, sequence
 length and seed and retaining this eight-sample negative observation.
+
+## Attempt 04: the explicit 32-sample draw still misses layer-12 expert 2
+
+PB action `e6e110874a033c26ed2ce1c3cf715f418758839a5cdefbad710ab358ee63cecc`
+used source `47a31e87b71c6d39109c6c730a3ca0a0649f717d`, materialized snapshot
+`4ed7bf06e93f9eebde705911b88ad1cee3708860`, bundle SHA-256
+`652ea18f28c005034f36539bbacae93d15c8f8705ee7c81d229a1135281cabc0`.
+This attempt explicitly increased the calibration draw to 32 sequences while
+retaining WikiText train, length 512, seed zero, maximum stored activation rows
+512, the qualified offline image, fixed candidate, and all 96 layer-12 units.
+
+It exited 1 after 33.95 seconds: expert 2 still received zero routed calibration
+rows, so its `w1`, `w2`, and `w3` projections had no Hessian. The unchanged gate
+refused before pricing, export, census, or serving. This result is insufficient
+layer-12 coverage under the 32-sample contract; it does not prove the expert is
+permanently inactive. No further sample escalation or fabricated fallback was
+used. A subsequent actual-forward histogram is a coverage diagnostic, not
+quantization-quality-based layer selection.
+
+Original artifacts are in `run183-04/`; the submission is `pq183-submit-04.json`.
+Both are mirrored in `pq183-evidence/`, along with the failed terminal record.
+Both-host telemetry succeeded with no monitor errors, all exact-container
+cleanup records were safe, and PB resource cleanup completed. Acceptance 4
+remains open.
