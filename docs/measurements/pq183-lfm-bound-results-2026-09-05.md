@@ -193,3 +193,34 @@ Required architecture/staleness checks and source compilation passed separately
 through CPU PB
 `d3e11c503da0f8fe1ba2e85acf61eb95b5d3ce692bdf89fe526b0c60fa8317b2`;
 the actual log and verified CAS receipt are retained beside the routing tests.
+
+## Attempt 03: insufficient routed calibration coverage
+
+PB action `874fe72da13a00e3c6bd18f67e339235e655a5feb64c55cf5962c9b347c76608`
+ran source parent `4cb2084134133b3d487a1d01112e0055b541b186`, including the
+routing fix merged as PR 247 (`8b16aef3`). Its materialized snapshot was
+`53b210b0fb7d6f336f2bbcc51629af4fda8302f2`, bundle SHA-256
+`1ee0e9557776242c0ede3b00bd873160dd530f1b039ce659811065e916b5b309`.
+The qualified offline image and eight-by-512, seed-zero calibration remained
+unchanged. The resource request used the fleet's current one-slot representation
+of one exclusive physical GPU, four CPUs and 64 GiB on sparklina.
+
+The router fix worked. Real calibration completed its forwards, then the
+existing no-routed-rows gate refused exactly three units:
+`model.layers.12.feed_forward.experts.2.{w1,w2,w3}`. Expert 2 received no
+calibration tokens in this draw, so those three units had no empirical Hessian.
+The campaign correctly refused a shared-Hessian or weight-only fallback; it
+did not emit `cost.pkl` or start export/serving. This negative result establishes
+insufficient coverage for the declared eight-sample campaign, not a completed
+priced observation or a defect in the no-row gate.
+
+The action exited 1 after 30.64 seconds. Both Netdata endpoints were recorded,
+monitor errors were empty, exact-container cleanup was safe, and PB resource
+cleanup completed. Logs, cProfile, dependency receipt, host state and telemetry
+remain under `run183-03/`, mirrored in `pq183-evidence/run183-03/`; the failed
+terminal record is retained beside them. Acceptance 4 remains open.
+
+The existing CLI supports changing the calibration sample count but has no
+per-projected-unit exclusion flag. A later larger draw, if run, must be recorded
+as an explicit revised calibration contract, preserving the corpus, sequence
+length and seed and retaining this eight-sample negative observation.
