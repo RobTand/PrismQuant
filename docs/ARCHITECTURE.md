@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-05 · `codex/pq208-preflight-receipts`. Stamps
+As of: 2026-09-05 · `codex/pq208-stack-contract`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-05, `measurement/pq208-2026-09-05`) for the opt-in paired
