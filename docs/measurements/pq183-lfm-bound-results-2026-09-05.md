@@ -137,3 +137,59 @@ is retained as provenance; the final image above includes the offline cache.
 
 These CPU qualifications repair and characterize the environment. Actual GPU
 campaign/export/serving acceptance remains pending a fresh reviewed run.
+
+## Attempt 02: real capture exposed a parent-owned router bias
+
+PB action `b47707a2f754eb71a78eb34ecd7a7aaea81b890d4d03d4660e57479898b6018f`
+did execute despite an initially stale placement indication. A later withdrawal
+request found it already failed; it was not a cancelled, unexecuted attempt.
+Source parent was `3ac5f3c69782b5430b4a5804cc20451a67038e37`, materialized
+snapshot `936259b853512f5e81fffc53191d59c35109dc93`, bundle SHA-256
+`6e99d1de8fb4dacee586346c51b0debcc2052100aa9cd658d54d95e865a08306`.
+It used the final offline producer image above, four CPUs, 64 GiB, and the
+then-submitted exclusive three-slot GPU request on sparklina. It exited 1
+after 30.31 seconds with completed PB resource cleanup and safe exact-container
+cleanup. Both-host telemetry, dependency preflight receipt, actual campaign
+log, and cProfile output remain in `run183-02/` and the local mirror
+`pq183-evidence/run183-02/`.
+
+The producer dependency preflight and actual offline calibration load passed.
+During real model forward capture, `derive_per_expert_activations` replayed
+the packed router without its parent-owned `expert_bias`. Transformers 5.15.1
+stores that buffer on `Lfm2MoeSparseMoeBlock` and passes it to
+`Lfm2MoeTopKRouter.forward(hidden_states, expert_bias)`. PrismaQuant's existing
+adapter recognized only `e_score_correction_bias`; the missing LFM argument
+caused `Tensor + None` to fail. No priced costs, exported artifact, census, or
+serving results were produced. Acceptance 4 remains unestablished.
+
+The bounded repair extends the shared router adapter and its three callers:
+activation capture, packed-cost replay, and empirical down-input statistics.
+It passes the original parent buffer to the model router, refuses a missing
+buffer when bias is enabled, and retains explicitly disabled-bias behavior.
+
+CPU regression used the actual qualified image and Transformers 5.15.1 router,
+with a nonzero parent bias that flips selected experts relative to uncorrected
+routing. It checks actual model-forward indices/weights, derived gate/up and
+down-input rows, and empirical column statistics. It also checks disabled bias,
+clear missing-bias rejection, and existing correction-bias handling.
+
+- Red PB `6e958854678fc4d3302a80846038bf47ff70814ca3d703f47da5fa1ca6b12c12`:
+  two intended failures and one pass, no skips. The real-router capture
+  reproduced the exact `Tensor + None` exception before the fix.
+- Green PB `c6f5d1ff7694a576078497966c1538b14c579f16153adc5ef71fa2acaf089c00`:
+  32 passed, no skips, including existing packed-cost and empirical suites.
+  CPU-only, two admitted CPUs, eight GiB aggregate memory, native threads one,
+  and networking disabled. CAS receipt
+  `b0eec7fe8591638083b14d6b934977aa7cb5a423c6d41e6caafa07ed4bac44b8`;
+  independently verified 546-byte payload SHA-256
+  `c04707642fbca02bb534ad6879b09603eeb325ef56920d1a2135ae220a0a64f8`.
+
+Both CPU actions' terminal records and the successful CAS receipt are retained
+in `pq183-evidence/`; the sealed test-only source and driver are
+`pq183-router-validation/`. These regressions establish the routing repair,
+not completion of the actual GPU pipeline.
+
+Required architecture/staleness checks and source compilation passed separately
+through CPU PB
+`d3e11c503da0f8fe1ba2e85acf61eb95b5d3ce692bdf89fe526b0c60fa8317b2`;
+the actual log and verified CAS receipt are retained beside the routing tests.
