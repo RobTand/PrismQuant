@@ -1,7 +1,22 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `codex/lfm-mixed-serving`. Stamps
+As of: 2026-09-06 · `main-campaign/pq278-attested-count`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `main-campaign/pq278-attested-count`) for the
+Tessera menu width report (#278). `[alloc] Tessera menu: N of M priced rungs
+are attested` counted the caller's explicit `--formats` list, and the token
+expansion's `dropped` is empty by construction when the `TESSERA` token is
+absent, so an explicit unattested menu printed "3 of 3 attested" one line
+before the eligibility gate refused all three -- a producer-side attestation
+with no contract read (principle 14). `tessera_menu.partition_attested` now
+applies the same `format_is_producer_eligible` predicate the gate applies to
+every explicit Tessera name, `menu_width_report` builds the provenance widths
+and the line from that partition (new fields `explicit_unattested_rungs`,
+`research_admitted_rungs`, `menu_mode`; `attested_rungs` is 0 under
+`PRISMAQUANT_TESSERA_MENU=research`, whose line says "admitted under research
+mode, not attested"). No default, stage graph, format menu, serving lane, ship
+gate or byte changes. Gate: `tests/test_tessera_menu_attested_count.py`.
 
 Re-stamped (2026-09-06, `codex/lfm-mixed-serving`, second pass) for the
 mixed-LFM observation's admission and encoder pin (#253). vLLM serving is
@@ -38,7 +53,6 @@ prelude materializes the immutable code input in task-local temporary storage;
 there is no persistent source cache or model placement logic.
 No export scheduler, runtime pin or production default changes. Gate:
 `tests/test_lfm_mixed_serving.py`.
-
 Re-stamped (2026-09-06, `claude/pq244-campaign-causality`) for **an exiting
 helper being the same helper** (§3.0; RobTand/prismaquant#244, P2). The #239
 contract above reads "a failed owner-environment read now rechecks process
