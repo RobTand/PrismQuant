@@ -127,7 +127,8 @@ def prefetch_files_to_page_cache(
         else:
             max_resident_bytes = 0
     stats["max_resident_bytes"] = int(max_resident_bytes or 0)
-    if max_resident_bytes and total_bytes > int(max_resident_bytes):
+    # An exhausted or unknown automatic budget is zero, never unlimited.
+    if total_bytes > int(max_resident_bytes):
         stats["skipped"] = True
         stats["reason"] = (
             f"{label} require {total_bytes / 1024**3:.2f} GiB, "
