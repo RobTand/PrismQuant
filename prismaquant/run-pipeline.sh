@@ -2533,19 +2533,41 @@ if [[ "$EXPORT_CONTAINER" == "tessera" ]]; then
   # build anchor cannot establish which allocation an existing plan translated.
   TESSERA_ASSIGNMENT_DIGEST=$(sha256sum "${WORK_DIR}/artifacts/layer_config.json")
   TESSERA_ASSIGNMENT_DIGEST=${TESSERA_ASSIGNMENT_DIGEST%% *}
+  # Packed allocator keys are projected to source units by the admitted
+  # preflight. Only the translator consumes this derived, content-bound view;
+  # the original allocation remains the build and serving-census identity.
+  TESSERA_PLAN_ASSIGNMENT=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("plan_assignment", sys.argv[2]))' "$TESSERA_BUILD_JSON" "${WORK_DIR}/artifacts/layer_config.json")
+  TESSERA_PLAN_ASSIGNMENT_DIGEST=""
+  if [[ "$TESSERA_PLAN_ASSIGNMENT" != "${WORK_DIR}/artifacts/layer_config.json" ]]; then
+    TESSERA_PLAN_ASSIGNMENT_EXPECTED=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["plan_assignment_sha256"])' "$TESSERA_BUILD_JSON")
+    TESSERA_PLAN_ASSIGNMENT_DIGEST=$(sha256sum "$TESSERA_PLAN_ASSIGNMENT")
+    TESSERA_PLAN_ASSIGNMENT_DIGEST=${TESSERA_PLAN_ASSIGNMENT_DIGEST%% *}
+    if [[ "$TESSERA_PLAN_ASSIGNMENT_DIGEST" != "$TESSERA_PLAN_ASSIGNMENT_EXPECTED" ]]; then
+      echo "[pipeline] ERROR: derived Tessera plan assignment changed after preflight." >&2
+      exit 2
+    fi
+  fi
   require_stage_settings "$TESSERA_PLAN" tessera-plan \
+    "PLAN_ASSIGNMENT_DIGEST=$TESSERA_PLAN_ASSIGNMENT_DIGEST" \
     "ASSIGNMENT_DIGEST=$TESSERA_ASSIGNMENT_DIGEST"
   if [[ ! -f "$TESSERA_PLAN" ]]; then
     echo "[pipeline] [4/4] translating layer_config.json -> Tessera plan (cover=${TESSERA_PLAN_COVER}) ..."
     # Write-then-rename: a crashed translation must not leave a partial plan
     # that the skip-gate above then trusts.
     python3 "${TESSERA_REPO%/}/experiments/plan_from_layer_config.py" \
-      "${WORK_DIR}/artifacts/layer_config.json" \
+      "$TESSERA_PLAN_ASSIGNMENT" \
       "$MODEL_PATH" \
       "${TESSERA_PLAN}.tmp" \
       --cover "$TESSERA_PLAN_COVER" \
       --prismaquant "$PIPELINE_SCRIPT_DIR/.." \
       2>&1 | tee "${WORK_DIR}/logs/tessera_plan.log"
+    if [[ "$TESSERA_PLAN_ASSIGNMENT" != "${WORK_DIR}/artifacts/layer_config.json" ]]; then
+      TESSERA_PLAN_ASSIGNMENT_DIGEST=$(sha256sum "$TESSERA_PLAN_ASSIGNMENT")
+      if [[ "${TESSERA_PLAN_ASSIGNMENT_DIGEST%% *}" != "$TESSERA_PLAN_ASSIGNMENT_EXPECTED" ]]; then
+        echo "[pipeline] ERROR: derived Tessera plan assignment changed during translation." >&2
+        exit 2
+      fi
+    fi
     mv "${TESSERA_PLAN}.tmp" "$TESSERA_PLAN"
     # The translator writes `<out>.provenance.json` beside the plan: the
     # source path, the allocation's own __prismaquant__ block, the coverage

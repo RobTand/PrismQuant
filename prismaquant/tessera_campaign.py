@@ -100,6 +100,7 @@ __all__ = [
     "draw_stack_sample",
     "load_calibration_census",
     "load_unit_selection",
+    "selection_stack_samples",
     "main",
     "next_anchor_rate",
     "report_empty_menus",
@@ -674,9 +675,12 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
         raise StackSampleError(
             f"{q}: h_trace_per_expert has {len(sample.h_trace_per_expert)} "
             f"entries for {sample.num_experts} experts")
+    if any(not math.isfinite(h) or h < 0.0 for h in sample.h_trace_per_expert):
+        raise StackSampleError(
+            f"{q}: per-expert Fisher weights must be finite and nonnegative")
     total = math.fsum(sample.h_trace_per_expert)
-    if not (sample.stack_h_trace > 0.0):
-        raise StackSampleError(f"{q}: probe h_trace is not positive")
+    if not math.isfinite(sample.stack_h_trace) or sample.stack_h_trace <= 0.0:
+        raise StackSampleError(f"{q}: probe h_trace must be finite and positive")
     # E terms summed at float32 storage precision: the worst-case accumulated
     # relative error is E * eps, so that IS the bound, computed per stack.
     tolerance = sample.num_experts * _FLOAT32_EPS * sample.stack_h_trace
@@ -691,12 +695,20 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
             f"{sample.num_experts} * float32 eps)")
     if not sample.sampled_experts:
         raise StackSampleError(f"{q}: no sampled experts")
+    if len(set(sample.sampled_experts)) != len(sample.sampled_experts):
+        raise StackSampleError(f"{q}: duplicate sampled expert id")
     for e in sample.sampled_experts:
         if not 0 <= e < sample.num_experts:
             raise StackSampleError(f"{q}: expert id {e} out of range")
         if e not in sample.inclusion_prob:
             raise StackSampleError(f"{q}: expert {e} has no inclusion probability")
-        pi = float(sample.inclusion_prob[e])
+    # Older callers carry only sampled probabilities. When the full frame is
+    # supplied, validate the unsampled entries too: zero-probability positive
+    # contributions and omitted certainty units both bias the stack total.
+    for e, probability in sample.inclusion_prob.items():
+        if not 0 <= e < sample.num_experts:
+            raise StackSampleError(f"{q}: expert id {e} out of range")
+        pi = float(probability)
         if pi == 0.0:
             # A zero-probability unit contributes an exactly-zero term ONLY if
             # its own weight is zero (a never-routed expert). Otherwise it is a
@@ -711,6 +723,8 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
         if not 0.0 < pi <= 1.0:
             raise StackSampleError(
                 f"{q}: expert {e} inclusion probability {pi!r} outside (0, 1]")
+        if pi == 1.0 and e not in sample.sampled_experts:
+            raise StackSampleError(f"{q}: certainty expert {e} is absent from the sample")
 
 
 def _stack_member_weight(sample: StackExpertSample, expert: int, roles: int) -> float:
@@ -746,17 +760,20 @@ def _horvitz_thompson_stack(
                                      * (y_e/pi_e - T_R/m)^2
 
     A unit with ``pi_e == 1`` is in every possible sample, so it contributes
-    exactly zero sampling variance and is excluded from the sum.  Hartley-Rao
-    is the estimator DERIVED for the design the campaign draws -- randomized
-    systematic PPS without replacement, ``pi_i = min(1, c*h_i)``, with the
-    take-all units moved to a certainty stratum -- for which the exact
-    Sen-Yates-Grundy form is unavailable because many joint inclusion
-    probabilities are exactly zero.  The Hansen-Hurwitz with-replacement form
+    exactly zero sampling variance and is excluded from the sum. This is a
+    plug-in Hartley-Rao approximation for randomized-order systematic PPS,
+    ``pi_i = min(1, c*h_i)``, after removing the take-all stratum. It is not
+    an exact design-unbiased variance estimator. Exact Sen-Yates-Grundy would
+    require joint inclusion probabilities averaged over the randomized order;
+    zero probabilities conditional on one fixed order do not establish zeros
+    under the randomized design.  The Hansen-Hurwitz with-replacement form
     is NOT used: it ignores both the finite-population correction and the
     certainty stratum, and overstates the standard error by 25-48% at E=32
-    (simulated on the LFM2.5 layer-18 Fisher vector).  Hartley-Rao stays
-    conservative for this design (+1% to +15% across the same simulations)
-    without paying that.
+    (simulated on the LFM2.5 layer-18 Fisher vector). The approximation was
+    conservative in those simulations (+1% to +15%); that is not a guarantee
+    for other populations. With equal weights, its expected variance is
+    (N-m+1)/(N-m) times the exact SRS variance, reaching twice the exact value
+    for m=N-1. The current allocator does not consume this uncertainty field.
     """
     certainty = [e for e in sample.sampled_experts
                  if float(sample.inclusion_prob[e]) == 1.0]
@@ -834,6 +851,7 @@ def _stack_cost_rows(
     menus: "Mapping[str, list]",
     hessian_identity: dict,
     refused: list,
+    wire_backed: "frozenset[str] | set[str]" = frozenset(),
 ) -> "tuple[dict[str, dict], object]":
     """Build every measured + interpolated row for one packed stack."""
     from .tessera_rate_surface import (
@@ -999,6 +1017,14 @@ def _stack_cost_rows(
             })
             continue
         surfaces[family] = surface
+        if sample.is_census and all(
+                member in wire_backed for members in sample.members.values()
+                for member in members):
+            # A full census handed to the cached-wire exporter can select
+            # only rungs with actual member bytes. Keep its surface for
+            # diagnostics, as the dense path does, but never price an
+            # interpolated rung as though the corresponding wires existed.
+            continue
         low, high = surface.q256_range
         template = next(r for r in rows.values()
                         if r["tessera_family"] == family)
@@ -1037,6 +1063,18 @@ def _stack_cost_rows(
 # ---------------------------------------------------------------------------
 # The dense payload
 # ---------------------------------------------------------------------------
+
+def canonical_refusals(refusals: Sequence[dict]) -> list[dict]:
+    """Order diagnostic records identically for a monolith and a shard union.
+
+    A surface refusal names a family; an incomplete sampled rung names a
+    format. Both are legitimate records. The full canonical record breaks
+    ties without depending on dictionary or shard insertion order.
+    """
+    return sorted(refusals, key=lambda entry: (
+        entry["qname"], entry.get("family", ""), entry.get("format_name", ""),
+        json.dumps(entry, sort_keys=True, separators=(",", ":"), allow_nan=False)))
+
 
 def campaign_cost_payload(
     anchors: Mapping[str, Mapping[str, list[CampaignAnchor]]],
@@ -1230,7 +1268,7 @@ def campaign_cost_payload(
             costs[qname] = rows
     for packed_qname, sample in sorted(samples.items()):
         stack_rows, stack_surfaces = _stack_cost_rows(
-            sample, anchors, menus, hessian_identity, refused)
+            sample, anchors, menus, hessian_identity, refused, wire_backed=wire_backed)
         if not stack_rows:
             continue
         costs[packed_qname] = stack_rows
@@ -1246,7 +1284,7 @@ def campaign_cost_payload(
         "leave_one_anchor_out": {
             q: {f: dict(v) for f, v in by_f.items()} for q, by_f in loo.items()
         },
-        "non_interpolable": refused,
+        "non_interpolable": canonical_refusals(refused),
     })
     # The attested objective this table prices (re-vet R2; read for reuse by
     # `cost_currency.require_run_currency`, never from the environment). Every
@@ -1285,7 +1323,7 @@ def _checkpoint_identity_api():
 def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
                                   calibration_identity, serving_scope,
                                   static_scales, static_scale_policy,
-                                  expert_projection=None):
+                                  expert_projection=None, stack_sampling_identity=None):
     """Bind the priced population, including score inputs when H is off.
 
     The static A-side contract is a scoring input like the score rows: the
@@ -1307,7 +1345,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     # ``units``, ``calibration_census`` and ``census_out`` are locations too,
     # and each one's load-bearing content is already bound by value somewhere
     # in this identity: the selection by the ``units`` map below (which holds
-    # exactly the selected units), the census by ``calibration.fit_tokens`` /
+    # exactly the selected units) and ``stack_sampling_identity`` (the probe,
+    # inclusion probabilities and audit draw), the census by ``calibration.fit_tokens`` /
     # ``fit_tokens_min``, and ``census_out`` by nothing, because a census run
     # writes no checkpoint. Binding the paths instead would make two shards
     # given the same selection under different filenames two identities, and
@@ -1321,6 +1360,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
                  "seed_checkpoint", "seed_wire_dir"):
         settings.pop(name, None)
     return {
+        **({"stack_sampling_identity": stack_sampling_identity}
+           if stack_sampling_identity else {}),
         "campaign_schema": SCHEMA,
         "currency": CURRENCY,
         "settings": settings,
@@ -1904,9 +1945,9 @@ def draw_stack_sample(weights: "Mapping[str, float]", n: int, *,
     the spread of ``mse_e`` in the estimator's variance.  On LFM2.5 layer 18
     the per-expert ``h_trace`` spans 9.6e4 to 7.7e6 (CV ~1.0) while the
     cross-expert spread of ``mse`` at a fixed rung is CV 0.33-0.55, so this is
-    where the variance is.  A uniform draw carries the product's spread and is
-    measurably biased on this table (-6..-28 %), and the bias does not shrink
-    with ``n``; that is why there is no uniform fallback anywhere below.
+    where the variance is. A uniform draw with the correct Horvitz-Thompson
+    weights remains unbiased, but carries the product's spread. The planner
+    requires Fisher weights and provides no uniform fallback.
 
     **The take-all stratum.** With ``h`` this dispersed, ``n * h_i / sum(h)``
     exceeds one for the largest experts.  Clipping that to one would leave
@@ -1946,6 +1987,8 @@ def draw_stack_sample(weights: "Mapping[str, float]", n: int, *,
     if not names:
         raise RuntimeError(f"stack {stack}: no unit to sample")
     sizes = {name: float(weights[name]) for name in names}
+    if any(not math.isfinite(value) for value in sizes.values()):
+        raise RuntimeError(f"stack {stack}: size weights must be finite")
     if any(value < 0.0 for value in sizes.values()):
         raise RuntimeError(f"stack {stack}: a size weight is negative")
     digest = hashlib.sha256(
@@ -2098,7 +2141,7 @@ def load_unit_selection(path) -> dict:
                 f"--units {path}: a group entry is not {{key, members[]}}")
         if schema == UNITS_SCHEMA and any(
                 field in entry for field in ("sampled", "audit",
-                                             "inclusion_probability")):
+                                             "inclusion_probability", "stack_samples")):
             raise RuntimeError(
                 f"--units {path}: group {entry['key']!r} carries a sample, "
                 f"which is a {UNITS_SCHEMA_V2} field; a file that samples "
@@ -2128,6 +2171,71 @@ def load_unit_selection(path) -> dict:
                 f"--units {path}: group {entry['key']!r} audits without "
                 "sampling")
     return selection
+
+
+def selection_stack_samples(selection: Mapping, profile) -> dict[str, StackExpertSample]:
+    """Rehydrate packed probe/draw records and bind them to the whole group.
+
+    A selection may narrow measured experts; it may not invent projections,
+    lose an expert from the frame, or give two roles different expert draws.
+    Legacy unsampled selections retain their existing per-unit behavior.
+    """
+    result = {}
+    for entry in selection["groups"]:
+        records = entry.get("stack_samples")
+        if records is None:
+            if entry.get("sampled") and str(entry["key"]).startswith("s:"):
+                raise StackSampleError(
+                    f"{entry['key']}: sampled stack requires original packed probe/draw records")
+            continue
+        if not isinstance(records, Mapping) or not records:
+            raise StackSampleError(f"{entry['key']}: stack_samples must name packed parameters")
+        frame_members, sampled_members, frame_pi, audit_members = set(), set(), {}, set()
+        for name, record in sorted(records.items()):
+            if name in result:
+                raise StackSampleError(f"{name}: duplicate packed sampling record")
+            sample = stack_sample_from_probe(
+                name, record["probe_row"], profile,
+                sampled_experts=record["sampled_experts"],
+                inclusion_prob=record["inclusion_prob"], seed=record["seed"],
+                design=record["design"])
+            _validate_stack_sample(sample)
+            replay = draw_stack_sample(
+                {str(e): h for e, h in enumerate(sample.h_trace_per_expert)},
+                len(sample.sampled_experts), seed=sample.seed, stack=name)
+            if (record.get("draw") != replay or sample.design != replay["method"]
+                    or list(sample.sampled_experts) != sorted(int(e) for e in replay["units"])
+                    or dict(sample.inclusion_prob) != {
+                        int(e): p for e, p in replay["inclusion_probability"].items()}):
+                raise StackSampleError(f"{name}: packed draw receipt does not replay from probe and seed")
+            if set(sample.inclusion_prob) != set(range(sample.num_experts)):
+                raise StackSampleError(f"{name}: selection needs full-frame inclusion probabilities")
+            if entry["key"] != "s:" + sample.packed_experts_module:
+                raise StackSampleError(f"{name}: packed module disagrees with anchor group")
+            frame = stack_sample_from_probe(
+                name, record["probe_row"], profile,
+                sampled_experts=range(sample.num_experts),
+                inclusion_prob={e: 1.0 for e in range(sample.num_experts)},
+                seed=sample.seed, design="census")
+            for e, members in frame.members.items():
+                for member in members:
+                    if member in frame_members:
+                        raise StackSampleError(f"{member}: two packed parameters claim one projection")
+                    frame_members.add(member)
+                    frame_pi[member] = sample.inclusion_prob[e]
+                    if e in record.get("audit_experts", []):
+                        audit_members.add(member)
+            sampled_members.update(m for members in sample.members.values() for m in members)
+            result[name] = sample
+        if frame_members != set(entry["members"]):
+            raise StackSampleError(f"{entry['key']}: packed probe projections disagree with census members")
+        if sampled_members != set(entry.get("sampled", entry["members"])):
+            raise StackSampleError(f"{entry['key']}: packed draw disagrees with sampled members")
+        if audit_members != set(entry.get("audit", [])):
+            raise StackSampleError(f"{entry['key']}: packed audit disagrees with audit members")
+        if frame_pi != entry.get("inclusion_probability"):
+            raise StackSampleError(f"{entry['key']}: packed draw disagrees with full-frame probabilities")
+    return result
 
 
 def selection_priced_units(selection: Mapping) -> tuple[set, set, dict]:
@@ -2595,28 +2703,63 @@ def _checked_projected_units(bound, *, weights, model_path, source,
 
 def _population_block(*, dense_targets, expert_targets, dense_all, pinned,
                       population: ExpertPopulation, layer_stride: int,
-                      costs, menus) -> dict:
+                      costs, menus, stack_samples=None, profile=None) -> dict:
     """Distinguish selected targets from units with actual emitted prices."""
     from .tessera_expert_projection import POPULATION_SCHEMA
 
     dense_omitted = sorted(set(dense_all) - set(dense_targets))
     priced = {name for name, rows in costs.items() if rows}
+    stack_decisions = {}
+    represented = set()
+    for packed_qname, sample in sorted((stack_samples or {}).items()):
+        if profile is None:
+            raise StackSampleError("stack population requires the model profile")
+        if (packed_qname != sample.packed_qname or
+                packed_qname not in population.packed_in_scope or
+                int(population.packed_in_scope[packed_qname][0]) != sample.num_experts):
+            raise StackSampleError(f"{packed_qname}: sample disagrees with packed population")
+        roles = tuple(profile.packed_expert_projection_names(sample.packed_param))
+        stem = packed_qname[: -len(sample.packed_param)].rstrip(".")
+        members = {f"{stem}.{e}.{role}" for e in range(sample.num_experts) for role in roles}
+        declared = set(population.declared.get(sample.packed_experts_module, {}))
+        measured = {member for group in sample.members.values() for member in group}
+        expected_measured = {f"{stem}.{e}.{role}" for e in sample.sampled_experts for role in roles}
+        if (not members or not members <= declared or measured != expected_measured
+                or not measured <= members):
+            raise StackSampleError(f"{packed_qname}: sample members disagree with declared population")
+        if represented & members:
+            raise StackSampleError(f"{packed_qname}: source members belong to multiple stack decisions")
+        if members & priced:
+            raise StackSampleError(f"{packed_qname}: both packed decision and source members are priced")
+        represented.update(members)
+        stack_decisions[packed_qname] = {
+            "stack": sample.packed_experts_module,
+            "members": sorted(members), "sampled_members": sorted(measured),
+        }
+    # Source experts represented by an HT row are neither separate prices nor
+    # unpriced BF16 units. Keep their full frame in the explicit decision map.
+    expert_targets = (set(expert_targets) - represented) | set(stack_decisions)
     dense_priced = sorted(set(dense_targets) & priced)
     expert_priced = sorted(set(expert_targets) & priced)
     unpriced = {
-        kind: {name: ("no_admitted_menu" if not menus.get(name)
+        kind: {name: ("no_admitted_menu" if not (menus.get(name) or
+                          any(menus.get(member) for member in
+                              stack_decisions.get(name, {}).get("sampled_members", ())))
                       else "no_successful_anchor")
                for name in sorted(set(targets) - priced)}
         for kind, targets in (("dense", dense_targets),
                               ("routed_experts", expert_targets))
     }
+    represented_priced = priced | {
+        member for name, decision in stack_decisions.items() if name in priced
+        for member in decision["members"]}
     complete_stacks = sorted(stack for stack, units in population.declared.items()
-                             if set(units) <= priced)
+                             if set(units) <= represented_priced)
     packed = {name: list(shape) for name, shape
               in sorted(population.packed_in_scope.items())}
     packed_omitted = {name: list(shape) for name, shape
                       in sorted(population.omitted_outside_layer_stride.items())}
-    return {
+    result = {
         "schema": POPULATION_SCHEMA,
         "layer_stride": int(layer_stride),
         "enumerated": {"dense": sorted(dense_targets),
@@ -2646,6 +2789,9 @@ def _population_block(*, dense_targets, expert_targets, dense_all, pinned,
             "pinned": len(pinned),
         },
     }
+    if stack_decisions:
+        result["stack_decisions"] = stack_decisions
+    return result
 
 
 def campaign_population_block(**kwargs) -> dict:
@@ -2992,11 +3138,16 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         raise RuntimeError("--census-out writes a census; it does not read one")
 
     selection = None
+    stack_samples = {}
     selected_groups: list[str] = sorted(scope_groups)
     audit_units: set = set()
     inclusion_probability: dict = {}
     if args.units:
         selection = load_unit_selection(args.units)
+        if (selection.get("model", args.model) != args.model
+                or selection.get("layer_stride", args.layer_stride) != args.layer_stride):
+            raise StackSampleError("--units model/layer_stride disagrees with this campaign")
+        stack_samples = selection_stack_samples(selection, profile)
         selected_groups = select_anchor_groups(
             selection, scope_groups, where=f"--units {args.units}")
         priced, audit_units, inclusion_probability = selection_priced_units(
@@ -3210,6 +3361,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                        if serving_target is not None else None),
         static_scales=static_scales, static_scale_policy=static_scale_policy,
         expert_projection=expert_projection,
+        stack_sampling_identity={name: record
+            for entry in (selection or {}).get("groups", [])
+            for name, record in entry.get("stack_samples", {}).items()},
     )
     journal, identity_sha256, resumed = prepare_journal(
         checkpoint.with_name(checkpoint.name + ".parts"), manifest_path=checkpoint,
@@ -3615,7 +3769,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # which experts stand for their stack and under what inclusion
             # probability. This travels with the prices because an estimate
             # built from them is only unbiased if the reader knows the pi it
-            # was drawn under; #290 turns these into the stack's row.
+            # was drawn under; the packed draw records build the stack rows.
             "rate_band": (None if rate_band is None
                           else [int(rate_band[0]), int(rate_band[1])]),
             "unit_selection_sample": {
@@ -3647,14 +3801,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # Rows this run did not encode itself, and where they came from.
             # None when every row was measured here.
             "seed_checkpoint": seed_provenance,
-            "unit_selection": {
+            "unit_selection": ({**selection, "selected": True} if selection else {
                 "schema": UNITS_SCHEMA,
                 "selected": True if args.units else False,
                 "groups": [
                     {"key": key, "members": list(scope_groups[key])}
                     for key in sorted(selected_groups)
                 ],
-            },
+            }),
             # The scope every shard shares: the enumeration the population
             # block is built from, the full grouping, and the census the
             # Hessian identity's token counts came from.
@@ -3785,13 +3939,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     }
     payload = campaign_cost_payload(
         measured, menus, loo=loo, provenance=provenance,
-        wire_backed=frozenset(projected_units))
+        wire_backed=frozenset(projected_units), stack_samples=stack_samples)
     # Empty menus, failed anchors and interrupted work do not establish a
     # price. Publish coverage only after the cost rows have been constructed.
     payload["provenance"][POPULATION_KEY] = _population_block(
         dense_targets=dense_targets, expert_targets=expert_targets,
         dense_all=all_dense, pinned=pinned, population=population,
-        layer_stride=int(args.layer_stride), costs=payload["costs"], menus=menus)
+        layer_stride=int(args.layer_stride), costs=payload["costs"], menus=menus,
+        stack_samples=stack_samples, profile=profile)
     if projected_units:
         # The producer's receipts for every priced expert wire, keyed by unit
         # then rung; the allocator carries the selected rung's receipt into

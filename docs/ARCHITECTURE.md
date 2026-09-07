@@ -1,7 +1,65 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `review/pq-joint-evidence-20260906`. Stamps
+As of: 2026-09-06 · `fix/packed-plan-handoff`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
+input for packed decisions** (§4.10; #293). Scoped preflight already resolved
+packed allocations against per-expert wire receipts, but the producer's
+translator still received packed names absent from the source checkpoint.
+After successful scope admission, preflight now writes a separate source-unit
+assignment using the same explicit population member map. Its metadata retains
+the original allocation path/hash and member ownership; the build anchor binds
+both original and derived inputs. The pipeline passes only the derived view to
+Tessera's translator, verifies its digest before and after translation, and
+includes it in plan cache settings. The original packed allocation remains the
+allocation and serving-census identity. No format, wire recipe or cost changes.
+Gate: `tests/test_tessera_packed_plan_handoff.py` uses the pinned producer's real
+translator; `tests/test_tessera_plan_input_binding.py` executes the shell arm.
+
+Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **packed
+sampling across merge and export** (§4.10; RobTand/prismaquant#293, #294).
+Fanout preserves full v2 selection entries, replays their packed draws, rebuilds
+the complete population decision map, and unions checkpoint sampling identities,
+audit probabilities and empty-menu evidence. Rate bands must agree; a shared
+checkpoint field missing from any row refuses. Overlapping serving contexts or
+producer stack projections must agree before their identities can be merged.
+Export resolves packed decisions
+through allocation's population member map and inherits each packed owner's
+serving context for its source members before the existing whole-stack geometry
+and wire checks. The serialized allocation remains packed. Contradictory source
+assignments or contexts, missing source ownership, wires or scales still refuse.
+Gates: `tests/test_tessera_merge_sampling.py`,
+`tests/test_tessera_packed_export_scope.py`.
+
+Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **campaign
+merge input validation** (§4.10; RobTand/prismaquant#294). The merger reads
+every source journal through `cost_stage_checkpoint.prepare_journal`, which
+checks manifest identity and per-unit envelope identity/checksums, before
+publishing a merged journal through the existing writer. Its manifest roster
+must match its identity roster and canonical shard paths. A merge cannot
+rehash unchecked bytes into trusted state. Diagnostic refusals use one
+canonical ordering in both the campaign and merger, including incomplete
+sampled rungs that name a format rather than a family. No prices, formats,
+defaults or serving gates change. Gate:
+`tests/test_tessera_campaign_merge_integrity.py`.
+
+Re-stamped (2026-09-06, `fix/stack-campaign-integration`) for **the packed
+probe-to-campaign selection boundary** (§4.10; RobTand/prismaquant#293).
+The planner accepts the original packed probe, draws once per profile-defined
+packed parameter, and persists the exact Fisher vector and stack multiplier,
+full-frame inclusion probabilities, draw receipt, and audit experts in each
+selection. Gate/up projections of one parameter share expert IDs at every
+rung. Campaign intake reconstructs `StackExpertSample`, replays the draw,
+checks whole-census and sampled projection membership, and passes those
+records to `campaign_cost_payload`. The checkpoint binds the probe/draw
+values and audit subset in `stack_sampling_identity`; equal measured-unit
+names alone cannot establish equal stack prices. Allocation reads the original
+packed probe. Missing export wires or static scales remain refusals. CPU
+regressions use attributable LFM probe data to exercise the planner and
+supported Tessera shapes to exercise scoped `allocator.main()`; they make
+no served-quality or performance claim. Gate:
+`tests/test_tessera_stack_driver_integration.py`.
 
 Re-stamped (2026-09-06, `review/pq-joint-evidence-20260906`) for **expert
 projection retries across different stack menus** (RobTand/prismaquant#295).
@@ -21,15 +79,16 @@ from a sample of its experts, drawn by the planner proportional to the probe's
 per-expert `h_trace` — randomized systematic PPS without replacement with a
 take-all stratum, exact inclusion probabilities, seeded from `(seed, stack)`
 and never from `h`. Pricing every expert is ~250 box-days at GLM-5.3 Flash
-scale; a uniform draw over a frame whose `h_trace` spans two orders of
-magnitude is biased −6…−28 % on campaign-01's own table and the bias does not
-shrink with `n`, so there is no uniform fallback: a probe with no per-expert
+scale; an unweighted reconstruction from a uniform draw showed −6…−28 % error
+on campaign-01's table. That screen does not establish bias for a uniform
+Horvitz–Thompson estimator, which is unbiased. The configured PPS design has
+no uniform fallback: a probe with no per-expert
 `h_trace` refuses and names PrismaQuant #290. The planner draws, stamps
 `{units, inclusion_probability, certainty, permutation, start, audit}` into the
 units file and the plan, and the campaign prices exactly the sampled units —
-which puts the draw inside the checkpoint identity for free, because that
-identity holds exactly the priced units. Turning the sampled prices into one
-stack row is #290's, not this file's. (2) `--rate-band lo,hi` puts a window
+and binds the full probe/draw receipt in the checkpoint identity. The
+stack-price and population bridges described above carry the estimate through
+allocation; the measured-unit roster alone does not identify a draw. (2) `--rate-band lo,hi` puts a window
 family's two round-one anchors at the ends of the band the artifact will
 actually be allocated in, instead of across the family's whole realisable
 range: a two-anchor fit spanning 1–8 bits misses the interior of a 1/4.5/8-bit
@@ -6170,6 +6229,13 @@ seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
 
+**Fan-out journal integrity.** Each source journal must pass the same
+manifest, unit identity and payload checksum checks as ordinary resume.
+The merger also checks that the listed units equal the journal identity's
+units and use canonical shard paths, then writes validated states through
+the shared journal writer. Refused surfaces and incomplete sampled rungs
+share a deterministic diagnostic ordering with a whole-scope campaign.
+
 **Shared cost intake.** `schemas.validate_cost_payload` requires finite
 numbers in each non-error row's existing cost scalar fields and
 `weight_mse_per_expert` elements. A finite sibling field cannot hide a
@@ -7220,6 +7286,18 @@ Two properties make the numbers comparable with the rest of the menu:
   from a hardcoded projection split -- and emits **one row per (family, rung)
   keyed at the packed parameter's own qname**.
 
+  `dispatch_tessera_campaign.py plan --stack-sample N --probe probe.pkl`
+  consumes the original packed probe. Each v2 selection group carries
+  `stack_samples`, keyed by packed qname, containing the probe's exact
+  `h_trace` and `h_trace_per_expert`, expert count and module/parameter names,
+  full-frame inclusion probabilities, seed, draw receipt and audit IDs.
+  `selection_stack_samples` rebuilds the profile-derived projections and
+  refuses inconsistent frame, sampled, probability or audit membership.
+  The CLI passes the reconstructed records into the payload builder, so its
+  output and population use packed decision keys. The same records are bound
+  by value in the checkpoint's `stack_sampling_identity` and retained in
+  selection provenance for fanout merging.
+
   That key is the fix. It is a row the probe already has, carrying
   `_packed_experts_module` and `num_experts`, so
   `tessera_serving_scope.unit_structure_from_stats` resolves `routed_moe` on its
@@ -7260,11 +7338,15 @@ Two properties make the numbers comparable with the rest of the menu:
 
   **The estimator.** Horvitz-Thompson is unbiased for the stack total under any
   design with known positive inclusion probabilities. The variance stamped is
-  **Hartley-Rao**, over the non-certainty stratum only — a unit with `π_e = 1`
-  is in every possible sample and contributes exactly zero sampling variance —
-  because the draw is randomized systematic PPS-without-replacement with a
-  take-all stratum (`π_i = min(1, c·h_i)`), for which the exact Sen-Yates-Grundy
-  form is unavailable: many joint inclusion probabilities are exactly zero. The
+  a **Hartley-Rao approximation**, over the non-certainty stratum only — a
+  unit with `π_e = 1` contributes exactly zero sampling variance. The draw is
+  randomized systematic PPS without replacement with a take-all stratum
+  (`π_i = min(1, c·h_i)`). Exact Sen-Yates-Grundy would require joint inclusion
+  probabilities averaged over the randomized order; a zero conditional on a
+  fixed order does not establish a zero under the actual design. This plug-in
+  approximation is not an exact variance estimator: for equal weights its
+  expected variance is `(N-m+1)/(N-m)` times the exact SRS variance, reaching
+  twice the exact value when the sample omits only one expert. The
   Hansen-Hurwitz with-replacement form is *not* used; simulated on the LFM
   layer-18 Fisher vector it overstates the standard error by 25-48% at E=32,
   because it ignores both the finite-population correction and the certainty
