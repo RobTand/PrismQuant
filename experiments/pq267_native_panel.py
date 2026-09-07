@@ -33,74 +33,70 @@ def dump(path, value):
     Path(path).write_text(json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n")
 
 
+def load_canonical_capture(plan):
+    # The shared v2 contract is emitted only after actual checkpoint missing-state
+    # initialization and binds the census/runtime. Old captures are quarantined.
+    if plan.get("schema") != "prismaquant.native_dense_preparation.v2":
+        raise ValueError("native preparation requires a new canonical capture plan v2")
+    raw = json.loads(checked(plan["capture"], plan["capture_sha256"]).read_text())
+    if raw.get("schema") != "prismaquant.tessera_calibration_cache.v2":
+        raise ValueError("native preparation refuses historical unqualified calibration captures")
+    from prismaquant.tessera_calibration_cache import require_capture_contract
+    capture = require_capture_contract(plan["capture"], expected_sha256=plan["capture_sha256"])
+    if capture["identity"]["attention_implementation"] != "eager":
+        raise ValueError("native preparation requires the actual eager source capture")
+    census = json.loads(checked(plan["census"], capture["identity"]["census_sha256"]).read_text())
+    from prismaquant.calibration_data import load_calibration_input
+    identity = capture["identity"]["calibration"]
+    tokens, calibration = load_calibration_input(plan["calibration_input"],
+        expected_sha256=plan["calibration_input_sha256"], n_samples=identity["nsamples"], seqlen=identity["seqlen"])
+    for key in ("fit_ids_sha256", "text_sha256", "source", "seed", "nsamples", "seqlen"):
+        if calibration["provenance"][key] != identity[key]:
+            raise ValueError(f"canonical capture and exact token draw disagree: {key}")
+    return capture, census, identity, tokens, calibration
+
+
 def prepare(args):
     import torch
     from safetensors import safe_open
     from safetensors.torch import save_file
     from tessera import cached_unit
-    from prismaquant.calibration_data import load_calibration_input
     from prismaquant.native_operator_panel import EXECUTION, prepare_native_inputs
     from prismaquant.production_weight_cache import ProductionWeightCache
-    from prismaquant.tessera_export_lane import hessian_capture_sha256
+    from prismaquant.tessera_calibration_cache import prefetch_capture
     from prismaquant.tessera_formats import parse_tessera_format_name
     from prismaquant.tessera_hessian import activation_source, encoder_kwargs
     from prismaquant.tessera_render import encode_tessera_unit, rung_accepts_hessian, tessera_wire_recipe
 
     plan = json.loads(checked(args.plan, args.plan_sha256).read_text())
-    if plan["schema"] != "prismaquant.native_dense_preparation.v1":
-        raise ValueError("unsupported native preparation plan")
     if re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", plan["runtime_image"]) is None:
         raise ValueError("native preparation needs a full immutable image RepoDigest reference")
-    unit, fmt = plan["unit"], plan["format"]
-    capture = json.loads(checked(plan["capture"], plan["capture_sha256"]).read_text())
-    root = Path(plan["capture"]).parent
-    identity = capture["identity"]
-    tokens, calibration = load_calibration_input(capture["tokens_file"],
-        expected_sha256=capture["tokens_file_sha256"], n_samples=identity["nsamples"], seqlen=identity["seqlen"])
-    if calibration["provenance"] != identity:
-        raise ValueError("token provenance differs from capture")
+    capture, census, identity, tokens, calibration = load_canonical_capture(plan)
     del tokens
-    if unit not in capture["captured_units"] or unit in capture.get("excluded_units", []):
-        raise ValueError("native panel unit was not captured")
-    checked(root / "activations.safetensors", capture["activation_sha256"])
-    checked(plan["units"], capture["units_safetensors_sha256"])
-    with safe_open(plan["units"], framework="pt", device="cpu") as source:
-        weight = source.get_tensor("weight/" + unit).to("cuda")
-    with safe_open(str(root / "activations.safetensors"), framework="pt", device="cpu") as source:
-        rows = source.get_tensor("activation/" + unit).to(device="cuda", dtype=torch.bfloat16)
-    hessians = torch.load(capture["hessian_capture"], map_location="cpu", mmap=True, weights_only=True)
-    if hessian_capture_sha256(hessians["H"], hessians["provenance"]) != capture["hessian_capture_sha256"]:
-        raise ValueError("captured Hessian values/provenance changed")
-    # The input scale is reconstructed from the capture's actual calibrated G
-    # by the SAME contract used by QDQ, not from a prefix maximum.
+    unit, fmt = plan["unit"], plan["format"]
+    source = census["expert_projection"]["producer"]["source"]
+    if plan["probe_request"]["source_model"] != census["model"] or plan["probe_request"]["source_shards"] != source["files"]:
+        raise ValueError("native preparation source differs from its canonical census")
+    tensor_name = unit + ".weight"
+    shard = Path(census["model"]) / source["tensors"][tensor_name]
+    checked(shard, source["files"][shard.name])
+    with safe_open(str(shard), framework="pt", device="cpu") as stored:
+        weight = stored.get_tensor(tensor_name).to("cuda")
+    (acts, hessians, counts, maxima), _ = prefetch_capture(plan["capture"], expected_sha256=plan["capture_sha256"],
+        expected_identity=capture["identity"], census=census, names=[unit], device="cuda")
+    rows = acts[unit].to(torch.bfloat16)
     from prismaquant import format_registry as fr
     spec = fr.get_format(fmt)
-    amax = None
-    if spec.static_activation_contract is not None:
-        from safetensors.torch import load_file
-        scales = load_file(capture["static_scales"])
-        key = unit + ".input_global_scale"
-        if key not in scales:
-            raise ValueError("captured static activation scale missing")
-        # The capture receipt carries the actual maxima separately. A reciprocal
-        # convention cannot be inferred from a scale artifact alone.
-        maxima = capture.get("activation_max_abs", {})
-        if unit not in maxima:
-            raise ValueError("capture must retain actual activation_max_abs for a static native route")
-        amax = float(maxima[unit])
-        actual_g = spec.static_activation_contract.require_input_global_scale(amax, qname=unit, consumer="native panel")
-        if actual_g != float(scales[key].reshape(())):
-            raise ValueError("captured scale differs from current activation contract")
+    amax = float(maxima[unit]) if spec.static_activation_contract is not None else None
     cache = ProductionWeightCache(weights={}, levers={"tessera_hessian_identity": identity},
                                   activation_max_abs={unit: amax} if amax is not None else {})
     family, rung = parse_tessera_format_name(fmt)
     recipe = tessera_wire_recipe(family, rung)
     uses_hessian = rung_accepts_hessian(fmt, recipe)
-    activation = activation_source({unit: hessians["H"][unit]}, identity) if uses_hessian else None
+    activation = activation_source(hessians, identity) if uses_hessian else None
     kwargs = (encoder_kwargs(activation, unit, weight.shape[1], weight.device, scale_plane=recipe.scale_plane)
               if activation is not None else None)
     args.out.mkdir(parents=True, exist_ok=False)
-    # The numerical policy is persisted before any native preparation/output.
     dump(args.out / "preparation-plan.json", plan)
     with torch.inference_mode():
         rendered, blob = encode_tessera_unit(weight, fmt, activation_kwargs=kwargs,
@@ -114,7 +110,6 @@ def prepare(args):
         max_resident_bytes=plan["max_resident_bytes"])
     (args.out / "weight.tessera").write_bytes(blob)
     dump(args.out / "wire-record.json", record)
-    # Clone aliases because A16 QDQ may deliberately return the original input.
     save_file({key: tensor.detach().cpu().contiguous().clone() for key, tensor in tensors.items()},
               str(args.out / "tensors.safetensors"))
     cache.weights[unit, fmt] = rendered.detach().cpu()
@@ -124,6 +119,8 @@ def prepare(args):
         ("weight.tessera", "wire-record.json", "tensors.safetensors", "production.pkl")}
     inputs["preparation_plan_sha256"] = args.plan_sha256
     inputs["preparation_plan_file"] = "preparation-plan.json"
+    inputs["source_capture"] = {"manifest_sha256": plan["capture_sha256"], "identity": capture["identity"],
+                                "member_entry": capture["entries"][unit], "member_count": counts[unit]}
     inputs["runtime_image"] = plan["runtime_image"]
     inputs["probe_request"] = plan["probe_request"]
     dump(args.out / "inputs.json", inputs)
@@ -155,7 +152,7 @@ def probe(args):
     import gc
     import torch
     from transformers import AutoModelForCausalLM
-    from prismaquant import aura_cost
+    from prismaquant import aura_cost, genuine_weight_initialization
     from prismaquant.calibration_data import load_calibration_input
     from prismaquant.joint_aura import validate_joint_aura_entry
     from prismaquant.model_profiles import detect_profile
@@ -163,12 +160,11 @@ def probe(args):
     inputs = json.loads(checked(args.inputs, args.inputs_sha256).read_text())
     root = args.inputs.parent
     plan = json.loads(checked(root / inputs["preparation_plan_file"], inputs["preparation_plan_sha256"]).read_text())
-    capture = json.loads(checked(plan["capture"], plan["capture_sha256"]).read_text())
+    capture, _census, capture_identity, calibration, _calibration_receipt = load_canonical_capture(plan)
+    if inputs.get("source_capture", {}).get("manifest_sha256") != plan["capture_sha256"]:
+        raise ValueError("native PWC inputs are not bound to this canonical capture")
     request = inputs["probe_request"]
     checked(root / "production.pkl", inputs["artifacts"]["production.pkl"])
-    calibration, _ = load_calibration_input(capture["tokens_file"],
-        expected_sha256=capture["tokens_file_sha256"], n_samples=capture["identity"]["nsamples"],
-        seqlen=capture["identity"]["seqlen"])
     if args.out.exists():
         raise ValueError("refuse overwriting joint probe output")
     args.out.mkdir(parents=True)
@@ -176,9 +172,12 @@ def probe(args):
     # A new model architecture must agree with its ordinary HF forward before
     # its streamed cotangents can qualify this panel. This is one bounded
     # first-sequence check, not a model-wide parity or performance claim.
-    reference_model = AutoModelForCausalLM.from_pretrained(request["source_model"],
-        dtype=torch.bfloat16, trust_remote_code=True,
-        local_files_only=True, attn_implementation="eager").to("cuda").eval()
+    # Transformers rebuilds nonpersistent buffers while finalizing a checkpoint.
+    # The ordinary reference needs their genuine initializers (not probe no-init).
+    with genuine_weight_initialization():
+        reference_model = AutoModelForCausalLM.from_pretrained(request["source_model"],
+            dtype=torch.bfloat16, trust_remote_code=True,
+            local_files_only=True, attn_implementation="eager").to("cuda").eval()
     with torch.inference_mode():
         reference = reference_model(calibration[:1].cuda(), use_cache=False).logits.detach().cpu()
     del reference_model
@@ -212,9 +211,9 @@ def probe(args):
             "--allow-packed-expert-omission", "--n-probes", str(request["n_probes"]),
             "--seed-base", str(request["seed_base"]), "--token-scope", request["token_scope"],
             "--temperature", str(request["temperature"]), "--min-free-gib", "2",
-            "--calibration-input", capture["tokens_file"], "--calibration-input-sha256", capture["tokens_file_sha256"],
-            "--n-calib-samples", str(capture["identity"]["nsamples"]),
-            "--calib-seqlen", str(capture["identity"]["seqlen"]),
+            "--calibration-input", plan["calibration_input"], "--calibration-input-sha256", plan["calibration_input_sha256"],
+            "--n-calib-samples", str(capture_identity["nsamples"]),
+            "--calib-seqlen", str(capture_identity["seqlen"]),
             "--checkpoint-dir", str(args.out / "checkpoints"),
             "--streaming-offload-dir", str(args.out / "streaming"), "--output", str(args.out / "joint.pkl")]
     dump(args.out / "probe-request.json", {"inputs_sha256": args.inputs_sha256, "argv": argv,
