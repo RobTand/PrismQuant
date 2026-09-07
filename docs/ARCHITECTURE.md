@@ -14,6 +14,10 @@ anchor/static-scale/H applicability checks, original wire grammar/hash checks
 and exact decoded-render comparison. The binding closes before source unload;
 it accepts no caller-supplied prehash and creates no tensor cache or dispatcher.
 Gate: `tests/test_tessera_bound_identity.py` plus original-wire qualification.
+Initial wire/render content verification may use explicit `file_hash_workers`,
+bounded by PB-assigned CPU affinity. Independent file pairs run in the same
+admitted process; their exact content hashes, before/after race detection and
+per-consumption render drift checks remain mandatory. Placement stays PB's.
 
 Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
 from completed measured Tessera anchors** (#322). The explicit
