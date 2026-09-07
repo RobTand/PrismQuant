@@ -389,9 +389,12 @@ def test_merge_unions_the_unservable_evidence_rather_than_copying_one_row_s():
     import dispatch_tessera_campaign as dispatch
 
     payloads = _payloads()
-    payloads["row-0000"]["provenance"]["unservable"] = {"a": _unservable_row()}
+    payloads["row-0000"]["provenance"]["unservable"] = {
+        "a": {"TESSERA_E2M1_K1_R512": _unservable_row()}}
+    other = _unservable_row("TESSERA_E2M1_K2_R128")
+    other["anchor"]["qname"] = "b"
     payloads["row-0001"]["provenance"]["unservable"] = {
-        "b": {"TESSERA_E2M1_K2_R128": _unservable_row()["anchor"]}}
+        "b": {"TESSERA_E2M1_K2_R128": other}}
 
     merged = dispatch.merge_payloads(
         payloads, census={"counts": {"a": 16384, "b": 16384}},
@@ -415,8 +418,10 @@ def test_merge_refuses_two_rows_that_disagree_about_one_unservable_row():
     mine = _unservable_row()
     theirs = copy.deepcopy(mine)
     theirs["anchor"]["dloss"] = 9.0
-    payloads["row-0000"]["provenance"]["unservable"] = {"a": mine}
-    payloads["row-0001"]["provenance"]["unservable"] = {"a": theirs}
+    payloads["row-0000"]["provenance"]["unservable"] = {
+        "a": {"TESSERA_E2M1_K1_R512": mine}}
+    payloads["row-0001"]["provenance"]["unservable"] = {
+        "a": {"TESSERA_E2M1_K1_R512": theirs}}
 
     with pytest.raises(dispatch.MergeRefused, match="unservable evidence"):
         dispatch.merge_payloads(
