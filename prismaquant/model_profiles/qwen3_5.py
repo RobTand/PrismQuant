@@ -130,9 +130,9 @@ class Qwen3_5Profile(ModelProfile):
         """vLLM class to read `packed_modules_mapping` +
         `hf_to_vllm_mapper` from. The base class auto-derives
         `fused_sibling_group()` and the body-part of
-        `to_vllm_internal_name()` from these two attributes. We only
-        override `to_vllm_internal_name()` below to handle the MTP
-        prefix specially."""
+        `to_vllm_internal_name()` from these two attributes. The structure
+        spec's explicit MTP identity rule keeps scheme-dispatch names in
+        their separate `mtp.` namespace."""
         if self._declared_moe_layout() == "native_causal":
             return "Qwen3_5MoeForCausalLM"
         return "Qwen3_5MoeForConditionalGeneration"

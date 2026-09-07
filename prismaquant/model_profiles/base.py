@@ -570,7 +570,12 @@ class ModelProfile(ABC):
         spec = self.structure_spec()
         if spec is not None and spec.recipe_to_vllm:
             mapped = spec.rewrite_recipe_to_vllm(checkpoint_name)
-            if mapped != checkpoint_name:
+            # An explicit identity rule is still authoritative. In particular,
+            # MTP scheme-dispatch names must not fall through to the body's
+            # weight-loader map, which may drop or rename that namespace.
+            if mapped != checkpoint_name or any(
+                rule.apply(checkpoint_name)[1] for rule in spec.recipe_to_vllm
+            ):
                 return mapped
         return self._name_remapper(checkpoint_name)
 
