@@ -87,3 +87,15 @@ def test_checkpoint_refuses_a_shared_field_missing_from_second_row(tmp_path):
     rows = _rows(tmp_path, [{'calibration': 'a'}, {}])
     with pytest.raises(dispatch.MergeRefused, match='calibration'):
         dispatch.merge_checkpoint(rows, tmp_path / 'merged.json')
+
+
+@pytest.mark.parametrize('field,left,right', [
+    ('serving_scope', {'target': 'target', 'by_unit': {'owner': {'lane': 'dense'}}},
+     {'target': 'target', 'by_unit': {'owner': {'lane': 'routed'}}}),
+    ('expert_projection', {'source': 'source', 'stacks': {'stack': {'slice': 1}}},
+     {'source': 'source', 'stacks': {'stack': {'slice': 2}}}),
+])
+def test_checkpoint_refuses_conflicting_overlapping_scope_records(tmp_path, field, left, right):
+    rows = _rows(tmp_path, [{field: left}, {field: right}])
+    with pytest.raises(dispatch.MergeRefused, match='(owner|stack)'):
+        dispatch.merge_checkpoint(rows, tmp_path / 'merged.json')

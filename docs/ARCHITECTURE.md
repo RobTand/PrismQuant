@@ -8,7 +8,9 @@ sampling across merge and export** (§4.10; RobTand/prismaquant#293, #294).
 Fanout preserves full v2 selection entries, replays their packed draws, rebuilds
 the complete population decision map, and unions checkpoint sampling identities,
 audit probabilities and empty-menu evidence. Rate bands must agree; a shared
-checkpoint field missing from any row refuses. Export resolves packed decisions
+checkpoint field missing from any row refuses. Overlapping serving contexts or
+producer stack projections must agree before their identities can be merged.
+Export resolves packed decisions
 through allocation's population member map and inherits each packed owner's
 serving context for its source members before the existing whole-stack geometry
 and wire checks. The serialized allocation remains packed. Contradictory source

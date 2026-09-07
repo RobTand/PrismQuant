@@ -938,6 +938,9 @@ def _merge_scope(left, right, row_id):
         return left
     if left["target"] != right["target"]:
         raise MergeRefused(f"{row_id}: rows disagree on the serving target")
+    for name in left["by_unit"].keys() & right["by_unit"].keys():
+        if left["by_unit"][name] != right["by_unit"][name]:
+            raise MergeRefused(f"{row_id}: different serving context for {name}")
     return {"target": left["target"],
             "by_unit": dict(sorted({**left["by_unit"], **right["by_unit"]}.items()))}
 
@@ -949,6 +952,9 @@ def _merge_projection(left, right, row_id):
         return left
     if left["source"] != right["source"]:
         raise MergeRefused(f"{row_id}: rows projected different source checkpoints")
+    for name in left["stacks"].keys() & right["stacks"].keys():
+        if left["stacks"][name] != right["stacks"][name]:
+            raise MergeRefused(f"{row_id}: different producer projection for stack {name}")
     stacks = {**left["stacks"], **right["stacks"]}
     return {"source": left["source"], "stacks": dict(sorted(stacks.items()))}
 
