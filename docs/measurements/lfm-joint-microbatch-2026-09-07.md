@@ -137,3 +137,42 @@ Each PB checkout snapshot seals the historical code used by that action;
 retained latest harnesses are convenient entry points, not replacements for
 those snapshot identities. Full 512-row validation and final qualified-QDQ
 cost production remain explicitly pending.
+
+
+## Qualified activation QDQ and regenerated operator screen
+
+The subsequent shared activation-QDQ fix preserves native FP32 tensor division
+by 448 and signed zero in the fallback cast. The native parity diagnostic
+`native-qdq-qualification/diagnostic-after-01.json`, SHA256
+`e955dfe266e5f704e38624549d9543019f2d8eec049fcd34ceed3e73ddbefeb6`,
+compares all 512 retained row scales and 1,048,576 activation codes: scales,
+codes and reconstructed prefill/decode tensors are bit-exact. PB actions
+`e9b8fe8567c646308c86bb3628764e3030608e35b35065bc6f6ef8b7337f15cb`
+(four CPU/CUDA regression parameters) and
+`d1c9f2ba1b7934161fddc88319a81bebe3094e8861e03193f9c5ae23cbd39e4b`
+(actual native parity) both completed with exit 0 and verified cleanup/CAS.
+
+The original row-0 operator screen was regenerated using that qualified QDQ,
+original PWC bytes, original four legacy probes and the same 96 logical members.
+PB `43b4b43e7a623cd97a0c024d0ac411572475ba26dab18558a58160e33547910d`
+completed with exit 0 on Sparklina. `cost03-native-qdq/joint-cost.json` has SHA256
+`66306b6f5feaecfbf5569a43c596b4229bf133ca036bc016fd2634a113780c39`;
+it contains 192 candidate rows. Its producer digest is
+`41f67d31422d3b41605cd5587a5d3432e2b38e1f4a0868c5694e6891cece679f`.
+This supersedes cost02 for the native operator panel after the QDQ correction;
+it remains an operator-subset screen, not a full-calibration cost. Peak PyTorch
+GPU allocation was 19,243,265,024 bytes under a 40 GiB aggregate reservation and
+32 GiB GPU cap. Both hosts' Netdata series are retained with the result.
+
+The combined integration action
+`f743a8375609bfb12586000e9e8bd1ea36096410a22bdebf73856204b5935cb9`
+passed 122 tests in 19.45 seconds with four workers/native threads 1, no skips,
+and an 8 GiB reservation. The CPU-only `-k 'not cuda'` selection deselected two
+CUDA parameters (covered by the QDQ action above) and one existing CPU test
+whose name contains `cuda` (already passed in the previous 121-test run).
+
+An off-task PrismaBuild capability gap was filed as
+[PrismaBuild #340](https://github.com/RobTand/prismabuild/issues/340): campaign
+value parsing cannot express a GPU-memory cap separately from aggregate memory.
+The full and operator-screen actions were submitted as independent ordinary PB
+quanta with explicit caps. PrismaBuild retained placement and admission ownership.
