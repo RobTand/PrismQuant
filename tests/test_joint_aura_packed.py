@@ -139,6 +139,37 @@ def test_packed_joint_rows_match_full_model_residual_oracle():
     assert observed_nonzero_cross_term
 
 
+def test_grouped_packed_joint_matches_eager_source_oracle(monkeypatch):
+    # A CPU grouped GEMM oracle with the same transpose/offset boundary as
+    # Transformers. Source routing executes unchanged under the observer.
+    def grouped_mm(inputs, weights, *, offs):
+        start = 0
+        outputs = []
+        for expert, end in enumerate(offs.tolist()):
+            outputs.append(inputs[start:end] @ weights[expert])
+            start = end
+        return torch.cat(outputs, dim=0)
+    monkeypatch.setattr(F, 'grouped_mm', grouped_mm, raising=False)
+    model, _, runner, profile, cache, _ = _fixture()
+    expected = _run(runner, profile, cache)
+    def grouped_forward(self, x):
+        shape = x.shape
+        inputs = x.reshape(-1, shape[-1])
+        count = inputs.shape[0]
+        inputs = torch.cat([inputs, inputs], dim=0)
+        offsets = torch.tensor([count, count * 2, count * 2], dtype=torch.int32)
+        gate, up = F.grouped_mm(inputs, self.gate_up_proj.transpose(-2, -1), offs=offsets).chunk(2, -1)
+        down = F.grouped_mm(F.silu(gate) * up, self.down_proj.transpose(-2, -1), offs=offsets)
+        return (down[:count] * 0.7 + down[count:] * 0.3).reshape(shape)
+    monkeypatch.setattr(_Experts, 'forward', grouped_forward)
+    _, _, runner, profile, cache, _ = _fixture()
+    observed = _run(runner, profile, cache)
+    assert F.grouped_mm is grouped_mm
+    for name, rows in observed['costs'].items():
+        actual = rows['FP8_E4M3']['signed_per_probe']
+        oracle = expected['costs'][name]['FP8_E4M3']['signed_per_probe']
+        assert actual == pytest.approx(oracle, rel=3e-5, abs=3e-8)
+
 def test_packed_joint_checkpoint_resume_keeps_aligned_unit_roster(tmp_path, monkeypatch):
     monkeypatch.setattr(aura, '_checkpoint_git_commit', lambda: '1' * 40)
     _, _, runner, profile, cache, _ = _fixture()
@@ -199,7 +230,7 @@ def test_packed_observer_refuses_a_source_that_escapes_linear_boundaries(monkeyp
     monkeypatch.setattr(_Experts, 'forward', matmul_forward)
     model, context, runner, profile, cache, _ = _fixture()
     original_linear = F.linear
-    with pytest.raises(RuntimeError, match='did not execute declared F.linear boundaries'):
+    with pytest.raises(RuntimeError, match='did not execute declared F.linear/grouped_mm boundaries'):
         _run(runner, profile, cache)
     assert F.linear is original_linear
     assert context.active == set()

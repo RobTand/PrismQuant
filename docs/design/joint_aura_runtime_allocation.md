@@ -43,8 +43,9 @@ it does not establish the quality of every joint assignment.
 
 `--include-routed-experts` with streamed joint AURA also accepts the existing
 profile-declared `PackedExpertProjection` views. A packed source is observed
-through its actual per-expert `F.linear` slices; its model, routing and source
-arithmetic remain intact. Fused gate/up output gradients are split using those
+through its actual per-expert `F.linear` slices or `F.grouped_mm` packed
+transposes and cumulative expert row offsets. Its model, expert backend, routing
+and source arithmetic remain intact. Fused gate/up output gradients are split using those
 exact views. Source views refresh at each streaming install and unload, and a
 single hook on each packed leaf serves its logical members. An implementation
 that bypasses the declared Linear boundaries refuses instead of emitting an

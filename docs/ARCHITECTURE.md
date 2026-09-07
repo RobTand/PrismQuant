@@ -9,7 +9,8 @@ with routed experts extends `PackedExpertProjection` views over the original
 packed Parameters. Views refresh after each shared streaming install/unload;
 one gradient hook per physical leaf distributes the existing gradient into its
 logical projections. The signed residual lease observes the unchanged packed
-`F.linear` calls, splits fused outputs according to the profile, and restores
+`F.linear` or `F.grouped_mm` calls, validates packed transposes and cumulative
+expert row offsets, splits fused outputs according to the profile, and restores
 its taps on success or failure. An unobserved packed implementation refuses.
 Each source Linear receives its own aligned joint row, source/render identities
 and activation policy; repeated calls and the three local residual terms sum

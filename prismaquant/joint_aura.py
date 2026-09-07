@@ -185,9 +185,10 @@ class SignedJointProjectionLease:
     def _install_packed_observer(self, members):
         """Observe the existing per-expert Linear slices without changing them.
 
-        This uses the same temporary F.linear interception and exact dim-0
-        slice recognizer as the packed Fisher and production activation taps.
-        The baseline forward and routing arithmetic execute unchanged.
+        F.linear uses the packed Fisher/activation tap's exact dim-0 slice
+        recognizer. F.grouped_mm uses the exact packed transpose and cumulative
+        expert row offsets. Both execute the original operator unchanged; the
+        baseline forward, expert backend and routing arithmetic are preserved.
         """
         from prismaquant.sensitivity_probe import _packed_expert_slice_index
 
@@ -203,6 +204,7 @@ class SignedJointProjectionLease:
                 raise RuntimeError("joint AURA packed forward outside active probe")
             seen = set()
             original_linear = F.linear
+            original_grouped = getattr(F, "grouped_mm", None)
 
             def linear(inputs, weight, bias=None):
                 base = weight._base if weight._is_view() else weight
@@ -218,13 +220,44 @@ class SignedJointProjectionLease:
                     self._observe(member.qname, member.weight, inputs, output, member.output_slice)
                 return output
 
+            def grouped(inputs, weight, *, offs=None, **kwargs):
+                base = weight._base if weight._is_view() else weight
+                parameter = parameters.get(id(base))
+                if parameter is None:
+                    return original_grouped(inputs, weight, offs=offs, **kwargs)
+                expected = parameter.transpose(-2, -1)
+                if (weight.shape != expected.shape or weight.stride() != expected.stride()
+                        or weight.storage_offset() != expected.storage_offset()
+                        or weight.untyped_storage().data_ptr() != parameter.untyped_storage().data_ptr()
+                        or inputs.ndim != 2 or inputs.shape[1] != parameter.shape[2]
+                        or not isinstance(offs, torch.Tensor) or offs.ndim != 1
+                        or len(offs) != parameter.shape[0] or offs.dtype not in (torch.int32, torch.int64)):
+                    raise RuntimeError("joint AURA grouped weight/offset geometry differs")
+                ends = offs.tolist()
+                if any(end < start for start, end in zip([0, *ends[:-1]], ends)) or ends[-1] > inputs.shape[0]:
+                    raise RuntimeError("joint AURA grouped offsets are outside input rows")
+                output = original_grouped(inputs, weight, offs=offs, **kwargs)
+                seen.add(id(parameter))
+                start = 0
+                for expert, end in enumerate(ends):
+                    if end > start:
+                        for member in by_expert.get((id(parameter), expert), ()):
+                            self._observe(member.qname, member.weight, inputs[start:end], output,
+                                          member.output_slice, slice(start, end))
+                    start = end
+                return output
+
             F.linear = linear
+            if original_grouped is not None:
+                F.grouped_mm = grouped
             try:
                 result = original(*args, **kwargs)
             finally:
                 F.linear = original_linear
+                if original_grouped is not None:
+                    F.grouped_mm = original_grouped
             if seen != set(parameters):
-                raise RuntimeError("joint AURA packed source did not execute declared F.linear boundaries")
+                raise RuntimeError("joint AURA packed source did not execute declared F.linear/grouped_mm boundaries")
             return result
 
         self.forward_originals.append((module, original))
@@ -242,7 +275,7 @@ class SignedJointProjectionLease:
             self._observe(name, module.weight, x, output)
         return observe
 
-    def _observe(self, name, source_weight, x, output, output_slice=None):
+    def _observe(self, name, source_weight, x, output, output_slice=None, row_slice=None):
         if not self.active:
             raise RuntimeError("joint AURA forward outside active probe")
         if not isinstance(x, torch.Tensor) or not isinstance(output, torch.Tensor):
@@ -253,7 +286,8 @@ class SignedJointProjectionLease:
 
         @torch.no_grad()
         def project(gradient):
-            selected = gradient if output_slice is None else gradient[..., output_slice]
+            selected = gradient if row_slice is None else gradient[row_slice]
+            selected = selected if output_slice is None else selected[..., output_slice]
             if x.device != selected.device or x.device != source_weight.device:
                 raise RuntimeError(f"joint AURA residency mismatch for {name}")
             if x.shape[:-1] != selected.shape[:-1] or x.shape[-1] != source_weight.shape[1] or selected.shape[-1] != source_weight.shape[0]:
