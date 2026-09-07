@@ -10,8 +10,9 @@ necessary layer-scoped consumption. The existing PWC loader can capture a
 SHA256 receipt from one explicitly bounded serialized-file read and deserialize
 those exact bytes. Its receipt is valid only for the same unchanged resident
 tensor and donor-file signature; eviction and compaction discard it. Temporary
-serialized buffers are bounded per admitted loader worker and never persist as
-another cache. Preparation uses this load receipt instead of global and
+serialized buffers use each file's observed size, capped before any prefetch
+by the declared PWC budget; they are bounded per admitted loader worker and
+never persist as another cache. Preparation uses this load receipt instead of global and
 post-prefetch render scans; the existing verifier reads each original wire,
 checks its recorded SHA/source/H/settings, and compares decoded values exactly.
 Prepared completion remains withheld until every measured cell qualifies.

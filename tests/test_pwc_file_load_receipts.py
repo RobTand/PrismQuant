@@ -138,3 +138,24 @@ def test_receipt_capture_requires_unloaded_entries(tmp_path):
     cache.get(*key)
     with pytest.raises(RuntimeError, match='resident|unloaded'):
         cache.enable_file_load_receipts(max_file_bytes=path.stat().st_size)
+
+
+def test_small_file_read_request_ignores_large_global_bound(tmp_path, monkeypatch):
+    cache, paths, _ = make_cache(tmp_path)
+    key, path = next(iter(paths.items()))
+    size = path.stat().st_size
+    cache.enable_file_load_receipts(max_file_bytes=size * 1000)
+    original = Path.open
+    class LimitedRead:
+        def __init__(self, stream): self.stream = stream
+        def __enter__(self): return self
+        def __exit__(self, *args): return self.stream.__exit__(*args)
+        def read(self, requested):
+            assert requested == size + 1, 'small file inherited the whole-cache read bound'
+            return self.stream.read(requested)
+        def __getattr__(self, name): return getattr(self.stream, name)
+    def limited(candidate, *args, **kwargs):
+        stream = original(candidate, *args, **kwargs)
+        return LimitedRead(stream) if candidate == path else stream
+    monkeypatch.setattr(Path, 'open', limited)
+    assert cache.prefetch([key], max_workers=1) == 1

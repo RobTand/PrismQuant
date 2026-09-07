@@ -406,3 +406,16 @@ def test_prepare_metadata_intake_defers_heavy_files_but_keeps_strict_default(tmp
     strict = bridge.load_measured_anchor_input(config)
     assert heavy <= set(calls)
     assert all('render_file_sha256' in cell for cell in strict.cells.values())
+
+
+def test_prepare_refuses_oversized_later_render_before_loading_any_layer(tmp_path):
+    from types import SimpleNamespace
+    from prismaquant import tessera_joint_aura as bridge
+    small, huge = tmp_path / 'early.pt', tmp_path / 'later.pt'
+    small.write_bytes(b'early')
+    with huge.open('wb') as stream:
+        stream.truncate(8192)
+    data = SimpleNamespace(cells={('early', 'fmt'): {'render': str(small)},
+                                  ('later', 'fmt'): {'render': str(huge)}})
+    with pytest.raises(ValueError, match='read buffer|shard|budget'):
+        bridge._prepare_file_read_bound(data, max_render_bytes=4096)

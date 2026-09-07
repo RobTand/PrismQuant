@@ -299,6 +299,14 @@ def _live_targets(runner, names):
     return {name: targets[name] for name in names}
 
 
+def _prepare_file_read_bound(data, *, max_render_bytes):
+    """Refuse an oversized later donor before any layer allocates read buffers."""
+    maximum = max(Path(cell["render"]).stat().st_size for cell in data.cells.values())
+    _require(0 < maximum <= max_render_bytes,
+             "original render shard exceeds the declared PWC read buffer budget")
+    return maximum
+
+
 def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None, file_load_workers=4):
     """Qualify original per-layer inputs and return the existing PWC object.
 
@@ -336,7 +344,7 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None, file_
         metadata={"schema": PREPARED_SCHEMA, "inputs": data.inputs,
                   "reader_identity": None if reader is None else reader.identity})
     cache.enable_lru(max_render_bytes)
-    max_file_bytes = max(Path(cell["render"]).stat().st_size for cell in data.cells.values())
+    max_file_bytes = _prepare_file_read_bound(data, max_render_bytes=max_render_bytes)
     cache.enable_file_load_receipts(max_file_bytes=max_file_bytes)
     targets = _live_targets(runner, data.formats_by_qname)
     layers = defaultdict(list)

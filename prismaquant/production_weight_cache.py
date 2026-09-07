@@ -783,7 +783,7 @@ class ProductionWeightCache:
         with path.open("rb") as handle:
             if self._file_signature(os.fstat(handle.fileno())) != signature:
                 raise RuntimeError("PWC file changed before its content read")
-            raw = handle.read(limit + 1)
+            raw = handle.read(before.st_size + 1)
             if (len(raw) != before.st_size or self._file_signature(os.fstat(handle.fileno())) != signature
                     or self._file_signature(path.lstat()) != signature):
                 raise RuntimeError("PWC file changed during its content read")
