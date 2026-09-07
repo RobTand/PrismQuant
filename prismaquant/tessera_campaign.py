@@ -1432,6 +1432,7 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     # ``--seed-checkpoint``, one verified row at a time.
     for name in ("out", "cache_dir", "checkpoint", "deadline_seconds",
                  "units", "calibration_census", "census_out",
+                 "capture_calibration_out", "calibration_cache", "calibration_cache_sha256",
                  "seed_checkpoint", "seed_wire_dir", "anchor_batch_size"):
         settings.pop(name, None)
     return {
@@ -1650,7 +1651,8 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
-                         *, want_hessian: bool = False, profile=None):
+                         *, want_hessian: bool = False, profile=None,
+                         boundary_consumer=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
@@ -1697,6 +1699,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
+    calibration_coordinates = None
+
+    def consume_boundary(qname, module, args, kwargs):
+        boundary_consumer(qname, module, args, kwargs, calibration_coordinates)
 
     def accumulate(name, x):
         # ONE accumulator for both populations: a dense Linear's pre-hook and
@@ -1711,8 +1717,13 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             return
         if name in routed_seen:
             routed_seen[name] += int(flat.shape[0])
-        amax[name] = max(
-            amax[name], float(flat.abs().amax().float().item()))
+        batch_max = flat.abs().amax().float()
+        previous_max = amax[name]
+        if not isinstance(previous_max, torch.Tensor):
+            previous_max = torch.zeros((), dtype=torch.float32, device=batch_max.device)
+        # Python max(previous, NaN) preserves previous. fmax keeps that exact
+        # policy while avoiding a device-to-host scalar read on every batch.
+        amax[name] = torch.fmax(previous_max, batch_max)
         seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
@@ -1789,6 +1800,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             model, {member.module_qname for member in inventory},
             module_token_budget=0, store_device=device, store_qnames=set(),
             profile=profile, row_consumer=consume_packed,
+            boundary_consumer=(consume_boundary if boundary_consumer is not None else None),
         )
     try:
         for name in targets:
@@ -1797,7 +1809,15 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         if packed_collector is not None:
             packed_collector.install()
         with torch.no_grad():
+            sample_offset = 0
             for batch in tokens:
+                if boundary_consumer is not None:
+                    if batch.ndim != 2:
+                        raise RuntimeError("boundary capture requires [sample, token] calibration IDs")
+                    sample_ids = torch.arange(sample_offset, sample_offset + batch.shape[0], dtype=torch.int64)
+                    positions = torch.arange(batch.shape[1], dtype=torch.int64)
+                    calibration_coordinates = torch.cartesian_prod(sample_ids, positions)
+                    sample_offset += batch.shape[0]
                 model(batch.to(device))
     finally:
         for handle in handles:
@@ -1809,14 +1829,33 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
-    rows = {
-        name: (torch.cat(chunks, dim=0) if chunks else None)
-        for name, chunks in store.items()
-    }
-    hessians = {
-        name: (None if h is None else h.to(device="cpu"))
-        for name, h in hess.items()
-    } if want_hessian else {}
+    # All forwards are complete: materialize each unit's maximum only once.
+    amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
+            for name, value in amax.items()}
+    # Do not retain both the original chunks and their concatenated outputs
+    # for the whole scope. Full-model captures can hold GiB of scoring rows.
+    rows = {}
+    for name in list(store):
+        chunks = store.pop(name)
+        rows[name] = torch.cat(chunks, dim=0) if chunks else None
+        del chunks
+    hessians = {}
+    if want_hessian:
+        # GB10 shares physical DRAM with CPU tensors. Releasing Python tensor
+        # references alone leaves the CUDA allocator's cached blocks resident,
+        # so periodically return those blocks while transferring the full H.
+        released_cuda_bytes = 0
+        for name in list(hess):
+            h = hess.pop(name)
+            hessians[name] = None if h is None else h.to(device="cpu")
+            if h is not None and h.is_cuda:
+                released_cuda_bytes += h.numel() * h.element_size()
+            del h
+            if released_cuda_bytes >= 256 * 1024**2:
+                torch.cuda.empty_cache()
+                released_cuda_bytes = 0
+        if released_cuda_bytes:
+            torch.cuda.empty_cache()
     return rows, hessians, dict(seen), dict(amax)
 
 
@@ -2363,7 +2402,8 @@ def select_anchor_groups(selection: Mapping, resolved: Mapping[str, list[str]],
 def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], *,
                        args, groups: Mapping, dense_targets: Sequence[str],
                        expert_targets: Sequence[str], shapes: Mapping,
-                       identity: Mapping, expert_projection=None) -> dict:
+                       identity: Mapping, expert_projection=None, model_load_contract=None,
+                       attention_implementation=None, capture_runtime=None) -> dict:
     """The whole priced scope, as one run that loaded the model saw it.
 
     Everything here is scope-wide and selection-independent, and it is here
@@ -2375,6 +2415,9 @@ def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], 
     """
     return {
         "schema": CENSUS_SCHEMA,
+        **({"model_load_contract": model_load_contract,
+            "attention_implementation": attention_implementation,
+            "capture_runtime": capture_runtime} if model_load_contract is not None else {}),
         "model": str(args.model),
         "nsamples": int(args.nsamples),
         "seqlen": int(args.seqlen),
@@ -3134,7 +3177,26 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     help="collect the calibration census over the whole scope, "
                          "write it here and exit. No Hessians, no retained "
                          "scoring rows, no encodes.")
+    ap.add_argument("--attention-implementation", choices=("eager", "sdpa"), default=None,
+                    help="Explicit HF attention backend required for canonical census/capture.")
+    ap.add_argument("--capture-calibration-out", default=None,
+                    help="Capture full-census float32 prefix X and uncapped H once, then exit.")
+    ap.add_argument("--calibration-cache", default=None,
+                    help="Verified capture manifest; prefetch selected X/H before encoding.")
+    ap.add_argument("--calibration-cache-sha256", default=None,
+                    help="Expected capture manifest hash, sealed by the campaign planner.")
     args = ap.parse_args(argv)
+    if (args.census_out or args.capture_calibration_out or args.calibration_cache) and not args.attention_implementation:
+        ap.error("canonical census/capture requires explicit --attention-implementation")
+    if args.calibration_cache_sha256 and not args.calibration_cache:
+        ap.error("--calibration-cache-sha256 requires --calibration-cache")
+    if args.capture_calibration_out or args.calibration_cache:
+        if not args.calibration_census or args.census_out or args.hessian != "require":
+            ap.error("capture/reuse requires --calibration-census and --hessian require")
+        if args.capture_calibration_out and (args.units or args.calibration_cache):
+            ap.error("--capture-calibration-out requires the full scope and cannot also reuse")
+        if args.max_act_rows < 1:
+            ap.error("capture/reuse requires positive --max-act-rows")
     if args.anchor_batch_size < 1:
         ap.error("--anchor-batch-size must be positive")
     if args.anchor_batch_size > 1:
@@ -3169,8 +3231,22 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map=device,
+        **({"attn_implementation": args.attention_implementation}
+           if args.attention_implementation is not None else {}),
     )
     model.eval()
+    model_load_contract = None
+    attention_implementation = None
+    capture_runtime = None
+    if args.census_out or args.capture_calibration_out or args.calibration_cache:
+        import importlib.metadata
+        from prismaquant import pretrained_initialization_contract
+        model_load_contract = pretrained_initialization_contract(model)
+        attention_implementation = model.config._attn_implementation
+        if attention_implementation != args.attention_implementation:
+            raise RuntimeError("loaded model attention backend differs from explicit request")
+        capture_runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
+            transformers=importlib.metadata.version("transformers"))
 
     from .model_profiles import detect_profile
 
@@ -3280,42 +3356,71 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     tokens, corpus_text = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
-    # A census run needs the counts and the maxima, which every hook produces
-    # unconditionally; it needs neither the Hessians nor the retained scoring
-    # rows, because it encodes nothing.
-    want_h = args.hessian == "require" and not census_only
-    acts, hessians, hessian_rows, act_max_abs = _collect_activations(
-        model, targets, tokens, 0 if census_only else args.max_act_rows, device,
-        want_hessian=want_h, profile=profile)
-    # For the log line and the run-level provenance only; every encode is
-    # given its own Linear's count.
     census = (None if not args.calibration_census
               else load_calibration_census(args.calibration_census, args=args))
-    hessian_token_count, hessian_token_min = census_token_counts(
-        census, hessian_rows)
-    print(f"[campaign] activations collected "
-          f"(hessian={args.hessian}, rows/Linear "
-          f"{hessian_token_min}..{hessian_token_count})",
-          flush=True)
-
-    # The draw's identity, in Tessera's own required vocabulary and built by
-    # the function the production render also calls. An ActivationSource
-    # refuses a provenance missing any of the three, which is what makes
-    # "cost.pkl and the production cache are the same draw" a checkable claim.
+    want_h = args.hessian == "require" and not census_only
+    calibration_cache = None
+    capture_identity = None
+    if census is not None:
+        # Validate the whole scope before a selected unit's artifact is read.
+        if (set(census["counts"]) != set(census_targets) or
+                census["anchor_groups"] != scope_groups):
+            raise RuntimeError("calibration census scope differs from the loaded model")
+        scope_shapes = {name: list(dict(model.named_modules())[name].weight.shape)
+                        for name in census_dense_targets}
+        scope_shapes.update({member.qname: list(member.weight.shape)
+                             for member in population.members})
+        if census["unit_shapes"] != scope_shapes:
+            raise RuntimeError("calibration census geometry differs from the loaded model")
+    if args.capture_calibration_out or args.calibration_cache:
+        from . import tessera_calibration_cache as calibration_store
+        hi, lo = census_token_counts(census, {})
+        bound_calibration = th.calibration_identity(
+            corpus_text, tokens, fit_tokens=hi,
+            source="wikitext-2-raw-v1/train", split_role="calibration",
+            model=str(args.model), seed=int(args.seed), nsamples=int(args.nsamples),
+            seqlen=int(args.seqlen), fit_tokens_min=lo)
+        require_census_draw(census, bound_calibration, where="calibration capture")
+        capture_identity = calibration_store.capture_identity(
+            args.calibration_census, calibration=bound_calibration,
+            max_act_rows=args.max_act_rows, model_load_contract=model_load_contract,
+            attention_implementation=attention_implementation)
+    if args.capture_calibration_out:
+        completed_capture = Path(args.capture_calibration_out) / "capture_manifest.json"
+        if completed_capture.exists():
+            _values, record = calibration_store.prefetch_capture(
+                completed_capture, expected_identity=capture_identity,
+                census=census, names=census_targets, device="cpu")
+            print(f"[campaign] complete calibration capture reused: {record}", flush=True)
+            return 0
+    if args.calibration_cache:
+        values, calibration_cache = calibration_store.prefetch_capture(
+            args.calibration_cache, expected_identity=capture_identity,
+            census=census, names=targets, device=device,
+            expected_sha256=args.calibration_cache_sha256)
+        acts, hessians, hessian_rows, act_max_abs = values
+    else:
+        acts, hessians, hessian_rows, act_max_abs = _collect_activations(
+            model, targets, tokens, 0 if census_only else args.max_act_rows, device,
+            want_hessian=want_h, profile=profile)
+    hessian_token_count, hessian_token_min = census_token_counts(census, hessian_rows)
     hessian_identity = th.calibration_identity(
-        corpus_text, tokens,
-        fit_tokens=int(hessian_token_count),
-        source="wikitext-2-raw-v1/train",
-        split_role="calibration",
-        model=str(args.model),
-        seed=int(args.seed),
-        nsamples=int(args.nsamples),
-        seqlen=int(args.seqlen),
-        fit_tokens_min=int(hessian_token_min),
-    )
+        corpus_text, tokens, fit_tokens=int(hessian_token_count),
+        source="wikitext-2-raw-v1/train", split_role="calibration",
+        model=str(args.model), seed=int(args.seed), nsamples=int(args.nsamples),
+        seqlen=int(args.seqlen), fit_tokens_min=int(hessian_token_min))
     if census is not None:
         require_census_draw(census, hessian_identity,
                             where=f"--calibration-census {args.calibration_census}")
+    if args.capture_calibration_out:
+        calibration_cache = calibration_store.publish_capture(
+            args.capture_calibration_out, census_path=args.calibration_census,
+            identity=capture_identity, acts=acts, hessians=hessians,
+            counts=hessian_rows, maxima=act_max_abs)
+        print(f"[campaign] complete calibration capture: {calibration_cache}", flush=True)
+        return 0
+    print(f"[campaign] activations ready (hessian={args.hessian}, rows/Linear "
+          f"{hessian_token_min}..{hessian_token_count})", flush=True)
 
     # The static A-side calibration, from the same forward passes: one
     # input_global_scale per unit under the resolved contract policy, fused
@@ -3419,7 +3524,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             dense_targets=census_dense_targets,
             expert_targets=census_expert_targets,
             shapes={name: tuple(weight.shape) for name, weight in weights.items()},
-            identity=hessian_identity, expert_projection=expert_projection)
+            identity=hessian_identity, expert_projection=expert_projection,
+            model_load_contract=model_load_contract,
+            attention_implementation=attention_implementation,capture_runtime=capture_runtime)
         if set(payload["counts"]) != set(census_targets):
             raise RuntimeError(
                 "the census did not observe every unit in scope: missing "
@@ -3990,6 +4097,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # unified. The served contract reads exactly one such scalar per
             # module (trellis_input_global_scale), so this block is what makes
             # "the priced A side is the served A side" checkable downstream.
+            "calibration_cache": calibration_cache,
             "activation_static_scales": {
                 "policy": str(static_scale_policy),
                 "source": "campaign_calibration_amax_fused_unified",
