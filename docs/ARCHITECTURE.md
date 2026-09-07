@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/tessera-joint-anchor-bridge`. Stamps
+As of: 2026-09-07 · `codex/runtime-provenance-relation`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/runtime-provenance-relation`) for **explicit
+cross-run runtime provenance** (#323). Opt-in measured-runtime context/table v2
+binds a separately hashed relation while retaining original native and engine
+manifests. Admission checks exhaustive production-library relationships,
+observed instrumentation source/build artifacts, canonical loaded package
+origins/bytes, source-archive packaging subsets, configuration, stock core and
+the same GPU identity. Exact pinned manifest bytes relate Docker manifest and
+config ID representations; original IDs and producer/installed source seals
+remain distinct. Native rows still pass their original same-panel numerical,
+route, tensor and resource-trace gates. Parsing v2 cannot supply allocation
+resources. Loading remains fail-closed because no qualified recomputable
+full-engine fixed resource/timing partition is yet supported; raw ledgers and
+completion flags cannot fill that gap. This adds no measured table, serving
+import, SLO attestation, format/default change or release-pin promotion.
+Contract: [runtime provenance relation](design/runtime_provenance_relation.md).
+Gate: `tests/test_runtime_provenance.py`.
 
 Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
 from completed measured Tessera anchors** (#322). The explicit
@@ -224,7 +241,6 @@ format, pricing estimate, production default or serving admission changes.
 Gates: `tests/test_tessera_materialization.py`,
 `tests/test_tessera_packed_export_scope.py`.
 
-
 Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
 expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
 optional `--anchor-batch-size` groups pending expert anchors with equal shape,
@@ -242,7 +258,6 @@ accounting, not independently measured per-unit latency. Default width remains
 one pending performance qualification. No serving pin, wire recipe, cost
 currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
 
-
 Re-stamped (2026-09-07, `codex/first-model-integration-20260907`) for
 **campaign quanta in the declared Docker runtime** (§4.10). The shared fanout
 spec accepts an optional `container` block with `image` and explicit absolute
@@ -256,7 +271,6 @@ squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
 Host-interpreter specs remain supported. Census, anchor and materialization
 quanta share the same row builder; the adapter does no scheduling or fanout.
 Gate: `tests/test_tessera_campaign_container.py`.
-
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
