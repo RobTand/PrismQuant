@@ -1,4 +1,4 @@
-"""Measure one real GLM layer with explicit synthetic B1 input boundaries.
+"""Measure one real GLM layer with original B1 source or synthetic boundaries.
 
 This is a PrismaBuild-admitted workspace experiment, never a calibration
 census/capture or source-forward quality qualification. Source weights, cache,
@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import threading
 import time
+import traceback
 import urllib.request
 
 import torch
@@ -51,6 +53,9 @@ def main():
     parser.add_argument('--max-act-rows', type=int, default=512)
     parser.add_argument('--fixture-seed', type=int, default=17092026)
     parser.add_argument('--physical-cap-gb', type=int, default=104)
+    parser.add_argument('--boundary-mode', choices=('synthetic', 'source-prefix'), default='synthetic')
+    parser.add_argument('--input-binding', type=Path)
+    parser.add_argument('--input-binding-sha256')
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     assert torch.cuda.is_available()
@@ -64,8 +69,26 @@ def main():
     profile = detect_profile(str(args.model))
     assert profile.name == 'glm5_next'
     os.environ['PRISMAQUANT_TMPDIR'] = str(args.out/'staging')
+    binding = None
+    def verify_binding():
+        from experiments.glm_workspace_inputs import fingerprint
+        assert binding is not None
+        for item in binding['source_files']:
+            expected = {k:v for k,v in item.items() if k != 'sha256'}
+            assert fingerprint(Path(item['path'])) == expected, f"bound source changed: {item['path']}"
+
+    if args.boundary_mode == 'source-prefix':
+        assert args.input_binding is not None and args.input_binding_sha256
+        raw_binding = args.input_binding.read_bytes()
+        assert hashlib.sha256(raw_binding).hexdigest() == args.input_binding_sha256
+        binding = json.loads(raw_binding)
+        assert binding['schema'] == 'prismaquant.glm_workspace_inputs.v1'
+        assert binding['model'] == str(args.model) and binding['stop_after_layer'] == args.layer
+        assert (args.nsamples,args.seqlen,binding['nsamples'],binding['seqlen'],binding['seed']) == (512,512,512,512,0)
+        verify_binding()
     result = dict(schema='prismaquant.glm_layer_workspace.v1',
-        scope='synthetic_boundary_real_source_layer_workspace_only',
+        scope=('bounded_real_source_prefix_workspace_only_unfrozen_production_draw'
+               if binding else 'synthetic_boundary_real_source_layer_workspace_only'),
         status='running', source=str(args.model), layer=args.layer,
         config_sha256=hashlib.sha256((args.model/'config.json').read_bytes()).hexdigest(),
         fixture_seed=args.fixture_seed, nsamples=args.nsamples, seqlen=args.seqlen,
@@ -75,8 +98,16 @@ def main():
         torch=torch.__version__, cuda=torch.version.cuda,
         device=torch.cuda.get_device_name(), cpu_affinity=sorted(os.sched_getaffinity(0)),
         phases=[], telemetry_errors=[])
+    if binding:
+        result['input_binding_sha256'] = args.input_binding_sha256
+        result['source_files_sha256'] = {item['path']:item['sha256'] for item in binding['source_files']}
+        result['calibration_seed'] = binding['seed']
+        result['corpus_sha256'] = binding['corpus_sha256']
+        result['tokens_sha256'] = binding['tokens_sha256']
     stopped = threading.Event()
     guard_tripped = threading.Event()
+    sampling_enabled = threading.Event()
+    main_thread_id = threading.get_ident()
     started = time.time()
     cgroot = Path('/sys/fs/cgroup')
 
@@ -184,10 +215,24 @@ def main():
                         result['telemetry_errors'].append(dict(host=host,error=repr(exc)))
                 stopped.wait(1)
 
+    def sample_python():
+        with (args.out/'python-main-thread-stacks.jsonl').open('w') as out:
+            while not stopped.is_set():
+                if sampling_enabled.is_set():
+                    frame = sys._current_frames().get(main_thread_id)
+                    stack = traceback.extract_stack(frame)
+                    del frame
+                    out.write(json.dumps(dict(time=time.time(), scope='python_main_thread_only',
+                        frames=[dict(file=x.filename,line=x.lineno,function=x.name) for x in stack]))+'\n')
+                    out.flush()
+                stopped.wait(0.1)
+
     monitor_thread = threading.Thread(target=monitor, daemon=True)
     memory_thread = threading.Thread(target=watch_memory, daemon=True)
+    sampler_thread = threading.Thread(target=sample_python, daemon=True)
     monitor_thread.start()
     memory_thread.start()
+    sampler_thread.start()
     runner = None
     try:
         mark('process_baseline')
@@ -218,84 +263,140 @@ def main():
             nsamples=args.nsamples, seqlen=args.seqlen, max_act_rows=args.max_act_rows,
             cache_slots=2, prefetch_workers=1, headroom_gb=24)
         result['units'] = len(targets)
-        # Allocate the same current-boundary lifetime as the production walk.
-        # Values are explicitly synthetic independent residual streams, not
-        # claimed to be a hidden state from the source model or a frozen draw.
-        generator = torch.Generator(device='cuda').manual_seed(args.fixture_seed)
-        shape = (1,args.seqlen,int(config.hc_mult),int(config.hidden_size))
-        states = [torch.randn(shape, generator=generator, device='cuda', dtype=torch.bfloat16)
-                  for _ in range(args.nsamples)]
-        tokens = [torch.arange(args.seqlen).remainder(int(config.vocab_size)-2).add(2).reshape(1,-1)
-                  for _ in states]
-        result['boundary_input_sha256'] = [digest_tensor(state) for state in states]
-        mark('synthetic_current_boundaries_resident',
-             boundary_bytes=sum(x.numel()*x.element_size() for x in states))
-        runner.context.schedule_prefetch(args.layer)
-        runner.context.schedule_prefetch(args.layer+1)
-        runner.context.install(args.layer, require_prefetched=True)
-        mark('current_layer_installed_next_prefetch_inflight')
-        check_guard('before_activation_collection')
-        next_batch = 0
-        samples_path = args.out/'batch-memory.jsonl'
-        with samples_path.open('w') as samples:
-            def forward_batch(input_ids):
-                nonlocal next_batch
-                check_guard('before_batch')
-                assert next_batch < len(states)
-                assert torch.equal(input_ids.cpu(), tokens[next_batch])
+        if binding:
+            token_bytes = Path(binding['tokens_path']).read_bytes()
+            assert hashlib.sha256(token_bytes).hexdigest() == binding['tokens_sha256']
+            tokens = [torch.tensor(ids, dtype=torch.int64) for ids in json.loads(token_bytes)]
+            assert len(tokens) == args.nsamples and all(tuple(t.shape) == (1,args.seqlen) for t in tokens)
+        else:
+            # Explicit synthetic residual streams, never a source-model draw.
+            generator = torch.Generator(device='cuda').manual_seed(args.fixture_seed)
+            shape = (1,args.seqlen,int(config.hc_mult),int(config.hidden_size))
+            states = [torch.randn(shape, generator=generator, device='cuda', dtype=torch.bfloat16)
+                      for _ in range(args.nsamples)]
+            tokens = [torch.arange(args.seqlen).remainder(int(config.vocab_size)-2).add(2).reshape(1,-1)
+                      for _ in states]
+            result['boundary_input_sha256'] = [digest_tensor(state) for state in states]
+            mark('synthetic_current_boundaries_resident',
+                 boundary_bytes=sum(x.numel()*x.element_size() for x in states))
+
+        def collect_and_audit(actual_forward):
+            check_guard('before_activation_collection')
+            next_batch = 0
+            traces_written = []
+            with (args.out/'batch-memory.jsonl').open('w') as samples:
+                def forward_batch(input_ids):
+                    nonlocal next_batch
+                    check_guard('before_batch')
+                    actual_forward(input_ids)
+                    next_batch += 1
+                    check_guard('after_batch')
+                    samples.write(json.dumps(dict(sample=next_batch, **memory_record()))+'\n')
+                    samples.flush()
+                    prof.step()
+
+                def trace_ready(prof):
+                    label = ('forward-first-two-batches' if not traces_written
+                             else 'forward-batches-32-33')
+                    prof.export_chrome_trace(str(args.out/(label+'.trace.json')))
+                    (args.out/(label+'.profile.txt')).write_text(
+                        prof.key_averages().table(sort_by='self_cuda_time_total',row_limit=50))
+                    traces_written.append(label)
+
+                def profiler_schedule(step):
+                    if step in (1,32):
+                        return torch.profiler.ProfilerAction.RECORD_AND_SAVE
+                    if step in (0,31):
+                        return torch.profiler.ProfilerAction.RECORD
+                    return torch.profiler.ProfilerAction.NONE
+
+                # Observe cold and later windows in the original traversal;
+                # no additional forwards or changed microbatches are needed.
+                sampling_enabled.set()
+                try:
+                    with torch.no_grad(), torch.profiler.profile(
+                            activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA],
+                            schedule=profiler_schedule, record_shapes=True,profile_memory=True,
+                            on_trace_ready=trace_ready) as prof:
+                        acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
+                            args.max_act_rows,runner.device,want_hessian=True,profile=profile,
+                            forward_batch=forward_batch)
+                finally:
+                    sampling_enabled.clear()
+                    result['profile_windows'] = traces_written
+                    result['target_batches_completed'] = next_batch
+            assert next_batch == args.nsamples
+            check_guard('after_collection')
+            assert set(counts) == set(targets) and min(counts.values()) > 0
+            mark('collector_return_full_h_and_prefix_x_on_cpu',
+                 hessian_bytes=sum(h.numel()*h.element_size() for h in hessians.values()),
+                 prefix_bytes=sum(x.numel()*x.element_size() for x in acts.values()),
+                 hessian_unique_storage_bytes=unique_storage_bytes(hessians.values()),
+                 prefix_unique_storage_bytes=unique_storage_bytes(acts.values()),
+                 minimum_observed_rows=min(counts.values()))
+            _next, source = runner.context.ensure_loaded(args.layer+1,require_prefetched=True)
+            assert all(t.device.type == 'cuda' for t in _next.values())
+            del _next
+            mark('next_source_resident_after_collection', delivery=source)
+            result['unit_results'] = {}
+            for name in targets:
+                x,h = acts[name],hessians[name]
+                assert x.dtype == h.dtype == torch.float32
+                assert torch.isfinite(x).all() and torch.isfinite(h).all()
+                result['unit_results'][name] = dict(count=counts[name],max_abs=maxima[name],
+                    x_shape=list(x.shape),h_shape=list(h.shape),
+                    x_sha256=digest_tensor(x),h_sha256=digest_tensor(h))
+            mark('output_bytes_audited')
+            del x,h,acts,hessians
+            mark('layer_capture_drained')
+
+        if binding:
+            class PrefixMeasurementComplete(Exception):
+                pass
+
+            def visit(layer, forward_batch):
+                mark('source_prefix_layer_installed', source_layer=layer)
+                if layer == args.layer:
+                    collect_and_audit(forward_batch)
+                    # The existing visitor's finally unloads this source layer.
+                    # No later layer or full-source initialization is claimed.
+                    raise PrefixMeasurementComplete()
+                assert layer < args.layer
+                for token in tokens:
+                    check_guard('before_prefix_batch')
+                    forward_batch(token.to(runner.device))
+                    check_guard('after_prefix_batch')
+                mark('source_prefix_layer_forward_complete', source_layer=layer,
+                     samples=args.nsamples)
+
+            try:
+                runner.visit_layer_batches(tokens, visit)
+            except PrefixMeasurementComplete:
+                pass
+            else:
+                raise RuntimeError('bounded prefix did not stop after its requested layer')
+            verify_binding()
+            result['source_binding_unchanged_after_prefix'] = True
+            mark('source_prefix_driver_drained_and_current_layer_unloaded')
+        else:
+            runner.context.schedule_prefetch(args.layer)
+            runner.context.schedule_prefetch(args.layer+1)
+            runner.context.install(args.layer, require_prefetched=True)
+            mark('current_layer_installed_next_prefetch_inflight')
+            synthetic_batch = 0
+            def synthetic_forward(input_ids):
+                nonlocal synthetic_batch
+                assert synthetic_batch < len(states)
+                assert torch.equal(input_ids.cpu(), tokens[synthetic_batch])
                 ids, positions, initial, embeddings, mask = runner._prepare(input_ids)
                 del initial
                 batch = StreamedForwardBoundaries(ids, positions, embeddings, mask, [], None)
-                states[next_batch] = runner.isolated_layer(batch,args.layer,states[next_batch],
+                states[synthetic_batch] = runner.isolated_layer(batch,args.layer,states[synthetic_batch],
                     pass_state=profile.new_forward_pass_state())
-                next_batch += 1
-                check_guard('after_batch')
-                samples.write(json.dumps(dict(sample=next_batch, **memory_record()))+'\n')
-                samples.flush()
-                prof.step()
-
-            def trace_ready(prof):
-                prof.export_chrome_trace(str(args.out/'forward-first-two-batches.trace.json'))
-                (args.out/'forward-first-two-batches.profile.txt').write_text(
-                    prof.key_averages().table(sort_by='self_cuda_time_total',row_limit=50))
-
-            # Bound profiler event storage; continuous allocator/cgroup/Netdata
-            # observations cover the complete original-B1 traversal.
-            with torch.no_grad(), torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA],
-                    schedule=torch.profiler.schedule(wait=0,warmup=0,active=2,repeat=1),
-                    record_shapes=True,profile_memory=True,on_trace_ready=trace_ready) as prof:
-                acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
-                    args.max_act_rows,runner.device,want_hessian=True,profile=profile,
-                    forward_batch=forward_batch)
-        assert next_batch == args.nsamples
-        check_guard('after_collection')
-        assert set(counts) == set(targets) and min(counts.values()) > 0
-        mark('collector_return_full_h_and_prefix_x_on_cpu',
-             hessian_bytes=sum(h.numel()*h.element_size() for h in hessians.values()),
-             prefix_bytes=sum(x.numel()*x.element_size() for x in acts.values()),
-             hessian_unique_storage_bytes=unique_storage_bytes(hessians.values()),
-             prefix_unique_storage_bytes=unique_storage_bytes(acts.values()),
-             minimum_observed_rows=min(counts.values()))
-        # Confirm the promised second source layer is delivered through the
-        # same prefetch/cache path; no synchronous cold read is allowed.
-        _next, source = runner.context.ensure_loaded(args.layer+1,require_prefetched=True)
-        assert all(t.device.type == 'cuda' for t in _next.values())
-        del _next
-        mark('next_source_resident_after_collection', delivery=source)
-        result['unit_results'] = {}
-        for name in targets:
-            x,h = acts[name],hessians[name]
-            assert x.dtype == h.dtype == torch.float32
-            assert torch.isfinite(x).all() and torch.isfinite(h).all()
-            result['unit_results'][name] = dict(count=counts[name],max_abs=maxima[name],
-                x_shape=list(x.shape),h_shape=list(h.shape),
-                x_sha256=digest_tensor(x),h_sha256=digest_tensor(h))
-        mark('output_bytes_audited')
-        del x,h,acts,hessians
-        mark('layer_capture_drained')
-        runner.context.unload(args.layer)
-        mark('source_layer_unloaded')
+                synthetic_batch += 1
+            collect_and_audit(synthetic_forward)
+            runner.context.unload(args.layer)
+            mark('source_layer_unloaded')
         torch.cuda.empty_cache()
         mark('explicit_allocator_release_after_layer_drain')
         result['status'] = 'complete'
@@ -307,13 +408,23 @@ def main():
     finally:
         if runner is not None:
             runner.shutdown()
+        if binding:
+            try:
+                verify_binding()
+                result['source_binding_unchanged_at_exit'] = True
+            except Exception as exc:
+                result['source_binding_unchanged_at_exit'] = False
+                result['source_binding_failure'] = repr(exc)
+                result['status'] = 'failed'
         stopped.set()
         monitor_thread.join(timeout=12)
         memory_thread.join(timeout=2)
+        sampler_thread.join(timeout=2)
         result['begin'] = started
         result['end'] = time.time()
         (args.out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
     assert not result['telemetry_errors'], result['telemetry_errors']
+    assert result['status'] == 'complete', result.get('source_binding_failure')
 
 
 if __name__ == '__main__':
