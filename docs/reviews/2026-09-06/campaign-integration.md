@@ -85,3 +85,32 @@ The older #266 GPU/parity actions cited in checked-in prose were withdrawn or
 failed before test execution; their absence is recorded, not called a numerical
 regression. Dedicated RDMA mount timing cannot be inferred from earlier LAN
 storage measurements.
+
+## Integrated checks and delivery update
+
+At integration `d2604d4d`, 14 campaign/sampling/export-scope files were supplied
+to PB's `pbtest.shard` and `pbcampaign` interfaces: **190 passed, 5 CUDA-only
+skipped** across 12 completed actions. Three initial 6 GiB actions were stopped
+by verified `memory_limit_oom` containment; their required 24 GiB retries passed.
+The negative actions remain in `campaign-results.json` alongside each successful
+terminal, CAS receipt and independently hashed result. Tests used the frozen
+producer `ba582d` at `/mnt/shared/prismaquant-validation/stack-producer-ba582d`,
+eligible GB10 CPU environments, two workers/native threads1 per action.
+
+Two further journal-overlap regressions failed before their fix; the repaired
+merge sampling/fanout suites passed **40 tests**. Existing projection or serving
+entries shared by two journal identities must agree before merge can rewrite
+those identities. This is part of #294's trust-boundary repair.
+
+Root reviewed and merged PQ#297 (`0f02ac79`), PB#308 (`cd035063`), PB#310
+(`b70f1d29`) and PB#311 (`7b0cecea`). Returned PB fixes, including #312, passed
+combined integration: **2924 passed, 3 skipped, 4 subtests**, action
+`1239030f09caaff2899b4de83256e60facf8c31f53167cb69b24e0a391dd6e4c`. Root read
+the production diffs and actual combined CAS output; separate evidence review
+checked sealed source correspondence. See `prismabuild-returned-fixes.md`.
+
+Runtime publication is held until isolated encoder profiling completes. Normal
+Netdata installation and exporter service restart require administrator access
+not available to the background worker; adoption-dependent issues remain open.
+No worker-directory permissions were weakened and no failure was manufactured
+to force a service restart.
