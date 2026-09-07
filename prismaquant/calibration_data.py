@@ -2,8 +2,57 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import hashlib
+import json
+from pathlib import Path
+import re
 
 import torch
+
+
+def load_calibration_input(path, *, expected_sha256, n_samples, seqlen):
+    """Load an independently pinned token draw without invoking a sampler.
+
+    The campaign's ``fit_ids_sha256`` hashes int32 token bytes; joint AURA
+    hashes the actual int64 tensor. Preserve and check both conventions.
+    This is explicit artifact preparation, outside the measurement hot path.
+    """
+    from safetensors import safe_open
+
+    if not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise ValueError("exact calibration input requires its independent SHA256")
+    path = Path(path)
+    artifact_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    if artifact_sha256 != expected_sha256:
+        raise ValueError("exact calibration input artifact SHA256 mismatch")
+    with safe_open(str(path), framework="pt", device="cpu") as stream:
+        if set(stream.keys()) != {"calibration_ids"}:
+            raise ValueError("exact calibration input requires only calibration_ids")
+        try:
+            provenance = json.loads(stream.metadata()["calibration_provenance"])
+        except (TypeError, KeyError, ValueError) as exc:
+            raise ValueError("exact calibration input requires calibration_provenance JSON") from exc
+        ids = stream.get_tensor("calibration_ids")
+    if ids.dtype != torch.int64 or list(ids.shape) != [n_samples, seqlen] or ids.numel() == 0:
+        raise ValueError("exact calibration input dtype/shape differs from requested draw")
+    if bool((ids < 0).any()) or bool((ids > torch.iinfo(torch.int32).max).any()):
+        raise ValueError("exact calibration token IDs exceed the nonnegative int32 identity domain")
+    if not isinstance(provenance, dict):
+        raise ValueError("exact calibration provenance must be an object")
+    draw_sha256 = hashlib.sha256(ids.to(torch.int32).numpy().tobytes()).hexdigest()
+    if (provenance.get("fit_ids_sha256") != draw_sha256
+            or provenance.get("fit_tokens") != ids.numel()
+            or provenance.get("nsamples") != n_samples
+            or provenance.get("seqlen") != seqlen):
+        raise ValueError("exact calibration input differs from declared draw provenance")
+    # Refuse a file replacement between its digest check and tensor loading.
+    if hashlib.sha256(path.read_bytes()).hexdigest() != artifact_sha256:
+        raise ValueError("exact calibration input changed while loading")
+    return ids, {
+        "schema": "prismaquant.calibration_input.v1", "artifact_sha256": artifact_sha256,
+        "calibration_sha256": hashlib.sha256(ids.contiguous().numpy().tobytes()).hexdigest(),
+        "shape": list(ids.shape), "dtype": str(ids.dtype), "provenance": provenance,
+    }
 
 
 def _sample_token_windows_from_texts(

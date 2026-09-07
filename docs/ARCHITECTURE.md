@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `fix/packed-plan-handoff`. Stamps
+As of: 2026-09-07 · `integration/native-panel-267`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `integration/native-panel-267`) for **exact calibration
+draw intake** (#267, #237). The shared AURA CLI accepts an independently hashed
+safetensors token draw through `--calibration-input` plus
+`--calibration-input-sha256`, preserving its IDs instead of invoking a sampler.
+The shared calibration loader checks sample/sequence geometry, int64 token
+storage, the campaign's int32 draw digest and its provenance. Joint AURA keeps
+its existing int64 tensor digest; both identities are recorded explicitly.
+Dataset sampling remains the default. Gate: `tests/test_native_panel_calibration.py`.
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved

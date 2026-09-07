@@ -176,3 +176,14 @@ wrapper does not infer these experimental inputs or enable this mode.
 The [current-model screen](../measurements/pq237-joint-aura-screen-2026-09-05.md)
 verifies numerical decomposition but shows no selection-quality gain.
 Qualification remains open in #237.
+
+An existing draw can be passed unchanged with `--calibration-input` and its
+independently held `--calibration-input-sha256`. The safetensors artifact contains
+only `calibration_ids` (int64, samples × sequence length); its
+`calibration_provenance` metadata records the original draw, including
+`fit_ids_sha256`, `fit_tokens`, `nsamples`, and `seqlen`. The explicit CLI sample
+and sequence counts must match. This path bypasses dataset sampling and refuses
+`--dataset`. It checks the campaign's int32 token hash and separately records
+the int64 token hash used by joint AURA, with the original seed retained in
+provenance. A WT2 train 32 × 512 torch-randint draw and the retained diverse
+32 × 1024 Fisher draw are different calibrations even when both name seed zero.

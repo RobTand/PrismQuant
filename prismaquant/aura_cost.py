@@ -3305,6 +3305,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "the cost draws from the same corpus as the pipeline "
                         "probe/render. Default keeps the historical WikiText "
                         "windowed loader (--calib-split/--calib-seed).")
+    p.add_argument("--calibration-input", default=None,
+                   help="Exact safetensors calibration_ids draw; bypasses dataset sampling. "
+                        "Requires --calibration-input-sha256 and matching sample/sequence counts.")
+    p.add_argument("--calibration-input-sha256", default=None,
+                   help="Independent SHA256 of --calibration-input.")
     p.add_argument("--token-scope", default="all")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument(
@@ -3403,6 +3408,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="Pipeline COST_MODE stamped into "
                         "provenance['cost_mode'] (re-vet R2).")
     args = p.parse_args(argv)
+    if bool(args.calibration_input) != bool(args.calibration_input_sha256):
+        p.error("--calibration-input and --calibration-input-sha256 are required together")
+    if args.calibration_input and args.dataset:
+        p.error("--calibration-input and --dataset are mutually exclusive")
     if args.joint_activation and not args.streaming:
         p.error("--joint-activation requires --streaming")
     if args.resume and not args.checkpoint_dir:
@@ -3489,7 +3498,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.train()
         _log("gradient checkpointing ON (non-reentrant, train-mode armed, "
              "no active dropout/batchnorm)")
-    if args.dataset:
+    calibration_input_receipt = None
+    if args.calibration_input:
+        from prismaquant.calibration_data import load_calibration_input
+        calib, calibration_input_receipt = load_calibration_input(
+            args.calibration_input, expected_sha256=args.calibration_input_sha256,
+            n_samples=args.n_calib_samples, seqlen=args.calib_seqlen,
+        )
+        calib = calib.to(args.device)
+    elif args.dataset:
         from prismaquant.sensitivity_probe import load_calibration
         calib = load_calibration(
             tok, args.dataset, args.n_calib_samples, args.calib_seqlen,
@@ -3612,15 +3629,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model": str(args.model),
         "dtype": str(args.dtype),
         "calib_source": (
-            str(args.dataset) if args.dataset
+            str(args.calibration_input) if args.calibration_input else str(args.dataset) if args.dataset
             else f"wikitext:{args.calib_split}"),
         "n_calib_samples": int(args.n_calib_samples),
         "calib_seqlen": int(args.calib_seqlen),
-        "calib_seed": int(args.calib_seed),
+        "calib_seed": (calibration_input_receipt["provenance"].get("seed")
+                       if calibration_input_receipt is not None else int(args.calib_seed)),
         "production_cache": str(args.production_cache or ""),
         # re-vet R2 precondition (i): which pipeline COST_MODE produced this.
         "cost_mode": str(args.cost_mode or ""),
     })
+    if calibration_input_receipt is not None:
+        payload["provenance"]["calibration_input"] = calibration_input_receipt
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as fh:
         pickle.dump(payload, fh)
