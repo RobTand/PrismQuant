@@ -116,3 +116,58 @@ def test_four_assignment_diagnostics_keep_background_and_currency_labels(tmp_pat
         pairs["A16"]["joint_quadratic_diagnostic"]["difference_per_probe"], abs=1e-12)
     assert set(pairs["A8"]["joint_quadratic_diagnostic"]["assignment_a"]
                ["operator_identity_sha256_by_unit"]) == set(plan)
+
+
+@pytest.mark.parametrize("changed_selector", [None, "root_attention", "layer_experts"])
+def test_predeclared_harness_bindings_match_current_producer_and_refuse_dispatch_drift(
+        tmp_path, monkeypatch, changed_selector):
+    """Expected bindings come from inputs, never from returned producer rows."""
+    from types import SimpleNamespace
+    import torch
+
+    from experiments.pq237_joint_aura_streamed import expected_currency_bindings
+    from prismaquant.production_weight_cache import _cb_cache_tensor_identity
+    from test_streamed_cost_checkpoints import _model_identity
+
+    monkeypatch.setenv("PRISMAQUANT_COST_UCB_Z", "0")
+    model, _, runner, cache = _fixture()
+    model.config = SimpleNamespace(_attn_implementation="eager")
+    model.model.layers[1].config = SimpleNamespace(_experts_implementation="eager")
+    plan = {name: ("FP8_E4M3", "NVFP4A16", "BF16")
+            for name, module in model.named_modules() if name.endswith(".proj")}
+    renders = {}
+    for name, formats in plan.items():
+        source = model.get_submodule(name).weight.detach()
+        renders[name] = {fmt: {
+            "source_weight": _cb_cache_tensor_identity(source),
+            "rendered_weight": _cb_cache_tensor_identity(
+                source if fmt == "BF16" else cache.get(name, fmt)),
+        } for fmt in formats}
+    protocol = {"plan": plan, "n_probes": 3, "seed_base": 7000}
+    probe, digest, operators = expected_currency_bindings(
+        runner, torch.tensor([[1, 2, 3, 4]]), protocol,
+        _model_identity("joint-source"), cache, renders)
+
+    # A changed real module-local selector is independently observed by the
+    # producer. Even a self-consistent returned envelope must then refuse.
+    if changed_selector == "root_attention":
+        model.config._attn_implementation = "sdpa"
+    elif changed_selector == "layer_experts":
+        model.model.layers[1].config._experts_implementation = "grouped_mm"
+    payload = _run(runner, cache, token_scope="causal")
+    path = tmp_path / "joint.pkl"
+    _write(path, payload)
+    if changed_selector:
+        with pytest.raises(ValueError, match="persisted joint probe identity differs"):
+            load_candidate_payload(path, plan, operators, digest)
+    else:
+        restored, candidates, _ = load_candidate_payload(path, plan, operators, digest)
+        assert restored["provenance"]["probe_identity"] == probe
+        assert probe["schema"] == "prismaquant.joint_aura.probes.v2"
+        assert probe["source_execution"]["modules"][""]["attention"] == "eager"
+        assert probe["source_execution"]["modules"]["model.layers.1"]["experts"] == "eager"
+        assert set(candidates) == set(plan)
+        for name, rows in restored["costs"].items():
+            for fmt, row in rows.items():
+                assert row["joint_operator_identity"]["schema"] == "prismaquant.joint_aura.operator.v2"
+                assert row["joint_operator_identity_sha256"] == operators[name][fmt]
