@@ -3,6 +3,18 @@
 As of: 2026-09-07 · `integration/native-panel-267`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
+initialization**. The shared Transformers compatibility hook suppresses random
+initialization for from-config skeletons, but enables the genuine initializer
+inside ordinary checkpoint missing-state finalization. A context-local scope
+prevents exceptions or concurrent skeleton construction from leaking that
+permission. This restores nonpersistent buffers (including LFM rotary frequency
+buffers) rematerialized by Transformers with uninitialized storage. Successfully
+finalized models expose `prismaquant.pretrained_initialization.v1` through
+`pretrained_initialization_contract`; from-config models and malformed descriptors
+refuse. This descriptor records the checkpoint load phase, not later model
+mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
+
 Re-stamped (2026-09-07, `integration/native-panel-267`) for **exact calibration
 draw intake** (#267, #237). The shared AURA CLI accepts an independently hashed
 safetensors token draw through `--calibration-input` plus
