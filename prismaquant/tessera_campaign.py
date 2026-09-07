@@ -1038,6 +1038,18 @@ def _stack_cost_rows(
 # The dense payload
 # ---------------------------------------------------------------------------
 
+def canonical_refusals(refusals: Sequence[dict]) -> list[dict]:
+    """Order diagnostic records identically for a monolith and a shard union.
+
+    A surface refusal names a family; an incomplete sampled rung names a
+    format. Both are legitimate records. The full canonical record breaks
+    ties without depending on dictionary or shard insertion order.
+    """
+    return sorted(refusals, key=lambda entry: (
+        entry["qname"], entry.get("family", ""), entry.get("format_name", ""),
+        json.dumps(entry, sort_keys=True, separators=(",", ":"), allow_nan=False)))
+
+
 def campaign_cost_payload(
     anchors: Mapping[str, Mapping[str, list[CampaignAnchor]]],
     menus: Mapping[str, list],
@@ -1246,7 +1258,7 @@ def campaign_cost_payload(
         "leave_one_anchor_out": {
             q: {f: dict(v) for f, v in by_f.items()} for q, by_f in loo.items()
         },
-        "non_interpolable": refused,
+        "non_interpolable": canonical_refusals(refused),
     })
     # The attested objective this table prices (re-vet R2; read for reuse by
     # `cost_currency.require_run_currency`, never from the environment). Every

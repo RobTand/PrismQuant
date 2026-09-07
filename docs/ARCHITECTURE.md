@@ -1,7 +1,19 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `main-campaign/pq290-stack-payload`. Stamps
+As of: 2026-09-06 · `codex/campaign-review-20260906`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **campaign
+merge input validation** (§4.10; RobTand/prismaquant#294). The merger reads
+every source journal through `cost_stage_checkpoint.prepare_journal`, which
+checks manifest identity and per-unit envelope identity/checksums, before
+publishing a merged journal through the existing writer. Its manifest roster
+must match its identity roster and canonical shard paths. A merge cannot
+rehash unchecked bytes into trusted state. Diagnostic refusals use one
+canonical ordering in both the campaign and merger, including incomplete
+sampled rungs that name a format rather than a family. No prices, formats,
+defaults or serving gates change. Gate:
+`tests/test_tessera_campaign_merge_integrity.py`.
 
 Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **what a
 campaign quantum measures: the expert sample, the rate band, and the refusal
@@ -6159,6 +6171,13 @@ twin of anything live — it is the only one of the two left, and §4.10 is its
 seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
+
+**Fan-out journal integrity.** Each source journal must pass the same
+manifest, unit identity and payload checksum checks as ordinary resume.
+The merger also checks that the listed units equal the journal identity's
+units and use canonical shard paths, then writes validated states through
+the shared journal writer. Refused surfaces and incomplete sampled rungs
+share a deterministic diagnostic ordering with a whole-scope campaign.
 
 **Shared cost intake.** `schemas.validate_cost_payload` requires finite
 numbers in each non-error row's existing cost scalar fields and

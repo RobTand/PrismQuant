@@ -551,7 +551,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     coverage block rebuilt over the **scope** rather than over any one row's
     selection.
     """
-    from prismaquant.tessera_campaign import SCHEMA, campaign_population_block
+    from prismaquant.tessera_campaign import (
+        SCHEMA, campaign_population_block, canonical_refusals)
     from prismaquant.tessera_campaign import ExpertPopulation
     # The keys a merged payload must land under are the ones the campaign and
     # the allocation share.  Spelling them here as literals is how a merge
@@ -722,8 +723,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         "costs": dict(sorted(costs.items())),
         "formats": sorted(formats),
         "leave_one_anchor_out": dict(sorted(loo.items())),
-        "non_interpolable": sorted(
-            non_interpolable, key=lambda entry: (entry["qname"], entry["family"])),
+        "non_interpolable": canonical_refusals(non_interpolable),
         "menu_sizes": dict(sorted(menu_sizes.items())),
         "anchor_counts": dict(sorted(anchor_counts.items())),
         "provenance": provenance,
@@ -836,30 +836,46 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
     """
     from prismaquant.cost_stage_checkpoint import (
         atomic_write_bytes, canonical_json, canonical_json_sha256, unit_path,
-        MANIFEST_SCHEMA,
+        MANIFEST_SCHEMA, prepare_journal, write_unit,
     )
 
     identities = {}
-    states: dict[str, bytes] = {}
-    stage = None
+    states: dict[str, dict] = {}
+    stage = "Tessera campaign"
     for row_id in sorted(row_dirs):
         manifest_path = Path(row_dirs[row_id]) / "cost.anchors.json"
         manifest = json.loads(manifest_path.read_text())
         identities[row_id] = manifest["identity"]
-        stage = manifest["stage"] if stage is None else stage
         parts = manifest_path.with_name(manifest_path.name + ".parts")
+        listed: list[str] = []
         for entry in manifest["units"]:
             qname = entry["qname"]
+            listed.append(qname)
             shard = parts / entry["file"]
             if not shard.is_file():
                 raise MergeRefused(
                     f"{row_id}: its journal names {qname} and the shard "
                     f"{shard} is not there; the row's anchors would be "
                     "dropped from the merged journal")
+            if shard != unit_path(parts, qname):
+                raise MergeRefused(f"{row_id}: unit {qname} names a noncanonical shard")
+        expected = set(manifest["identity"]["units"])
+        if len(listed) != len(set(listed)) or set(listed) != expected:
+            raise MergeRefused(
+                f"{row_id}: manifest units differ from its checkpoint identity units")
+        # Reuse the journal's reader: it validates the manifest and every
+        # envelope before returning state. Rehashing unchecked payload bytes
+        # here would turn corrupt or foreign shards into a trusted journal.
+        try:
+            _, _, completed = prepare_journal(
+                parts, stage=stage, resume=True, identity=manifest["identity"],
+                qnames=sorted(expected), manifest_path=manifest_path)
+        except RuntimeError as exc:
+            raise MergeRefused(f"{row_id}: {exc}") from exc
+        for qname, state in completed.items():
             if qname in states:
                 raise MergeRefused(f"unit {qname} has a journal shard in two rows")
-            with shard.open("rb") as handle:
-                states[qname] = pickle.load(handle)["payload"]
+            states[qname] = state
 
     merged_identity = None
     for row_id, identity in sorted(identities.items()):
@@ -887,18 +903,9 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
     canonical = canonical_json(merged_identity, where="merged campaign identity")
     identity_sha256 = canonical_json_sha256(canonical, where="merged campaign identity")
     parts = out_manifest.with_name(out_manifest.name + ".parts")
-    for qname, payload in sorted(states.items()):
-        import hashlib
-
-        envelope = {
-            "schema": "prismaquant.cost_stage_checkpoint.unit.v1",
-            "stage": stage, "qname": qname,
-            "identity_sha256": identity_sha256,
-            "payload_sha256": hashlib.sha256(payload).hexdigest(),
-            "payload": payload,
-        }
-        atomic_write_bytes(unit_path(parts, qname),
-                           pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL))
+    for qname, state in sorted(states.items()):
+        write_unit(parts, stage=stage, qname=qname,
+                   identity_sha256=identity_sha256, state=state)
     manifest = {
         "schema": MANIFEST_SCHEMA, "stage": stage,
         "identity_sha256": identity_sha256, "identity": canonical,
