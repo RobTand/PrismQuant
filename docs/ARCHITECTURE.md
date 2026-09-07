@@ -1,7 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `integration/native-panel-267`. Stamps
+As of: 2026-09-07 · `feat/packed-joint-aura`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `feat/packed-joint-aura`) for **joint costs for
+profile-declared packed source Linears** (#313). Opt-in streamed joint AURA
+with routed experts extends `PackedExpertProjection` views over the original
+packed Parameters. Views refresh after each shared streaming install/unload;
+one gradient hook per physical leaf distributes the existing gradient into its
+logical projections. The signed residual lease observes the unchanged packed
+`F.linear` or `F.grouped_mm` calls, validates packed transposes and cumulative
+expert row offsets, splits fused outputs according to the profile, and restores
+its taps on success or failure. An unobserved packed implementation refuses.
+Each source Linear receives its own aligned joint row, source/render identities
+and activation policy. Probe identities also seal each module's resolved attention
+and expert backend; a changed backend refuses checkpoint resume, and mutation
+during measurement refuses before that layer's rows are written. Repeated calls and the three local residual terms sum
+while signed within that Linear before squaring. The allocator's additive
+per-Linear objective is unchanged. Original decoded `ProductionWeightCache`
+entries are required; the dense-only on-demand renderer refuses before the
+source forward. LFM exposes 96 w1/w3/w2 source rows per 32-expert block, while
+native runtime binding still assigns one whole-block measurement to that roster.
+Gates: `tests/test_joint_aura_packed.py`, `tests/test_joint_aura_lease_lifetime.py`.
 
 Re-stamped (2026-09-07, `integration/native-panel-267`) for **exact calibration
 draw intake** (#267, #237). The shared AURA CLI accepts an independently hashed

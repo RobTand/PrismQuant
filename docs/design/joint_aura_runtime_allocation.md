@@ -39,6 +39,28 @@ not uncertainty over new calibration data or evidence of generalization.
 The additive sum of local quadratic prices is still a model approximation;
 it does not establish the quality of every joint assignment.
 
+### Packed source projections
+
+`--include-routed-experts` with streamed joint AURA also accepts the existing
+profile-declared `PackedExpertProjection` views. A packed source is observed
+through its actual per-expert `F.linear` slices or `F.grouped_mm` packed
+transposes and cumulative expert row offsets. Its model, expert backend, routing
+and source arithmetic remain intact. Fused gate/up output gradients are split using those
+exact views. Source views refresh at each streaming install and unload, and a
+single hook on each packed leaf serves its logical members. An implementation
+that bypasses the declared Linear boundaries refuses instead of emitting an
+unobserved zero price. A genuinely unrouted member still receives aligned zero
+samples.
+
+The LFM packed block produces 96 source-Linear rows (32 experts times w1/w3/w2),
+with each member's actual rendered weight and activation policy. These require
+original decoded production-cache entries; the on-demand dense renderer is not
+an adapter for packed sources and refuses early. All repeated uses of the SAME
+logical Linear sum while signed before squaring. Different members remain
+separate unary prices under the existing additive objective. A whole-block
+runtime measurement binds the complete roster without inventing a group quality
+price; the explicitly requested diagnostics below remain available.
+
 ## Assignment diagnostics
 
 `joint_aura.assignment_probe_summary` and `paired_assignment_difference`
