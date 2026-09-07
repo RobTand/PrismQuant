@@ -61,6 +61,7 @@ def run_profile(output, command, *, profiler, rate):
         if path.is_file():
             blob = path.read_bytes()
             result["artifacts"][path.name] = {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+    result["sampler_log"] = (output / "sampler.log").read_text()
     child = result["child"]
     result["passed"] = (sampled.returncode == 0 and isinstance(child, dict)
                         and child.get("command") == command and type(child.get("returncode")) is int

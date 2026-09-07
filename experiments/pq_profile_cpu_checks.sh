@@ -2,7 +2,7 @@
 set -euo pipefail
 if [ "$(uname -m)" != x86_64 ] && [ "${PQ_PROFILE_CONTAINER:-0}" != 1 ]; then
   image=eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c
-  exec docker run --rm --user "$(id -u):$(id -g)" \
+  exec docker run --cap-add SYS_PTRACE --security-opt seccomp=unconfined --rm --user "$(id -u):$(id -g)" \
     -v "$PWD:/workspace:ro" -v /mnt/shared:/mnt/shared -w /workspace --entrypoint bash \
     -e PQ_PROFILE_CONTAINER=1 -e PYTHONDONTWRITEBYTECODE=1 \
     -e CUDA_VISIBLE_DEVICES -e NVIDIA_VISIBLE_DEVICES=void \
