@@ -1,0 +1,107 @@
+{
+  "schema": "prismaquant.joint_projection_qualification.v1",
+  "status": "qualified",
+  "build": {
+    "source_sha256": "17d100e93d552b8566e58c3764f2aa8d9d5d93746ccd6802db26b6e124344a80",
+    "binary_sha256": "9305c183c5214dc5ff1f73382963f8275eb1b6197cb8d173c6a93bffd700c115",
+    "cpp_flags": [
+      "-O3"
+    ],
+    "cuda_flags": [
+      "-O3",
+      "--fmad=false",
+      "--ftz=false",
+      "--prec-div=true",
+      "--prec-sqrt=true",
+      "-lineinfo"
+    ],
+    "arch_list": "12.1",
+    "module_name": "pq_joint_projection_reduce_17d100e93d552b85"
+  },
+  "runtime": {
+    "torch": "2.13.0+cu130",
+    "torch_git": "cf30153c4c131c8164ee7798e5022d810682e2cb",
+    "cuda": "13.0",
+    "headers": {
+      "ATen/native/cuda/Reduce.cuh": "ef9bea8fdfd03cec2d7e7421cbe75d98fddfdaafddb4f25a1ed655c5861dfb65",
+      "ATen/native/cuda/MemoryAccess.cuh": "972ade42c472053033ee75a75c18a279517a20e208bfea278c99f8accb6ba46e",
+      "ATen/native/cuda/thread_constants.h": "61e0f733a01a729f96036cd84b78645731d126534f3ecc972a3e91d3c37416d2",
+      "ATen/cuda/DeviceUtils.cuh": "724844fa2f9ee79699ac19a1e80d0a31ad0a25ffdde326a7d4067e6190b0945f",
+      "ATen/TensorIterator.h": "078c3720cfc9e4b211f5ca5d21e6c2b2068ae35d723527e138c2eb214cf13116"
+    },
+    "machine": "aarch64",
+    "device": {
+      "name": "NVIDIA GB10",
+      "major": 12,
+      "minor": 1,
+      "multi_processor_count": 48
+    },
+    "compiler": {
+      "nvcc_version": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:57:39_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0\n",
+      "cxx_version": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    }
+  },
+  "qualified_shapes": [
+    [
+      512,
+      2048
+    ],
+    [
+      1792,
+      2048
+    ],
+    [
+      2048,
+      1792
+    ],
+    [
+      2048,
+      2048
+    ],
+    [
+      2048,
+      7168
+    ],
+    [
+      7168,
+      2048
+    ]
+  ],
+  "evidence": [
+    {
+      "pb_action": "24c59324f3d263a30450fa3ffb88e0d5389317da40a162f5833813da5b2fcbae",
+      "gate": "208 individual FP32 reductions and four actual-source seven-rung probes; bit-exact",
+      "artifact_receipt_sha256": "4c54fa604496fb06a2c275616506fd7d6d8ab6029e24080a15ef98d5917985b5"
+    },
+    {
+      "pb_action": "2953d23e60517f4bfcc998008d60dc35e3361781283d8148e7d69e23211c4a0c",
+      "unit": "model.layers.0.feed_forward.w1",
+      "gate": "52 individual reductions and four seven-rung projections, real captured X/source/renders and seeded qualification cotangents; bit-exact",
+      "artifact_receipt_sha256": "f61d5c54e1f6669a151a4cb4235353a2ded64bd00e16d05274b1f9b2fe6f8511"
+    },
+    {
+      "pb_action": "269e5ae7e381086adec9fce92ee0ba99fbef5600e28c8ec00a892c3200a70c2e",
+      "unit": "model.layers.0.feed_forward.w2",
+      "gate": "52 individual reductions and four seven-rung projections, real captured X/source/renders and seeded qualification cotangents; bit-exact",
+      "artifact_receipt_sha256": "3e8c1fb070b52d71321f4dfd9346e612daf1c6fa0b58a53bf643422d4b865f83"
+    },
+    {
+      "pb_action": "f4f13a24bf9e8e3761f0dd5fb5f1c3571df711fcfbf19f2f7ee58ab152dd3a58",
+      "unit": "model.layers.10.self_attn.k_proj",
+      "gate": "52 individual reductions and four seven-rung projections, real captured X/source/renders and seeded qualification cotangents; bit-exact",
+      "artifact_receipt_sha256": "2a91f07e3ea2c93ccb3a53bab65ddc2f13d97a7e5c6e3dbeb0eb93e23617a6eb"
+    },
+    {
+      "pb_action": "f6cd1965e4fe417ef859c89311366f7573110bbf77645fad0e336267d909c351",
+      "unit": "model.layers.10.self_attn.q_proj",
+      "gate": "52 individual reductions and four seven-rung projections, real captured X/source/renders and seeded qualification cotangents; bit-exact",
+      "artifact_receipt_sha256": "ab36232c28b9b8fd3a79087e8977c564edbab52e7d06d4e2e82911cb2ce3a901"
+    },
+    {
+      "pb_action": "f2d04f245e367a3a9c14a3baaaf184dbca63e9bed5134778925b06e5bd67788f",
+      "unit": "model.layers.23.feed_forward.experts.0.w2",
+      "gate": "52 individual reductions and four seven-rung projections, real captured X/source/renders and seeded qualification cotangents; bit-exact",
+      "artifact_receipt_sha256": "932e63e81cd32b435711b33429c25bd654fa645dd5ad2abd4c6706e567a09185"
+    }
+  ]
+}

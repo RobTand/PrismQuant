@@ -1,7 +1,42 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `perf/joint-prepare-single-read`. Stamps
+As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/joint-fused-promotion-20260907`) for **explicit
+qualified joint-projection backends**. The joint anchor plan retains the native
+`torch` multiplication/sum reference by default. Its optional
+`execution.projection_backend` selects `fused_fp32_v1` only with an independently
+SHA256-bound prebuilt extension. The existing joint lease uses the selected
+backend at its weight, activation, and mixed product/reductions, preserving FP32
+leaf rounding, PyTorch's native reduction tree, GEMMs, invocation/format/probe
+order, QDQ and signed accumulation. No cache or activation residency owner is
+replaced; the backend retains code modules and device-prewarm markers only.
+
+`joint_projection_backend.py` verifies the packaged qualification before
+loading: exact Torch/version/git/CUDA, reduction header hashes, compiler identity,
+source/compiler flags, GB10 device geometry, and actual loaded binary SHA256.
+Production never JIT-builds an unqualified replacement. Prewarm launches a
+transient zero-matrix check before source/projection hot execution; a lease
+refuses a selector that has not been prewarmed, a different device, or an
+unqualified matrix shape. The six original-census shapes are explicitly
+qualified; ineligible alignment/layout/dtype retains the reference expression.
+Runtime/backend identity is sealed in prepared PWC metadata, completion,
+probe arithmetic and resumable operator identities. This changes prepared,
+probe, operator and joint-run schemas to **v2**: v1 prepared and signed artifacts
+require fresh preparation and recomputation, including when choosing `torch`.
+There is no legacy-cache adoption or checkpoint identity override.
+
+The exact-tree kernel's local actual-source evidence is 208 bit-exact individual
+reductions and four seven-rung signed/forward/backward comparisons; five
+additional original source/capture/rung geometry gates each add 52 exact
+reductions using explicitly seeded qualification cotangents. These cover all
+six matrix shapes in the first model's 2142-unit census. They do not establish
+full-model timing or served quality. The opt-in does not change a format,
+serving gate, allocator objective, calibration draw or pipeline default.
+Gates: `tests/test_joint_projection_backend.py`, `tests/test_joint_projection_reduce.py`,
+the retained-source production-lease replay and
+`docs/results/joint_projection_backend_promotion_2026-09-07.md`.
 
 Re-stamped (2026-09-07, `perf/joint-prepare-single-read`) for **verified
 single-read PWC preparation**. Joint-anchor preparation performs complete
