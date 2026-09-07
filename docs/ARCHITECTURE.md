@@ -1,7 +1,13 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `perf/joint-prepare-single-read`. Stamps
+As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **GLM live KDA
+pin aliases**. The profile's existing immutable attention scope also names
+`self_attn.forget_gate.f_a_proj` and `f_b_proj`, the live spellings produced by
+checkpoint conversion. Both source and live names remain pinned.
+Gate: `tests/test_glm5_next_pinned_names.py`.
 
 Re-stamped (2026-09-07, `perf/joint-prepare-single-read`) for **verified
 single-read PWC preparation**. Joint-anchor preparation performs complete
