@@ -3448,6 +3448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dtype=dt,
             offload_folder=offload_dir,
             profile=profile,
+            attn_implementation="eager",
         )
     else:
         load_kwargs = dict(

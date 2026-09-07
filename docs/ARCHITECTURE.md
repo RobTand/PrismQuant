@@ -1,7 +1,16 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/campaign-batched-anchors`. Stamps
+As of: 2026-09-07 · `fix/lfm-streamed-parity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **AURA attention
+backend parity**. AURA explicitly requests eager attention in both resident
+checkpoint and streamed skeleton construction. The shared streaming builder
+passes an optional explicit `attn_implementation` through the auto-model and
+resolved-class construction routes; callers that omit it retain Transformers'
+backend selection. Together with checkpoint initialization and buffer precision,
+this makes the LFM BF16 source forward comparable on the same exact token draw;
+it does not loosen the full-vocabulary tolerance or quantization gates.
 
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **declared buffer
 precision in shared checkpoint loading**. Resident materialization and streamed

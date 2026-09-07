@@ -1143,6 +1143,7 @@ def _build_streaming_context(model_path: str, *,
                              log_prefix: str = "[streaming]",
                              multimodal: bool = False,
                              visual_requires_grad: bool = False,
+                             attn_implementation: str | None = None,
                              ) -> StreamingContext:
     """One-time setup: AutoConfig + empty skeleton, then manually
     materialize only the always-resident head pieces. Decoder layers
@@ -1209,13 +1210,15 @@ def _build_streaming_context(model_path: str, *,
     config, model_cls = _skeleton_config_and_class(
         config, multimodal=multimodal, log_prefix=log_prefix)
 
+    attention_kwargs = ({"attn_implementation": attn_implementation}
+                        if attn_implementation is not None else {})
     with _mask_cuda_queries_during_meta_init(log_prefix):
         with init_empty_weights():
             if model_cls is AutoModelForCausalLM:
                 skeleton = AutoModelForCausalLM.from_config(
-                    config, trust_remote_code=True)
+                    config, trust_remote_code=True, **attention_kwargs)
             else:
-                skeleton = model_cls._from_config(config)
+                skeleton = model_cls._from_config(config, **attention_kwargs)
     skel_base, skel_layers = _get_layer_list(skeleton)
     base_prefix = _resolve_base_prefix(skeleton, skel_base)
     num_layers = len(skel_layers)
