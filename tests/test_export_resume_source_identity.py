@@ -254,7 +254,7 @@ def test_source_identity_never_degrades_to_none(tmp_path):
     raise, not stamp a null the next run can match."""
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="no safetensors shards"):
         _fingerprint(empty)
 
 

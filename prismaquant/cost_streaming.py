@@ -414,6 +414,168 @@ def _local_checkpoint_shards(
     return None, None
 
 
+SOURCE_CHECKPOINT_IDENTITY_SCHEMA = (
+    "prismaquant.source_checkpoint.identity.v1"
+)
+SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA = (
+    "prismaquant.source_checkpoint.digest_cache.v1"
+)
+
+
+def _read_source_checkpoint_digest_cache(
+    cache_path: Path,
+) -> dict[str, dict[str, object]]:
+    """Digests keyed by the six-field stat fingerprint of the file they cover.
+
+    A corrupt or foreign cache is not an error: it simply reuses nothing, and
+    every shard is hashed. The cache can only ever make the identity CHEAPER,
+    never different -- the fingerprint it keys on includes ``ctime_ns``, which
+    ``utime`` cannot restore after an in-place same-size rewrite.
+    """
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA
+    ):
+        return {}
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return {}
+    reusable: dict[str, dict[str, object]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        fingerprint = entry.get("fingerprint")
+        digest = str(entry.get("sha256", "")).lower()
+        if (
+            not isinstance(fingerprint, dict)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            continue
+        reusable[canonical_fingerprint_key(fingerprint)] = {
+            "fingerprint": fingerprint,
+            "sha256": digest,
+        }
+    return reusable
+
+
+def canonical_fingerprint_key(fingerprint: dict[str, object]) -> str:
+    return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+
+
+def build_source_checkpoint_identity(
+    source_model: str | Path,
+    *,
+    extra_shard_paths: object = (),
+    digest_cache_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Content identity of the exact safetensors byte set a run consumes.
+
+    This is the runner-free half of :func:`build_streamed_model_identity`, for
+    consumers that hold a checkpoint path rather than a live streaming runner
+    -- the standalone compressed-tensors export resume cache is the first
+    (PrismaQuant #340). It binds file CONTENT, so a same-size, same-header
+    value edit is a different source, and the same bytes under a different
+    directory are the same source.
+
+    ``digest_cache_path`` makes the read happen once per (file, machine): a
+    shard whose complete stat fingerprint still matches reuses its recorded
+    digest, so a resume costs one ``stat`` per shard instead of a full
+    checkpoint read. Without it, every call hashes every shard.
+    """
+    from prismaquant.cost_stage_checkpoint import canonical_json_sha256
+
+    root = Path(source_model)
+    _, indexed_shards = _local_checkpoint_shards(source_model)
+    shard_paths = {Path(path).resolve() for path in (indexed_shards or ())}
+    for path in extra_shard_paths or ():
+        shard_paths.add(Path(path).resolve())
+    missing = sorted(str(path) for path in shard_paths if not path.is_file())
+    if missing:
+        raise RuntimeError(
+            f"source checkpoint identity references missing shards: "
+            f"{missing[:8]}"
+        )
+    if not shard_paths:
+        raise RuntimeError(
+            f"source checkpoint identity found no safetensors shards under "
+            f"{root}; refusing to stamp an unidentified source"
+        )
+    ordered = sorted(shard_paths, key=str)
+
+    reusable = (
+        _read_source_checkpoint_digest_cache(Path(digest_cache_path))
+        if digest_cache_path is not None
+        and Path(digest_cache_path).is_file()
+        else {}
+    )
+
+    entries: list[dict[str, object]] = []
+    shards: list[dict[str, object]] = []
+    for path in ordered:
+        fingerprint = _streamed_identity_stat_fingerprint(path)
+        cached = reusable.get(canonical_fingerprint_key(fingerprint))
+        digest = str(cached["sha256"]) if cached is not None else None
+        if digest is None:
+            digest = _file_sha256(path)
+            if _streamed_identity_stat_fingerprint(path) != fingerprint:
+                raise RuntimeError(
+                    f"source checkpoint shard changed while hashing: {path}"
+                )
+        entries.append({"fingerprint": fingerprint, "sha256": digest})
+        # Name the shard by its position INSIDE the checkpoint, never by the
+        # absolute path: relocating a checkpoint does not change its bytes,
+        # and a path-keyed identity would refuse every moved resume.
+        try:
+            name = str(path.relative_to(root.resolve()))
+        except ValueError:
+            name = path.name
+        shards.append({
+            "name": name,
+            "size": int(fingerprint["size"]),
+            "sha256": digest,
+        })
+    shards.sort(key=lambda row: (str(row["name"]), str(row["sha256"])))
+
+    identity = {
+        "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
+        "shards": shards,
+        "content_sha256": canonical_json_sha256(
+            {
+                "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
+                "shards": shards,
+            },
+            where="source checkpoint content identity",
+        ),
+    }
+
+    if digest_cache_path is not None:
+        from prismaquant.cost_stage_checkpoint import atomic_write_bytes
+
+        try:
+            atomic_write_bytes(
+                Path(digest_cache_path),
+                json.dumps(
+                    {
+                        "schema": SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA,
+                        "entries": entries,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8"),
+            )
+        except OSError:
+            # The digest cache is an optimization. A read-only or full cache
+            # directory costs a re-read next time; it never changes identity.
+            pass
+    return identity
+
+
 def _read_streamed_model_identity_cache(
     cache_path: Path,
     *,

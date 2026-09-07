@@ -6548,59 +6548,19 @@ def materialize_tensors_streaming(
     cache_path = Path(export_cache_dir) if export_cache_dir else None
     if cache_path is not None:
         cache_path.mkdir(parents=True, exist_ok=True)
-
-        # Cache fingerprint (codex review #2): bind the cache to the
-        # quality-affecting state. If any of these change between runs,
-        # the cache is silently wrong because the saved layer tensors
-        # were quantized under a different recipe. Write/check a
-        # manifest.json; mismatch invalidates the cache wholesale.
-        import json as _json
-        fp_state = _render_lever_provenance()
-        # Hash the assignment dict (layer_config recipe) too — recipe
-        # changes invalidate per-Linear quantization output.
-        try:
-            fp_state["assignment_hash"] = hashlib.sha256(
-                _json.dumps(assignment, sort_keys=True).encode()
-            ).hexdigest()[:16]
-        except Exception:
-            fp_state["assignment_hash"] = None
-
-        manifest_path = cache_path / "manifest.json"
-        if manifest_path.exists():
-            try:
-                with manifest_path.open() as _f:
-                    prev = _json.load(_f)
-                if prev != fp_state:
-                    diff_keys = sorted(
-                        set(prev.keys()) | set(fp_state.keys())
-                    )
-                    diffs = [
-                        k for k in diff_keys
-                        if prev.get(k) != fp_state.get(k)
-                    ]
-                    print(f"[export-stream] cache fingerprint MISMATCH "
-                          f"(differs in: {diffs}); invalidating cache",
-                          flush=True)
-                    for _f in cache_path.glob("layer_*.pt"):
-                        _f.unlink()
-                    with manifest_path.open("w") as _f:
-                        _json.dump(fp_state, _f, indent=2)
-                else:
-                    print(f"[export-stream] cache fingerprint match — "
-                          f"resumable from {len(list(cache_path.glob('layer_*.pt')))} "
-                          f"layers", flush=True)
-            except Exception as _e:
-                print(f"[export-stream] cache manifest unreadable "
-                      f"({_e}); invalidating cache", flush=True)
-                for _f in cache_path.glob("layer_*.pt"):
-                    _f.unlink()
-                with manifest_path.open("w") as _f:
-                    _json.dump(fp_state, _f, indent=2)
-        else:
-            with manifest_path.open("w") as _f:
-                _json.dump(fp_state, _f, indent=2)
-            print(f"[export-stream] wrote cache fingerprint to {manifest_path}",
-                  flush=True)
+        # The fingerprint is computed ONLY when a cache dir was asked for, so
+        # the source hash never touches an export that is not resumable.
+        _admit_export_resume_cache(
+            cache_path,
+            _export_resume_fingerprint(
+                assignment=assignment,
+                model_path=model_path,
+                dtype=dtype,
+                declared_buffer_dtypes=declared_buffer_dtypes,
+                extra_shard_paths=set(weight_shard.values()),
+                digest_cache_path=cache_path / "source_identity_cache.json",
+            ),
+        )
 
     def _layer_cache_file(L: int) -> Path | None:
         return None if cache_path is None else cache_path / f"layer_{L:03d}.pt"
@@ -8521,15 +8481,136 @@ def compute_extra_ignore(
     return extra_ignore
 
 
+def _export_resume_fingerprint(
+    *,
+    assignment: dict,
+    model_path: str,
+    dtype: "torch.dtype",
+    declared_buffer_dtypes: dict,
+    extra_shard_paths: object = (),
+    digest_cache_path: str | Path | None = None,
+) -> dict:
+    """Everything a `layer_NNN.pt` payload is only valid under.
+
+    `_render_lever_provenance()` says how the export renders; this adds WHAT
+    it renders. Before #340 the manifest carried the levers and the recipe
+    hash alone, so a cache dir reused against a different checkpoint replayed
+    the first checkpoint's quantized bytes -- the levers matched, the
+    assignment matched, and no field named the source.
+
+    Three bindings, all of which a replayed payload silently bakes in:
+
+    * ``source_identity`` -- the sha256 of every safetensors shard the run
+      consumes (`build_source_checkpoint_identity`). Content, not path: a
+      relocated checkpoint still resumes, a same-size value edit does not.
+    * ``requested_dtype`` -- the parameter dtype the source read narrows to.
+    * ``declared_buffer_dtypes`` -- the skeleton's persistent-buffer dtype
+      map, which is what the reader restores buffers to (#311/PR #325). The
+      policy STAMP alone says the reader is correct; the map says it was
+      handed the same declarations.
+
+    Nothing here may degrade to ``None``: the manifest comparison is
+    equality, and ``None == None`` admits. A source that cannot be identified
+    raises instead.
+    """
+    import hashlib
+
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    fp_state = _render_lever_provenance()
+    fp_state["assignment_hash"] = hashlib.sha256(
+        json.dumps(assignment, sort_keys=True).encode()
+    ).hexdigest()[:16]
+    fp_state["source_identity"] = build_source_checkpoint_identity(
+        model_path,
+        extra_shard_paths=extra_shard_paths,
+        digest_cache_path=digest_cache_path,
+    )
+    fp_state["requested_dtype"] = str(dtype)
+    fp_state["declared_buffer_dtypes"] = {
+        str(name): str(value)
+        for name, value in sorted(dict(declared_buffer_dtypes).items())
+    }
+    return fp_state
+
+
+# The manifest keys without which replay cannot be authorized. A pre-#340
+# cache carries none of them, and a manifest that lost one is not a weaker
+# match -- it is unreadable, and refused on the same branch.
+_EXPORT_RESUME_REQUIRED_KEYS = (
+    "source_identity",
+    "requested_dtype",
+    "declared_buffer_dtypes",
+    "assignment_hash",
+)
+
+
+def _admit_export_resume_cache(cache_path: Path, fp_state: dict) -> bool:
+    """Decide whether `layer_*.pt` replay is admitted, BEFORE any is read.
+
+    Returns True when the cache may be resumed. On any refusal every
+    `layer_*.pt` is removed and the manifest is rewritten, so the caller's
+    per-layer `cf.exists()` check cannot find a stale payload afterwards.
+    """
+    manifest_path = cache_path / "manifest.json"
+
+    def _refuse(reason: str) -> bool:
+        removed = 0
+        for stale in cache_path.glob("layer_*.pt"):
+            stale.unlink()
+            removed += 1
+        with manifest_path.open("w") as handle:
+            json.dump(fp_state, handle, indent=2)
+        print(f"[export-stream] resume REFUSED ({reason}); "
+              f"discarded {removed} cached layers", flush=True)
+        return False
+
+    if not manifest_path.exists():
+        with manifest_path.open("w") as handle:
+            json.dump(fp_state, handle, indent=2)
+        print(f"[export-stream] wrote cache fingerprint to {manifest_path}",
+              flush=True)
+        return True
+
+    try:
+        with manifest_path.open() as handle:
+            prev = json.load(handle)
+        if not isinstance(prev, dict):
+            raise ValueError("manifest is not an object")
+    except Exception as exc:
+        return _refuse(f"cache manifest unreadable: {exc}")
+
+    absent = [k for k in _EXPORT_RESUME_REQUIRED_KEYS if k not in prev]
+    if absent:
+        return _refuse(
+            f"manifest predates the source-identity contract, missing {absent}")
+
+    if prev != fp_state:
+        diffs = [
+            key for key in sorted(set(prev) | set(fp_state))
+            if prev.get(key) != fp_state.get(key)
+        ]
+        return _refuse(f"fingerprint differs in: {diffs}")
+
+    print(f"[export-stream] cache fingerprint match — resumable from "
+          f"{len(list(cache_path.glob('layer_*.pt')))} layers", flush=True)
+    return True
+
+
 def _render_lever_provenance() -> dict:
     """The quality-affecting render state of this export run.
 
-    Two consumers, one definition: the per-layer export cache binds its
-    `manifest.json` to this dict (a change means the cached layer tensors were
-    quantized under a different recipe and the cache is silently wrong), and the
-    shipcard echoes it so an artifact carries the levers it was rendered under.
-    Keep the key set stable — changing it invalidates every in-flight export
-    cache.
+    Two consumers, one definition: the per-layer export cache folds this dict
+    into its `manifest.json` fingerprint (a change means the cached layer
+    tensors were quantized under a different recipe and the cache is silently
+    wrong), and the shipcard echoes it so an artifact carries the levers it was
+    rendered under. Keep the key set stable — changing it invalidates every
+    in-flight export cache.
+
+    This is HOW the export renders, not WHAT it renders. The source checkpoint
+    identity, the requested dtype and the declared buffer-dtype map belong to
+    the cache fingerprint only (`_export_resume_fingerprint`, #340); the
+    shipcard records the source through its own `source_model` field.
     """
     return {
         # Older layer_*.pt payloads may already contain narrowed persistent
