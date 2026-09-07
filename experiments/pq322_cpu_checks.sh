@@ -18,5 +18,5 @@ export PYTHONPATH="$PWD:$pq_target:/mnt/shared/tessera-measurements/first-model-
 export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 "$pq_python" -c 'import sys, torch, transformers, pytest; print({"python":sys.version, "torch":torch.__version__, "transformers":transformers.__version__, "pytest":pytest.__version__}, flush=True)'
-"$pq_python" -c 'import ast, pathlib; paths=["prismaquant/tessera_joint_aura.py", "experiments/pq322_anchor_wire_qualification.py", "tests/test_tessera_joint_aura.py"]; [compile(pathlib.Path(p).read_text(),p,"exec") for p in paths]; print("Touched Python modules compile",flush=True)'
+"$pq_python" -c 'import ast, pathlib; paths=["prismaquant/tessera_joint_aura.py", "prismaquant/production_weight_cache.py", "prismaquant/joint_aura.py", "experiments/pq322_anchor_file_io_ab.py", "experiments/file_read_audit.py", "tests/test_pwc_file_load_receipts.py", "tests/test_tessera_joint_aura.py", "tests/test_file_read_audit.py"]; [compile(pathlib.Path(p).read_text(),p,"exec") for p in paths]; print("Touched Python modules compile",flush=True)'
 exec "$pq_python" -m pytest "$@"
