@@ -13,7 +13,9 @@ logical projections. The signed residual lease observes the unchanged packed
 expert row offsets, splits fused outputs according to the profile, and restores
 its taps on success or failure. An unobserved packed implementation refuses.
 Each source Linear receives its own aligned joint row, source/render identities
-and activation policy; repeated calls and the three local residual terms sum
+and activation policy. Probe identities also seal each module's resolved attention
+and expert backend; a changed backend refuses checkpoint resume, and mutation
+during measurement refuses before that layer's rows are written. Repeated calls and the three local residual terms sum
 while signed within that Linear before squaring. The allocator's additive
 per-Linear objective is unchanged. Original decoded `ProductionWeightCache`
 entries are required; the dense-only on-demand renderer refuses before the

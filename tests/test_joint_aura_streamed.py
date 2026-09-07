@@ -238,3 +238,34 @@ def test_joint_transient_anchor_renderer_is_consumed_and_resumed(tmp_path, monke
     assert first["costs"] == second["costs"]
     assert context.install_calls == 0
     assert renderer.render_count == 0
+
+
+@pytest.mark.parametrize('field', ['_attn_implementation', '_experts_implementation'])
+def test_joint_resume_binds_private_source_backend(tmp_path, monkeypatch, field):
+    from types import SimpleNamespace
+    monkeypatch.setattr(aura, '_checkpoint_git_commit', lambda: '1' * 40)
+    model, _, runner, cache = _fixture()
+    model.model.layers[0].config = SimpleNamespace(**{field: 'eager'})
+    _run(runner, cache, checkpoint_dir=tmp_path)
+    model, context, runner, cache = _fixture()
+    model.model.layers[0].config = SimpleNamespace(**{field: 'changed_backend'})
+    with pytest.raises(RuntimeError, match='identity mismatch'):
+        _run(runner, cache, checkpoint_dir=tmp_path, resume=True)
+    assert context.install_calls == 0
+
+
+def test_joint_refuses_backend_mutation_before_writing_layer_rows(tmp_path):
+    from types import SimpleNamespace
+    model, context, runner, cache = _fixture()
+    layer = model.model.layers[0]
+    layer.config = SimpleNamespace(_experts_implementation='eager')
+    def mutate(*args):
+        layer.config._experts_implementation = 'changed_backend'
+    handle = layer.register_forward_pre_hook(mutate)
+    try:
+        with pytest.raises(RuntimeError, match='backend changed during measurement'):
+            _run(runner, cache, checkpoint_dir=tmp_path)
+    finally:
+        handle.remove()
+    assert context.active == set()
+    assert not list(tmp_path.glob('units/*.pkl'))

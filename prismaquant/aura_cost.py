@@ -2066,6 +2066,7 @@ def compute_aura_cost_streamed(
         from prismaquant.joint_aura import (
             SignedJointProjectionLease, activation_identity, arithmetic_identity,
             identity_sha256, make_joint_aura_entry, prefetch_joint_cache, squared_signed,
+            source_execution_identity,
             validate_joint_aura_entry,
         )
         from prismaquant.production_weight_cache import _cb_cache_tensor_identity
@@ -2080,6 +2081,7 @@ def compute_aura_cost_streamed(
             "token_scope": token_scope, "temperature": temperature,
             "distribution": "rademacher", "normalization": "global_kl_fisher",
             "producer_source_sha256": _aura_source_sha256(),
+            "source_execution": source_execution_identity(runner.model),
             "arithmetic": arithmetic_identity(runner.dtype),
         }
         # Hash actual decoded production outputs before checkpoint admission,
@@ -2959,6 +2961,8 @@ def compute_aura_cost_streamed(
                     handle.remove()
 
             if joint_activation:
+                if source_execution_identity(runner.model) != joint_probe_identity["source_execution"]:
+                    raise RuntimeError("joint AURA source execution backend changed during measurement")
                 for name in pending:
                     joint_rows[name] = {}
                     for fmt in unit_formats[name]:

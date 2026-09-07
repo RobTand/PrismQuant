@@ -71,6 +71,28 @@ def activation_identity(spec, activation_max_abs: Mapping, qname: str) -> dict:
     }
 
 
+def source_execution_identity(model) -> dict:
+    """Bind resolved dispatch selectors omitted by Transformers config dumps.
+
+    Include module-local configs because a model may override a single layer's
+    backend without changing the root config or any checkpoint tensor.
+    """
+    modules = {}
+    for name, module in model.named_modules():
+        config = getattr(module, "config", None)
+        selectors = {}
+        for label, field in (("attention", "_attn_implementation"),
+                             ("experts", "_experts_implementation")):
+            if config is not None and hasattr(config, field):
+                # Take an independent JSON value, so later config mutation
+                # cannot mutate the sealed identity through a shared dict.
+                selectors[label] = json.loads(json.dumps(
+                    getattr(config, field), sort_keys=True, allow_nan=False))
+        if selectors:
+            modules[name] = selectors
+    return {"schema": "prismaquant.joint_aura.source_execution.v1", "modules": modules}
+
+
 def arithmetic_identity(measurement_dtype) -> dict:
     return {
         "projection_dtype": "torch.float32", "delta_dtype": "torch.float32",
