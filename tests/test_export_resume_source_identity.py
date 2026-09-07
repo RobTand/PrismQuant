@@ -3,10 +3,12 @@
 `materialize_tensors_streaming(..., export_cache_dir=...)` saves each
 quantized layer to `layer_NNN.pt` and, on a restart, replays those payloads
 instead of re-reading the source. Admission was decided by
-`_render_lever_provenance()` plus `assignment_hash` alone, so a cache dir
-reused against a DIFFERENT checkpoint replayed the first checkpoint's
-quantized bytes: the render levers and the recipe both still matched, and
-nothing in the manifest named the source (#340).
+`_render_lever_provenance()` alone, so a cache dir reused against a DIFFERENT
+checkpoint replayed the first checkpoint's quantized bytes: the render levers
+still matched and nothing in the manifest named the source (#340). The
+`assignment_hash` beside them was no help either -- `hashlib` was in scope
+nowhere inside that function, so the call raised NameError, the surrounding
+`except Exception` stamped null, and the recipe was never compared.
 
 These tests drive the real exporter on a tiny synthetic checkpoint. They
 assert on the admission decision (was a `layer_*.pt` read at all?) and on the
@@ -316,3 +318,44 @@ def test_a_symlink_snapshot_is_the_same_source_as_the_plain_directory(tmp_path):
 
     assert (build_source_checkpoint_identity(str(plain))["content_sha256"]
             == build_source_checkpoint_identity(str(snapshot))["content_sha256"])
+
+
+# --------------------------------------------------------------------------
+# The recipe. On main `hashlib` was in scope nowhere inside
+# `materialize_tensors_streaming`, so `hashlib.sha256(...)` raised NameError,
+# the surrounding `except Exception` stamped `assignment_hash: null`, and two
+# runs under DIFFERENT recipes compared equal. The swallow is gone; these keep
+# it gone.
+# --------------------------------------------------------------------------
+
+def test_assignment_hash_is_a_real_digest(tmp_path):
+    source = tmp_path / "source"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+
+    empty = _fingerprint(source)["assignment_hash"]
+    assert isinstance(empty, str) and len(empty) == 16
+    int(empty, 16)  # raises unless it is really a hex digest
+
+    other = _fingerprint(
+        source, assignment={"model.layers.0.proj": "BF16"})["assignment_hash"]
+    assert empty != other
+
+
+def test_recipe_change_refuses_replay(tmp_path):
+    """Admission is the seam the exporter calls before reading any payload."""
+    source = tmp_path / "source"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+    cache = tmp_path / "resume"
+    cache.mkdir()
+
+    first = _fingerprint(source, assignment={"model.layers.0.proj": "BF16"})
+    assert export._admit_export_resume_cache(cache, first) is True
+    (cache / "layer_000.pt").write_bytes(b"payload")
+    assert export._admit_export_resume_cache(cache, first) is True, (
+        "an unchanged recipe stopped resuming")
+
+    second = _fingerprint(source, assignment={"model.layers.0.proj": "NVFP4"})
+    assert export._admit_export_resume_cache(cache, second) is False
+    assert not list(cache.glob("layer_*.pt")), (
+        "a recipe change left the previous recipe's payloads replayable")
+    assert json.loads((cache / "manifest.json").read_text()) == second

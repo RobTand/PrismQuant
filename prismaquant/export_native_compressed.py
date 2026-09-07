@@ -8493,10 +8493,15 @@ def _export_resume_fingerprint(
     """Everything a `layer_NNN.pt` payload is only valid under.
 
     `_render_lever_provenance()` says how the export renders; this adds WHAT
-    it renders. Before #340 the manifest carried the levers and the recipe
-    hash alone, so a cache dir reused against a different checkpoint replayed
-    the first checkpoint's quantized bytes -- the levers matched, the
-    assignment matched, and no field named the source.
+    it renders. Before #340 the manifest carried the levers alone, so a cache
+    dir reused against a different checkpoint replayed the first checkpoint's
+    quantized bytes -- the levers matched and no field named the source. The
+    `assignment_hash` beside them compared nothing: `hashlib` was in scope
+    nowhere inside `materialize_tensors_streaming`, so the call raised
+    NameError and the `except Exception` stamped a null on every manifest
+    ever written (measured on origin/main, PB action 41e6e63eb9dd). The
+    import is explicit here and there is no swallow: a recipe hash that
+    cannot be computed is a crash, not a null that matches the next null.
 
     Three bindings, all of which a replayed payload silently bakes in:
 
