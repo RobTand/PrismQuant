@@ -10,8 +10,11 @@ All fourteen verification records remained exactly equal to the previously
 qualified original oracle; eight corruption cases refused.
 
 This is a bounded preparation result. It does not establish a full-model
-speedup, change cost/resume behavior, or require discarding an already qualified
-prepared artifact. The original 2,142-unit, seven-candidate census represents
+speedup or change cost/resume behavior. An already qualified prepared artifact
+remains valid under its original frozen implementation. The current v1 source
+gate binds the complete PrismaQuant package, so running an updated implementation
+requires new preparation; this result does not authorize adopting or re-stamping
+the old artifact. The original 2,142-unit, seven-candidate census represents
 103.03125 GiB of rendered tensor payload, exceeding its 6 GiB layer PWC budget;
 a global scan therefore cannot guarantee later layer residency.
 
