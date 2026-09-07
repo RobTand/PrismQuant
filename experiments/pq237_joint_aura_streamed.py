@@ -45,6 +45,38 @@ def verify_source_manifest(root, path):
     return manifest
 
 
+def expected_currency_bindings(runner, calibration, protocol, model_identity, cache, renders):
+    """Seal dense qualification inputs before the producer returns any rows."""
+    from prismaquant import format_registry as fr
+    from prismaquant.aura_cost import _aura_source_sha256
+    from prismaquant.joint_aura import (
+        activation_identity, arithmetic_identity, identity_sha256, source_execution_identity,
+    )
+    from prismaquant.production_weight_cache import _cb_cache_tensor_identity
+
+    plan = protocol["plan"]
+    expected_probe = {
+        "schema": "prismaquant.joint_aura.probes.v2", "source_model": model_identity,
+        "calibration_sha256": _cb_cache_tensor_identity(calibration)["content_sha256"],
+        "calibration_shape": list(calibration.shape), "calibration_dtype": str(calibration.dtype),
+        "n_probes": protocol["n_probes"], "seed_base": protocol["seed_base"],
+        "token_scope": "causal", "temperature": 1.0, "distribution": "rademacher",
+        "normalization": "global_kl_fisher", "producer_source_sha256": _aura_source_sha256(),
+        "source_execution": source_execution_identity(runner.model),
+        "arithmetic": arithmetic_identity(runner.dtype),
+    }
+    expected_probe_sha256 = identity_sha256(expected_probe)
+    expected = {name: {fmt: identity_sha256({
+        "schema": "prismaquant.joint_aura.operator.v2", "qname": name, "format": fmt,
+        "source_weight": renders[name][fmt]["source_weight"],
+        "rendered_weight": renders[name][fmt]["rendered_weight"],
+        "activation": activation_identity(fr.get_format(fmt), cache.activation_max_abs, name),
+        "arithmetic": expected_probe["arithmetic"],
+        "probe_identity_sha256": expected_probe_sha256,
+    }) for fmt in formats} for name, formats in plan.items()}
+    return expected_probe, expected_probe_sha256, expected
+
+
 def load_candidate_payload(path, plan, operator_bindings, probe_sha256):
     """Validate persisted producer currency against independently held bindings.
 
@@ -452,12 +484,10 @@ def main():
     import transformers
     from transformers import AutoModelForCausalLM
     import tessera
-    from prismaquant.aura_cost import compute_aura_cost_streamed, _aura_source_sha256
+    from prismaquant.aura_cost import compute_aura_cost_streamed
     from prismaquant.cost_streaming import build_streamed_causal_lm, build_streamed_model_identity
-    from prismaquant.joint_aura import activation_identity, arithmetic_identity, identity_sha256, prefetch_joint_cache
-    from prismaquant import format_registry as fr
+    from prismaquant.joint_aura import arithmetic_identity, identity_sha256, prefetch_joint_cache
     from prismaquant.model_profiles import detect_profile
-    from prismaquant.production_weight_cache import _cb_cache_tensor_identity
 
     if not torch.cuda.is_available():
         raise RuntimeError("this qualification requires an admitted GPU action")
@@ -519,24 +549,8 @@ def main():
             identity_cache_path=out / "streamed-model-identity.json")
         # Bind the input contract before the producer returns any rows. Its
         # own self-consistent digest cannot authorize different probe inputs.
-        expected_probe = {
-            "schema": "prismaquant.joint_aura.probes.v2", "source_model": model_identity,
-            "calibration_sha256": _cb_cache_tensor_identity(calibration)["content_sha256"],
-            "calibration_shape": list(calibration.shape), "calibration_dtype": str(calibration.dtype),
-            "n_probes": protocol["n_probes"], "seed_base": protocol["seed_base"],
-            "token_scope": "causal", "temperature": 1.0, "distribution": "rademacher",
-            "normalization": "global_kl_fisher", "producer_source_sha256": _aura_source_sha256(),
-            "arithmetic": arithmetic_identity(torch.bfloat16),
-        }
-        expected_probe_sha256 = identity_sha256(expected_probe)
-        expected = {name: {fmt: identity_sha256({
-            "schema": "prismaquant.joint_aura.operator.v2", "qname": name, "format": fmt,
-            "source_weight": renders[name][fmt]["source_weight"],
-            "rendered_weight": renders[name][fmt]["rendered_weight"],
-            "activation": activation_identity(fr.get_format(fmt), cache.activation_max_abs, name),
-            "arithmetic": arithmetic_identity(torch.bfloat16),
-            "probe_identity_sha256": expected_probe_sha256,
-        }) for fmt in formats} for name, formats in plan.items()}
+        expected_probe, expected_probe_sha256, expected = expected_currency_bindings(
+            runner, calibration, protocol, model_identity, cache, renders)
         dump(out / "expected-currency-bindings.json", {
             "probe": expected_probe, "operator_identity_sha256_by_candidate": expected})
         with torch.no_grad():
