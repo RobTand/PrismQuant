@@ -2917,6 +2917,7 @@ def compute_aura_cost_streamed(
             finally:
                 if joint_lease is not None:
                     joint_lease.__exit__(None, None, None)
+                    joint_lease = None
                 for handle in hook_handles:
                     handle.remove()
 
@@ -2980,6 +2981,10 @@ def compute_aura_cost_streamed(
             for name in pending:
                 linears[name].weight.grad = None
                 linears[name].weight.requires_grad_(False)
+            # Loop locals and the lease otherwise retain the last layer's
+            # delta plane through the next source install/render window.
+            d_weights.clear()
+            result = delta = weight = None
             del d_weights
             runner.context.unload(layer)
 
