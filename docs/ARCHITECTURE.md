@@ -1,7 +1,28 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/campaign-batched-anchors`. Stamps
+As of: 2026-09-07 · `codex/selected-wire-materialization-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/selected-wire-materialization-20260907`) for
+**selected expert-wire materialization** (§4.10; #301). The allocator's opt-in
+`--tessera-materialization-plan` writes a versioned, non-exportable selection
+request before the existing complete-wire allocation gate. The request binds
+the original cost bytes and preserves packed decisions and sampled estimates.
+`tessera_materialization plan` turns census anchor stacks with missing selected
+wires into ordinary PrismaBuild rows; complete stacks require no new quantum.
+Each row captures only its selected source units on the same calibration draw,
+uses the campaign encoder and `ProductionWeightCache` (including its opt-in
+`--anchor-batch-size` adapter), verifies existing
+producer receipts, and journals only the selected missing renders. Finalization
+verifies source bytes, producer recipe, every selected wire, and exact equality
+of overlapping Hessians before binding the verified capture union and publishing
+the packed allocation through the existing receipt and priced-input gates.
+Static-scale preflight expands the explicit member map and checks each source
+scalar; unequal expert scales cannot be replaced by a packed scalar. The
+producer's source-unit plan view remains a downstream export product. No
+format, pricing estimate, production default or serving admission changes.
+Gates: `tests/test_tessera_materialization.py`,
+`tests/test_tessera_packed_export_scope.py`.
 
 Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
 expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
@@ -19,6 +40,7 @@ batch width and identify equally apportioned batch encoding time; that is
 accounting, not independently measured per-unit latency. Default width remains
 one pending performance qualification. No serving pin, wire recipe, cost
 currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
+
 
 Re-stamped (2026-09-07, `codex/first-model-integration-20260907`) for
 **campaign quanta in the declared Docker runtime** (§4.10). The shared fanout
@@ -6259,6 +6281,32 @@ twin of anything live — it is the only one of the two left, and §4.10 is its
 seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
+
+For a sampled allocation that selects source wires not yet encoded, the opt-in
+completion path is:
+
+```mermaid
+flowchart LR
+  costs[Sampled campaign costs] --> selection[Non-exportable packed selection request]
+  census[Calibration census] --> plan[Selected-wire PB manifest]
+  selection --> plan
+  plan --> groups[Census stack quanta: capture, verify, encode missing selected wires]
+  groups --> finalize[Verify receipts and Hessian union]
+  finalize --> gate[Existing strict allocation and priced-input gates]
+  gate --> allocation[Final packed allocation]
+```
+
+Run `python -m prismaquant.tessera_materialization plan --request REQUEST
+--census CENSUS --workspace WORKSPACE --spec CAMPAIGN_SPEC`, submit its
+`WORKSPACE/manifest.json` through PrismaBuild's published `pbcampaign.py`, and
+run `python -m prismaquant.tessera_materialization finalize --plan
+WORKSPACE/plan.json` inside an admitted action. `final/result.json` names the
+final allocation, capture, scales and wire directory for the export leg.
+The request itself is never an exporter input. Interrupted groups resume through
+the existing identity-bound journal; contradictory or unjournaled wire bytes
+refuse instead of being replaced. These selected wire measurements do not
+re-solve the allocation or turn sampled stack estimates into census prices.
+
 
 **Fan-out journal integrity.** Each source journal must pass the same
 manifest, unit identity and payload checksum checks as ordinary resume.

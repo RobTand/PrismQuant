@@ -1139,7 +1139,21 @@ def require_priced_export_inputs(
         tessera_serving_route, tessera_wire_recipe,
     )
 
-    selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
+    from .tessera_expert_projection import (
+        POPULATION_KEY, PROJECTION_KEY, ExpertProjectionError,
+        carried_units, expand_stack_decision_assignment,
+    )
+    assignment = load_assignment(assignment_path)
+    metadata = read_layer_config_metadata(assignment_path)
+    population = metadata.get(POPULATION_KEY)
+    if isinstance(population, Mapping) and population.get("stack_decisions"):
+        try:
+            _source, units, stack_of = carried_units(metadata.get(PROJECTION_KEY))
+            assignment, _owners = expand_stack_decision_assignment(
+                assignment, population, units=units, stack_of=stack_of)
+        except ExpertProjectionError as exc:
+            raise TesseraExportLaneError(f"expert projection: {exc}") from exc
+    selected = {name: fmt for name, fmt in assignment.items()
                 if fmt.startswith("TESSERA_")}
     report = {
         "hessian_required": False, "hessian": None,

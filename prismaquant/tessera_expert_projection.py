@@ -558,6 +558,23 @@ def expand_stack_decision_assignment(assignment: Mapping[str, Any], population: 
 
 def allocation_expert_projection_block(payload: Mapping[str, Any],
                                        assignment: Mapping[str, Any]) -> dict:
+    """Carry population/projection only after every selected receipt is present."""
+    return _allocation_expert_projection_block(payload, assignment, require_wires=True)
+
+
+def selection_expert_projection_block(payload: Mapping[str, Any],
+                                      assignment: Mapping[str, Any]) -> dict:
+    """Validate selection structure without claiming selected bytes exist.
+
+    This is only for a non-exportable materialization request. The public
+    allocation gate always requires every selected receipt.
+    """
+    return _allocation_expert_projection_block(payload, assignment, require_wires=False)
+
+
+def _allocation_expert_projection_block(payload: Mapping[str, Any],
+                                        assignment: Mapping[str, Any], *,
+                                        require_wires: bool) -> dict:
     """What an allocation carries about the expert population it selected from.
 
     A stock table (no population statement, no projection, no wires) adds no
@@ -663,6 +680,8 @@ def allocation_expert_projection_block(payload: Mapping[str, Any],
     if not isinstance(wire_dir, str) or not wire_dir:
         raise ExpertProjectionError(
             "cost table names no wire_dir for its priced expert wires")
+    if wires is None and not require_wires:
+        wires = {}
     if not isinstance(wires, Mapping):
         raise ExpertProjectionError(
             "cost table carries a producer projection but no priced expert wires")
@@ -674,6 +693,8 @@ def allocation_expert_projection_block(payload: Mapping[str, Any],
         family, q256 = parsed
         per_unit = wires.get(name)
         record = per_unit.get(fmt) if isinstance(per_unit, Mapping) else None
+        if record is None and not require_wires:
+            continue
         if record is None:
             raise ExpertProjectionError(
                 f"{name}: selected {fmt} has no priced wire receipt in the cost table; "
