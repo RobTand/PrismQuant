@@ -207,3 +207,23 @@ unknown. It produces operator evidence, not a complete runtime table: complete
 table admission still needs independently measured fixed/KV work and the
 serving-unit coverage required above. A readable research rung or a local
 operator parity result does not change the runtime pin or serving gates.
+
+
+The whole routed native bridge (`native_moe_panel.py`, #309) binds one complete
+32-expert LFM E4M3 K1 R1024 stack to all 96 ordered w1/w3/w2 members. It reuses
+`RuntimeBinding` over validated member rows on the same source and signed
+probes, without introducing a scalar group cost. Actual external top-k IDs and
+weights are retained before coercion; supported transport casts must round-trip
+losslessly. The reference calls the existing packed-expert operation and the
+shared QDQ at both input and intermediate boundaries. The scoped measurement
+protocol explicitly disables optional activation preclip and refuses clipped
+joint rows; the global default remains unchanged.
+
+The capture must carry the actual checkpoint initializer descriptor and eager
+backend, with source files/config and calibration bound to the member probes.
+LFM routing uses sigmoid, selection-only expert bias, normalization with its
+source epsilon and the captured final weights; the bridge never renormalizes
+them. A first-sequence M=1 prefix is only an operator shape check, not a served
+autoregressive measurement. Native resource evidence keeps runtime workspace
+separate from layer storage and incremental scratch. Operator observations
+still cannot supply a complete model-fixed or SLO/runtime table.

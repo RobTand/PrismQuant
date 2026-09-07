@@ -3,6 +3,19 @@
 As of: 2026-09-07 · `integration/native-panel-267`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `integration/native-moe-panel`) for **whole routed native
+operator evidence** (#309). `prismaquant.native_moe_panel` retains original
+routed inputs and all 96 ordered source/PWC/wire members of one 32-expert LFM
+stack. Canonical checkpoint initialization, actual eager attention, source
+files/config and exact calibration are required. The existing packed-expert
+reference applies the shared activation QDQ at both GEMM boundaries. Native
+measurements bind all aligned joint rows through `RuntimeBinding`; no new
+scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace
+is recorded separately from layer residency and per-apply scratch, with
+full-model fixed resources and workspace composition still unknown. This is a
+research boundary; no format, pin, serving gate or production default changes.
+Gate: `tests/test_native_moe_panel.py`.
+
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
 initialization**. The shared Transformers compatibility hook suppresses random
 initialization for from-config skeletons, but enables the genuine initializer
