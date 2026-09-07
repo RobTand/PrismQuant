@@ -122,7 +122,9 @@ def main():
         return dict(cgroup_current_bytes=current, cuda_reserved_bytes=reserved,
             conservative_cgroup_plus_cuda_reserved_bytes=current+reserved,
             host_mem_available_bytes=host['MemAvailable']*1024,
-            host_mem_total_bytes=host['MemTotal']*1024)
+            host_mem_total_bytes=host['MemTotal']*1024,
+            host_memory_bytes={name:host[name]*1024 for name in
+                ('MemFree','Cached','Buffers','Shmem','SReclaimable','SUnreclaim')})
 
     def check_guard(label):
         path = cgroot/'memory.current'
@@ -134,6 +136,10 @@ def main():
                 observed['host_mem_available_bytes'] < 8*1024**3):
             result.setdefault('memory_guard_failure', dict(label=label,time=time.time(),
                 **observed, requested_cap_bytes=args.physical_cap_gb*1024**3,
+                stats=proc_fields(cgroot/'memory.stat'),
+                cuda_allocated_bytes=torch.cuda.memory_allocated(),
+                cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+                cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(),
                 minimum_host_available_bytes=8*1024**3))
             guard_tripped.set()
         if guard_tripped.is_set():
@@ -368,6 +374,10 @@ def main():
                     check_guard('after_prefix_batch')
                 mark('source_prefix_layer_forward_complete', source_layer=layer,
                      samples=args.nsamples)
+                # Match _run_streamed_calibration.visit's existing boundary
+                # cleanup even though these prefix layers collect no H/X.
+                torch.cuda.empty_cache()
+                mark('source_prefix_layer_allocator_released', source_layer=layer)
 
             try:
                 runner.visit_layer_batches(tokens, visit)
