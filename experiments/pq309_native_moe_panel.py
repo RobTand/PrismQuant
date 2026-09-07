@@ -35,7 +35,6 @@ def dump(path, value):
 def prepare(args):
     import torch
     import transformers
-    from safetensors import safe_open
     from safetensors.torch import save_file
     from tessera import cached_unit
     from prismaquant.calibration_data import load_calibration_input
@@ -44,6 +43,7 @@ def prepare(args):
     from prismaquant.model_profiles import profile_from_model
     from prismaquant.tessera_calibration_cache import require_capture_contract, prefetch_capture
     from prismaquant.tessera_formats import parse_tessera_format_name
+    from prismaquant.tessera_expert_projection import carried_units, source_unit_weight
     from prismaquant.tessera_hessian import activation_source
 
     plan = json.loads(checked(args.plan, args.plan_sha256).read_text())
@@ -66,7 +66,8 @@ def prepare(args):
     unit, shape = routed["unit"], routed["shape"]
     _equal(unit, plan["unit"], "planned routed unit")
     _equal(routed["producer_source"], census["expert_projection"]["producer"]["source"], "boundary/census source")
-    source = routed["producer_source"]
+    source, projected_units, stack_of = carried_units(census["expert_projection"])
+    _equal(source, routed["producer_source"], "validated projected source")
     model_root = Path(census["model"]).resolve(strict=True)
     request = plan["probe_request"]
     for key, expected in (("source_model", str(model_root)), ("source_shards", source["files"]),
@@ -90,15 +91,21 @@ def prepare(args):
         cache = pickle.load(stream)
     weights = {}
     for member in members:
-        tensor_name = member["unit"] + ".weight"
-        with safe_open(str(model_root / source["tensors"][tensor_name]), framework="pt", device="cpu") as stream:
-            weights[member["unit"]] = stream.get_tensor(tensor_name).to("cuda:0")
+        name = member["unit"]
+        _equal(stack_of[name], unit, f"{name} producer stack")
+        projection = projected_units[name]
+        _equal(projection["expert"], member["expert"], f"{name} producer expert")
+        _equal([projection["rows"], projection["cols"]], member["shape"], f"{name} producer shape")
+        weights[name] = source_unit_weight(model_root, source, projection).to("cuda:0")
     (_, hessians, counts, _), prefetched = prefetch_capture(plan["capture"], expected_sha256=plan["capture_sha256"],
         expected_identity=capture["identity"], census=census, names=names, device="cuda:0")
     activation = activation_source(hessians, calibration)
     family, rung = parse_tessera_format_name(FORMAT)
-    encodings = {name: cached_unit.encoding_input_identity(weights[name], name, family.payload_grid(),
-                                                          int(rung), activation=activation) for name in names}
+    # The ordinary routed campaign seals unit_input_identity, which includes
+    # the producer projection. Re-derive that exact identity from the canonical
+    # census and actual source/H rather than rewrapping the original record.
+    encodings = {name: cached_unit.unit_input_identity(weights[name], projected_units[name], family.payload_grid(),
+                                                      int(rung), activation=activation) for name in names}
     del hessians, activation
     blobs, records, wire_inputs = {}, {}, []
     for member in members:

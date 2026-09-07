@@ -86,3 +86,26 @@ per-Linear joint probe, and clean-runtime native whole-stack qualification are
 integration dependencies still pending at this checkpoint. The source adapter
 has not yet executed its actual GPU preparation. No quality, speed, resource
 price, full-model allocation, export, or served claim follows from the CPU tests.
+
+
+## First real capture failure and correction
+
+The first fresh capture stopped before publishing a native boundary because
+three helper uses called `profile.name()` although the real LFM profile exposes
+`name` as a property. The synthetic protocol tests had not exercised that API.
+The capture owner's failed PB action was
+`35ab901ece41f8ef6a8f4c22672b383344e200e713f567c2afe357eb21a17c9a`.
+A new regression resolves the actual registered `Lfm2MoeProfile` and invokes
+the capture helper; it reproduced the same TypeError through PB
+`3aa003fedc62` before the fix. Commit `73650a41` changes all three accesses.
+PB `b04ac96ac1c3247ef9171eada4b6d4d24e87e13c31f4d330827ccca6d6e9fb0c`
+then passed all 48 native-MoE/profile tests, CPU-only, no skips, exit 0;
+receipt `a7f5047bc75c761e12ee4d16d87186e86482f0ce3352049c9eba985de4a40839`,
+CAS result independently rehashed. The failed capture has no reusable native
+boundary or complete canonical capture; the capture owner restarts it.
+
+The adapter uses the campaign's projection-aware `unit_input_identity`,
+independently derived from `carried_units` on the canonical census plus actual
+source weights and full Hessians. Original campaign wire records are preserved
+without rewrapping them as plain encoding-only records. The source weights are
+read through the existing `source_unit_weight` bridge.
