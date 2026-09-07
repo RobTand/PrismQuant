@@ -8576,6 +8576,8 @@ def _admit_export_resume_cache(cache_path: Path, fp_state: dict) -> bool:
         return False
 
     if not manifest_path.exists():
+        if next(cache_path.glob("layer_*.pt"), None) is not None:
+            return _refuse("cached layers have no manifest binding")
         with manifest_path.open("w") as handle:
             json.dump(fp_state, handle, indent=2)
         print(f"[export-stream] wrote cache fingerprint to {manifest_path}",

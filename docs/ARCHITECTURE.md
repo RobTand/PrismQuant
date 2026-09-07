@@ -3,6 +3,13 @@
 As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/pr348-orphan-cache-root`) for missing-manifest
+export-cache refusal. Existing `layer_*.pt` files without a manifest are
+discarded through the same refusal path as mismatched fingerprints before
+any layer can be replayed. A fresh empty cache retains its initialization
+behavior. Real streaming-export regressions check emitted bytes and absence
+of orphaned payload reads for both unchanged and changed source weights.
+
 Re-stamped (2026-09-07, `triage/340-export-resume-source-identity`) for the
 standalone compressed-tensors export resume cache's **source identity** (#340).
 `--export-cache-dir` replays `layer_NNN.pt` payloads whenever the manifest
