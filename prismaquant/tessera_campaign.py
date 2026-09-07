@@ -674,9 +674,12 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
         raise StackSampleError(
             f"{q}: h_trace_per_expert has {len(sample.h_trace_per_expert)} "
             f"entries for {sample.num_experts} experts")
+    if any(not math.isfinite(h) or h < 0.0 for h in sample.h_trace_per_expert):
+        raise StackSampleError(
+            f"{q}: per-expert Fisher weights must be finite and nonnegative")
     total = math.fsum(sample.h_trace_per_expert)
-    if not (sample.stack_h_trace > 0.0):
-        raise StackSampleError(f"{q}: probe h_trace is not positive")
+    if not math.isfinite(sample.stack_h_trace) or sample.stack_h_trace <= 0.0:
+        raise StackSampleError(f"{q}: probe h_trace must be finite and positive")
     # E terms summed at float32 storage precision: the worst-case accumulated
     # relative error is E * eps, so that IS the bound, computed per stack.
     tolerance = sample.num_experts * _FLOAT32_EPS * sample.stack_h_trace
@@ -691,12 +694,20 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
             f"{sample.num_experts} * float32 eps)")
     if not sample.sampled_experts:
         raise StackSampleError(f"{q}: no sampled experts")
+    if len(set(sample.sampled_experts)) != len(sample.sampled_experts):
+        raise StackSampleError(f"{q}: duplicate sampled expert id")
     for e in sample.sampled_experts:
         if not 0 <= e < sample.num_experts:
             raise StackSampleError(f"{q}: expert id {e} out of range")
         if e not in sample.inclusion_prob:
             raise StackSampleError(f"{q}: expert {e} has no inclusion probability")
-        pi = float(sample.inclusion_prob[e])
+    # Older callers carry only sampled probabilities. When the full frame is
+    # supplied, validate the unsampled entries too: zero-probability positive
+    # contributions and omitted certainty units both bias the stack total.
+    for e, probability in sample.inclusion_prob.items():
+        if not 0 <= e < sample.num_experts:
+            raise StackSampleError(f"{q}: expert id {e} out of range")
+        pi = float(probability)
         if pi == 0.0:
             # A zero-probability unit contributes an exactly-zero term ONLY if
             # its own weight is zero (a never-routed expert). Otherwise it is a
@@ -711,6 +722,8 @@ def _validate_stack_sample(sample: StackExpertSample) -> None:
         if not 0.0 < pi <= 1.0:
             raise StackSampleError(
                 f"{q}: expert {e} inclusion probability {pi!r} outside (0, 1]")
+        if pi == 1.0 and e not in sample.sampled_experts:
+            raise StackSampleError(f"{q}: certainty expert {e} is absent from the sample")
 
 
 def _stack_member_weight(sample: StackExpertSample, expert: int, roles: int) -> float:
@@ -1958,6 +1971,8 @@ def draw_stack_sample(weights: "Mapping[str, float]", n: int, *,
     if not names:
         raise RuntimeError(f"stack {stack}: no unit to sample")
     sizes = {name: float(weights[name]) for name in names}
+    if any(not math.isfinite(value) for value in sizes.values()):
+        raise RuntimeError(f"stack {stack}: size weights must be finite")
     if any(value < 0.0 for value in sizes.values()):
         raise RuntimeError(f"stack {stack}: a size weight is negative")
     digest = hashlib.sha256(
