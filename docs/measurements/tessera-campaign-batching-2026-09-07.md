@@ -246,3 +246,28 @@ has no untracked helper files. The original zero-route failed capture remains
 bounded negative evidence and does not qualify full-model calibration.
 
 Evidence manifest SHA-256: `8b144abda1b4a9933070146e9a54a1c5dcbd62c0159bae7428184a9bafdd11e5`.
+
+## Source-reference correction — 2026-09-07 05:25 UTC
+
+A later full-vocabulary LFM parity diagnosis found that PrismaQuant's global
+HF initialization no-op also suppresses Transformers 5.16.1's initialization
+of nonpersistent RoPE buffers during `from_pretrained`. The capture above used
+that ordinary loading path. Its activation rows, Hessians, route counts and
+maxima therefore cannot qualify canonical source-model quality or a new native
+operator panel. They must be regenerated after the shared loader correction.
+Token IDs and source checkpoint weight bytes are unaffected.
+
+The matched scalar/batch measurements remain evidence for the exact retained
+inputs, encoded-byte equality and measured throughput/energy deltas described
+above. They are not a canonical-model quality comparison. Original artifacts
+and their hashes are retained unchanged.
+
+Diagnosis action `c999ff211ab7` completed through PrismaBuild on GB10 using the
+same producer image. Its actual full-vocabulary first-sequence comparison is
+bit-exact between HF loaded with genuine initialization and the streamed model
+with FP32 routing buffers and eager attention. Injecting the old reference's
+invalid RoPE into that streamed path reproduces the old reference exactly;
+matching its attention mask alone does not. Detailed evidence is retained at
+`/mnt/shared/tessera-measurements/lfm-streamed-parity-20260907/diagnose-02/diagnosis.json`.
+This bounded diagnosis establishes the loading defect; it does not replace
+fresh full-calibration capture or final served quality validation.

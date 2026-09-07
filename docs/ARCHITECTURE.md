@@ -1,7 +1,37 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/selected-wire-materialization-20260907`. Stamps
+As of: 2026-09-07 · `fix/lfm-streamed-parity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **AURA attention
+backend parity**. AURA explicitly requests eager attention in both resident
+checkpoint and streamed skeleton construction. The shared streaming builder
+passes an optional explicit `attn_implementation` through the auto-model and
+resolved-class construction routes; callers that omit it retain Transformers'
+backend selection. Together with checkpoint initialization and buffer precision,
+this makes the LFM BF16 source forward comparable on the same exact token draw;
+it does not loosen the full-vocabulary tolerance or quantization gates.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **declared buffer
+precision in shared checkpoint loading**. Resident materialization and streamed
+cold/prefetch/cache paths cast parameters to the requested compute dtype while
+retaining each model buffer's declared dtype. This preserves FP32 LFM expert
+bias arithmetic when BF16 router scores are corrected before top-k selection;
+representable bias values alone do not make a BF16 buffer equivalent. The
+existing layer cache carries these tensors without a parallel residency path.
+Gate: `tests/test_streaming_buffer_precision.py`.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
+initialization**. The shared Transformers compatibility hook suppresses random
+initialization for from-config skeletons, but enables the genuine initializer
+inside ordinary checkpoint missing-state finalization. A context-local scope
+prevents exceptions or concurrent skeleton construction from leaking that
+permission. This restores nonpersistent buffers (including LFM rotary frequency
+buffers) rematerialized by Transformers with uninitialized storage. Successfully
+finalized models expose `prismaquant.pretrained_initialization.v1` through
+`pretrained_initialization_contract`; from-config models and malformed descriptors
+refuse. This descriptor records the checkpoint load phase, not later model
+mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
 
 Re-stamped (2026-09-07, `codex/selected-wire-materialization-20260907`) for
 **selected expert-wire materialization** (§4.10; #301). The allocator's opt-in
@@ -23,6 +53,7 @@ producer's source-unit plan view remains a downstream export product. No
 format, pricing estimate, production default or serving admission changes.
 Gates: `tests/test_tessera_materialization.py`,
 `tests/test_tessera_packed_export_scope.py`.
+
 
 Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
 expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
@@ -55,6 +86,7 @@ squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
 Host-interpreter specs remain supported. Census, anchor and materialization
 quanta share the same row builder; the adapter does no scheduling or fanout.
 Gate: `tests/test_tessera_campaign_container.py`.
+
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
