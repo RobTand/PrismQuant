@@ -203,3 +203,24 @@ state:
 - why the existing mechanism cannot be used;
 - how the exception is isolated behind a flag or research path;
 - what result would justify promoting, deleting, or replacing it.
+
+
+### Streamed joint AURA calibration partitions
+
+Explicit `probe_microbatch > 0` uses versioned global-row Fisher probes on the
+entire supplied calibration draw. The row seed domain includes the probe seed,
+global row index, scope and selected token/vocabulary geometry. Normalize every
+partition by the full selected-token count. Compare partitioned execution with
+an explicit full-size positive microbatch reference using that same layout;
+zero is the legacy layout and its finite probe samples differ.
+
+A logical Linear's weight, activation and mixed residuals sum while signed
+across repeated invocations and every calibration partition before squaring.
+Gradient norm and column-energy diagnostics also square only after the complete
+probe gradient is accumulated. Batch size is part of the existing probe
+arithmetic identity as well as execution provenance and checkpoint identity.
+Shared paired-candidate and assignment consumers reject mixed execution sizes,
+while the row RNG descriptor remains partition independent. BF16 source kernels
+can round differently at different shapes; this is also a resume boundary. Full-draw host boundaries, cotangents, declared shared pass state and
+existing source/cache residency must be included in admission even though GPU
+logits and recompute graphs are bounded by the microbatch.
