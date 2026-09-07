@@ -1154,11 +1154,14 @@ def nvfp4_activation_qdq_served(
         -FP4_E2M1_MAX,
         FP4_E2M1_MAX,
     )
-    positive = torch.tensor(
-        _E2M1_POSITIVE,
-        device=normalized.device,
-        dtype=torch.float32,
-    )
+    # The registry already owns device-resident format constants. Its sorted
+    # E2M1 table ends with these eight positive encodings, including +0. Reuse
+    # that view instead of copying a Python tuple to CUDA on every QDQ call.
+    from .format_registry import _CODEBOOKS, _codebook_on_device
+
+    positive = _codebook_on_device(
+        _CODEBOOKS["fp4_e2m1"], device=normalized.device, dtype=torch.float32,
+    )[-len(_E2M1_POSITIVE):]
     magnitude = normalized.abs().contiguous()
     upper_index = torch.bucketize(magnitude, positive).clamp_max(
         positive.numel() - 1
