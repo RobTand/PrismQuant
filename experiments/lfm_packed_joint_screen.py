@@ -28,7 +28,7 @@ def main():
     from prismaquant import pretrained_initialization_contract
     from prismaquant.aura_cost import compute_aura_cost_streamed
     from prismaquant.cost_streaming import build_streamed_causal_lm, build_streamed_model_identity
-    from prismaquant.joint_aura import validate_joint_aura_entry
+    from prismaquant.joint_aura import validate_joint_aura_entry, source_execution_identity
     from prismaquant.kl_fisher import fisher_probe_scalar
     from prismaquant.model_profiles import detect_profile
     from prismaquant.production_weight_cache import ProductionWeightCache
@@ -41,6 +41,8 @@ def main():
     parser.add_argument('--row', type=int, default=0)
     parser.add_argument('--subset-artifact', type=Path)
     parser.add_argument('--subset-artifact-sha256')
+    parser.add_argument('--qualify-boundary', type=Path)
+    parser.add_argument('--qualify-boundary-sha256')
     parser.add_argument('--cache', type=Path)
     parser.add_argument('--cache-sha256')
     parser.add_argument('--out', type=Path, required=True)
@@ -101,6 +103,12 @@ def main():
         reference = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16,
             trust_remote_code=True, local_files_only=True, attn_implementation='eager').cuda().eval()
         result['model_load_contract'] = pretrained_initialization_contract(reference)
+        result['reference_source_execution_identity'] = source_execution_identity(reference)
+        raw_boundary = None
+        if args.qualify_boundary is not None:
+            if file_sha(args.qualify_boundary) != args.qualify_boundary_sha256:
+                raise ValueError('retained boundary artifact hash differs')
+            raw_boundary = torch.load(args.qualify_boundary, map_location='cpu', weights_only=False)
         for parameter in reference.parameters():
             parameter.requires_grad_(False)
         source_parameters = {name: reference.get_parameter(f'{unit}.{name}')
@@ -111,6 +119,26 @@ def main():
         parent = reference.get_submodule(unit.rsplit('.', 1)[0])
         original_experts_forward = experts.forward
         def inspect_source(hidden_states, top_k_index, top_k_weights):
+            if raw_boundary is not None:
+                coordinates = torch.stack((torch.zeros(512, dtype=torch.int64), torch.arange(512)), dim=1)
+                actual_tensors = {'inputs': hidden_states, 'top_k_index': top_k_index,
+                                  'top_k_weights': top_k_weights, 'expert_bias': parent.expert_bias,
+                                  'coordinates': coordinates}
+                checks = {}
+                for name, actual in actual_tensors.items():
+                    expected = raw_boundary[name]
+                    cpu = actual.detach().cpu()
+                    equal = cpu.dtype == expected.dtype and torch.equal(cpu, expected)
+                    checks[name] = {'equal': equal, 'shape': list(cpu.shape), 'dtype': str(cpu.dtype),
+                                    'actual_sha256': digest(cpu), 'captured_sha256': digest(expected)}
+                    if not equal:
+                        raise AssertionError(f'retained canonical boundary differs: {name}')
+                result['retained_boundary_qualification'] = {
+                    'schema': 'prismaquant.packed_source_boundary_qualification.v1',
+                    'unit_qname': unit, 'artifact': str(args.qualify_boundary), 'artifact_sha256': args.qualify_boundary_sha256,
+                    'boundary_metadata': raw_boundary['boundary_metadata'],
+                    'source_execution_identity': result['reference_source_execution_identity'],
+                    'calibration_subset': result['calibration_subset'], 'tensor_comparisons': checks}
             from prismaquant.measure_quant_cost import derive_per_expert_activations
             from torch.nn import functional as F
             derived = derive_per_expert_activations(experts, hidden_states, parent)
@@ -181,6 +209,13 @@ def main():
     result['streamed_backend'] = runner.model.config._attn_implementation
     result['source_execution'] = {'attention': runner.model.config._attn_implementation,
                                   'experts': runner.model.config._experts_implementation}
+    result['streamed_source_execution_identity'] = source_execution_identity(runner.model)
+    if args.mode == 'source':
+        assert result['streamed_source_execution_identity'] == result['reference_source_execution_identity']
+        if 'retained_boundary_qualification' in result:
+            result['retained_boundary_qualification'].update(
+                source_model_identity=model_identity, runtime=result['env'],
+                streamed_source_execution_identity=result['streamed_source_execution_identity'])
     # Prefetch remains owned by the existing streaming context/cache.
     for layer in range(runner.num_layers):
         runner.context.schedule_prefetch(layer)

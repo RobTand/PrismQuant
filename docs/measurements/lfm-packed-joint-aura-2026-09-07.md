@@ -137,3 +137,30 @@ per-Linear signed accumulation across partitions before squaring. Whole-draw
 logits and Fisher tensors must not be materialized at once. Native whole-MoE
 runtime measurements bind the 96-row roster separately; this cost result alone
 does not qualify a serving lane or change any ship gate.
+
+## Independent retained-boundary qualification
+
+A subsequent source-only run qualifies the retained first canonical MoE boundary
+without changing or recapturing it. PB action
+`e46ba7cf0b4fd2f38ed6a127bee4a3fb78010b73b223f54756eec66b1626e1fe`
+finished rc0. The proof at
+`/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/results.json`
+has SHA256 `f308e7f6fbf563884d9625721523f4247322e0bfa95876e04798438553ce8558`.
+It binds the original raw boundary artifact SHA256
+`1290dd0dcb4ebecd09aee9fd2427aae62cb9c09974a466c05dcbe1ff08c6874d`,
+retains that artifact's original metadata, and independently compares new source
+input activations, top-k IDs, top-k weights, FP32 expert bias, and token
+coordinates. Every tensor is bit-exact with matching dtype and hash. The
+reference descriptor is captured before its first forward; all 49 resolved
+module backend descriptors match the streamed model. The run also repeats and
+passes full-vocabulary forward, all eight packed gradient comparisons, and
+the shared-derived versus actual grouped down-input comparison.
+
+The retained cProfile files have an attribution limitation discovered during
+separate inspection: some call edges contradict the source call graph, including
+an apparent recursive `assignment_keys` edge. These files must not support
+function-level timing or bottleneck claims. The failure mechanism is not
+established. Future performance comparisons require reliable per-thread
+instrumentation or an independent sampler alongside both hosts' telemetry.
+The tensor comparisons, terminal outcomes, CAS results and Netdata artifacts
+remain separately attributable; this screen makes no speed claim.

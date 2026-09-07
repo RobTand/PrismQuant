@@ -2,7 +2,7 @@
   "schema": "prismaquant.packed_joint_screen.evidence.v1",
   "scope": "canonical_row0_operator_screen",
   "final_cost": "cost-02/joint-cost.json",
-  "source_proof": "source-03/results.json",
+  "source_proof": "source-04/results.json",
   "superseded": {
     "source-01": "fail-closed grouped source before observer support",
     "source-02": "explicit eager diagnostic; not the canonical source backend",
@@ -61,8 +61,8 @@
     },
     {
       "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/harness/lfm_packed_joint_screen.py",
-      "bytes": 14531,
-      "sha256": "60e8c15ef49085e8c9730bc877a64e35a44b7849fcd249dc741b1ad8bf43e87d"
+      "bytes": 17168,
+      "sha256": "c4dd617894467c9abe5d6a3004330123041d043c1af92363fd1d77bc3a806a9c"
     },
     {
       "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/harness/lfm_packed_joint_screen.sh",
@@ -350,6 +350,26 @@
       "sha256": "fd59d015753fe99c9a30e9ccd0b87729d29516b6a3b904876f24c0bd50f33e6f"
     },
     {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/e46ba7cf0b4f.cas.json",
+      "bytes": 2631,
+      "sha256": "ba466beb96da86ecc54f56524f3672da1308dcd2337ea8969be1c7d521c65038"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/e46ba7cf0b4f.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/e46ba7cf0b4f.stdout.log",
+      "bytes": 5320,
+      "sha256": "3c8704b583ddbe14e16ac72df8cccee6ab777e5ecea6c8c286788845364aea04"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/e46ba7cf0b4f.terminal.json",
+      "bytes": 2312,
+      "sha256": "9d2d7ffe72e5b8b570efffe976aa55984a29d311f0388f0ad8fab386cdf45d03"
+    },
+    {
       "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/f45f37939d43.cas.json",
       "bytes": 2631,
       "sha256": "098d07163499f84fd6ae2bb63c95dec732631b103de5fdc15085533950a72359"
@@ -453,6 +473,36 @@
       "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/streamed_packed_joint.pstats",
       "bytes": 153670,
       "sha256": "0f7cb43b230ebfe7e9a4b11f3a6c770a85d28a9f7f53a32f90ead200aef462a6"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/joint-cost.json",
+      "bytes": 27808659,
+      "sha256": "a36ef223bc3c529129c3b4ff62e0ba12919a54750ca2b6c92a8a04259024454c"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/model_identity.json",
+      "bytes": 252894,
+      "sha256": "fa7a85734252375df0d01fe5003efc065688348c3c535535305bc9f64d47d339"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/netdata-both-hosts.json",
+      "bytes": 64676,
+      "sha256": "1e2cef57235ec0bdab8f0a265f7c00f9071d28db0651dae2e8d36a1eabf76cf5"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/resident_reference_forward_backward.pstats",
+      "bytes": 202897,
+      "sha256": "06455f495cb6bd4b00ec104dff6c40b2daf9c451e2197b6b7608960757f3db43"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/results.json",
+      "bytes": 742114,
+      "sha256": "f308e7f6fbf563884d9625721523f4247322e0bfa95876e04798438553ce8558"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-04/streamed_packed_joint.pstats",
+      "bytes": 152388,
+      "sha256": "2e2cd761b066b61987388f8482e5d3d146a30a8bc54ca34cdd425fcfb2e621dc"
     }
   ]
 }
