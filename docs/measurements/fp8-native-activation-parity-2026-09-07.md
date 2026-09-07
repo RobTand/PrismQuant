@@ -69,7 +69,7 @@ to one and PB-assigned affinity is preserved.
 | --- | --- | --- |
 | Before arithmetic diagnostic | `be5ed565392b97e0850474728cf53d3f1242b6c10b20d950dcd5954a4c45ccdb` | rc 0; original failure reproduced |
 | Regression before fix | `bd44408bac75641bc74c79963cf0ee2e98d4800c778e387ce5c5a331a5f3e26f` | Four CPU/CUDA cases failed as expected |
-| Regression after fix | `e9b8fe8567c646308c86bb3628764e3030608e35b35065bc6f6ef8b7337f15cb4` | Four passed, no skips, rc 0 |
+| Regression after fix | `e9b8fe8567c646308c86bb3628764e3030608e35b35065bc6f6ef8b7337f15cb` | Four passed, no skips, rc 0 |
 | After arithmetic diagnostic | `d1c9f2ba1b7934161fddc88319a81bebe3094e8861e03193f9c5ae23cbd39e4b` | Native bit parity, rc 0 |
 | Native panel, packed/streamed joint and architecture tests | `600ecfcae8673cfabd10e38aa66448fa981ce0902ea5b90b75b0cee66c4c8b1c` | 107 passed, no skips; x86 CPU, four workers, rc 0 |
 | Before profile | `6eabab316edeb1715fe4683df6f2a711ac714b10abe7d6ad3b2c72e330b5b17c` | rc 0, measurement admission |
