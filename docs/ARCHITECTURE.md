@@ -1,7 +1,25 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `fix/packed-plan-handoff`. Stamps
+As of: 2026-09-07 · `codex/campaign-batched-anchors`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
+expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
+optional `--anchor-batch-size` groups pending expert anchors with equal shape,
+dtype, device, family and rung inside the existing admitted action. The
+adaptive schedule still chooses every anchor; PrismaBuild still assigns the
+actions. `tessera_render.encode_tessera_units` reuses the scalar input guard
+and calls Tessera's `encode_linears` with each unit's own ActivationSource
+mapping. Each result uses the scalar path's served activation scale, wire
+decoder, production scorer and cache writer. Per-unit wire identity and
+journal envelopes remain unchanged; each completed batch is journalled before
+the next starts. Batch width is excluded from input identity, so a resume can
+change execution width without repricing completed rows. Measured rows record
+batch width and identify equally apportioned batch encoding time; that is
+accounting, not independently measured per-unit latency. Default width remains
+one pending performance qualification. No serving pin, wire recipe, cost
+currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
+
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
