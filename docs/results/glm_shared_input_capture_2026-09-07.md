@@ -225,3 +225,53 @@ All artifacts live under
 The option remains default-off. Root review of this bounded result is required
 before the separate full 512-sample candidate fit. No repeat of the failed full
 legacy H return and no full-prefix-05 run were submitted by this work.
+
+## Full-prefix candidate refusal, 2026-09-07
+
+After independent review of the bounded replay and integration receipts, root
+authorized one full-prefix candidate fit with the original 512×512, B=1,
+seed-0 binding. Clean source `e4d369e163e15d3f0833d8627789ab5b6ed37c33`
+executed as snapshot `3533e1340f12e7b71211627ebd9ac99024d5d363`; the whole
+snapshot differs only by PB closure metadata. No source, input, container or
+guard change accompanied the run. Sharing and source-page release were explicit
+opt-ins; the physical reservation remained 104 GiB, conservative trip threshold
+102 GiB, host-available floor 8 GiB and GPU subset 92 GiB.
+
+PB action `c1290f6f0b5385e29739ee086d5486712cfca5148bb980549599663580ce8e5c`
+was admitted on Sparky as a measurement with six preferred CPUs and no prior
+GPU member. Each source layer 0–3 completed all 512 batches. Target layer 4
+also completed all 512 forwards, then refused during independent CPU H/X
+materialization. **Full workspace fit is not established.**
+
+The last target forward completed at Unix `1788821168.6869888`. The continuous
+observer latched the guard 99.5636 seconds later, at `1788821268.2505882`:
+
+- Conservative cgroup-plus-CUDA-reserved sum: **109,541,953,536 bytes**,
+  versus the unchanged 109,521,666,048-byte threshold.
+- Cgroup current: 38,326,865,920 bytes; CUDA reserved: 71,215,087,616 bytes;
+  CUDA allocated: 52,926,256,640 bytes. Ordinary cgroup file pages account for
+  594,124,800 bytes after excluding shmem.
+- Host MemAvailable at the first guard: 12,349,505,536 bytes. The minimum
+  sampled value was 12,295,327,744 bytes.
+
+The foreground refused at `after_hessian_cpu_transfer`, before that group's
+allocator-cache release. The highest sampled conservative sum equals the
+first guard value; post-guard observation continued for 0.7103 seconds and
+result finalization ended 0.7908 seconds after the latch. These are sampled
+separate-plane accounting values, not deduplicated physical ownership.
+
+Failure diagnostics retain **867 positive target qnames**, zero unobserved
+qnames, and observed counts from 1,772 to 262,144. These are failed-collection
+coverage observations, not a census or completed output audit. No complete
+independent CPU output set was returned. The current return group and number
+of fully materialized groups were not serialized and remain unknown.
+
+Actual status is `refused_by_memory_guard`, exit 1. Source binding remained
+unchanged, telemetry had no errors, scope cleanup/release completed, and the
+owned container is gone; PB recorded no OOM. All nine output artifacts,
+250,047,996 bytes including both forward traces and bounded both-host Netdata,
+are sealed by `review-02/shared-input-full-prefix-refusal.json` under
+`/mnt/shared/tessera-measurements/glm-streaming-source-20260907/`. The packet
+includes the actual terminal, source-bundle comparison, admission, samples and
+artifact hashes. A failed action has no success CAS receipt. No repeat,
+guard increase, energy ranking or full-fit performance claim followed.

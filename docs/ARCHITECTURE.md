@@ -28,7 +28,9 @@ The first legacy arm has no retained CPU reference; later arms report that
 reference footprint and provide matched contexts for memory comparisons.
 Gates: bytewise and serialized H/X/count/max equality, independent CPU storage,
 complete original batch order, CPU failure-lifetime checks, then reviewed GPU
-A/B and a separate full 512-sample candidate fit. GPU qualification is pending.
+A/B and a separate full 512-sample candidate fit. Bounded real-input GPU replay
+passed exact-output checks; the full 512-sample candidate still refused during
+CPU output return at the unchanged memory guard. The option remains default-off.
 
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the campaign
 collector's optional `resource_check(label)` output-materialization checkpoints.
