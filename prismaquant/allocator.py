@@ -1916,6 +1916,9 @@ def main():
     ap.add_argument("--layer-config", required=True,
                     help="Output AutoRound layer_config JSON")
     ap.add_argument("--pareto-csv", required=True, help="Output Pareto CSV")
+    ap.add_argument("--tessera-materialization-plan", default=None,
+                    help="Write a non-exportable selected-wire request here instead of layer-config; "
+                         "finalize through prismaquant.tessera_materialization after selected wires exist")
     ap.add_argument("--knee-refine-tol", type=float, default=0.03,
                     help="Golden-section knee refinement tolerance in bpp "
                          "(default 0.03). The coarse Pareto grid only lands the "
@@ -5748,6 +5751,13 @@ def main():
     # before the layer config is written.  Additive: a stock cost table adds
     # no keys, and a table carrying a population but no projection carries
     # only the population.
+    if args.tessera_materialization_plan:
+        from .tessera_materialization import write_selection_request
+        write_selection_request(args.tessera_materialization_plan,
+            layer_config=layer_cfg, assignment=assignment_expanded,
+            cost_path=args.costs, cost_payload=cost_data, output_path=args.layer_config)
+        print(f"[alloc] non-exportable selected-wire request → {args.tessera_materialization_plan}")
+        return
     try:
         layer_cfg[LAYER_CONFIG_META_KEY].update(
             allocation_expert_projection_block(cost_data, assignment_expanded))
