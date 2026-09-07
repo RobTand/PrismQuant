@@ -491,6 +491,550 @@ def _measure_anchor(
 
 
 # ---------------------------------------------------------------------------
+# The routed-expert stack, and the sample that prices it
+# ---------------------------------------------------------------------------
+#
+# A routed MoE stack is ONE decision: vLLM loads a packed ``[E, M, N]`` expert
+# tensor under a single quantization scheme, and PrismaQuant's union-find
+# serving-unit promotion already enforces that (``allocator_solver.
+# _packed_groups_by_profile`` keys ``...experts.gate_up_proj`` and
+# ``...experts.down_proj`` into the same ``__packed_format__`` group).  The
+# campaign, however, measures ONE EXPERT AT A TIME -- an encode is per Linear
+# -- and on a 32-expert stack a full census of every rung is 32x the GPU.
+#
+# So the campaign may measure a SAMPLE of experts and this module estimates the
+# stack from it.  Two things have to be right for that to be honest:
+#
+# 1. The estimator must be unbiased for the stack's total, not for "the average
+#    expert".  With a probability-proportional-to-size draw the Horvitz-Thompson
+#    estimator is the one that is: ``T_hat = sum_{e in S} y_e / pi_e``.
+#
+# 2. The number written into the row must be the quantity the ALLOCATOR will
+#    multiply correctly.  ``allocator_solver.predicted_dloss`` prices a row as
+#    ``0.5 * h_trace * output_mse``, and it reads ``h_trace`` from the PROBE, so
+#    the stack row is multiplied by the packed row's own ``h_trace``.  The
+#    quantity that makes that product reproduce the stack's summed per-expert
+#    dloss is therefore
+#
+#        output_mse_stack = ( sum_e h_e * mse_e ) / h_stack
+#
+#    i.e. the h-weighted MEAN expert MSE, not the sum.  Two independent facts
+#    in this repo fix that convention rather than taste:
+#
+#      * the probe's own identity ``sum_e h_trace_per_expert[e] == h_trace``,
+#        which holds to float32 storage precision on all 44 packed rows of
+#        ``pq275-2026-09-06/probe-02/probe.pkl`` (2.0e-7 relative on layer 18),
+#        so the weights sum to the multiplier the allocator will apply; and
+#      * ``allocator_candidates``' own super-item aggregation, which inverts the
+#        same product the same way when it has to express a group's summed
+#        predicted dloss as one member-shaped MSE:
+#        ``effective_mse = base_pred / (0.5 * sum_h)``.
+#
+# A per-expert member's Fisher weight is ``h_trace_per_expert[e] / R``, where R
+# is the number of projections the packed parameter splits into -- the SAME
+# split ``tier2_per_expert_counterfactual.expand_packed_expert_rows`` uses, and
+# R comes from the profile's ``packed_expert_projection_names``, never from a
+# hardcoded ``gate_up_proj -> 2``.
+
+
+class StackSampleError(ValueError):
+    """A routed-stack sampling record cannot be turned into an honest row."""
+
+
+@dataclass(frozen=True)
+class StackExpertSample:
+    """Which experts of one packed stack were measured, and with what weight.
+
+    Built by the campaign driver from the PROBE row plus its own draw --
+    ``stack_sample_from_probe`` is the constructor that reads the profile so no
+    caller has to spell a projection split.  Everything here that describes the
+    stack (``num_experts``, ``stack_h_trace``, ``h_trace_per_expert``,
+    ``packed_experts_module``) is copied from the probe row, so the row this
+    record prices and the row the allocator multiplies are the same row.
+    """
+
+    #: The packed parameter's qname -- the key the stack row is written under,
+    #: and a key the probe already has (e.g.
+    #: ``model.layers.18.feed_forward.experts.gate_up_proj``).
+    packed_qname: str
+    #: ``_packed_experts_module`` from the probe row, copied onto the cost row
+    #: so ``tessera_serving_scope.unit_structure_from_stats`` resolves
+    #: ``routed_moe`` on its EXISTING packed branch rather than being taught a
+    #: new topology (principle 14: the scope may not invent structure).
+    packed_experts_module: str
+    #: ``gate_up_proj`` / ``down_proj``: the packed parameter, used only to ask
+    #: the profile for its projection names.
+    packed_param: str
+    num_experts: int
+    #: The probe row's ``h_trace`` -- the exact multiplier the allocator applies.
+    stack_h_trace: float
+    #: The probe row's ``h_trace_per_expert``; must sum to ``stack_h_trace``.
+    h_trace_per_expert: tuple[float, ...]
+    #: Expert ids actually encoded, ascending.
+    sampled_experts: tuple[int, ...]
+    #: pi_e for every sampled expert. 1.0 marks a certainty stratum (or a
+    #: census), which contributes zero sampling variance.
+    inclusion_prob: "Mapping[int, float]"
+    #: expert id -> the anchor qnames measured for it, one per projection.
+    members: "Mapping[int, tuple[str, ...]]"
+    #: The draw's seed, and its design name, carried for reproduction.
+    seed: int
+    design: str = "pps_wor"
+
+    @property
+    def is_census(self) -> bool:
+        return len(self.sampled_experts) == self.num_experts and all(
+            float(self.inclusion_prob[e]) == 1.0 for e in self.sampled_experts)
+
+
+def stack_sample_from_probe(
+    packed_qname: str,
+    probe_row: "Mapping[str, object]",
+    profile,
+    *,
+    sampled_experts,
+    inclusion_prob,
+    seed: int,
+    design: str = "pps_wor",
+) -> StackExpertSample:
+    """Build a sampling record from the PROBE row and the model profile.
+
+    The caller supplies only its draw.  Everything structural -- the expert
+    count, the Fisher weights, the packed module, and the per-expert member
+    qnames -- is read here from the probe row and the profile's packed-expert
+    accessors, because a driver-supplied weight that drifts from the probe
+    would break the currency invisibly: the allocator would still multiply by
+    the probe's ``h_trace``.
+    """
+    packed_param = str(probe_row.get("_packed_param") or "")
+    module = probe_row.get("_packed_experts_module")
+    num_experts = int(probe_row.get("num_experts", 0) or 0)
+    stack_h = float(probe_row.get("h_trace", 0.0) or 0.0)
+    per_expert = probe_row.get("h_trace_per_expert")
+    if not isinstance(module, str) or not module:
+        raise StackSampleError(
+            f"{packed_qname}: probe row has no _packed_experts_module; this is "
+            "not a packed routed stack and must not be priced as one")
+    if num_experts <= 0:
+        raise StackSampleError(f"{packed_qname}: probe row has no num_experts")
+    if not isinstance(per_expert, Sequence) or len(per_expert) != num_experts:
+        raise StackSampleError(
+            f"{packed_qname}: stack pricing requires "
+            f"h_trace_per_expert[{num_experts}] from the probe")
+    if not packed_param:
+        raise StackSampleError(f"{packed_qname}: probe row has no _packed_param")
+    if not packed_qname.endswith(packed_param):
+        raise StackSampleError(
+            f"{packed_qname}: does not end in its own _packed_param "
+            f"{packed_param!r}; refusing to guess the stem")
+    # The projection split comes from the profile, so a family whose leaves are
+    # ``w1/w3/w2`` and one whose leaves are ``gate_proj/up_proj/down_proj`` are
+    # both handled without this module knowing either spelling.
+    roles = tuple(profile.packed_expert_projection_names(packed_param))
+    if not roles:
+        raise StackSampleError(
+            f"{packed_qname}: profile declares no projections for "
+            f"{packed_param!r}")
+    stem = packed_qname[: -len(packed_param)].rstrip(".")
+    ordered = tuple(sorted(int(e) for e in sampled_experts))
+    if len(set(ordered)) != len(ordered):
+        raise StackSampleError(f"{packed_qname}: duplicate sampled expert id")
+    members = {e: tuple(f"{stem}.{e}.{role}" for role in roles) for e in ordered}
+    return StackExpertSample(
+        packed_qname=str(packed_qname),
+        packed_experts_module=module,
+        packed_param=packed_param,
+        num_experts=num_experts,
+        stack_h_trace=stack_h,
+        h_trace_per_expert=tuple(float(v) for v in per_expert),
+        sampled_experts=ordered,
+        inclusion_prob={int(e): float(p) for e, p in dict(inclusion_prob).items()},
+        members=members,
+        seed=int(seed),
+        design=str(design),
+    )
+
+
+#: ``float32`` machine epsilon.  The probe accumulates the packed row's
+#: ``h_trace`` and its ``h_trace_per_expert`` vector from the same raw sums and
+#: divides both by the same global token count
+#: (``sensitivity_probe.finalize_fisher_stats``), so the two agree exactly in
+#: exact arithmetic.  They are stored at ``float32``, which is the only reason
+#: they differ at all, so the admissible discrepancy is a property of that
+#: dtype and of how many terms are summed -- not a tolerance anyone chose.
+#: Measured on ``probe-02``'s two layer-18 packed rows: 2.0e-7 and 6.6e-8
+#: relative, against the bound below of 3.8e-6 at E=32.
+_FLOAT32_EPS = 1.1920928955078125e-07
+
+
+def _validate_stack_sample(sample: StackExpertSample) -> None:
+    """Refuse a record whose weights or probabilities cannot carry an estimate."""
+    q = sample.packed_qname
+    if len(sample.h_trace_per_expert) != sample.num_experts:
+        raise StackSampleError(
+            f"{q}: h_trace_per_expert has {len(sample.h_trace_per_expert)} "
+            f"entries for {sample.num_experts} experts")
+    total = math.fsum(sample.h_trace_per_expert)
+    if not (sample.stack_h_trace > 0.0):
+        raise StackSampleError(f"{q}: probe h_trace is not positive")
+    # E terms summed at float32 storage precision: the worst-case accumulated
+    # relative error is E * eps, so that IS the bound, computed per stack.
+    tolerance = sample.num_experts * _FLOAT32_EPS * sample.stack_h_trace
+    if abs(total - sample.stack_h_trace) > tolerance:
+        # The whole currency rests on this identity; a row written against a
+        # broken one would be multiplied by a number its weights do not sum to.
+        raise StackSampleError(
+            f"{q}: sum(h_trace_per_expert)={total!r} does not equal the probe "
+            f"row's h_trace={sample.stack_h_trace!r}; the stack row's currency "
+            "assumes the per-expert weights sum to the multiplier the "
+            f"allocator applies (tolerance {tolerance!r} = "
+            f"{sample.num_experts} * float32 eps)")
+    if not sample.sampled_experts:
+        raise StackSampleError(f"{q}: no sampled experts")
+    for e in sample.sampled_experts:
+        if not 0 <= e < sample.num_experts:
+            raise StackSampleError(f"{q}: expert id {e} out of range")
+        if e not in sample.inclusion_prob:
+            raise StackSampleError(f"{q}: expert {e} has no inclusion probability")
+        pi = float(sample.inclusion_prob[e])
+        if pi == 0.0:
+            # A zero-probability unit contributes an exactly-zero term ONLY if
+            # its own weight is zero (a never-routed expert). Otherwise it is a
+            # unit the design can never draw, and HT is biased by exactly its
+            # contribution -- silently.
+            if sample.h_trace_per_expert[e] != 0.0:
+                raise StackSampleError(
+                    f"{q}: expert {e} has inclusion probability 0 but Fisher "
+                    f"weight {sample.h_trace_per_expert[e]!r}; a unit that "
+                    "cannot be drawn biases the estimate")
+            continue
+        if not 0.0 < pi <= 1.0:
+            raise StackSampleError(
+                f"{q}: expert {e} inclusion probability {pi!r} outside (0, 1]")
+
+
+def _stack_member_weight(sample: StackExpertSample, expert: int, roles: int) -> float:
+    """The Fisher weight of ONE measured member of one expert.
+
+    ``h_trace_per_expert[e] / R`` -- the same equal split
+    ``expand_packed_expert_rows`` applies, so a census through this path and an
+    expansion through that one price the stack identically.
+    """
+    return float(sample.h_trace_per_expert[expert]) / float(roles)
+
+
+def _horvitz_thompson_stack(
+    sample: StackExpertSample,
+    member_dloss: "Mapping[int, float]",
+) -> "tuple[float, float, int]":
+    """Estimate ``sum_e h_e * mse_e`` and its standard error from the sample.
+
+    ``member_dloss`` maps a sampled expert id to that expert's h-weighted
+    contribution ``y_e = sum_roles (h_e/R) * mse_role`` already summed over the
+    packed parameter's projections.
+
+    Returns ``(T_hat, stderr, m)`` where ``m`` is the size of the random
+    stratum.
+
+    The point estimate is Horvitz-Thompson, ``sum_{e in S} y_e / pi_e``, which
+    is unbiased for the stack total under any design with known positive
+    inclusion probabilities.
+
+    The VARIANCE is Hartley-Rao's, over the non-certainty stratum only:
+
+        v = m/(m-1) * sum_{e in S_R} (1 - (m-1)/m * pi_e)
+                                     * (y_e/pi_e - T_R/m)^2
+
+    A unit with ``pi_e == 1`` is in every possible sample, so it contributes
+    exactly zero sampling variance and is excluded from the sum.  Hartley-Rao
+    is the estimator DERIVED for the design the campaign draws -- randomized
+    systematic PPS without replacement, ``pi_i = min(1, c*h_i)``, with the
+    take-all units moved to a certainty stratum -- for which the exact
+    Sen-Yates-Grundy form is unavailable because many joint inclusion
+    probabilities are exactly zero.  The Hansen-Hurwitz with-replacement form
+    is NOT used: it ignores both the finite-population correction and the
+    certainty stratum, and overstates the standard error by 25-48% at E=32
+    (simulated on the LFM2.5 layer-18 Fisher vector).  Hartley-Rao stays
+    conservative for this design (+1% to +15% across the same simulations)
+    without paying that.
+    """
+    certainty = [e for e in sample.sampled_experts
+                 if float(sample.inclusion_prob[e]) == 1.0]
+    random = [e for e in sample.sampled_experts
+              if 0.0 < float(sample.inclusion_prob[e]) < 1.0]
+    total = math.fsum(member_dloss[e] for e in certainty)
+    t_random = math.fsum(member_dloss[e] / float(sample.inclusion_prob[e])
+                         for e in random)
+    total += t_random
+    m = len(random)
+    if m == 0:
+        # Every measured unit was certain: a census, or a fully take-all
+        # stratum. The estimate IS the total and the error is a true zero.
+        return total, 0.0, 0
+    if m < 2:
+        # 0.0 already means "no sampling error" on this row's siblings, and a
+        # single random draw is not that. The draw plan is supposed to refuse
+        # m == 1 before anything is encoded; refusing again here keeps a plan
+        # that did not from being laundered into a published zero.
+        raise StackSampleError(
+            f"{sample.packed_qname}: {m} non-certainty draw(s); a sampling "
+            "variance needs at least two, and writing 0.0 would claim the "
+            "zero that a census means")
+    mean_r = t_random / m
+    variance = (m / (m - 1)) * math.fsum(
+        (1.0 - ((m - 1) / m) * float(sample.inclusion_prob[e]))
+        * (member_dloss[e] / float(sample.inclusion_prob[e]) - mean_r) ** 2
+        for e in random)
+    return total, math.sqrt(max(variance, 0.0)), m
+
+
+def _stack_menu(sample: StackExpertSample, menus: "Mapping[str, list]") -> list:
+    """The menu the stack row is interpolated over.
+
+    Preferred source is a menu the driver keyed at the packed qname.  Failing
+    that the stack inherits its members' menu -- but only if every measured
+    member offers the SAME rungs, because a stack is one decision and a menu
+    that differs between the experts inside it is not a menu for that decision.
+    """
+    packed = menus.get(sample.packed_qname)
+    if packed:
+        return list(packed)
+    seen: dict[tuple, list] = {}
+    for expert in sample.sampled_experts:
+        for member in sample.members[expert]:
+            rungs = list(menus.get(member, []))
+            key = tuple(sorted(
+                (r.family, r.format_name, int(r.body_rate_q256)) for r in rungs))
+            seen.setdefault(key, rungs)
+    if not seen:
+        return []
+    if len(seen) > 1:
+        raise StackSampleError(
+            f"{sample.packed_qname}: the measured experts do not share one "
+            f"menu ({len(seen)} distinct rung sets); a packed stack is a "
+            "single serving decision and cannot be priced over a menu that "
+            "differs between the experts inside it")
+    return next(iter(seen.values()))
+
+
+#: The anchor fields that must agree across every measured member of one stack
+#: rung, mapped to the row field they are written to.  Taking member zero's
+#: value the way the dense interpolation path takes ``ordered[0]``'s would let
+#: one expert scored under a different activation contract, or without the
+#: Hessian, disappear into a stack average.
+_STACK_UNIFORM_FIELDS = (
+    "family", "body_rate_q256", "activation_contract",
+    "activation_quantized", "hessian_applied",
+)
+
+
+def _stack_cost_rows(
+    sample: StackExpertSample,
+    anchors: "Mapping[str, Mapping[str, list]]",
+    menus: "Mapping[str, list]",
+    hessian_identity: dict,
+    refused: list,
+) -> "tuple[dict[str, dict], object]":
+    """Build every measured + interpolated row for one packed stack."""
+    from .tessera_rate_surface import (
+        PROVENANCE_INTERPOLATED, PROVENANCE_MEASURED, TesseraRateSurface,
+    )
+
+    _validate_stack_sample(sample)
+    q = sample.packed_qname
+    roles = len(sample.members[sample.sampled_experts[0]])
+    if roles <= 0:
+        raise StackSampleError(f"{q}: sampled experts have no measured members")
+
+    # (format_name) -> {expert -> [anchor, ...]}, one anchor per member.
+    by_format: dict[str, dict[int, list]] = {}
+    for expert in sample.sampled_experts:
+        if len(sample.members[expert]) != roles:
+            raise StackSampleError(
+                f"{q}: expert {expert} contributes "
+                f"{len(sample.members[expert])} members, expert "
+                f"{sample.sampled_experts[0]} contributes {roles}")
+        for member in sample.members[expert]:
+            member_anchors = anchors.get(member)
+            if not member_anchors:
+                raise StackSampleError(
+                    f"{q}: sampled member {member} has no measured anchors")
+            for family_anchors in member_anchors.values():
+                for anchor in family_anchors:
+                    by_format.setdefault(
+                        anchor.format_name, {}).setdefault(expert, []).append(anchor)
+
+    rows: dict[str, dict] = {}
+    measured_by_family: dict[str, list[tuple[int, float, float]]] = {}
+    for format_name in sorted(by_format):
+        per_expert = by_format[format_name]
+        missing = [e for e in sample.sampled_experts
+                   if len(per_expert.get(e, ())) != roles]
+        if missing:
+            # A rung measured on only some of the drawn experts is not a rung
+            # this sample can price: HT needs every drawn unit's y_e.
+            refused.append({
+                "qname": q, "format_name": format_name,
+                "reason": "stack_rung_incomplete_over_sample",
+                "detail": (f"{len(missing)} of {len(sample.sampled_experts)} "
+                           "sampled experts lack a full set of member anchors"),
+                "missing_experts": missing,
+            })
+            continue
+        contributing = [a for e in sample.sampled_experts for a in per_expert[e]]
+        uniform = {}
+        for field in _STACK_UNIFORM_FIELDS:
+            values = {getattr(a, field) for a in contributing}
+            if len(values) != 1:
+                raise StackSampleError(
+                    f"{q}/{format_name}: measured members disagree on {field} "
+                    f"({sorted(map(repr, values))}); a stack row may not "
+                    "average measurements taken under different contracts")
+            uniform[field] = next(iter(values))
+        member_dloss = {
+            e: math.fsum(_stack_member_weight(sample, e, roles) * float(a.dloss)
+                         for a in per_expert[e])
+            for e in sample.sampled_experts
+        }
+        total, stderr, n_random = _horvitz_thompson_stack(sample, member_dloss)
+        h_stack = float(sample.stack_h_trace)
+        rows[format_name] = {
+            # The h-weighted MEAN expert MSE -- see the section header. The
+            # allocator multiplies this by the PROBE row's h_trace, which the
+            # per-expert weights sum to, so 0.5*h_stack*output_mse reproduces
+            # the stack's summed per-expert predicted dloss.
+            "output_mse": total / h_stack,
+            "output_mse_measured": True,
+            "cost_source": "tessera_campaign_measured_stack_sample",
+            "currency": CURRENCY,
+            "tessera_provenance": PROVENANCE_MEASURED,
+            "tessera_family": uniform["family"],
+            "tessera_body_rate_q256": uniform["body_rate_q256"],
+            "activation_quantized": uniform["activation_quantized"],
+            "activation_contract": uniform["activation_contract"],
+            # The Horvitz-Thompson standard error, in the SAME currency as
+            # ``output_mse``.  REPORTED, NOT CONSUMED: the allocator's UCB
+            # hedge (``allocator_candidates._super_item_ucb_hedge``) skips
+            # rows priced from ``output_mse``, so no DP behaviour depends on
+            # this field today.  It is written because a sampled price whose
+            # sampling error is nowhere on the row is a sampled price nothing
+            # can audit.
+            "dloss_stderr": stderr / h_stack,
+            "dloss_stderr_currency": CURRENCY,
+            "dloss_stderr_consumed_by_allocator": False,
+            # Copied from the PROBE row so the explicit Tessera serving scope
+            # resolves ``routed_moe`` on ``unit_structure_from_stats``'s
+            # existing packed branch. The scope is not taught a new topology;
+            # it is handed the one the probe already recorded.
+            "_packed_experts_module": sample.packed_experts_module,
+            "num_experts": sample.num_experts,
+            "encode_seconds": math.fsum(float(a.seconds) for a in contributing),
+            "hessian_identity": {
+                **hessian_identity, "applied": bool(uniform["hessian_applied"]),
+            },
+            "sampled_experts": {
+                "design": sample.design,
+                "seed": sample.seed,
+                "n_experts": sample.num_experts,
+                "n_sampled": len(sample.sampled_experts),
+                "n_random_stratum": n_random,
+                "experts": list(sample.sampled_experts),
+                "inclusion_prob": {int(e): float(sample.inclusion_prob[e])
+                                   for e in sample.sampled_experts},
+                "packed_param": sample.packed_param,
+                "projections_per_expert": roles,
+                "estimator": "horvitz_thompson",
+                "variance_estimator": (
+                    "census" if n_random == 0 else "hartley_rao"),
+                "h_trace_stack": h_stack,
+                "h_trace_per_sampled_expert": {
+                    int(e): float(sample.h_trace_per_expert[e])
+                    for e in sample.sampled_experts},
+                # The per-member evidence the stack row was estimated from,
+                # kept on the row because the members are NOT cost keys: a
+                # stack price whose members are unreadable is unauditable.
+                "members": {
+                    int(e): [
+                        {"qname": a.qname, "dloss": float(a.dloss),
+                         "wire_bytes": int(a.wire_bytes),
+                         "memory_bytes": int(a.memory_bytes),
+                         "input_global_scale": (
+                             None if a.input_global_scale is None
+                             else float(a.input_global_scale))}
+                        for a in per_expert[e]]
+                    for e in sample.sampled_experts},
+            },
+        }
+        # No ``wire_bytes`` and no ``input_global_scale`` scalar on a stack
+        # row, deliberately.  Both are per-expert facts: a sample has neither a
+        # stack wire nor one A-side scale, and the per-member values are on the
+        # row above.  ``tessera_menu.priced_static_scales`` will therefore find
+        # no scale for a selected W4A4 stack and the export lane will refuse it
+        # by name -- which is the correct refusal until the driver calibrates
+        # a scale for every expert, sampled or not (reported, not papered over).
+        measured_by_family.setdefault(uniform["family"], []).append(
+            (int(uniform["body_rate_q256"]), total / h_stack, stderr / h_stack))
+
+    # Interpolation, on the STACK's own anchors: the same monotone surface the
+    # dense path uses, fitted to HT estimates rather than to one unit's
+    # measurements, and refusing to extrapolate for the same reason.
+    surfaces: dict[str, object] = {}
+    measured_names = set(rows)
+    for family, points in measured_by_family.items():
+        ordered = sorted(points)
+        try:
+            surface = TesseraRateSurface(
+                unit_name=q, family=family, layout="tight", currency=CURRENCY,
+                anchor_q256=tuple(p[0] for p in ordered),
+                anchor_dloss=tuple(p[1] for p in ordered),
+                anchor_stderr=tuple(p[2] for p in ordered),
+            )
+        except Exception as exc:
+            refused.append({
+                "qname": q, "family": family,
+                "reason": "non_interpolable_anchors",
+                "detail": str(exc),
+                "anchor_q256": [p[0] for p in ordered],
+                "anchor_dloss": [p[1] for p in ordered],
+            })
+            continue
+        surfaces[family] = surface
+        low, high = surface.q256_range
+        template = next(r for r in rows.values()
+                        if r["tessera_family"] == family)
+        for rung in _stack_menu(sample, menus):
+            if rung.family != family or rung.format_name in measured_names:
+                continue
+            if not low <= rung.body_rate_q256 <= high:
+                continue
+            rows[rung.format_name] = {
+                "output_mse": surface.predict(rung.body_rate_q256),
+                "output_mse_measured": False,
+                "cost_source": "tessera_campaign_interpolated",
+                "currency": CURRENCY,
+                "tessera_provenance": PROVENANCE_INTERPOLATED,
+                "tessera_family": family,
+                "tessera_body_rate_q256": rung.body_rate_q256,
+                "activation_contract": rung.admission.activation_contract,
+                "_packed_experts_module": sample.packed_experts_module,
+                "num_experts": sample.num_experts,
+                "hessian_identity": {
+                    **hessian_identity,
+                    "applied": bool(template["hessian_identity"]["applied"]),
+                },
+                # An interpolated stack row inherits the sample its bracketing
+                # anchors were estimated from; it is a prediction ABOUT that
+                # sample, so the sample travels with it.
+                "sampled_experts": {
+                    **{k: v for k, v in template["sampled_experts"].items()
+                       if k != "members"},
+                    "interpolated_from": sorted(measured_names),
+                },
+            }
+    return rows, surfaces
+
+
+# ---------------------------------------------------------------------------
 # The dense payload
 # ---------------------------------------------------------------------------
 
@@ -501,6 +1045,7 @@ def campaign_cost_payload(
     loo: Mapping[str, Mapping[str, dict]],
     provenance: dict,
     wire_backed: "frozenset[str] | set[str]" = frozenset(),
+    stack_samples: "Mapping[str, StackExpertSample] | None" = None,
 ) -> dict:
     """Turn measured anchors plus a legal menu into a cost payload.
 
@@ -516,6 +1061,16 @@ def campaign_cost_payload(
     interpolated row would price a rung that has no bytes to ship, so they get
     measured rows only: the allocator can select for them exactly the rungs a
     wire exists for (priced == written; PrismaQuant #183).
+
+    ``stack_samples`` maps a packed expert parameter's qname to the
+    ``StackExpertSample`` describing which of its experts were measured.  Each
+    one collapses its members' per-expert anchors into ONE stack-level row per
+    (family, rung) at the packed qname -- the key the probe already has, so the
+    row carries the packed topology the serving scope needs and the ``h_trace``
+    the allocator will multiply.  The members are then NOT top-level cost keys
+    (their measurements ride along on the stack row's ``sampled_experts``
+    block), which is what stops the same experts being priced twice: once as a
+    stack and once as themselves.
     """
     from .tessera_rate_surface import (
         PROVENANCE_INTERPOLATED, PROVENANCE_MEASURED, TesseraRateSurface,
@@ -550,7 +1105,34 @@ def campaign_cost_payload(
     formats: set[str] = set()
     surfaces: dict[str, dict[str, TesseraRateSurface]] = {}
     refused: list[dict] = []
+    # Every unit that is a MEMBER of a sampled stack, and the stack that owns
+    # it. A member never becomes its own cost key: the DP would otherwise see
+    # the same experts twice -- once inside the packed stack row and once as
+    # standalone units -- and the union-find promotion cannot merge what it
+    # cannot see as one group.
+    samples: dict[str, StackExpertSample] = dict(stack_samples or {})
+    member_owner: dict[str, str] = {}
+    for packed_qname, sample in samples.items():
+        if sample.packed_qname != packed_qname:
+            raise StackSampleError(
+                f"{packed_qname}: sampling record names "
+                f"{sample.packed_qname!r}")
+        if packed_qname in anchors:
+            raise StackSampleError(
+                f"{packed_qname}: the packed stack itself carries measured "
+                "anchors; a stack that was measured whole is not a sample and "
+                "must not also be estimated from one")
+        for expert, members in sample.members.items():
+            for member in members:
+                owner = member_owner.setdefault(member, packed_qname)
+                if owner != packed_qname:
+                    raise StackSampleError(
+                        f"{member}: claimed by both {owner} and "
+                        f"{packed_qname}; a measured expert belongs to exactly "
+                        "one stack")
     for qname, by_family in anchors.items():
+        if qname in member_owner:
+            continue
         rows: dict[str, dict] = {}
         measured_names: set[str] = set()
         for family, family_anchors in by_family.items():
@@ -646,6 +1228,15 @@ def campaign_cost_payload(
                 formats.add(rung.format_name)
         if rows:
             costs[qname] = rows
+    for packed_qname, sample in sorted(samples.items()):
+        stack_rows, stack_surfaces = _stack_cost_rows(
+            sample, anchors, menus, hessian_identity, refused)
+        if not stack_rows:
+            continue
+        costs[packed_qname] = stack_rows
+        formats.update(stack_rows)
+        if stack_surfaces:
+            surfaces.setdefault(packed_qname, {}).update(stack_surfaces)
     payload = dict(provenance)
     payload.update({
         "schema": SCHEMA,
