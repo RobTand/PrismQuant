@@ -20,6 +20,19 @@ accounting, not independently measured per-unit latency. Default width remains
 one pending performance qualification. No serving pin, wire recipe, cost
 currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
 
+Re-stamped (2026-09-07, `codex/first-model-integration-20260907`) for
+**campaign quanta in the declared Docker runtime** (§4.10). The shared fanout
+spec accepts an optional `container` block with `image` and explicit absolute
+`mounts` (`source`, `target`, optional `readonly`). The worker resolves the image
+once, logs its immutable ID and executes that ID; use a digest in versioned
+specs when retries must retain the same runtime. The existing environment is
+passed into the container. Its source is the PB worker's sealed checkout at
+`/workspace`, read-only; data mounts cannot hide that source. The container
+runs with the worker's UID/GID so shared output remains writable under NFS root
+squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
+Host-interpreter specs remain supported. Census, anchor and materialization
+quanta share the same row builder; the adapter does no scheduling or fanout.
+Gate: `tests/test_tessera_campaign_container.py`.
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
