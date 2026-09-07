@@ -2621,28 +2621,63 @@ def _checked_projected_units(bound, *, weights, model_path, source,
 
 def _population_block(*, dense_targets, expert_targets, dense_all, pinned,
                       population: ExpertPopulation, layer_stride: int,
-                      costs, menus) -> dict:
+                      costs, menus, stack_samples=None, profile=None) -> dict:
     """Distinguish selected targets from units with actual emitted prices."""
     from .tessera_expert_projection import POPULATION_SCHEMA
 
     dense_omitted = sorted(set(dense_all) - set(dense_targets))
     priced = {name for name, rows in costs.items() if rows}
+    stack_decisions = {}
+    represented = set()
+    for packed_qname, sample in sorted((stack_samples or {}).items()):
+        if profile is None:
+            raise StackSampleError("stack population requires the model profile")
+        if (packed_qname != sample.packed_qname or
+                packed_qname not in population.packed_in_scope or
+                int(population.packed_in_scope[packed_qname][0]) != sample.num_experts):
+            raise StackSampleError(f"{packed_qname}: sample disagrees with packed population")
+        roles = tuple(profile.packed_expert_projection_names(sample.packed_param))
+        stem = packed_qname[: -len(sample.packed_param)].rstrip(".")
+        members = {f"{stem}.{e}.{role}" for e in range(sample.num_experts) for role in roles}
+        declared = set(population.declared.get(sample.packed_experts_module, {}))
+        measured = {member for group in sample.members.values() for member in group}
+        expected_measured = {f"{stem}.{e}.{role}" for e in sample.sampled_experts for role in roles}
+        if (not members or not members <= declared or measured != expected_measured
+                or not measured <= members):
+            raise StackSampleError(f"{packed_qname}: sample members disagree with declared population")
+        if represented & members:
+            raise StackSampleError(f"{packed_qname}: source members belong to multiple stack decisions")
+        if members & priced:
+            raise StackSampleError(f"{packed_qname}: both packed decision and source members are priced")
+        represented.update(members)
+        stack_decisions[packed_qname] = {
+            "stack": sample.packed_experts_module,
+            "members": sorted(members), "sampled_members": sorted(measured),
+        }
+    # Source experts represented by an HT row are neither separate prices nor
+    # unpriced BF16 units. Keep their full frame in the explicit decision map.
+    expert_targets = (set(expert_targets) - represented) | set(stack_decisions)
     dense_priced = sorted(set(dense_targets) & priced)
     expert_priced = sorted(set(expert_targets) & priced)
     unpriced = {
-        kind: {name: ("no_admitted_menu" if not menus.get(name)
+        kind: {name: ("no_admitted_menu" if not (menus.get(name) or
+                          any(menus.get(member) for member in
+                              stack_decisions.get(name, {}).get("sampled_members", ())))
                       else "no_successful_anchor")
                for name in sorted(set(targets) - priced)}
         for kind, targets in (("dense", dense_targets),
                               ("routed_experts", expert_targets))
     }
+    represented_priced = priced | {
+        member for name, decision in stack_decisions.items() if name in priced
+        for member in decision["members"]}
     complete_stacks = sorted(stack for stack, units in population.declared.items()
-                             if set(units) <= priced)
+                             if set(units) <= represented_priced)
     packed = {name: list(shape) for name, shape
               in sorted(population.packed_in_scope.items())}
     packed_omitted = {name: list(shape) for name, shape
                       in sorted(population.omitted_outside_layer_stride.items())}
-    return {
+    result = {
         "schema": POPULATION_SCHEMA,
         "layer_stride": int(layer_stride),
         "enumerated": {"dense": sorted(dense_targets),
@@ -2672,6 +2707,9 @@ def _population_block(*, dense_targets, expert_targets, dense_all, pinned,
             "pinned": len(pinned),
         },
     }
+    if stack_decisions:
+        result["stack_decisions"] = stack_decisions
+    return result
 
 
 def campaign_population_block(**kwargs) -> dict:
