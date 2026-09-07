@@ -1442,3 +1442,156 @@ def test_the_geometry_memo_is_keyed_by_family_name_not_by_the_family():
     assert tm._shard_geometry.cache_info().hits == 1
     with pytest.raises(tm.TesseraMenuError):
         tm._shard_geometry(spec, lo, 2048, 1024)
+
+
+# ---------------------------------------------------------------------------
+# The third mode: readable by the pinned decoder, and still not attested
+# ---------------------------------------------------------------------------
+
+def _synthetic_contract(monkeypatch, *, reader=(256, 2048), attested=(1024,)):
+    """A contract whose reader range and attested rungs deliberately differ.
+
+    The real table can only ever show one arrangement at a time, and today
+    every attested rung happens to sit inside its family's reader range. That
+    makes it a poor witness for the property under test: a menu that answered
+    ``readable`` by consulting ``attested_rungs`` would pass on it. So the two
+    are pulled apart here -- a reader that accepts ``[256, 2048]`` and a cell
+    census that attests one rung of it -- and the three modes are asked to
+    disagree in the one direction that proves each read its own field.
+    """
+    from types import SimpleNamespace
+
+    family = "TESSERA_E4M3_K1"
+    cell = SimpleNamespace(
+        cell_id="synthetic_cell", route_status=tm.ROUTE_STATUS_BACKED,
+        activation_contract="fp8_per_token_dynamic",
+        requires_serve_flags=(),
+    )
+    contract = SimpleNamespace(
+        commit="synthetic", requires_serving_context=False, lane_schema="legacy",
+        max_world_size={family: 1},
+        reader_rate_range={family: reader},
+        attested_rungs={family: frozenset(attested)},
+        governs=lambda name: name == family,
+        native_cells=lambda name, rate, **_kw: (
+            (cell,) if name == family and rate in attested else ()),
+    )
+    monkeypatch.setattr(tm, "tessera_runtime_contract", lambda: contract)
+    return contract
+
+
+def test_readable_is_the_reader_range_not_the_attested_rungs(monkeypatch):
+    """R512 is inside the published reader range and no cell attests it."""
+    _synthetic_contract(monkeypatch)
+
+    readable_only = tm.route_admission("TESSERA_E4M3_K1_R512")
+    assert readable_only.readable
+    assert not readable_only.attested
+    assert readable_only.route_status == tm.ROUTE_STATUS_UNATTESTED, (
+        "readable is a decoder fact; it must not promote the route status"
+    )
+    assert readable_only.admits(tm.MENU_READABLE)
+    assert not readable_only.admits(tm.MENU_ATTESTED)
+    assert readable_only.admits(tm.MENU_RESEARCH)
+
+
+def test_an_attested_rung_is_also_readable(monkeypatch):
+    _synthetic_contract(monkeypatch)
+
+    attested = tm.route_admission("TESSERA_E4M3_K1_R1024")
+    assert attested.attested and attested.readable
+    assert all(attested.admits(mode) for mode in tm.MENU_MODES)
+
+
+def test_a_rate_outside_the_reader_range_is_research_only(monkeypatch):
+    """The rung the campaign should stop paying for: writable, unreadable."""
+    _synthetic_contract(monkeypatch, reader=(1024, 2048))
+
+    outside = tm.route_admission("TESSERA_E4M3_K1_R512")
+    assert not outside.readable and not outside.attested
+    assert not outside.admits(tm.MENU_READABLE)
+    assert outside.admits(tm.MENU_RESEARCH)
+
+
+def test_a_family_the_contract_does_not_publish_is_never_readable(monkeypatch):
+    """Absence is "no reader is published", never "any rate is fine"."""
+    _synthetic_contract(monkeypatch)
+
+    ungoverned = tm.route_admission("TESSERA_E2M1_K2_R896")
+    assert not ungoverned.readable
+    assert not ungoverned.admits(tm.MENU_READABLE)
+
+
+def test_the_packaged_reader_range_is_read_from_its_own_field():
+    """``reader_rate_range_q256``, not the rung list beside it.
+
+    The packaged ``formats`` row carries three rate fields and only one of
+    them answers "what will the decoder accept": ``attested_rungs_q256`` (and
+    its deprecated ``candidate_rungs_q256`` alias) name the rungs a CELL
+    attests, which is the narrower question ``attested`` already answers.
+    Reading the alias here would make ``readable`` an exact synonym for
+    ``attested`` on today's table and nobody would notice, because on today's
+    table every attested rung is inside its reader range.
+    """
+    row = {
+        "family": "TESSERA_E4M3_K1",
+        "kind": "tessera_wire",
+        "reader_rate_range_q256": [256, 2048],
+        "attested_rungs_q256": [1024],
+        "candidate_rungs_q256": [1024],
+    }
+    formats = {"TESSERA_E4M3_K1": row}
+    assert tm._published_reader_range(formats, "TESSERA_E4M3_K1") == (256, 2048)
+    assert tm._published_reader_range(formats, "TESSERA_E2M1_K1") is None
+    assert tm._published_reader_range({"X": {"family": "X"}}, "X") is None
+    assert tm._rate_is_readable(256, (256, 2048))
+    assert tm._rate_is_readable(2048, (256, 2048))
+    assert not tm._rate_is_readable(255, (256, 2048))
+    assert not tm._rate_is_readable(2049, (256, 2048))
+    assert not tm._rate_is_readable(1024, None)
+
+
+def test_readable_menu_sits_between_attested_and_research(monkeypatch):
+    """The ordering the issue asked for, on a synthetic reader range.
+
+    The range is narrower than the family's realisable axis and wider than the
+    one attested rung on purpose, so both containments are strict here. On the
+    real table only the outer one is (there the attested set is one rung per
+    family), which is why this is asserted on a fixture and the real table
+    asserts the containment itself.
+    """
+    _synthetic_contract(monkeypatch, reader=(1024, 1200), attested=(1024,))
+    families = tuple(
+        f for f in tm.menu_families() if f.name == "TESSERA_E4M3_K1")
+    assert families, "the fixture family must be on the menu"
+
+    def names(mode):
+        return {r.format_name for r in tm.expand_tessera_menu(
+            SHAPE, mode=mode, families=families)}
+
+    attested = names(tm.MENU_ATTESTED)
+    readable = names(tm.MENU_READABLE)
+    research = names(tm.MENU_RESEARCH)
+    assert attested == {"TESSERA_E4M3_K1_R1024"}, attested
+    assert attested < readable < research, (
+        len(attested), len(readable), len(research))
+
+
+def test_menu_mode_accepts_the_third_spelling_and_still_refuses_others():
+    assert tm.menu_mode("readable") == tm.MENU_READABLE
+    assert tm.MENU_READABLE in tm.MENU_MODES
+    with pytest.raises(tm.TesseraMenuError) as excinfo:
+        tm.menu_mode("decodable")
+    assert "readable" in str(excinfo.value)
+
+
+def test_the_readable_width_report_says_readable_not_attested(monkeypatch):
+    monkeypatch.setattr(fr, "format_is_producer_eligible", lambda name, **_kw: True)
+    kept = ["TESSERA_E4M3_K1_R1024", "TESSERA_E4M3_K1_R512"]
+    admitted, refused = tm.partition_attested(kept)
+    widths, line = tm.menu_width_report(kept, admitted, [], refused, tm.MENU_READABLE)
+    assert widths["readable_rungs"] == 2
+    assert widths["attested_rungs"] == 0
+    assert widths["research_admitted_rungs"] == 0
+    assert widths["menu_mode"] == tm.MENU_READABLE
+    assert "readable by the pinned decoder, not attested" in line

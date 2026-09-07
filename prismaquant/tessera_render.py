@@ -588,6 +588,11 @@ def _producer_eligible(
     seam.  Under ``PRISMAQUANT_TESSERA_MENU=research`` this half is answered
     ``unattested`` rather than refused, and the rung enters the menu carrying
     that status for the export gate to fail closed on (principles 1 and 9).
+    ``PRISMAQUANT_TESSERA_MENU=readable`` relaxes it the same way but only as
+    far as the pinned contract's own ``reader_rate_range_q256``: the rung
+    still carries ``unattested`` and the export gate still refuses it, and
+    what the mode buys is that a campaign stops encoding bytes no reader
+    accepts.
 
     Conflating the two is how a rung reaches the DP that cannot be written, so
     they stay separate here even though both currently answer the same way.

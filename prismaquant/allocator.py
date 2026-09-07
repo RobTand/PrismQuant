@@ -2601,8 +2601,10 @@ def main():
                 "nothing. Either widen the runtime's attested rungs "
                 "(attested_rungs_q256 in the packaged runtime_contract.json) "
                 "or price a table under the attested menu; "
-                "PRISMAQUANT_TESSERA_MENU=research allocates over the whole "
-                "realisable axis for research runs that do not export."
+                "PRISMAQUANT_TESSERA_MENU=readable allocates over the rungs "
+                "the pinned decoder accepts and "
+                "PRISMAQUANT_TESSERA_MENU=research over the whole realisable "
+                "axis -- both for research runs that do not export."
             )
     try:
         specs = fr.require_producer_formats(

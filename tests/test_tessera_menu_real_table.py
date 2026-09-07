@@ -75,7 +75,13 @@ CAMPAIGN = Path("/mnt/shared/tessera-runs/pq-continuous")
 PROBE = CAMPAIGN / "qwen06b" / "probe.pkl"
 COSTS = CAMPAIGN / "qwen06b_group" / "cost.pkl"
 
-pytestmark = pytest.mark.skipif(
+#: The allocation walks need the campaign's artifacts; the contract reads do
+#: not.  This was a module-level ``pytestmark`` until the readable-menu work
+#: (#284) added tests that ask only the pinned contract what its decoder
+#: accepts.  Skipping those for want of a 7 MB probe pickle would have made
+#: the one assertion the issue is about read "did not run" on any box that
+#: does not mount ``/mnt/shared`` -- a green receipt for a test nothing ran.
+campaign_table = pytest.mark.skipif(
     not (PROBE.exists() and COSTS.exists()),
     reason=(
         f"the campaign's real cost table is not on this box ({PROBE}, {COSTS}); "
@@ -257,6 +263,7 @@ def _installed_contract_sha() -> str:
     return hashlib.sha256(trc.contract_path().read_bytes()).hexdigest()
 
 
+@campaign_table
 def test_the_default_path_allocates_over_the_attested_axis(
     tmp_path, monkeypatch, installed_contract,
 ):
@@ -306,6 +313,7 @@ def test_the_default_path_allocates_over_the_attested_axis(
         context_by_unit={unit: _dense_context() for unit in assigned})
 
 
+@campaign_table
 def test_the_expansion_reads_the_guards_own_predicate(installed_contract):
     """Lesson 1 of issue #19, pinned behaviourally rather than by reading code.
 
@@ -338,6 +346,7 @@ def test_the_expansion_reads_the_guards_own_predicate(installed_contract):
     assert unscoped == [] and len(all_dropped) == len(priced)
 
 
+@campaign_table
 def test_the_expansion_narrows_with_the_predicate_it_shares(
     monkeypatch, installed_contract,
 ):
@@ -361,6 +370,7 @@ def test_the_expansion_narrows_with_the_predicate_it_shares(
     assert len(dropped) == len(priced)
 
 
+@campaign_table
 def test_the_provenance_names_the_table_that_attested_the_menu(
     tmp_path, monkeypatch, installed_contract,
 ):
@@ -390,6 +400,7 @@ def test_the_provenance_names_the_table_that_attested_the_menu(
     assert pin["contract_path"] == installed_contract.path
 
 
+@campaign_table
 def test_the_operator_path_allocates_through_the_dev_pin(tmp_path, monkeypatch):
     """The walk an operator takes: the pin in the environment, nothing patched.
 
@@ -430,6 +441,7 @@ def test_the_operator_path_allocates_through_the_dev_pin(tmp_path, monkeypatch):
                                 context_by_unit={unit: _dense_context() for unit in assigned})
 
 
+@campaign_table
 def test_the_pin_and_the_one_read_allocate_identically(tmp_path, monkeypatch):
     """Same contract by two routes, same allocation.
 
@@ -460,3 +472,151 @@ def test_the_pin_and_the_one_read_allocate_identically(tmp_path, monkeypatch):
     assert (via_pin["__prismaquant__"]["tessera_dev_pin"]["contract_sha256"]
             == via_read["__prismaquant__"]["tessera_dev_pin"]["contract_sha256"]
             == sha)
+
+
+# ---------------------------------------------------------------------------
+# The readable menu, on the contract the installed Tessera actually publishes
+# ---------------------------------------------------------------------------
+
+#: What contract v22's ``formats[].reader_rate_range_q256`` says the plugin's
+#: decoder accepts, read here as the EXPECTATION the two code paths must both
+#: reproduce. It is written out rather than re-read from the file on purpose:
+#: a test that derives its expectation from the same field the code reads
+#: asserts only that one read happened twice.
+READER_RANGES = {
+    "TESSERA_E2M1_K2": (896, 896),
+    "TESSERA_E4M3_K1": (256, 2048),
+    "TESSERA_BF16_K1": (256, 4096),
+}
+#: And the family the contract does not publish at all -- the one the #275 LFM
+#: campaign spent 168 rows x 27 s encoding. Absence is "no reader exists",
+#: never "any rate is fine", so every rung of it must be refused.
+UNPUBLISHED_FAMILY = "TESSERA_E2M1_K1"
+
+
+def _readable_by_family(*, families=None):
+    """``{family: {rate: readable}}`` over every legal rung of every family.
+
+    Walks the RESEARCH menu, which is the whole shape-legal set, so the
+    "exactly" in the acceptance criterion is a statement about every rung the
+    producer can write and not about a list somebody typed.
+    """
+    out: dict[str, dict[int, bool]] = {}
+    for rung in tm.expand_tessera_menu(
+        (2048, 1024), mode=tm.MENU_RESEARCH,
+        **({"families": families} if families is not None else {}),
+    ):
+        out.setdefault(rung.family, {})[rung.body_rate_q256] = (
+            rung.admission.readable)
+    return out
+
+
+def _assert_the_published_reader_ranges(seen):
+    assert set(seen) >= set(READER_RANGES) | {UNPUBLISHED_FAMILY}, sorted(seen)
+    for family, rates in sorted(seen.items()):
+        span = READER_RANGES.get(family)
+        readable = {rate for rate, ok in rates.items() if ok}
+        if span is None:
+            assert not readable, (
+                f"{family} is not published by the pinned contract, so no "
+                f"reader accepts it; {sorted(readable)[:8]} were admitted")
+            continue
+        lo, hi = span
+        expected = {rate for rate in rates if lo <= rate <= hi}
+        assert readable == expected, (
+            f"{family}: readable={sorted(readable)[:8]} "
+            f"expected={sorted(expected)[:8]} over range {span}")
+        assert expected, f"{family}: the shape carries no rung inside {span}"
+
+
+def test_the_readable_menu_is_exactly_the_published_reader_ranges(
+    installed_contract,
+):
+    """The set the issue named, through the module's declared one read.
+
+    ``TESSERA_E2M1_K2`` at 896 only; ``TESSERA_E4M3_K1`` over [256, 2048];
+    ``TESSERA_BF16_K1`` over [256, 4096]; and nothing at all from
+    ``TESSERA_E2M1_K1``, which the contract does not publish.
+    """
+    seen = _readable_by_family()
+    # Not vacuous: the family the campaign wasted its time on IS on the
+    # research menu, at many rungs, and every one of them must be refused.
+    assert len(seen.get(UNPUBLISHED_FAMILY, {})) > 50, (
+        "the unpublished family is absent from the research menu, so "
+        "'refuses every E2M1_K1 rung' asserts nothing")
+    _assert_the_published_reader_ranges(seen)
+    # The two anchors the #275 campaign encoded outside the reader range.
+    for rate in (128, 512):
+        assert seen["TESSERA_E2M1_K2"][rate] is False
+    assert seen["TESSERA_E2M1_K2"][896] is True
+
+
+def test_the_packaged_branch_agrees_with_the_dev_pin_on_readability():
+    """The same answer with no pin supplied: the packaged ``formats`` table.
+
+    ``route_admission`` derives ``readable`` from two different fields on two
+    different objects -- ``reader_rate_range`` on the parsed dev-pin contract,
+    ``reader_rate_range_q256`` on the packaged ``formats`` row. Nothing else
+    in this suite crosses those two paths, so a wrong key on either one is
+    invisible until a campaign prices the wrong axis. This runs the walk with
+    no contract substituted and no pin requested, which is the branch
+    production takes, and holds it to the same expectation.
+    """
+    assert not trc.dev_pin_requested(), "this walk takes the packaged branch"
+    _assert_the_published_reader_ranges(_readable_by_family())
+
+
+def test_attested_is_contained_in_readable_is_contained_in_research(
+    installed_contract,
+):
+    """``attested <= readable <= research``, rung by rung, family by family.
+
+    Asserted as containment of the admission predicate rather than of three
+    menus, so a family whose shape drops every rung cannot make the ordering
+    hold by being empty on all three sides.
+    """
+    context = _dense_context()
+    # The scoped table attests a cell only under an exact serving scope, so a
+    # context-free walk would count zero attested rungs and the containment
+    # would hold by being empty on one side.
+    attested_seen = readable_seen = 0
+    for rung in tm.expand_tessera_menu(
+        (2048, 1024), mode=tm.MENU_RESEARCH, serving_context=context,
+    ):
+        admission = rung.admission
+        assert admission.admits(tm.MENU_RESEARCH), rung.format_name
+        if admission.admits(tm.MENU_ATTESTED):
+            attested_seen += 1
+            assert admission.admits(tm.MENU_READABLE), (
+                f"{rung.format_name} is attested by a cell the contract "
+                "publishes and yet its own decoder is said to refuse the rate")
+        if admission.admits(tm.MENU_READABLE):
+            readable_seen += 1
+        # The containment that matters for the export gate: readable moves
+        # nothing.  A rung nothing attests is `unattested` in every mode.
+        if not admission.attested:
+            assert admission.route_status == tm.ROUTE_STATUS_UNATTESTED
+    assert attested_seen > 0 and readable_seen > attested_seen, (
+        attested_seen, readable_seen)
+
+
+def test_readability_does_not_depend_on_the_serving_scope(installed_contract):
+    """A decoder either takes a rate or it does not; a scope cannot change it.
+
+    ``attested`` is scope-bound by construction -- a cell attests one platform,
+    image, execution mode and residency -- and ``readable`` deliberately is
+    not, because ``reader_rate_range_q256`` is published once per family and
+    says nothing about where the rung is served. Asserting it here keeps the
+    two from quietly merging: a ``readable`` that moved with the scope would be
+    a weaker spelling of ``attested`` wearing a different name.
+    """
+    context = _dense_context()
+    for name in ("TESSERA_E4M3_K1_R512", "TESSERA_E4M3_K1_R1024",
+                 "TESSERA_E2M1_K2_R512", "TESSERA_E2M1_K2_R896"):
+        scoped = tm.route_admission(name, serving_context=context)
+        bare = tm.route_admission(name)
+        assert scoped.readable == bare.readable, name
+    # ...and the attestation is, which is what makes the above non-trivial.
+    assert tm.route_admission(
+        "TESSERA_E4M3_K1_R1024", serving_context=context).attested
+    assert not tm.route_admission("TESSERA_E4M3_K1_R1024").attested
