@@ -3,6 +3,58 @@
 As of: 2026-09-06 · `main-campaign/pq290-stack-payload`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **what a
+campaign quantum measures: the expert sample, the rate band, and the refusal
+of an empty menu** (§4.10; RobTand/prismaquant#282, #291). Three changes, each
+paid for by a measurement rather than an economy. (1) A routed stack is priced
+from a sample of its experts, drawn by the planner proportional to the probe's
+per-expert `h_trace` — randomized systematic PPS without replacement with a
+take-all stratum, exact inclusion probabilities, seeded from `(seed, stack)`
+and never from `h`. Pricing every expert is ~250 box-days at GLM-5.3 Flash
+scale; a uniform draw over a frame whose `h_trace` spans two orders of
+magnitude is biased −6…−28 % on campaign-01's own table and the bias does not
+shrink with `n`, so there is no uniform fallback: a probe with no per-expert
+`h_trace` refuses and names PrismaQuant #290. The planner draws, stamps
+`{units, inclusion_probability, certainty, permutation, start, audit}` into the
+units file and the plan, and the campaign prices exactly the sampled units —
+which puts the draw inside the checkpoint identity for free, because that
+identity holds exactly the priced units. Turning the sampled prices into one
+stack row is #290's, not this file's. (2) `--rate-band lo,hi` puts a window
+family's two round-one anchors at the ends of the band the artifact will
+actually be allocated in, instead of across the family's whole realisable
+range: a two-anchor fit spanning 1–8 bits misses the interior of a 1/4.5/8-bit
+triple by median 0.32 and p90 0.76 log₂ with the same sign at both ends —
+curvature, not noise — while the same fit inside a one-bit bracket lands at
+median 0.08. One sampled expert in ten (`--audit-rate`) gets a third anchor
+inside the bracket, which the existing leave-one-anchor-out report scores; two
+anchors define a line and can never disagree with it, so a bracket priced at
+its ends carries no evidence about its own interpolation. (3) A menu mode that
+admits nothing now exits 2 naming the mode and the contract, instead of
+writing `costs: {}` and exiting 0; units the mode admits no rung for are
+stamped `no_admitted_rung` rather than silently absent. Unset flags reproduce
+every artifact built before this date: no cost model, format menu, serving
+lane, ship gate or byte changes. Gate:
+`tests/test_tessera_campaign_fanout.py`.
+
+Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **the
+anchor campaign's execution contract** (§4.10; RobTand/prismaquant#282). The
+campaign was one exclusive GPU action and the second GB10 sat idle beside it.
+`--units` selects fused anchor groups to measure and narrows the checkpoint
+identity with the selection; `--census-out` / `--calibration-census` carry the
+three scope-wide answers no shard may re-derive (the calibration row counts
+behind `fit_tokens`, the fused-unified activation maxima behind
+`input_global_scale`, and the producer's whole-scope expert projection);
+`--seed-checkpoint` offers an in-flight campaign's anchors to this run's own
+row gates. `tools/dispatch_tessera_campaign.py` is census/plan/submit/merge
+over `pbcampaign`, and the merge unions disjoint captures into the object a
+whole-scope run writes, recomputes its digest and refuses on any identity the
+rows do not already share. A row whose rung this run's menu does not admit is
+carried as `unservable` evidence rather than refused or priced, and
+`plan --rows-per-box N` checks that a box can hold N of these rows rather than
+shrinking a demand to make it so. No cost model, format menu, serving lane,
+ship gate or byte change: a whole-scope invocation with no new flag behaves
+exactly as before. Gate: `tests/test_tessera_campaign_fanout.py`.
+
 Re-stamped (2026-09-06, `main-campaign/pq290-stack-payload`) for **the routed
 expert stack as one Tessera decision unit, priced from a sample** (§4.10;
 RobTand/prismaquant#290). The campaign encodes one expert Linear at a time, so
@@ -6930,6 +6982,133 @@ recomputing or relabelling the old result. Output/cache paths and the wall-clock
 interruption limit are not numerical inputs; moving them is allowed only if
 the same manifest, unit journal and verified priced wire remain available.
 The producer API is required; an older producer without it refuses.
+
+**The campaign fans out per anchor group** (`--units`, `--census-out`,
+`--calibration-census`, `--seed-checkpoint`; `tools/dispatch_tessera_campaign.py`;
+RobTand/prismaquant#282). It was one exclusive GPU action -- `--layer-stride`
+was the only scope control and the adaptive rounds turned inside one process --
+so the second GB10 sat idle beside it. `--units` takes a
+`prismaquant.tessera_campaign_units.v1` selection of **fused anchor groups**,
+checked member for member against the grouping the run itself resolves, and the
+checkpoint identity narrows to exactly the selected units, so disjoint
+selections never contend for one journal. The group is the quantum because
+anchor placement already is: one shared rung grid per group, split by the
+group's worst member.
+
+Three answers are scope-wide and no shard may re-derive them, so a **census**
+row computes them once. `--census-out` runs the prologue over the whole scope
+and writes `prismaquant.tessera_campaign_census.v1`: the per-unit calibration
+row counts, the per-unit activation maxima, the anchor grouping, the unit
+shapes, the draw's own `text_sha256`/`fit_ids_sha256`, and the producer's
+expert projection of every declared stack. `--calibration-census` reads it
+back, refuses a census of another draw or scope, checks every unit the run
+hooked against it, and only then stamps the scope's values.
+
+* **`fit_tokens` is a maximum over the scope**, and Tessera seals it into every
+  H-aware wire receipt (`cached_unit.encoding_input_identity`), so a shard
+  stamping its own selection's maximum would write receipts the exporter
+  rejects against the merged capture. The census makes it the monolith's value
+  without any shard asserting a count it did not see.
+* **The static `input_global_scale` unifies over fused siblings** by
+  `unify_fused_sibling_max_abs`, whose partition has fallbacks the anchor
+  grouping does not, so a selection whole by the anchor partition can be
+  partial by the scale partition -- and a partial fused group calibrates an A
+  side no module executes. Taking the scope's maxima removes the dependence.
+* **The producer's expert projection is rebound at allocation** against every
+  stack the carried block names (`carried_units`), so a block trimmed to one
+  shard's stacks is refused there; and the request hashes the whole checkpoint,
+  which must not land on every row.
+
+`--seed-checkpoint` offers another campaign's stored anchors to this run's own
+row gates rather than resuming its journal: a journal binds the run identity
+and `prismaquant_source_sha256` moves with any change to the package, while the
+row gates are content checks and strictly stronger -- the producer input
+identity is recomputed from this run's weight, menu, Hessian applicability and
+static scale, and Tessera's `verify_cached_unit` re-reads the blob and
+re-validates the wire against it. The adaptive state needs nothing further:
+`grid`, the leave-one-out error and the stop reason are all recomputed from the
+anchor set at the top of every round, so adopting a group's anchors resumes it
+where it stood. What a seeded row inherits and does not re-derive is the stored
+`dloss`, exactly as an ordinary resume does. Adopted anchors are written to the
+row's own journal **before** the anchor loop, because a fully seeded group has
+nothing pending in round one and the loop ends without reaching the flush that
+follows an encode; without that write the rows would price into `cost.pkl` and
+leave `merge` a journal missing exactly the units the seed contributed.
+
+An adopted row whose rung is **outside this run's menu** is neither priced nor
+refused: it is recorded as `unservable` evidence, in the journal shard and in
+`provenance["unservable"]`, and never in `costs`. The two are different
+failures. A row that disagrees with this run's weights, Hessian applicability
+or static scale is a row about some other campaign and is refused by name; a
+row this menu does not admit is a correct measurement of a rung the pinned
+reader cannot decode. Discarding it would mean re-encoding it to get the
+rate/distortion law back, and pricing it would put a rung nothing can serve in
+front of the allocator. The seed's wire bytes for such a row are **not** linked
+into the run's wire directory -- that directory is what the export intake reads
+-- and no fresh encode ever lands here, because the menu is what decides what
+gets encoded. Evidence the source had already set aside is carried forward, and
+a source that calls a rung unservable while this run's menu admits it is
+refused: the two disagree about where the line is. Which rungs the menu admits
+is the menu mode's answer, not this tool's; the contract-readable mode is
+RobTand/prismaquant#284, and a fanned-out run selects it the way it selects any
+campaign flag, through the spec's `campaign_argv`, with `merge` refusing rows
+whose `menu_mode` disagrees.
+
+`tools/dispatch_tessera_campaign.py` is `census` / `plan` / `submit` / `merge`
+over `pbcampaign`. Rows are portable (no host pin), GPU-demanding, not
+exclusive, `retry_safe`, and carry a memory demand computed from the
+checkpoint's size and the selection's shapes. Re-running the manifest **is**
+the resume -- a finished row is a CAS hit and a running row is re-attached --
+so nothing here decides what to skip, and a row may not carry
+`--deadline-seconds`, which stops a run mid-round and would price a different
+anchor set than one run would have. `merge` unions the rows' disjoint Hessian
+captures into the object a whole-scope run writes (same `counts`, same
+provenance), **recomputes** its digest, re-stamps every row's
+`capture_sha256`, rebuilds the population block over the scope, and writes one
+`cost.pkl` plus a journal under the union identity. The merged population block lands under the
+key the allocation reads (`tessera_expert_projection.POPULATION_KEY`), which is
+what keeps the reference row's own narrow block from surviving the merge.
+It refuses a row the fleet
+did not report as executed, a journal entry whose unit shard is absent, a
+mixed Hessian identity, a unit priced twice, a
+gap in the coverage, a capture whose seal disagrees with its own rows' stamps,
+and any static scale or producer projection the rows do not already share.
+The `unservable` evidence is **unioned** across rows rather than copied from
+the reference row, and two rows that carry different evidence for one
+`(unit, rung)` are refused.
+
+**How many rows one box runs at once is a fit question, not a flag.**
+PrismaBuild admits on the row's declared demand, so the only way to put more
+rows on a box is to make a row hold less; declaring a smaller demand than the
+row holds would reserve less than it uses. `plan --rows-per-box N` therefore
+*checks* rather than sets: it refuses when the spec declares a
+`box_memory_gb` that `N` widest rows do not fit, prints the arithmetic
+otherwise, and records `rows_per_box` and each row's `row_memory_gb` in the
+plan. The dominant term in a row's demand today is `_model_bytes` -- every row
+loads the whole checkpoint, because the activations a unit is priced on come
+from a forward pass through the layers above it -- so that term, not the
+selection, is the concurrency ceiling. A quantum that held only its own units'
+weights would have to take its activations from something the census carried,
+or from the streaming loader; that is not this change.
+
+**Why the quantum is the fused anchor group.** The adaptive loop's round is per
+`(group, family)`: a round adds one anchor to each surface still failing its
+gate, and the decision reads all of that family's anchors at once. Splitting
+the quantum by rung would put that decision outside the process that owns the
+round. It is still reachable without a second dispatcher, and the mechanism is
+already here: a row seeded with the prior anchors and given a narrower menu
+computes exactly one more round, so a per-round or per-rung fan-out is
+`plan --seed-checkpoint` / `submit` / `merge` iterated, with the journal as the
+handoff. That is also the shape a batched encoder entry point would take -- one
+call encoding a stack's sampled experts at one rung (Tessera #385) makes
+`(stack, family, rung, expert subset)` a *pending list* a round can hand to the
+encoder in one call, not a new sharding unit: the anchor grid and the gate stay
+per group either way.
+
+Equality is defined modulo what a wall clock writes: `encode_seconds`,
+`wall_seconds`, `rounds_run`, `stopped_early`, `cache_dir`, `wire_dir` and the
+fan-out provenance differ by construction; the priced rows, anchors,
+leave-one-out values and Hessian identity do not.
 
 > **Premise correction.** This work was briefed on the belief that Tessera's
 > "embedded rate axis" would let one deep encode per unit yield exact decodes of
