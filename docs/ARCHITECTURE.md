@@ -11399,7 +11399,7 @@ Linear-exclusion regex **profile-owned**. `incremental_probe.resolve_linear_excl
 (`:423-437`) ORs the profile's fragment into the router baseline and replaced four literal
 regex sites, so hook installs and the shard-reuse meta stamp (`:830`) can no longer disagree —
 a mismatch there silently invalidates shard reuse. `DeepseekV4Profile` overrides it
-(`deepseek_v4.py:115`) to exclude `self_attn.{compressor,indexer}`. The reason is a contract
+(`deepseek_v4.py:115`) to exclude `self_attn.{compressor,indexer}`. The Tessera campaign's dense-Linear census honours the same fragment (`tessera_campaign.py:3686`), so every campaign pins the set the probe pins. The reason is a contract
 fact, not a preference: the faithful vendored forward (`87ca027`) instantiates and loads the
 compressor and indexer, so their `nn.Linear` leaves became visible to the probe's enumeration,
 but they sit **outside the gridbook D0.1 serving contract's quantizable set** — served
