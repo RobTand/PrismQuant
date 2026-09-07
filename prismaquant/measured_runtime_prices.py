@@ -14,7 +14,7 @@ import json
 import math
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -25,6 +25,9 @@ from .serve_dispatch_table import DispatchTableError
 
 SCHEMA = "prismaquant.measured_runtime_prices.v1"
 CONTEXT_SCHEMA = "prismaquant.measured_runtime_context.v1"
+PROVENANCE_CONTEXT_SCHEMA = "prismaquant.measured_runtime_context.v2"
+PROVENANCE_TABLE_SCHEMA = "prismaquant.measured_runtime_prices.v2"
+PROVENANCE_IDENTITY_KIND = "prismaquant.runtime_provenance_relation.v1"
 RESOURCE_FIELDS = ("prefill_ms", "decode_ms", "serialized_bytes", "resident_bytes",
                    "peak_scratch_bytes", "activation_bytes", "kv_bytes")
 
@@ -102,7 +105,9 @@ class RuntimeContext:
     insufficient because these can change inside one image. ``gpu_identity``
     identifies the actual device/configuration used by that manifest. The
     explicit workload fields are additional checked coordinates, not a licence
-    to omit unlisted runtime settings from the manifest identity.
+    to omit unlisted runtime settings from the manifest identity. Version 2
+    instead names a provenance-relation identity that retains every original
+    runtime manifest and explicitly verifies their common coordinates.
     """
 
     serving_context: ServingContext
@@ -115,11 +120,14 @@ class RuntimeContext:
     tensor_parallel: int
     graph_mode: str
     operator_routes: Mapping[str, Mapping[str, str]]
+    runtime_identity_kind: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.serving_context, ServingContext):
             raise RuntimePriceError("serving_context must be a ServingContext")
         _string(self.gpu_identity, "gpu_identity")
+        if self.runtime_identity_kind not in (None, PROVENANCE_IDENTITY_KIND):
+            raise RuntimePriceError("unknown measured runtime identity kind")
         for name in ("runtime_sha256", "source_sha256", "calibration_sha256"):
             _sha(getattr(self, name), name)
         for name in ("prompt_tokens", "batch_size", "tensor_parallel"):
@@ -143,7 +151,9 @@ class RuntimeContext:
             raise RuntimePriceError(f"missing expected operator route for {(unit, fmt)}") from exc
 
     def as_dict(self) -> dict:
-        return {"schema": CONTEXT_SCHEMA, "serving_context": self.serving_context.as_dict(),
+        return {"schema": PROVENANCE_CONTEXT_SCHEMA if self.runtime_identity_kind else CONTEXT_SCHEMA,
+                **({"runtime_identity_kind": self.runtime_identity_kind} if self.runtime_identity_kind else {}),
+                "serving_context": self.serving_context.as_dict(),
                 **{name: getattr(self, name) for name in (
                     "gpu_identity", "runtime_sha256", "source_sha256", "calibration_sha256",
                     "prompt_tokens", "batch_size", "tensor_parallel", "graph_mode")},
@@ -153,8 +163,14 @@ class RuntimeContext:
 def parse_runtime_context(payload: Mapping) -> RuntimeContext:
     fields = ("schema", "serving_context", "gpu_identity", "runtime_sha256", "source_sha256",
               "calibration_sha256", "prompt_tokens", "batch_size", "tensor_parallel", "graph_mode", "operator_routes")
+    if not isinstance(payload, Mapping):
+        raise RuntimePriceError("runtime context: expected an object")
+    if payload.get("schema") == PROVENANCE_CONTEXT_SCHEMA:
+        fields += ("runtime_identity_kind",)
+        if payload.get("runtime_identity_kind") != PROVENANCE_IDENTITY_KIND:
+            raise RuntimePriceError("v2 runtime context requires an explicit provenance relation identity")
     _object(payload, fields, "runtime context")
-    if payload["schema"] != CONTEXT_SCHEMA:
+    if payload["schema"] not in (CONTEXT_SCHEMA, PROVENANCE_CONTEXT_SCHEMA):
         raise RuntimePriceError(f"runtime context schema must be {CONTEXT_SCHEMA}")
     serving = _object(payload["serving_context"], ("platform", "structure", "residency", "runtime_image", "execution_mode"), "serving_context")
     try:
@@ -310,9 +326,18 @@ class MeasuredRuntimeTable:
     fixed_resources_receipt_sha256: str
     rows: tuple[MeasuredRuntimeRow, ...]
     source_path: str = ""
+    runtime_provenance: Mapping | None = None
+    native_receipt_bindings: tuple[Mapping, ...] = ()
+    producer_admitted: bool = False
 
     def as_dict(self) -> dict:
-        return {"schema": SCHEMA, "table_id": self.table_id, "status": "proposal_data",
+        return {"schema": PROVENANCE_TABLE_SCHEMA if self.runtime_provenance is not None else SCHEMA,
+                **({"runtime_provenance": dict(self.runtime_provenance),
+                    "native_receipt_bindings": [{key: dict(value) if isinstance(value, Mapping) else value
+                                                  for key, value in binding.items()}
+                                                 for binding in self.native_receipt_bindings]}
+                   if self.runtime_provenance is not None else {}),
+                "table_id": self.table_id, "status": "proposal_data",
                 "composition": "sequential_operator_sum", "context": self.context.as_dict(),
                 "cost_sha256": self.cost_sha256, "measured_at": self.measured_at,
                 "valid_until": self.valid_until, "fixed_assignment": dict(self.fixed_assignment),
@@ -322,7 +347,7 @@ class MeasuredRuntimeTable:
                 "rows": [row.as_dict() for row in self.rows]}
 
     def identity(self) -> dict:
-        return {"schema": SCHEMA, "table_id": self.table_id, "sha256": identity_sha256(self.as_dict()),
+        return {"schema": self.as_dict()["schema"], "table_id": self.table_id, "sha256": identity_sha256(self.as_dict()),
                 "cost_sha256": self.cost_sha256, "context": self.context.as_dict(),
                 "source_path": self.source_path, "status": "proposal_data", "slo_eligible": False,
                 "composition": "sequential_operator_sum", "measured_at": self.measured_at,
@@ -335,16 +360,25 @@ def parse_measured_runtime_table(payload: Mapping, *, expected_context: RuntimeC
     """Validate an explicit table; caller supplies independent workload/cost identity.
 
     Parsing validates the evidence declarations. Loading additionally verifies
-    local raw receipt content hashes. Neither operation is producer admission.
+    local raw receipt content hashes. Version 2 additionally requires producer
+    admission; parsing alone cannot supply allocation resources.
     """
-    _object(payload, ("schema", "table_id", "status", "composition", "context", "cost_sha256",
+    fields = ("schema", "table_id", "status", "composition", "context", "cost_sha256",
                       "measured_at", "valid_until", "fixed_assignment", "fixed_resources",
-                      "fixed_resources_receipt_path", "fixed_resources_receipt_sha256", "rows"), "runtime table")
-    if payload["schema"] != SCHEMA or payload["status"] != "proposal_data":
+                      "fixed_resources_receipt_path", "fixed_resources_receipt_sha256", "rows")
+    if not isinstance(payload, Mapping):
+        raise RuntimePriceError("runtime table: expected an object")
+    is_provenance = payload.get("schema") == PROVENANCE_TABLE_SCHEMA
+    if is_provenance:
+        fields += ("runtime_provenance", "native_receipt_bindings")
+    _object(payload, fields, "runtime table")
+    if payload["schema"] not in (SCHEMA, PROVENANCE_TABLE_SCHEMA) or payload["status"] != "proposal_data":
         raise RuntimePriceError("runtime table requires current schema and proposal_data status")
     if payload["composition"] != "sequential_operator_sum":
         raise RuntimePriceError("only explicit sequential_operator_sum composition is supported")
     context = parse_runtime_context(payload["context"])
+    if is_provenance != (context.runtime_identity_kind is not None):
+        raise RuntimePriceError("runtime table/context provenance version mismatch")
     if context != expected_context:
         raise RuntimePriceError("runtime context mismatch against independently supplied expected context")
     cost_sha256 = _sha(payload["cost_sha256"], "cost_sha256")
@@ -383,12 +417,30 @@ def parse_measured_runtime_table(payload: Mapping, *, expected_context: RuntimeC
         if resources.kv_bytes:
             raise RuntimePriceError("KV belongs to fixed_resources, not per-unit rows")
         rows.append(MeasuredRuntimeRow(unit, fmt, binding, resources, prefill, decode))
+    provenance, receipt_bindings = None, ()
+    if is_provenance:
+        reference = _object(payload["runtime_provenance"], ("path", "sha256"), "runtime provenance artifact")
+        provenance = MappingProxyType({"path": _string(reference["path"], "runtime provenance path"),
+                                       "sha256": _sha(reference["sha256"], "runtime provenance digest")})
+        if not isinstance(payload["native_receipt_bindings"], list):
+            raise RuntimePriceError("native receipt bindings must be a list")
+        frozen = []
+        for item in payload["native_receipt_bindings"]:
+            _object(item, ("unit", "format", "run_id", "panel", "receipt", "memory_trace"), "native receipt binding")
+            binding = {key: _string(item[key], "native receipt " + key) for key in ("unit", "format", "run_id")}
+            for key in ("panel", "receipt", "memory_trace"):
+                ref = _object(item[key], ("path", "sha256"), "native " + key + " artifact")
+                binding[key] = MappingProxyType({"path": _string(ref["path"], key + " path"),
+                                                 "sha256": _sha(ref["sha256"], key + " digest")})
+            frozen.append(MappingProxyType(binding))
+        receipt_bindings = tuple(frozen)
     return MeasuredRuntimeTable(_string(payload["table_id"], "table_id"), context, cost_sha256,
                                 payload["measured_at"], payload["valid_until"], fixed,
                                 RuntimeResources.from_dict(payload["fixed_resources"]),
                                 _string(payload["fixed_resources_receipt_path"], "fixed_resources_receipt_path"),
                                 _sha(payload["fixed_resources_receipt_sha256"], "fixed_resources_receipt_sha256"),
-                                tuple(sorted(rows, key=lambda row: row.key)), source_path)
+                                tuple(sorted(rows, key=lambda row: row.key)), source_path,
+                                provenance, receipt_bindings)
 
 
 def load_measured_runtime_table(path: str | Path, *, expected_context: RuntimeContext,
@@ -411,12 +463,18 @@ def load_measured_runtime_table(path: str | Path, *, expected_context: RuntimeCo
             raise RuntimePriceError(f"cannot read measurement receipt {receipt_path}: {exc}") from exc
         if actual != expected:
             raise RuntimePriceError(f"measurement receipt SHA-256 mismatch: {receipt_path}")
+    if table.runtime_provenance is not None:
+        from .runtime_provenance import admit_runtime_provenance
+        admit_runtime_provenance(table)
+        table = replace(table, producer_admitted=True)
     return table
 
 
 def build_runtime_resources(table: MeasuredRuntimeTable, candidates: Mapping[str, list], *,
                             expected_bindings: Mapping[tuple[str, str], RuntimeBinding]) -> dict[tuple[str, str], RuntimeResources]:
     """Price every candidate exactly; no family fallback or unmeasured group sums."""
+    if table.runtime_provenance is not None and not table.producer_admitted:
+        raise RuntimePriceError("v2 runtime prices require producer admission through the loader")
     rows = {row.key: row for row in table.rows}
     result = {}
     for unit, options in sorted(candidates.items()):
