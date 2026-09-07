@@ -66,6 +66,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __package__:
+    from .tessera_campaign_container import validate_container
+else:
+    from tessera_campaign_container import validate_container
+
 PBCAMPAIGN = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py")
 
 #: What ``plan`` writes beside the manifest, so ``merge`` reads the row layout
@@ -125,6 +130,8 @@ def load_spec(path: Path) -> dict:
         raise RuntimeError(
             f"{path}: campaign_argv sets --deadline-seconds; a fanned-out row "
             "takes its deadline from the fleet, not from inside the round loop")
+    if "container" in spec:
+        validate_container(spec)
     return spec
 
 
@@ -180,9 +187,16 @@ def require_rows_fit(mem_gb: "list[int]", per_box: int, budget) -> int:
     return widest
 
 
-def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int) -> dict:
+def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int,
+         module: str = "prismaquant.tessera_campaign") -> dict:
+    command = [spec["python"], "-u", "-m", module, *argv]
+    if "container" in spec:
+        validate_container(spec)
+        command = ["python3", "-m", "tools.tessera_campaign_container", "--spec",
+                   json.dumps({"container": spec["container"], "env": spec["env"]},
+                              sort_keys=True), "--", *command]
     row = {
-        "argv": [spec["python"], "-u", "-m", "prismaquant.tessera_campaign", *argv],
+        "argv": command,
         "cwd": spec["cwd"],
         "demand": {"gpu": 1, "cpu": int(spec.get("cpus", 4)), "mem_gb": int(mem_gb)},
         "env": dict(spec["env"]),
