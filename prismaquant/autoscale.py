@@ -62,9 +62,11 @@ def streamed_calibration_resources(model_path, *, unit_shapes, counts,
 
     Headers and profile mappings determine source residency. Capture owns one
     current hidden boundary per original sample, one layer's X/H, and one
-    microbatch transition. The shared expert packer's fused slabs and original
-    source allocations are charged separately from its final prefetch window.
-    The declared headroom is additional forward/allocator/runtime workspace.
+    microbatch transition. The shared expert packer writes final allocations
+    directly and drops consumed sources. Its physical allocator may retain
+    released source blocks until reuse, so that transient is charged separately
+    from the final prefetch window. The
+    declared headroom is additional forward/allocator/runtime workspace.
     """
     import math
     from .artifact_completeness import read_artifact_header
@@ -146,10 +148,10 @@ def streamed_calibration_resources(model_path, *, unit_shapes, counts,
                 concat[group] = concat.get(group, 0)+size
     if set(body) != set(range(layers)):
         raise ValueError('source headers do not cover every decoder layer')
-    # Original source groups coexist with the largest intermediate fused group
-    # and the final packed layer until packing completes.
-    pack_peak = [sum(size for key, size in pack.items() if key[0] == layer) +
-                 max((size for key, size in pack.items() if key[0] == layer), default=0)
+    # A final group is preallocated and filled directly; no per-expert fused
+    # slabs survive. Charge all original packed-source bytes as a conservative
+    # physical allocator-cache allowance even after their references drop.
+    pack_peak = [sum(size for key, size in pack.items() if key[0] == layer)
                  for layer in range(layers)]
     loader_transient = min(prefetch_workers, cache_slots) * (
         max(pack_peak, default=0)+max(concat.values(), default=0))
@@ -172,8 +174,8 @@ def streamed_calibration_resources(model_path, *, unit_shapes, counts,
     transition = seqlen*hidden*hc_mult*2
     # Derived metadata is ephemeral for one original B1 batch. Conservatively
     # allow a dense FP32 mask and full-hidden-width rotary pairs; original IDs
-    # remain resident for all samples and have an explicit int64 allowance.
-    masks_positions = seqlen*seqlen*4 + seqlen*hidden*4 + nsamples*seqlen*8
+    # remain in both the original CPU draw and the device-side sample states.
+    masks_positions = seqlen*seqlen*4 + seqlen*hidden*4 + nsamples*seqlen*16
     terms = dict(source_window_bytes=sum(sorted(body.values(), reverse=True)[:cache_slots]),
         nonbody_source_bytes=fixed, loader_transient_bytes=loader_transient,
         current_boundary_bytes=boundary, microbatch_transition_bytes=transition,
@@ -191,7 +193,7 @@ def streamed_calibration_resources(model_path, *, unit_shapes, counts,
         terms=terms, memory_bytes=sum(terms.values()), disk_bytes=disk,
         full_hessian_bytes=total_h, full_prefix_bytes=total_x,
         body_layer_bytes={str(k): v for k, v in sorted(body.items())},
-        transient_status='original sources plus largest fused expert group')
+        transient_status='conservative physical allocator bound for direct final-slab packer')
 
 
 def _num_layers(cfg: dict) -> int:

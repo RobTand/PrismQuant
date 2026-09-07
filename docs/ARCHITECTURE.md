@@ -3,6 +3,19 @@
 As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **bounded shared
+expert packing**. The profile-driven per-expert bridge validates the complete
+layout and source dtype/device before mutation, allocates each final packed
+parameter once, and copies original projections directly into their final
+expert slices. Consumed source members and completed shard-read futures release
+their references as packing proceeds. It preserves source bytes, dtype and
+projection order without intermediate fused slabs. Canonical resource planning
+still charges all original packed-source bytes as a conservative physical
+allocator allowance; released references alone do not prove returned DRAM.
+Original CPU token draws and device token states are both charged explicitly.
+Gate: `tests/test_per_expert_packing.py`, native GLM source parity, and the
+real GLM/LFM per-layer byte and allocator comparison.
+
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **bounded canonical
 source calibration**. Full-scope census/capture may explicitly select
 `--streaming`, reusing the shared model construction, resident layer cache,

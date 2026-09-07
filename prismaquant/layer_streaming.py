@@ -877,7 +877,7 @@ def _pack_per_expert_into_packed(
     projection_names_for,
     live_param_shape,
 ) -> int:
-    """Stack per-expert checkpoint tensors into packed 3D live params.
+    """Copy per-expert checkpoint tensors into their final packed 3D params.
 
     Some MoE checkpoints store each routed expert's projections separately
     on disk (``…experts.{i}.{proj}.weight``) while the live module exposes a
@@ -896,15 +896,14 @@ def _pack_per_expert_into_packed(
     Mutates ``out`` in place: removes consumed per-expert keys and inserts
     the packed keys. Returns the number of packed params produced (0 = the
     checkpoint isn't per-expert, or the live module isn't packed)."""
-    # packed_full_name -> {expert_idx -> {projection -> tensor}}
-    groups: dict[str, dict[int, dict[str, torch.Tensor]]] = defaultdict(
-        lambda: defaultdict(dict))
-    consumed: list[str] = []
-    for key, t in out.items():
+    # Keep names, not tensor references: each source can be released as soon
+    # as its bytes have reached their final slice in the packed parameter.
+    groups: dict[str, dict[int, dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
+    for key in out:
         name = key[:-len(".weight")] if key.endswith(".weight") else key
         if not is_per_expert(name):
             continue
-        head, proj = name.rsplit(".", 1)           # head = …experts.{idx}
+        head, proj = name.rsplit(".", 1)
         experts_path, idx_str = head.rsplit(".", 1)
         if not idx_str.isdigit():
             continue
@@ -913,39 +912,55 @@ def _pack_per_expert_into_packed(
             continue
         packed_full = f"{experts_path}.{parent}"
         if live_param_shape(packed_full) is None:
-            continue  # live module isn't packed for this group — leave as-is
-        groups[packed_full][int(idx_str)][proj] = t
-        consumed.append(key)
-    produced = 0
+            continue
+        by_projection = groups[packed_full][int(idx_str)]
+        if proj in by_projection:
+            raise ValueError(f"per-expert pack: duplicate source for {packed_full} expert {idx_str} {proj}")
+        by_projection[proj] = key
+
+    # Validate the full layout before consuming any source. Copying into a
+    # correctly typed final allocation cannot silently promote mixed dtypes.
+    plans = []
     for packed_full, by_expert in groups.items():
-        parent = packed_full.rsplit(".", 1)[1]
-        order = tuple(projection_names_for(parent))
-        n_experts = max(by_expert) + 1
-        slabs: list[torch.Tensor] = []
-        for i in range(n_experts):
-            projs = by_expert.get(i)
-            if projs is None or any(p not in projs for p in order):
-                raise ValueError(
-                    f"per-expert pack: {packed_full} missing expert {i} "
-                    f"projection(s) {order}")
-            if len(order) == 1:
-                slabs.append(projs[order[0]])
-            else:
-                # Fuse projections along the output axis (the transformers
-                # packed-FusedMoE convention), then stack experts on a new
-                # leading axis. The shape check below is the safety net.
-                slabs.append(torch.cat([projs[p] for p in order], dim=0))
-        packed = torch.stack(slabs, dim=0).contiguous()
-        target = live_param_shape(packed_full)
-        if tuple(packed.shape) != tuple(target):
-            raise ValueError(
-                f"per-expert pack: assembled {packed_full} shape "
-                f"{tuple(packed.shape)} != live param {tuple(target)}")
+        order = tuple(projection_names_for(packed_full.rsplit(".", 1)[1]))
+        target = tuple(live_param_shape(packed_full))
+        if not order or len(target) != 3 or set(by_expert) != set(range(target[0])):
+            raise ValueError(f"per-expert pack: {packed_full} missing expert or invalid live shape {target}")
+        first = None
+        for i in range(target[0]):
+            projs = by_expert[i]
+            if set(projs) != set(order):
+                raise ValueError(f"per-expert pack: {packed_full} missing expert {i} projection(s) {order}")
+            rows = 0
+            for proj in order:
+                tensor = out[projs[proj]]
+                if tensor.ndim != 2 or tensor.shape[1] != target[2]:
+                    raise ValueError(f"per-expert pack: {packed_full} source shape {tuple(tensor.shape)} != live param {target}")
+                rows += tensor.shape[0]
+                precision = (tensor.dtype, tensor.device)
+                if first is None:
+                    first = precision
+                if precision != first:
+                    raise ValueError(f"per-expert pack: {packed_full} source dtype/device differs")
+            if rows != target[1]:
+                raise ValueError(f"per-expert pack: {packed_full} assembled shape rows {rows} != live param {target}")
+        plans.append((packed_full, by_expert, order, target))
+    # The validation loop's last tensor must not keep a consumed allocation.
+    if groups:
+        del tensor
+    for packed_full, by_expert, order, target in plans:
+        first_key = by_expert[0][order[0]]
+        packed = out[first_key].new_empty(target)
+        for i in range(target[0]):
+            offset = 0
+            for proj in order:
+                tensor = out.pop(by_expert[i][proj])
+                rows = tensor.shape[0]
+                packed[i].narrow(0, offset, rows).copy_(tensor)
+                offset += rows
+                del tensor
         out[packed_full] = packed
-        produced += 1
-    for key in consumed:
-        out.pop(key, None)
-    return produced
+    return len(plans)
 
 
 def _merge_concat_sources(
@@ -1429,6 +1444,10 @@ def _read_layer_to_device(prefix: str,
         # layer must never be installed as if it were complete.
         for fut in futures:
             out.update(fut.result())
+        # Future results own the original source tensors too. Drop that
+        # ownership before packing so consumed source members can be released.
+        futures.clear()
+        del fut
     else:
         for shard, pairs in by_shard.items():
             out.update(_read_chunk(shard, pairs))

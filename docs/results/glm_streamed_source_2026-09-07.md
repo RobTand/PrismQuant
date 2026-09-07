@@ -50,3 +50,61 @@ proposed 512×512 draw remains unfrozen. A header-only upper bound has roughly
 counts need an actual census. Explicit workspace remains an allowance rather
 than measured full-model allocation. No full-model census or capture was run
 as part of this qualification.
+
+Follow-up compile clarification: the 84-test wrapper compiles its pre-existing
+module list; those tests also import the changed production modules. Dedicated
+PB action `e6901251714f4d2819b57cef9c1027b05e798fc95806bb3026576336912c24f5`
+subsequently compiled all 15 changed/new source, tool, experiment and test
+modules, including the new real-layer workspace experiment, and exited zero.
+Its verified payload SHA256 is
+`5c6b74c22c93c9ca80c9a440a490e4ecac464fc06d6195bdb4e8e5d1e656b601`.
+
+Real-source expert-packer ABBA qualification, 19:02–19:04 UTC, used one
+complete paired action per model on Lina's GB10, driver 595.84, CUDA 13.0,
+PyTorch 2.13.0+cu130, CPU affinity 5–8, native threads one and four shard
+readers. The producer image ID was
+`sha256:9f9b9f05b17531399ba66dc6415b054cf5d68c82270626d0e9150e75c808435f`.
+Both measurement admissions recorded an empty preceding GPU membership.
+Source reads and SHA256 byte audits were outside each profiled packing arm.
+
+| Real source layer | Profiled before seconds (A1, A2) | Profiled after seconds (B1, B2) | Allocated peak GiB, before → after | Reserved peak GiB, before → after |
+|---|---|---|---|---|
+| GLM layer 3, 288 experts / 864 tensors | 6.1327, 0.7671 | 0.4629, 0.4564 | 36 → 22.5 | 36 → 27 |
+| LFM layer 2, 32 experts / 96 tensors | 0.05859, 0.04131 | 0.02909, 0.02942 | 1.53125 → 1.09375 | 2.03125 → 1.59375 |
+
+All original source and final packed bytes, shapes and BF16 dtypes matched in
+all four arms for both models. GLM's 13.5 GiB allocated-peak reduction is
+37.5%; the reserved-peak reduction is 9 GiB (25%). LFM reduced both peaks by
+0.4375 GiB. The final baseline versus first after profiler shows GLM replacing
+290 concatenation allocations (22.5 GiB cumulative) with two final allocations
+(13.5 GiB cumulative) and 864 direct device copies. Corresponding CUDA work was
+204.996 versus 121.088 ms; `cudaMalloc` CPU time was 617.201 versus 333.794 ms.
+LFM replaced 34 concatenation allocations with two final allocations and 96
+copies; CUDA work was 10.409 versus 5.973 ms. These are profiled packer-only
+observations; the first GLM baseline includes a large cold/profiler effect, so
+an aggregate wall-speed ratio would misrepresent the experiment.
+
+Both-host Netdata series were recorded without errors. GLM had 86 power
+samples per host across the complete action: Lina 4–21 W, Sparky 18–46 W.
+No power sample landed within either subsecond GLM after arm; none landed in
+any LFM packing arm (four samples per host over its complete action). These
+series cannot attribute per-arm energy or rank work per joule. No GPU
+saturation, energy-efficiency or full-pipeline throughput claim follows.
+PB's GLM cgroup peak was only 14.61 GiB while torch's allocation peak was
+36 GiB: cgroup memory alone does not bound GB10 CUDA physical allocation.
+The subsequent workspace experiment therefore records separate cgroup,
+CUDA-reserved and host-available planes and conservatively guards their sum.
+
+GLM action `316e639634f55dd8be031e0783e80b8725d76eb1b350bb0291d12a4d0eb3d8a7`
+completed with exit 0; verified CAS payload SHA256
+`988de09f4ef7bc7b2fd3d27ef1d4609e619d466e9e2ff9890a74bf78989b3bff`,
+receipt `7b1efc90cbf6f4640e610b58dd0999a9076db3592228fe282aaf819c11519e3e`.
+LFM action `2b185c53a48e64fd061b6080dc38e48153e586d681a47e7ff0394ee509592e4c`
+completed with exit 0; verified payload
+`abbb2863a13cc597727d0fc9d6709a9f3da774fed2fe8c8ab85069cda182cd15`,
+receipt `a52bb2d7e9280479ccf5aa2b86fd7e8917158c46b28f16b0f9946a3f0c92bf16`.
+Full result JSON, four CPU/CUDA traces per model and telemetry are under the
+qualification root's `packer-ab-01/` and `lfm-packer-ab-01/` directories.
+The recorded baseline function SHA256 is
+`d9eeacfe684472bc2ffa27e529ea2480f195f59fd8b621a52da9dcf238e4db6e`,
+from commit `1c7492333`; the complete immutable fixture is checked in.

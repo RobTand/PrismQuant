@@ -173,3 +173,24 @@ def test_multimodal_naming_qwen35():
         assert torch.allclose(gu[i, :I], gates[i])
         assert torch.allclose(gu[i, I:], ups[i])
         assert torch.allclose(dp[i], downs[i])
+
+
+def test_pack_releases_consumed_sources_and_refuses_dtype_promotion():
+    import weakref
+    import pytest
+    prof, pat = _lfm_pat()
+    blk = 'model.layers.2.feed_forward.experts'
+    live = {f'{blk}.gate_up_proj':(2,12,8),f'{blk}.down_proj':(2,8,6)}
+    out = {f'{blk}.{i}.{proj}.weight':torch.randn(shape,dtype=torch.bfloat16)
+           for i in range(2) for proj,shape in [('w1',(6,8)),('w3',(6,8)),('w2',(8,6))]}
+    refs = [weakref.ref(t) for t in out.values()]
+    assert _pack(out,prof,pat,live)==2
+    assert all(ref() is None for ref in refs)
+    assert all(t.dtype==torch.bfloat16 for t in out.values())
+    bad = {f'{blk}.0.w1.weight':torch.randn(6,8,dtype=torch.bfloat16),
+           f'{blk}.0.w3.weight':torch.randn(6,8,dtype=torch.float32)}
+    original = dict(bad)
+    with pytest.raises(ValueError,match='dtype/device'):
+        _pack(bad,prof,pat,{f'{blk}.gate_up_proj':(1,12,8)})
+    assert bad.keys()==original.keys()
+    assert all(bad[name] is value for name,value in original.items())
