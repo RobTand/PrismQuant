@@ -3,6 +3,19 @@
 As of: 2026-09-06 · `codex/campaign-review-20260906`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **packed
+sampling across merge and export** (§4.10; RobTand/prismaquant#293, #294).
+Fanout preserves full v2 selection entries, replays their packed draws, rebuilds
+the complete population decision map, and unions checkpoint sampling identities,
+audit probabilities and empty-menu evidence. Rate bands must agree; a shared
+checkpoint field missing from any row refuses. Export resolves packed decisions
+through allocation's population member map and inherits each packed owner's
+serving context for its source members before the existing whole-stack geometry
+and wire checks. The serialized allocation remains packed. Contradictory source
+assignments or contexts, missing source ownership, wires or scales still refuse.
+Gates: `tests/test_tessera_merge_sampling.py`,
+`tests/test_tessera_packed_export_scope.py`.
+
 Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **campaign
 merge input validation** (§4.10; RobTand/prismaquant#294). The merger reads
 every source journal through `cost_stage_checkpoint.prepare_journal`, which
@@ -40,15 +53,16 @@ from a sample of its experts, drawn by the planner proportional to the probe's
 per-expert `h_trace` — randomized systematic PPS without replacement with a
 take-all stratum, exact inclusion probabilities, seeded from `(seed, stack)`
 and never from `h`. Pricing every expert is ~250 box-days at GLM-5.3 Flash
-scale; a uniform draw over a frame whose `h_trace` spans two orders of
-magnitude is biased −6…−28 % on campaign-01's own table and the bias does not
-shrink with `n`, so there is no uniform fallback: a probe with no per-expert
+scale; an unweighted reconstruction from a uniform draw showed −6…−28 % error
+on campaign-01's table. That screen does not establish bias for a uniform
+Horvitz–Thompson estimator, which is unbiased. The configured PPS design has
+no uniform fallback: a probe with no per-expert
 `h_trace` refuses and names PrismaQuant #290. The planner draws, stamps
 `{units, inclusion_probability, certainty, permutation, start, audit}` into the
 units file and the plan, and the campaign prices exactly the sampled units —
-which puts the draw inside the checkpoint identity for free, because that
-identity holds exactly the priced units. Turning the sampled prices into one
-stack row is #290's, not this file's. (2) `--rate-band lo,hi` puts a window
+and binds the full probe/draw receipt in the checkpoint identity. The
+stack-price and population bridges described above carry the estimate through
+allocation; the measured-unit roster alone does not identify a draw. (2) `--rate-band lo,hi` puts a window
 family's two round-one anchors at the ends of the band the artifact will
 actually be allocated in, instead of across the family's whole realisable
 range: a two-anchor fit spanning 1–8 bits misses the interior of a 1/4.5/8-bit

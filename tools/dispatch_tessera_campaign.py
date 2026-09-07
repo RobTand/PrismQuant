@@ -78,7 +78,7 @@ PLAN_SCHEMA = "prismaquant.tessera_campaign_plan.v1"
 SHARED_PROVENANCE = (
     "menu_mode", "tp_degree", "model", "nsamples", "seqlen", "max_act_rows",
     "layer_stride", "anchors_round_one", "max_rounds", "anchor_budget",
-    "loo_gate", "max_artifact_bpp", "cost_mode",
+    "loo_gate", "max_artifact_bpp", "cost_mode", "rate_band",
 )
 
 #: Hessian identity fields every row must already agree on.  ``capture_sha256``
@@ -528,7 +528,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     selection.
     """
     from prismaquant.tessera_campaign import (
-        SCHEMA, campaign_population_block, canonical_refusals)
+        SCHEMA, campaign_population_block, canonical_refusals, selection_stack_samples)
     from prismaquant.tessera_campaign import ExpertPopulation
     # The keys a merged payload must land under are the ones the campaign and
     # the allocation share.  Spelling them here as literals is how a merge
@@ -576,19 +576,37 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
 
     # Coverage: every group in the scope priced exactly once.
     selected: dict[str, str] = {}
+    selection_entries = {}
     for row_id, prov in provenances.items():
         for entry in prov["unit_selection"]["groups"]:
             key = entry["key"]
             if key in selected:
                 raise MergeRefused(
                     f"anchor group {key!r} is priced by both {selected[key]} and {row_id}")
+            if key not in scope["anchor_groups"] or sorted(entry["members"]) != sorted(scope["anchor_groups"][key]):
+                raise MergeRefused(f"{row_id}: selection {key!r} differs from campaign scope")
             selected[key] = row_id
+            selection_entries[key] = entry
     missing = sorted(set(scope["anchor_groups"]) - set(selected))
     if missing:
         raise MergeRefused(
             f"the rows do not cover {len(missing)} anchor group(s) of the scope: "
             + ", ".join(missing[:8]))
 
+    sampled = any("stack_samples" in entry or entry.get("sampled")
+                  for entry in selection_entries.values())
+    merged_selection = {
+        "schema": "prismaquant.tessera_campaign_units.v2" if sampled else "prismaquant.tessera_campaign_units.v1",
+        "selected": False,
+        "groups": [selection_entries[key] if sampled else
+                   {"key": key, "members": list(scope["anchor_groups"][key])}
+                   for key in sorted(selection_entries)],
+    }
+    stack_samples, profile = {}, None
+    if sampled:
+        from prismaquant.model_profiles import detect_profile
+        profile = detect_profile(next(iter(provenances.values()))["model"])
+        stack_samples = selection_stack_samples(merged_selection, profile)
     costs: dict[str, dict] = {}
     loo: dict[str, dict] = {}
     surfaces: dict[str, dict] = {}
@@ -670,12 +688,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         "stopped_early": stopped_early,
         "wall_seconds": wall_seconds,
         "rounds_run": rounds_run,
-        "unit_selection": {
-            "schema": "prismaquant.tessera_campaign_units.v1",
-            "selected": False,
-            "groups": [{"key": key, "members": list(members)}
-                       for key, members in sorted(scope["anchor_groups"].items())],
-        },
+        "unit_selection": merged_selection,
         "activation_static_scales": dict(reference["activation_static_scales"]),
         "hessian": {**reference["hessian"], "capture_sha256": capture_sha256},
         "campaign_fanout": {
@@ -686,6 +699,20 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
             "seed_checkpoints": seeds,
         },
     })
+    if any("no_admitted_rung" in prov for prov in provenances.values()):
+        provenance["no_admitted_rung"] = sorted({name for prov in provenances.values()
+                                               for name in prov.get("no_admitted_rung", [])})
+    if any("unit_selection_sample" in prov for prov in provenances.values()):
+        audit, probabilities = set(), {}
+        for row_id, prov in provenances.items():
+            sample = prov.get("unit_selection_sample", {})
+            audit.update(sample.get("audit_units", []))
+            for name, probability in sample.get("inclusion_probability", {}).items():
+                if name in probabilities and probabilities[name] != probability:
+                    raise MergeRefused(f"{row_id}: different inclusion probability for {name}")
+                probabilities[name] = probability
+        provenance["unit_selection_sample"] = {
+            "audit_units": sorted(audit), "inclusion_probability": dict(sorted(probabilities.items()))}
     if serving_target is not None:
         provenance["tessera_serving_scope"] = {
             "target": serving_target, "by_unit": dict(sorted(serving_by_unit.items()))}
@@ -721,7 +748,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         dense_targets=scope["dense_targets"], expert_targets=scope["expert_targets"],
         dense_all=scope["dense_all"], pinned=scope["pinned"],
         population=population, layer_stride=int(reference["layer_stride"]),
-        costs=payload["costs"], menus=menu_sizes)
+        costs=payload["costs"], menus=menu_sizes,
+        stack_samples=stack_samples, profile=profile)
     return payload
 
 
@@ -859,16 +887,24 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
             merged_identity = {key: value for key, value in identity.items()}
             merged_identity["units"] = dict(identity["units"])
             continue
-        for key, value in identity.items():
-            if key in {"units", "serving_scope", "expert_projection"}:
+        for key in sorted(set(merged_identity) | set(identity)):
+            if key in {"units", "serving_scope", "expert_projection", "stack_sampling_identity"}:
                 continue
-            if merged_identity.get(key) != value:
+            if (key not in merged_identity or key not in identity
+                    or merged_identity[key] != identity[key]):
                 raise MergeRefused(
                     f"{row_id}: checkpoint identity differs at {key!r}")
         for name, unit in identity["units"].items():
             if name in merged_identity["units"] and merged_identity["units"][name] != unit:
                 raise MergeRefused(f"{row_id}: two rows bind different inputs for {name}")
             merged_identity["units"][name] = unit
+        if "stack_sampling_identity" in merged_identity or "stack_sampling_identity" in identity:
+            combined = dict(merged_identity.get("stack_sampling_identity", {}))
+            for name, sample in identity.get("stack_sampling_identity", {}).items():
+                if name in combined and combined[name] != sample:
+                    raise MergeRefused(f"{row_id}: different stack_sampling_identity for {name}")
+                combined[name] = sample
+            merged_identity["stack_sampling_identity"] = dict(sorted(combined.items()))
         merged_identity["serving_scope"] = _merge_scope(
             merged_identity.get("serving_scope"), identity.get("serving_scope"), row_id)
         merged_identity["expert_projection"] = _merge_projection(
