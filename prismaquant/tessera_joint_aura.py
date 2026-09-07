@@ -221,7 +221,7 @@ def calibrated_maxima(data, profile):
 
 
 def verify_anchor_render(cell, source_weight, rendered_weight, *, calibration_source,
-                         projected_unit, static_scales):
+                         projected_unit, static_scales, bound_unit=None):
     """Re-derive encoder inputs from actual source/H and compare decoded bytes."""
     import torch
     from tessera.unit_artifact import read_unit_artifact
@@ -233,18 +233,21 @@ def verify_anchor_render(cell, source_weight, rendered_weight, *, calibration_so
     _require(source_weight.dtype == rendered_weight.dtype == torch.bfloat16 and
              source_weight.ndim == 2 and rendered_weight.shape == source_weight.shape,
              f"{name}@{fmt}: source/render BF16 shape differs")
-    _require(bool(torch.isfinite(source_weight).all()) and bool(torch.isfinite(rendered_weight).all()),
-             f"{name}@{fmt}: source/render is nonfinite")
+    source_receipt = (None if bound_unit is None else bound_unit.source_receipt(source_weight))
+    _require((bound_unit is not None or bool(torch.isfinite(source_weight).all())) and
+             bool(torch.isfinite(rendered_weight).all()), f"{name}@{fmt}: source/render is nonfinite")
     expected = tc._checkpoint_anchor_identity(anchor,
         weights={name: source_weight}, menus={name: [SimpleNamespace(format_name=fmt)]},
         calibration_source=calibration_source, static_scales=static_scales,
-        projected_units={} if projected_unit is None else {name: projected_unit})
+        projected_units={} if projected_unit is None else {name: projected_unit},
+        **({} if bound_unit is None else {"bound_unit": bound_unit}))
     blob = Path(cell["wire"]).read_bytes()
     tc._checkpoint_identity_api().verify_cached_unit(blob, cell["record"], expected)
     decoded = read_unit_artifact(blob, device=str(rendered_weight.device)).to(torch.bfloat16)
     _require(torch.equal(decoded, rendered_weight), f"{name}@{fmt}: decoded wire differs from original PWC render")
     del decoded
-    return {"source_weight": _cb_cache_tensor_identity(source_weight),
+    return {"source_weight": (_cb_cache_tensor_identity(source_weight)
+                              if source_receipt is None else source_receipt),
             "rendered_weight": _cb_cache_tensor_identity(rendered_weight),
             "encoding_identity_sha256": canonical_json_sha256(expected, where="joint anchor encoding"),
             "wire_sha256": hashlib.sha256(blob).hexdigest(),
@@ -270,7 +273,7 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
     even though the merged renders have more than one original directory.
     """
     import torch
-    from . import tessera_calibration_cache as cc, tessera_hessian as th
+    from . import tessera_calibration_cache as cc, tessera_hessian as th, tessera_campaign as tc
     from .joint_aura import activation_identity, prefetch_joint_cache
     from .production_weight_cache import ProductionWeightCache
     from .routed_experts import PackedExpertProjection, refresh_packed_expert_projections
@@ -325,19 +328,23 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
             stats = prefetch_joint_cache(cache, names, renders, max_resident_bytes=max_render_bytes)
             for name in names:
                 source_weight = targets[name].weight.detach()
-                for fmt in renders[name]:
-                    cell = data.cells[name, fmt]
-                    _same(_sha(cell["render"]), cell["render_file_sha256"], f"{name}: original render file changed")
-                    rendered = cache.get(name, fmt).to(runner.device)
-                    record = verify_anchor_render(cell, source_weight, rendered,
-                        calibration_source=calibration_source,
-                        projected_unit=projected.get(name), static_scales=scales)
-                    activation = activation_identity(fr.get_format(fmt), cache.activation_max_abs, name)
-                    _same(activation["input_global_scale"], cell["anchor"].get("input_global_scale"),
-                          f"{name}@{fmt}: joint/campaign static scale")
-                    record["activation"] = activation
-                    verified[name, fmt] = record
-                    del rendered
+                anchors = [tc.CampaignAnchor(**data.cells[name, fmt]["anchor"]) for fmt in renders[name]]
+                with tc.bind_checkpoint_unit_identity(anchors, source_weight=source_weight,
+                        calibration_source=calibration_source, projected_unit=projected.get(name),
+                        static_scales=scales) as bound_unit:
+                    for fmt in renders[name]:
+                        cell = data.cells[name, fmt]
+                        _same(_sha(cell["render"]), cell["render_file_sha256"], f"{name}: original render file changed")
+                        rendered = cache.get(name, fmt).to(runner.device)
+                        record = verify_anchor_render(cell, source_weight, rendered,
+                            calibration_source=calibration_source,
+                            projected_unit=projected.get(name), static_scales=scales, bound_unit=bound_unit)
+                        activation = activation_identity(fr.get_format(fmt), cache.activation_max_abs, name)
+                        _same(activation["input_global_scale"], cell["anchor"].get("input_global_scale"),
+                              f"{name}@{fmt}: joint/campaign static scale")
+                        record["activation"] = activation
+                        verified[name, fmt] = record
+                        del rendered
             telemetry.append({"layer": layer, **stats})
             print(json.dumps({"qualified_layer": layer, "qualified_cells": len(verified),
                               "total_cells": len(data.cells), "prefetch": stats}), flush=True)

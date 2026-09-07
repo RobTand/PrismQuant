@@ -1,7 +1,19 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/tessera-joint-anchor-bridge`. Stamps
+As of: 2026-09-07 · `perf/joint-anchor-identity-reuse`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for **bounded
+source/H identity reuse during anchor preparation**. The shared campaign seam
+can bind one unit's closed anchor roster from actual source/H tensors through
+Tessera's unchanged producer API. Source finite checks, source/H hashes and the
+PWC source receipt are derived once for that lifetime; storage, version, device,
+shape, stride, dtype, calibration settings and projection guards refuse stale
+reuse. Each format still resolves Tessera's canonical recipe and retains its
+anchor/static-scale/H applicability checks, original wire grammar/hash checks
+and exact decoded-render comparison. The binding closes before source unload;
+it accepts no caller-supplied prehash and creates no tensor cache or dispatcher.
+Gate: `tests/test_tessera_bound_identity.py` plus original-wire qualification.
 
 Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
 from completed measured Tessera anchors** (#322). The explicit
