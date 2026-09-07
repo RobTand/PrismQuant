@@ -515,8 +515,9 @@ def build_source_checkpoint_identity(
 
     ``digest_cache_path`` makes the read happen once per (file, machine): a
     shard whose complete stat fingerprint still matches reuses its recorded
-    digest, so a resume costs one ``stat`` per shard instead of a full
-    checkpoint read. Without it, every call hashes every shard.
+    digest instead of rereading that shard. Discovery, metadata hashing,
+    digest-cache JSON handling and identity construction still run. Without
+    this cache, every call hashes every shard.
     """
     from prismaquant.cost_stage_checkpoint import canonical_json_sha256
 
