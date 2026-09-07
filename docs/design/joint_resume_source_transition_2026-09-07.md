@@ -11,7 +11,7 @@ ran 528.679 seconds and exited 1 when a fully completed reverse layer created an
 empty joint projection lease. The empty lease selected CPU, while the explicitly
 qualified fused backend required its prewarmed CUDA device. There was no OOM;
 cleanup completed. The sampler retained 32,383 samples and one error. Its
-`run-03/run/sampling/stacks.raw` SHA256 is
+`run-03/run-attempt-02-empty-lease/sampling/stacks.raw` SHA256 is
 `29ffccc448796f083ee9720b1c7b006d1a76f5d91d743ad290b954667924ba73`.
 No extra checkpoint unit was written. All original unit bytes and the manifest
 were rehashed unchanged, and both hosts' Netdata evidence was retained. Neither
@@ -133,3 +133,16 @@ compiled all five touched Python modules on dl380g10 (portable priority -10,
 one CPU/one GiB), exit zero and released scope. Its actual CAS output was
 `5 touched Python modules compile`. `compile-verified-01.json` records the
 terminal, snapshot, cleanup, payload and verified canonical receipt.
+
+
+## Integration into current main
+
+The integration branch starts from `8281ace2f2`, where #344 already supplies
+the empty-lease guard. Only the explicit transition implementation, its tests,
+acceptance tool and evidence documentation are added. The execution checkout
+at `9e05ab56bd` remains frozen; its original artifact-gate receipt continues to
+attest that exact source. Current main contains unrelated producer changes and
+therefore intentionally cannot pass the old source reconstruction contract.
+Integration does not relax or update the approved original package hash.
+
+Fresh current-main integration validation is recorded below after it completes.

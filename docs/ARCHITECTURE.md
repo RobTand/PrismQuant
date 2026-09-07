@@ -3,7 +3,7 @@
 As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
 
-Re-stamped (2026-09-07, `fix/joint-resume-source-transition`) for the explicit
+Re-stamped (2026-09-07, `fix/joint-source-transition-integration`) for the explicit
 `empty_joint_lease_v1` transition. Its sole approved source closure is the
 interrupted first-model joint run's exact producer package. A CPU preflight
 reverses only the reviewed empty-lease fix and exact transition API glue,
