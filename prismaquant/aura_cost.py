@@ -59,8 +59,11 @@ from prismaquant.nvfp4_cb_footprint import (
     is_cb_format,
 )
 from prismaquant.routed_experts import (
+    PackedExpertProjection,
+    profile_declared_packed_expert_projections,
     profile_declared_routed_expert_targets,
     profile_declared_unpacked_expert_linears,
+    refresh_packed_expert_projections,
     resolve_routed_expert_profile,
 )
 
@@ -1897,6 +1900,7 @@ def compute_aura_cost_streamed(
     profile = resolve_routed_expert_profile(
         runner.model, profile or runner.profile
     )
+    packed_projections = []
     if include_routed_experts:
         routed_targets = set(_packed_expert_targets(runner.model, profile))
         unpacked_targets = {
@@ -1905,7 +1909,10 @@ def compute_aura_cost_streamed(
                 runner.model, profile
             )
         }
-        unsupported = sorted(routed_targets - unpacked_targets)
+        if joint_activation:
+            packed_projections = profile_declared_packed_expert_projections(runner.model, profile)
+        packed_targets = {member.packed_qname for member in packed_projections}
+        unsupported = sorted(routed_targets - unpacked_targets - packed_targets)
         if unsupported:
             raise RuntimeError(
                 "streamed AURA can include routed experts only when the "
@@ -1930,6 +1937,13 @@ def compute_aura_cost_streamed(
         include_routed_experts=include_routed_experts,
         profile=profile,
     )
+    if packed_projections:
+        if anchor_renderer is not None:
+            raise RuntimeError(
+                "packed joint AURA requires decoded ProductionWeightCache entries; "
+                "the on-demand production anchor renderer supports only nn.Linear modules"
+            )
+        linears.update({member.qname: member for member in packed_projections})
     fmts = list(dict.fromkeys(
         fr.canonical_format_name(fmt) for fmt in formats
     ))
@@ -2011,6 +2025,19 @@ def compute_aura_cost_streamed(
         layer = runner.layer_index_for_qname(name)
         names_by_layer.setdefault(layer, []).append(name)
 
+    def _refresh_packed_layer_views(layer):
+        members = [linears[name] for name in names_by_layer.get(layer, ())
+                   if isinstance(linears[name], PackedExpertProjection)]
+        if members:
+            linears.update({member.qname: member for member in
+                            refresh_packed_expert_projections(members, profile)})
+
+    def _source_parameter(target):
+        return target.parameter if isinstance(target, PackedExpertProjection) else target.weight
+
+    def _source_gradient(target, gradient):
+        return target.gradient_view(gradient) if isinstance(target, PackedExpertProjection) else gradient
+
     unit_formats: dict[str, tuple[str, ...]] = {}
     render_formats: dict[str, tuple[str, ...]] = {}
     for name in names:
@@ -2039,6 +2066,7 @@ def compute_aura_cost_streamed(
         from prismaquant.joint_aura import (
             SignedJointProjectionLease, activation_identity, arithmetic_identity,
             identity_sha256, make_joint_aura_entry, prefetch_joint_cache, squared_signed,
+            source_execution_identity,
             validate_joint_aura_entry,
         )
         from prismaquant.production_weight_cache import _cb_cache_tensor_identity
@@ -2053,6 +2081,7 @@ def compute_aura_cost_streamed(
             "token_scope": token_scope, "temperature": temperature,
             "distribution": "rademacher", "normalization": "global_kl_fisher",
             "producer_source_sha256": _aura_source_sha256(),
+            "source_execution": source_execution_identity(runner.model),
             "arithmetic": arithmetic_identity(runner.dtype),
         }
         # Hash actual decoded production outputs before checkpoint admission,
@@ -2534,6 +2563,7 @@ def compute_aura_cost_streamed(
             layer,
             require_prefetched=runner.require_prefetched_residency,
         )
+        _refresh_packed_layer_views(layer)
         # Forward boundary capture leaves the final lookahead window hot.
         # Keep that pipeline moving in the direction of this traversal: the
         # existing StreamingContext/LayerCache loads the next reverse layer
@@ -2546,9 +2576,14 @@ def compute_aura_cost_streamed(
             if name not in completed_checkpoint_units
         ]
         d_weights: dict[tuple[str, str], torch.Tensor] = {}
+        parameter_members = {}
+        parameters = {}
         try:
             for name in pending:
-                linears[name].weight.requires_grad_(True)
+                parameter = _source_parameter(linears[name])
+                parameter.requires_grad_(True)
+                parameters[id(parameter)] = parameter
+                parameter_members.setdefault(id(parameter), []).append(name)
                 g_trace[name] = 0.0
             with torch.no_grad():
                 if anchor_renderer is not None and pending:
@@ -2807,12 +2842,14 @@ def compute_aura_cost_streamed(
                         x2_probe[key].append(value)
                 harvested.add(name)
 
-            def _make_streamed_gradient_hook(name: str):
+            def _make_streamed_gradient_hook(member_names):
                 def _hook(parameter: torch.Tensor) -> None:
                     gradient = parameter.grad
-                    if gradient is None or name in harvested:
+                    if gradient is None:
                         return
-                    _harvest_streamed_gradient(name, gradient)
+                    for name in member_names:
+                        if name not in harvested:
+                            _harvest_streamed_gradient(name, _source_gradient(linears[name], gradient))
                     parameter.grad = None
 
                 return _hook
@@ -2829,10 +2866,10 @@ def compute_aura_cost_streamed(
             try:
                 if joint_lease is not None:
                     joint_lease.__enter__()
-                for name in pending:
+                for parameter_id, parameter in parameters.items():
                     hook_handles.append(
-                        linears[name].weight.register_post_accumulate_grad_hook(
-                            _make_streamed_gradient_hook(name)
+                        parameter.register_post_accumulate_grad_hook(
+                            _make_streamed_gradient_hook(parameter_members[parameter_id])
                         )
                     )
                 for probe_index in range(n_probes):
@@ -2877,17 +2914,19 @@ def compute_aura_cost_streamed(
                     # plane. In-place rollover bounds the CPU plane to 32
                     # tensors plus the one result currently being copied.
                     grad_outs[probe_index] = x_in.grad.detach().to("cpu")
-                    for name in pending:
-                        if name in harvested:
-                            continue
-                        gradient = linears[name].weight.grad
+                    for parameter_id, parameter in parameters.items():
+                        gradient = parameter.grad
                         if gradient is not None:
                             # Defensive straggler path for a backend that did
                             # not invoke the post-accumulate hook. It performs
                             # the identical reduction and still frees the
                             # gradient before the next probe.
-                            _harvest_streamed_gradient(name, gradient)
-                            linears[name].weight.grad = None
+                            for name in parameter_members[parameter_id]:
+                                if name not in harvested:
+                                    _harvest_streamed_gradient(name, _source_gradient(linears[name], gradient))
+                            parameter.grad = None
+                    for name in pending:
+                        if name in harvested:
                             continue
                         # A routed expert not selected by this probe has an
                         # exact zero projection. Record the sample explicitly
@@ -2917,10 +2956,13 @@ def compute_aura_cost_streamed(
             finally:
                 if joint_lease is not None:
                     joint_lease.__exit__(None, None, None)
+                    joint_lease = None
                 for handle in hook_handles:
                     handle.remove()
 
             if joint_activation:
+                if source_execution_identity(runner.model) != joint_probe_identity["source_execution"]:
+                    raise RuntimeError("joint AURA source execution backend changed during measurement")
                 for name in pending:
                     joint_rows[name] = {}
                     for fmt in unit_formats[name]:
@@ -2977,11 +3019,18 @@ def compute_aura_cost_streamed(
                     f"ETA {remaining / rate / 60:.1f} min)"
                 )
         finally:
-            for name in pending:
-                linears[name].weight.grad = None
-                linears[name].weight.requires_grad_(False)
+            for parameter in parameters.values():
+                parameter.grad = None
+                parameter.requires_grad_(False)
+            # Loop locals and the lease otherwise retain the last layer's
+            # delta plane through the next source install/render window.
+            d_weights.clear()
+            result = delta = weight = None
             del d_weights
+            parameters.clear()
+            parameter = None
             runner.context.unload(layer)
+            _refresh_packed_layer_views(layer)
 
     return _finish_streamed_payload()
 
