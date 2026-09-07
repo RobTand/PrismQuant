@@ -9,6 +9,8 @@ from experiments.profile_command import run_profile
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.skipif("PQ_TEST_PY_SPY" not in os.environ,
+                    reason="PB scoped py-spy integration tooling is not configured")
 def test_sampler_preserves_observed_child_result_and_stack_bytes(tmp_path, exit_code):
     profiler = os.environ["PQ_TEST_PY_SPY"]
     target = tmp_path / "target.py"
