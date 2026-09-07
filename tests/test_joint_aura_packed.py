@@ -169,6 +169,16 @@ def test_grouped_packed_joint_matches_eager_source_oracle(monkeypatch):
         actual = rows['FP8_E4M3']['signed_per_probe']
         oracle = expected['costs'][name]['FP8_E4M3']['signed_per_probe']
         assert actual == pytest.approx(oracle, rel=3e-5, abs=3e-8)
+    import prismaquant.joint_aura as joint
+    def fail(*args, **kwargs):
+        raise RuntimeError('grouped QDQ failure sentinel')
+    monkeypatch.setattr(joint, '_activation_qdq', fail)
+    _, context, runner, profile, cache, _ = _fixture()
+    with pytest.raises(RuntimeError, match='grouped QDQ failure sentinel'):
+        _run(runner, profile, cache)
+    assert F.grouped_mm is grouped_mm
+    assert context.active == set()
+
 
 def test_packed_joint_checkpoint_resume_keeps_aligned_unit_roster(tmp_path, monkeypatch):
     monkeypatch.setattr(aura, '_checkpoint_git_commit', lambda: '1' * 40)
