@@ -33,15 +33,41 @@ def dump(path, value):
 
 
 def verify_source_manifest(root, path):
+    """Refuse any source under `root` the manifest does not exactly account for.
+
+    "Exact file closure" is two claims, and only the first used to be checked:
+    every listed entry still has its recorded kind and content, and no unlisted
+    entry under the root can be reached by the import system. The second is the
+    shared policy in experiments/pq237_source_closure.py, which the writer
+    (experiments/pq237_source_manifest.py) enumerates with the same function.
+    """
+    from experiments.pq237_source_closure import verify_source_closure
+
+    root = Path(root)
     manifest = json.loads(Path(path).read_text())
     if not manifest.get("files"):
         raise ValueError("source manifest requires an exact file closure")
+    # `excluded_symlinks` records links whose target lies outside the root, so
+    # their content cannot be sealed. Declaring one keeps it out of `files`; it
+    # never exempts it from the closure, and its kind and target are checked
+    # exactly as a listed symlink's are.
+    declared_symlinks = dict(manifest.get("symlinks", {}))
+    declared_symlinks.update(manifest.get("excluded_symlinks", {}))
     for relative, expected in manifest["files"].items():
-        if file_sha256(Path(root) / relative) != expected:
+        entry = root / relative
+        # Kind before content: file_sha256 reads through a symlink, so a
+        # regular file swapped for a link would otherwise verify silently.
+        if entry.is_symlink() or not entry.is_file():
+            raise ValueError(f"source entry is no longer a regular file: {relative}")
+        if file_sha256(entry) != expected:
             raise ValueError(f"source changed after manifest: {relative}")
-    for relative, expected in manifest.get("symlinks", {}).items():
-        if os.readlink(Path(root) / relative) != expected:
+    for relative, expected in declared_symlinks.items():
+        entry = root / relative
+        if not entry.is_symlink():
+            raise ValueError(f"source entry is no longer a symlink: {relative}")
+        if os.readlink(entry) != expected:
             raise ValueError(f"source symlink changed after manifest: {relative}")
+    verify_source_closure(root, manifest["files"], declared_symlinks)
     return manifest
 
 
