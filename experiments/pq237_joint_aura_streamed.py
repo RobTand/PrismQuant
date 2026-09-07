@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import pickle
 import time
+import types
 
 
 def file_sha256(path):
@@ -32,16 +33,87 @@ def dump(path, value):
     Path(path).write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
+def load_source_closure_policy(root, manifest):
+    """Execute the closure policy from bytes this function has already checked.
+
+    Trust ordering is the whole point. `import experiments.pq237_source_closure`
+    resolves through `sys.path`, so an unlisted `experiments/pq237_source_closure/`
+    package beside the module supplies a no-op `verify_source_closure` and the
+    seal then accepts any further unlisted source: the helper was trusted before
+    it had checked the root it was about to vouch for.
+
+    Naming the file exactly is necessary but not sufficient. A `SourceFileLoader`
+    asks `cache_from_source` first and, on a timestamp-valid `.pyc`, returns the
+    cached code *without ever reading the source we hashed* (CPython
+    `importlib/_bootstrap_external.py`, `SourceLoader.get_code`) -- and the
+    refusal for in-tree caches lives in the helper not yet loaded. So the bytes
+    are read once, checked against the manifest when the helper is itself under
+    the root, and those same bytes are compiled and executed: no finder, no
+    loader, no cache lookup, no parent-package `__init__`, and no second read
+    for the executed copy to differ from the hashed one.
+
+    A helper outside the root is the caller's own program, at the same trust as
+    this module, and has no manifest entry to check against.
+    """
+    helper = Path(__file__).resolve().with_name("pq237_source_closure.py")
+    if not helper.is_file():
+        raise ValueError(f"source closure policy is missing: {helper}")
+    source = helper.read_bytes()
+    root = Path(root).resolve()
+    if helper.is_relative_to(root):
+        relative = helper.relative_to(root).as_posix()
+        expected = manifest["files"].get(relative)
+        if expected is None:
+            raise ValueError(
+                "source closure policy lies under the root but the manifest "
+                f"does not list it: {relative}")
+        if hashlib.sha256(source).hexdigest() != expected:
+            raise ValueError(f"source changed after manifest: {relative}")
+    module = types.ModuleType("_pq237_source_closure_verified")
+    module.__file__ = str(helper)
+    exec(compile(source, str(helper), "exec", dont_inherit=True), module.__dict__)
+    return module.verify_source_closure
+
+
 def verify_source_manifest(root, path):
+    """Refuse any source under `root` the manifest does not exactly account for.
+
+    "Exact file closure" is two claims, and only the first used to be checked:
+    every listed entry still has its recorded kind and content, and no unlisted
+    entry under the root can be reached by the import system. The second is the
+    shared policy in experiments/pq237_source_closure.py, which the writer
+    (experiments/pq237_source_manifest.py) enumerates with the same function,
+    and which is loaded here only after its own bytes have been checked.
+    """
+    root = Path(root)
     manifest = json.loads(Path(path).read_text())
     if not manifest.get("files"):
         raise ValueError("source manifest requires an exact file closure")
+    verify_source_closure = load_source_closure_policy(root, manifest)
+    # `excluded_symlinks` records links to data whose target lies outside the
+    # root, so their content cannot be sealed -- the three historical
+    # `calibration/*.jsonl` links. Declaring one keeps it out of `files`; it
+    # never exempts it from the closure, and its kind and target are checked
+    # exactly as a listed symlink's are. It is not a way to admit *code* from
+    # outside: `verify_source_closure` resolves every importable link and
+    # refuses one whose bytes the manifest does not seal.
+    declared_symlinks = dict(manifest.get("symlinks", {}))
+    declared_symlinks.update(manifest.get("excluded_symlinks", {}))
     for relative, expected in manifest["files"].items():
-        if file_sha256(Path(root) / relative) != expected:
+        entry = root / relative
+        # Kind before content: file_sha256 reads through a symlink, so a
+        # regular file swapped for a link would otherwise verify silently.
+        if entry.is_symlink() or not entry.is_file():
+            raise ValueError(f"source entry is no longer a regular file: {relative}")
+        if file_sha256(entry) != expected:
             raise ValueError(f"source changed after manifest: {relative}")
-    for relative, expected in manifest.get("symlinks", {}).items():
-        if os.readlink(Path(root) / relative) != expected:
+    for relative, expected in declared_symlinks.items():
+        entry = root / relative
+        if not entry.is_symlink():
+            raise ValueError(f"source entry is no longer a symlink: {relative}")
+        if os.readlink(entry) != expected:
             raise ValueError(f"source symlink changed after manifest: {relative}")
+    verify_source_closure(root, manifest["files"], declared_symlinks)
     return manifest
 
 
