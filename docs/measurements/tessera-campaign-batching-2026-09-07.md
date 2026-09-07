@@ -216,4 +216,33 @@ and 25.00 of 25.34 batch wall seconds. `viterbi_columns` calls fall from
 `_run_joined` discards the returned scalar SSE. That is an attributable
 follow-up seam for Tessera #385, reported to its owner; this integration does
 not change the producer, and further speedup from suppressing the readback is
-unmeasured. The full native E2M1 pair is still pending.
+unmeasured. The full native E2M1 pair below confirms the reduction.
+
+
+E2M1 native sampling produced 10,608 scalar and 2,814 batch main-thread
+samples, representing 106.08 and 28.14 sampled seconds; profiled walls were
+105.45 and 27.85 seconds. Inclusive `sse` time is 90.43 versus 14.98 sampled
+seconds. CUDA stream synchronization totals 71.58 versus 16.38 sampled seconds;
+the `sse` readback at `encode.py:574` is responsible for 66.24 versus 11.20
+of those seconds. The next largest synchronization site, `_fit_lut:1522`,
+remains 4.68 versus 4.63 seconds. This localizes the observed batching gain to
+the joined trellis/readback path while showing that independent refit waits
+persist. It does not measure the effect of a future asynchronous SSE change.
+
+E2M1 native action
+`192ab33b80faa3a251dab65fad7a5fda92834340bf308025c1ea31b9f2c867a9`
+completed on Sparklina, exit zero, 272.18 seconds; CAS receipt
+`2626f7830802671e6351d240eff23988543f94f75e5124f4bfa1e7834a1ac922`.
+Raw profiles, verified profile receipts and both-host Netdata series are under
+`E2M1-native-profile/`. Both hosts' telemetry brackets every measured and
+profiled interval in both formats, without missing-series or gap errors.
+
+All four performance actions and the CUDA correctness gate have terminal
+exit-zero records and CAS receipts. The 48-file `evidence-manifest.json` binds
+the capture correction, reproduction helpers, action receipts, results,
+profiles and telemetry by SHA-256. Temporary checkout helpers were retired
+after byte-identical copies were retained in `harness/`; the production branch
+has no untracked helper files. The original zero-route failed capture remains
+bounded negative evidence and does not qualify full-model calibration.
+
+Evidence manifest SHA-256: `8b144abda1b4a9933070146e9a54a1c5dcbd62c0159bae7428184a9bafdd11e5`.
