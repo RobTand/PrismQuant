@@ -3090,19 +3090,17 @@ def compute_aura_cost_streamed(
                         **({"execution_provenance": source_transition.execution_provenance}
                            if source_transition is not None else {})},
                     )
-            # Closed-loop observability: a reverse layer is minutes of silent
-            # render+adjoint work at streamed scale, so each one reports its
-            # own rate and the sweep ETA the moment it lands.
+            # Report measured progress without extrapolating a layer rate:
+            # resumed layers and dense/MoE layers can have very different costs.
             reverse_layers_done += 1
             if pending:
                 elapsed = time.time() - reverse_started
-                rate = reverse_layers_done / max(elapsed, 1e-9)
                 remaining = runner.num_layers - reverse_layers_done
                 _log(
                     f"reverse layer {layer} done "
                     f"({reverse_layers_done}/{runner.num_layers}, "
                     f"{len(pending)} unit(s), {elapsed / 60:.1f} min elapsed, "
-                    f"ETA {remaining / rate / 60:.1f} min)"
+                    f"{remaining} layer(s) remaining)"
                 )
         finally:
             for parameter in parameters.values():

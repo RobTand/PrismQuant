@@ -17,6 +17,16 @@ current wire bytes or runtime coverage: those remain existing export/serving
 gates. The CLI requires bound input hashes and new output/receipt paths.
 Gate: `tests/test_tessera_joint_allocation.py`.
 
+Re-stamped (2026-09-07, `fix/profile-dispatch-identity`) for declared
+scheme-dispatch identity rewrites. `ModelProfile.to_vllm_internal_name()` now
+honors a matched structure-spec rule even when the spelling stays unchanged.
+The existing `mtp.` identity/stop rule therefore remains authoritative when
+the body runtime's weight-loader map drops or renames MTP keys. Native-causal
+body identity rules are preserved for the same reason; unmatched names still
+use the existing runtime fallback. No profile, mapping declaration, format or
+serving lane is added. CPU regressions cover both drop and rename destinations,
+unchanged body names, completed rewrite chains and unmatched fallbacks.
+
 Re-stamped (2026-09-07, `fix/joint-source-transition-integration`) for the explicit
 `empty_joint_lease_v1` transition. Its sole approved source closure is the
 interrupted first-model joint run's exact producer package. A CPU preflight
