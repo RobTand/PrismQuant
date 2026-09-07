@@ -23,6 +23,36 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 
 
+def test_standalone_planner_without_pythonpath(tmp_path):
+    import os
+    import subprocess
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    model = tmp_path / "model"
+    model.mkdir()
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({
+        "model": str(model), "campaign_argv": [], "cwd": str(root),
+        "python": sys.executable, "env": {},
+    }))
+    workspace = tmp_path / "campaign"
+    workspace.mkdir()
+    (workspace / "census.json").write_text(json.dumps({
+        "model": str(model), "anchor_groups": {"u:linear": ["linear"]},
+        "layer_stride": 1, "unit_shapes": {"linear": [8, 8]},
+    }))
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    completed = subprocess.run([
+        sys.executable, str(root / "tools/dispatch_tessera_campaign.py"),
+        "plan", "--spec", str(spec), "--workspace", str(workspace),
+    ], cwd=tmp_path, env=env, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    rows = json.loads((workspace / "manifest.json").read_text())
+    assert len(rows) == 1
+    assert rows[0]["argv"][3] == "prismaquant.tessera_campaign"
+
+
 # ---------------------------------------------------------------------------
 # The selection
 # ---------------------------------------------------------------------------
