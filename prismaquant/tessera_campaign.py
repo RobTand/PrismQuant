@@ -39,7 +39,8 @@ to the dynamic quantiser.
 Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
-``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
+``read_unit_artifact(encode_linear(...).blob)`` (or the equivalent batch
+entry) -- **the bytes, decoded**.  So the
 cache entry holds the wire beside the dequantised render. Checkpoint resume
 verifies those bytes against their producer input receipt. That proves the
 cached wire is the priced wire. The packed producer-plan/cached-wire bridge
@@ -140,6 +141,7 @@ class CampaignAnchor:
     activation_contract: str
     activation_quantized: bool
     wire_bytes: int
+    #: Encoding wall time; joined batches apportion it equally among units.
     seconds: float
     #: Was a Hessian actually applied to these bytes? Admission comes from the
     #: producer's ActivationSource settings for this rung's scale plane, via
@@ -151,6 +153,7 @@ class CampaignAnchor:
     #: on every other route.  Carried per row so the price's activation
     #: identity survives into the cost table beside the Hessian identity.
     input_global_scale: "float | None" = None
+    encoding_batch_size: int = 1
 
 
 def anchor_schedule(lo: int, hi: int, count: int) -> list[int]:
@@ -313,7 +316,7 @@ def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
 
     A thin adapter over ``tessera_render.encode_tessera_unit``, which is the
-    **one** function in this tree that calls Tessera's byte path.  Everything
+    shared scalar/batch adapter that calls Tessera's byte path.  Everything
     that made this function worth having -- the render is
     ``read_unit_artifact(blob)``, i.e. the bytes decoded rather than a second
     reconstruction (principle 8), and ``verify=False`` because the tensor
@@ -362,12 +365,24 @@ def _measure_anchor(
     of a rung whose shipping bytes are H-aware is exactly that bug with
     different bytes.
     """
-    import torch
+    prepared = _prepare_anchor(
+        qname=qname, format_name=format_name,
+        activation_kwargs_for=activation_kwargs_for,
+        hessian_required=hessian_required, static_input_scale=static_input_scale)
+    started = time.time()
+    render, blob = _encode_and_render(
+        weight, format_name, recipe=prepared["wire"],
+        activation_kwargs=prepared["activation_kwargs"],
+        hessian_required=prepared["hessian_required"])
+    return _finish_anchor(qname=qname, weight=weight, activations=activations,
+        format_name=format_name, cache=cache, wire_dir=wire_dir,
+        prepared=prepared, render=render, blob=blob, elapsed=time.time() - started)
 
+
+def _prepare_anchor(*, qname, format_name, activation_kwargs_for,
+                    hessian_required, static_input_scale):
+    """Admit each unit's Hessian and served activation contract before encode."""
     from . import format_registry as fr
-    from .production_weight_cache import (
-        _local_forward_render_score, _store_rendered_weight_entry,
-    )
     from .tessera_formats import (
         parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
     )
@@ -432,13 +447,22 @@ def _measure_anchor(
             raise HessianContractError(
                 f"{qname}: no Hessian for this Linear. A lookup that misses "
                 "must not fall through to a weights-only encode.")
-    started = time.time()
-    render, blob = _encode_and_render(
-        weight, format_name, recipe=wire, activation_kwargs=activation_kwargs,
-        hessian_required=hessian_required,
-    )
-    elapsed = time.time() - started
+    return dict(spec=spec, family=family, rung=rung, wire=wire,
+                activation_qdq=activation_qdq, input_scale=input_scale,
+                activation_kwargs=activation_kwargs,
+                hessian_required=hessian_required)
 
+
+def _finish_anchor(*, qname, weight, activations, format_name, cache, wire_dir,
+                   prepared, render, blob, elapsed, encoding_batch_size=1):
+    """Score decoded bytes and publish the existing cache/wire entries."""
+    import torch
+    from .production_weight_cache import (
+        _local_forward_render_score, _store_rendered_weight_entry)
+
+    spec, family, rung = (prepared[key] for key in ("spec", "family", "rung"))
+    activation_qdq, input_scale = (prepared[key] for key in (
+        "activation_qdq", "input_scale"))
     score, metric, quantized, _clipped = _local_forward_render_score(
         reference_weight=weight,
         rendered_weight=render,
@@ -451,7 +475,7 @@ def _measure_anchor(
     )
     if metric != "output_mse":
         raise RuntimeError(f"unexpected render-score metric {metric!r}")
-    hessian_applied = bool(activation_kwargs)
+    hessian_applied = bool(prepared["activation_kwargs"])
 
     _store_rendered_weight_entry(
         weights=cache.weights,
@@ -488,7 +512,55 @@ def _measure_anchor(
         seconds=elapsed,
         hessian_applied=hessian_applied,
         input_global_scale=input_scale,
+        encoding_batch_size=encoding_batch_size,
     )
+
+
+def _measure_anchor_batch(*, qnames, weights, activations, format_name,
+                          cache, wire_dir, activation_kwargs_for=None,
+                          hessian_required=True, static_input_scales=None):
+    """One producer batch, with the scalar path's per-unit gates and storage."""
+    from .tessera_render import encode_tessera_units
+
+    if not qnames or len(set(qnames)) != len(qnames):
+        raise ValueError("anchor batch needs distinct nonempty unit names")
+    if len(weights) != len(qnames) or len(activations) != len(qnames):
+        raise ValueError("anchor batch needs one weight and activation input per unit")
+    prepared = [_prepare_anchor(
+        qname=name, format_name=format_name,
+        activation_kwargs_for=activation_kwargs_for,
+        hessian_required=hessian_required,
+        static_input_scale=(static_input_scales or {}).get(name)) for name in qnames]
+    started = time.time()
+    encoded = encode_tessera_units(
+        weights, format_name, recipe=prepared[0]["wire"],
+        activation_kwargs=[entry["activation_kwargs"] for entry in prepared],
+        hessian_required=prepared[0]["hessian_required"])
+    # Batch wall time is apportioned, not attributed as a measured per-unit
+    # duration. Summing anchor.seconds still reports the actual encoding time.
+    elapsed = (time.time() - started) / len(qnames)
+    return [_finish_anchor(qname=name, weight=weight, activations=acts,
+        format_name=format_name, cache=cache, wire_dir=wire_dir, prepared=entry,
+        render=render, blob=blob, elapsed=elapsed, encoding_batch_size=len(qnames))
+        for name, weight, acts, entry, (render, blob) in zip(
+            qnames, weights, activations, prepared, encoded)]
+
+
+def _anchor_batches(pending, *, weights, expert_members, batch_size):
+    """Bound compatible expert encodes inside this action; never assign hosts."""
+    if batch_size < 1:
+        raise ValueError("anchor batch size must be positive")
+    if batch_size == 1:
+        return [[item] for item in pending]
+    groups = {}
+    for item in pending:
+        name, family, rung = item
+        weight = weights[name]
+        key = ((family, rung, tuple(weight.shape), weight.dtype, weight.device)
+               if name in expert_members else (name, family, rung))
+        groups.setdefault(key, []).append(item)
+    return [group[start:start + batch_size] for group in groups.values()
+            for start in range(0, len(group), batch_size)]
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +572,8 @@ def _measure_anchor(
 # serving-unit promotion already enforces that (``allocator_solver.
 # _packed_groups_by_profile`` keys ``...experts.gate_up_proj`` and
 # ``...experts.down_proj`` into the same ``__packed_format__`` group).  The
-# campaign, however, measures ONE EXPERT AT A TIME -- an encode is per Linear
-# -- and on a 32-expert stack a full census of every rung is 32x the GPU.
+# campaign measures separate expert Linears, optionally encoding compatible
+# units together. A full census still requires every expert's wire and score.
 #
 # So the campaign may measure a SAMPLE of experts and this module estimates the
 # stack from it.  Two things have to be right for that to be honest:
@@ -1196,6 +1268,9 @@ def campaign_cost_payload(
                     "activation_contract": anchor.activation_contract,
                     "wire_bytes": anchor.wire_bytes,
                     "encode_seconds": anchor.seconds,
+                    "encode_seconds_accounting": ("unit" if anchor.encoding_batch_size == 1
+                        else "batch_wall_time_divided_by_batch_size"),
+                    "encoding_batch_size": anchor.encoding_batch_size,
                     # The static A-side scale this row was scored under, when
                     # its route executes the static NVFP4 contract; the value
                     # identity the export's scale file must reproduce.
@@ -1339,8 +1414,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
 
     api = _checkpoint_identity_api()
     settings = vars(args).copy()
-    # Locations and a wall-clock interruption limit are not encoding/scoring
-    # inputs. All other explicit campaign settings remain bound by default.
+    # Locations, batch width and a wall-clock interruption limit are not
+    # encoding/scoring inputs. All other explicit campaign settings remain bound by default.
     #
     # ``units``, ``calibration_census`` and ``census_out`` are locations too,
     # and each one's load-bearing content is already bound by value somewhere
@@ -1357,7 +1432,7 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     # ``--seed-checkpoint``, one verified row at a time.
     for name in ("out", "cache_dir", "checkpoint", "deadline_seconds",
                  "units", "calibration_census", "census_out",
-                 "seed_checkpoint", "seed_wire_dir"):
+                 "seed_checkpoint", "seed_wire_dir", "anchor_batch_size"):
         settings.pop(name, None)
     return {
         **({"stack_sampling_identity": stack_sampling_identity}
@@ -2979,6 +3054,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--layer-stride", type=int, default=1,
                     help="price every Nth decoder layer (1 = every Linear)")
     ap.add_argument("--anchors", type=int, default=ROUND_ONE_ANCHORS)
+    ap.add_argument("--anchor-batch-size", type=int, default=1,
+                    help="maximum compatible expert anchors in one producer "
+                         "batch within this action (1 = scalar). Does not "
+                         "change the anchor schedule or PB placement.")
     ap.add_argument("--max-rounds", type=int, default=0,
                     help="hard stop on adaptive rounds (0 = governed by "
                          "--anchor-budget instead). Rounds are not the "
@@ -3056,6 +3135,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                          "write it here and exit. No Hessians, no retained "
                          "scoring rows, no encodes.")
     args = ap.parse_args(argv)
+    if args.anchor_batch_size < 1:
+        ap.error("--anchor-batch-size must be positive")
+    if args.anchor_batch_size > 1:
+        from .tessera_render import require_tessera_batch_encoder
+        require_tessera_batch_encoder()
     serving_target = serving_target_from_args(args)
 
     mode = menu_mode(args.menu_mode)
@@ -3707,45 +3791,59 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             break
         print(f"[campaign] round {round_index}: {len(pending)} anchors",
               flush=True)
-        for index, (name, family, rung) in enumerate(pending):
+        batches = _anchor_batches(
+            [item for item in pending if acts.get(item[0]) is not None],
+            weights=weights, expert_members=expert_members,
+            batch_size=args.anchor_batch_size)
+        completed = 0
+        for batch in batches:
             if out_of_time():
                 stopped_early = True
                 print("[campaign] deadline reached; stopping", flush=True)
                 break
+            names = [item[0] for item in batch]
+            family, rung = batch[0][1:]
             fmt = f"{family}_R{rung}"
-            activations = acts.get(name)
-            if activations is None:
-                continue
             try:
-                anchor = _measure_anchor(
-                    qname=name, weight=weights[name].to(device),
-                    activations=activations.to(device),
-                    format_name=fmt, cache=cache, wire_dir=wire_dir,
+                common = dict(format_name=fmt, cache=cache, wire_dir=wire_dir,
                     activation_kwargs_for=(
                         _activation_kwargs_for if want_h else None),
-                    hessian_required=want_h,
-                    static_input_scale=static_scales.get(name),
-                )
+                    hessian_required=want_h)
+                if len(batch) == 1:
+                    name = names[0]
+                    anchors = [_measure_anchor(
+                        qname=name, weight=weights[name].to(device),
+                        activations=acts[name].to(device),
+                        static_input_scale=static_scales.get(name), **common)]
+                else:
+                    anchors = _measure_anchor_batch(
+                        qnames=names,
+                        weights=[weights[name].to(device) for name in names],
+                        activations=[acts[name].to(device) for name in names],
+                        static_input_scales=static_scales, **common)
             except (HessianContractError, ActivationScaleContractError):
-                # Never absorbed into "one anchor failed": a contract refusal
-                # is about every row this run would write, not this one.
                 raise
             except Exception as exc:
-                print(f"[campaign] {name} {fmt}: FAILED {type(exc).__name__}: "
+                print(f"[campaign] {names} {fmt}: FAILED {type(exc).__name__}: "
                       f"{exc}", flush=True)
                 continue
-            identity = _checkpoint_anchor_identity(
-                anchor, weights=weights, menus=menus,
-                calibration_source=calibration_source, static_scales=static_scales,
-                projected_units=projected_units)
-            wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
-            measured.setdefault(name, {}).setdefault(family, []).append(anchor)
-            dirty_checkpoint_units.add(name)
-            if index % 10 == 0:
+            for anchor in anchors:
+                name = anchor.qname
+                identity = _checkpoint_anchor_identity(
+                    anchor, weights=weights, menus=menus,
+                    calibration_source=calibration_source, static_scales=static_scales,
+                    projected_units=projected_units)
+                wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
+                measured.setdefault(name, {}).setdefault(family, []).append(anchor)
+                dirty_checkpoint_units.add(name)
+            completed += len(anchors)
+            # Commit every joined quantum before advancing. The scalar mode
+            # keeps its existing ten-anchor flush cadence.
+            if args.anchor_batch_size > 1 or (completed - 1) % 10 == 0:
                 flush_checkpoint()
-                print(f"[campaign] r{round_index} {index}/{len(pending)} "
-                      f"{name} {fmt} mse={anchor.dloss:.6g} "
-                      f"{anchor.seconds:.1f}s", flush=True)
+                print(f"[campaign] r{round_index} {completed}/{len(pending)} "
+                      f"batch={len(anchors)} {fmt} "
+                      f"encode_seconds={sum(a.seconds for a in anchors):.3f}", flush=True)
         flush_checkpoint()
         if stopped_early:
             break
