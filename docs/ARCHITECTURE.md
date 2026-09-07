@@ -1,7 +1,31 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/joint-aura-calibration-microbatch`. Stamps
+As of: 2026-09-07 · `feat/tessera-joint-anchor-bridge`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
+from completed measured Tessera anchors** (#322). The explicit
+`prismaquant.tessera_joint_aura.plan.v1` intake binds a complete campaign fanout,
+its fleet receipts, merged scalar payload/journal, full census and canonical
+token/capture artifacts. Only journaled measured wire cells enter the exact
+per-Linear format plan; interpolated MSE rows never become joint prices.
+Preparation derives the producer's encoding identity from actual streamed source
+weights and original prefetched Hessians, verifies original wire bytes, and
+requires their decoded BF16 values to equal original PWC shards. Fused-census
+maxima use the existing static-scale contract and must reproduce measured E2M1
+scales. The existing PWC indexes original absolute donor paths and owns prefetch
+and eviction; no encoder, cache store or dispatcher is added. A sealed prepared
+record binds every qualified render plus source/backend/calibration/implementation
+identity. The dependent run verifies those bindings and calls existing streamed
+joint AURA with explicit complete-sequence microbatches, global-row probes and
+durable checkpoints. Both preparation and pricing require explicit source-cache
+slots, prefetch workers/lookahead and memory floors, with strict prefetched
+residency enabled; omitted settings and cold-read fallback refuse at intake.
+The plan digest binds these settings through preparation and cost resume.
+Source BF16 remains the independent zero-cost terminal.
+Full-duration in-process profiles and allocation/IO records accompany these
+research actions; no format/default, wire or serving gate changes.
+Gate: `tests/test_tessera_joint_aura.py`.
 
 Re-stamped (2026-09-07, `feat/joint-aura-calibration-microbatch`) for
 **bounded full-calibration streamed joint AURA** (#318). Explicit
