@@ -2036,7 +2036,9 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(model_path)
-    data = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    # Use the canonical repository: newer Hub URI validation rejects the
+    # legacy namespace-free alias while resolving the dataset metadata.
+    data = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
     text = "\n\n".join(data["text"])
     ids = tok(text, return_tensors="pt").input_ids[0]
     # The corpus text travels beside the ids: Tessera's identity triple wants

@@ -145,3 +145,19 @@ qualification root. PB did not publish a success CAS receipt for this nonzero
 action. The practical lesson is that random residual boundaries do not ensure
 real MoE routing coverage, even after 262,144 tokens; a source-prefix fixture
 is needed to attempt the missing transfer and cleanup measurement.
+
+Real-prefix input preparation exposed a separate dataset lookup defect. PB
+`61405ca3b1c15ff45d24eecaa24edae16b3598598827e8cd0927a4d40344e148`
+failed when the producer's installed Hub URI parser rejected the legacy
+namespace-free `wikitext` repository alias. The canonical helper now requests
+`Salesforce/wikitext`, preserving the `wikitext-2-raw-v1` train split and draw
+algorithm. Green PB action
+`8d091af6a523b2e514875411fa9ab88e8a675fcb555ee847983e51c2afa90168`
+produced all 512×512 original B1 token IDs with seed 0. Its corpus SHA256 was
+`aee724fa58bfbdeb3fc6803297fb6bab27b203d7c40b39ddef9b9770e5d52fe5`,
+exactly the existing canonical corpus identity. Its verified CAS payload is
+`98d8994c7e561e399ad1a565e0caca618a322d5462e2c9a190defb954b70c566`,
+receipt `f7b35b3c7256c1f66997b7095d925da610f263624f6160fb2993d96a50cc9d67`.
+This repairs repository resolution; the proposed production draw remains
+unfrozen. The source/config byte binding and token IDs are immutable inputs
+for the bounded workspace measurement only.
