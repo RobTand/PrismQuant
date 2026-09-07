@@ -135,9 +135,12 @@ def test_a_stack_payload_allocates_through_the_real_allocator(tmp_path, monkeypa
     allocator.main()
 
     assert seen["context_by_unit"][gate_up].structure == "routed_moe"
-    written = layer_config.read_text()
+    written = json.loads(layer_config.read_text())
     assert gate_up in written
     assert f"{STEM}.0.w1" not in written
+    route = written["__prismaquant__"]["serving_lane_provenance"]["by_unit"][gate_up]
+    assert route["format"] == fmt
+    assert route["serving_context"]["structure"] == "routed_moe"
 
 
 def test_draw_receipt_must_replay_from_the_carried_probe(tmp_path, monkeypatch):
@@ -151,8 +154,7 @@ def test_draw_receipt_must_replay_from_the_carried_probe(tmp_path, monkeypatch):
 
 def test_checkpoint_binds_fisher_and_probability_values_with_same_measured_units(monkeypatch):
     from prismaquant import tessera_campaign as campaign
-    import hashlib
-    identity_sha256 = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    from prismaquant.cost_stage_checkpoint import canonical_json_sha256
     monkeypatch.setattr(campaign, '_checkpoint_identity_api', lambda: SimpleNamespace(
         encoder_source_sha256=lambda: 'encoder', tensor_identity=lambda t: t))
     monkeypatch.setattr(campaign.th, 'encoder_recipe', lambda: {})
@@ -166,4 +168,38 @@ def test_checkpoint_binds_fisher_and_probability_values_with_same_measured_units
     changed['stack']['inclusion_prob']['0'] = 0.75
     second = campaign._campaign_checkpoint_identity(**common, stack_sampling_identity=changed)
     assert first['units'] == second['units']
-    assert identity_sha256(first) != identity_sha256(second)
+    assert canonical_json_sha256(first, where="first") != canonical_json_sha256(second, where="second")
+
+
+def test_campaign_main_consumes_persisted_draw_and_emits_packed_population(tmp_path, monkeypatch):
+    """Real producer projection/capture/receipts, with the established CPU fixture."""
+    import dispatch_tessera_campaign as dispatch
+    from test_tessera_campaign_packed import _bridge_main_fixture, STACK, RUNG
+    campaign, argv, model, encoded = _bridge_main_fixture(monkeypatch, tmp_path)
+    profile = _profile()
+    population = campaign._require_campaign_population(model, profile, 1)
+    dense = 'model.layers.0.attention'
+    groups = campaign.resolve_anchor_groups([dense, *population.qnames], profile=profile,
+        expert_members={member.qname: member for member in population.members})
+    probe_rows = {}
+    for name, shape in population.packed_in_scope.items():
+        probe_rows[name] = _packed_probe_row(shape[0], [1.0] * shape[0],
+            packed_param=name.rsplit('.', 1)[-1], out_features=shape[1], in_features=shape[2])
+        probe_rows[name]['_packed_experts_module'] = STACK
+    sampled = dispatch.sample_stack_groups(groups, probe_rows, profile=profile,
+        stack_sample=2, seed=5, audit_rate=10)
+    selection = {'schema': campaign.UNITS_SCHEMA_V2, 'model': argv[1], 'layer_stride': 1,
+        'groups': [{'key': key, 'members': members, **sampled.get(key, {})}
+                   for key, members in sorted(groups.items())]}
+    path = tmp_path / 'units.json'
+    path.write_text(json.dumps(selection))
+    assert campaign.main([*argv, '--units', str(path)]) == 0
+    payload = pickle.loads((tmp_path / 'cost.pkl').read_bytes())
+    assert set(payload['costs']) == {dense, *probe_rows}
+    assert payload['provenance']['population']['priced']['routed_experts'] == sorted(probe_rows)
+    assert len(payload['tessera_expert_wires']) == 6
+    assert payload['provenance']['unit_selection']['groups'] == selection['groups']
+    checkpoint = json.loads((tmp_path / 'cost.anchors.json').read_text())
+    assert set(checkpoint['identity']['stack_sampling_identity']) == set(probe_rows)
+    for packed in probe_rows:
+        assert set(payload['costs'][packed]) == {RUNG}
