@@ -1,7 +1,23 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/joint-sampling-profiler`. Stamps
+As of: 2026-09-07 · `perf/joint-prepare-single-read`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `perf/joint-prepare-single-read`) for **verified
+single-read PWC preparation**. Joint-anchor preparation performs complete
+metadata/roster/producer-receipt intake, then verifies payload bytes on their
+necessary layer-scoped consumption. The existing PWC loader can capture a
+SHA256 receipt from one explicitly bounded serialized-file read and deserialize
+those exact bytes. Its receipt is valid only for the same unchanged resident
+tensor and donor-file signature; eviction and compaction discard it. Temporary
+serialized buffers are bounded per admitted loader worker and never persist as
+another cache. Preparation uses this load receipt instead of global and
+post-prefetch render scans; the existing verifier reads each original wire,
+checks its recorded SHA/source/H/settings, and compares decoded values exactly.
+Prepared completion remains withheld until every measured cell qualifies.
+The strict intake API default and cost/resume payload scans remain unchanged.
+Gate: `tests/test_pwc_file_load_receipts.py`, `tests/test_tessera_joint_aura.py`,
+and equal-work original fourteen-cell qualification with reader/identity held fixed.
 
 Re-stamped (2026-09-07, `codex/joint-sampling-profiler`) for **sampling joint
 preparation and cost execution**. The explicit plan profiler may be `py-spy`:
@@ -40,10 +56,11 @@ anchor/static-scale/H applicability checks, original wire grammar/hash checks
 and exact decoded-render comparison. The binding closes before source unload;
 it accepts no caller-supplied prehash and creates no tensor cache or dispatcher.
 Gate: `tests/test_tessera_bound_identity.py` plus original-wire qualification.
-Initial wire/render content verification may use explicit `file_hash_workers`,
-bounded by PB-assigned CPU affinity. Independent file pairs run in the same
-admitted process; their exact content hashes, before/after race detection and
-per-consumption render drift checks remain mandatory. Placement stays PB's.
+Strict intake wire/render verification may use explicit `file_hash_workers`,
+bounded by PB-assigned CPU affinity. Preparation instead uses that worker bound
+for the existing PWC loader and its single-read receipts described above.
+Exact content hashes and consumption lifetime guards remain mandatory; placement
+stays PB's.
 
 Re-stamped (2026-09-07, `codex/runtime-provenance-relation`) for **explicit
 cross-run runtime provenance** (#323). Opt-in measured-runtime context/table v2

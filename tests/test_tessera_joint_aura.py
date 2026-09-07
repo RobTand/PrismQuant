@@ -263,7 +263,7 @@ def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypat
     from prismaquant import tessera_joint_aura as bridge, calibration_data, cost_streaming, gpu_guard
     draw = dict(fit_ids_sha256="a" * 64, text_sha256="b" * 64, nsamples=512, seqlen=512, seed=0)
     monkeypatch.setattr(gpu_guard, "require_cuda_hot_path", lambda *_args: None)
-    monkeypatch.setattr(bridge, "load_measured_anchor_input", lambda _inputs: SimpleNamespace(
+    monkeypatch.setattr(bridge, "load_measured_anchor_input", lambda _inputs, **_kwargs: SimpleNamespace(
         census={"model": "fixture", "attention_implementation": "eager"},
         payload={"provenance": {"hessian": {"calibration_identity": draw}}}))
     monkeypatch.setattr(calibration_data, "load_calibration_input", lambda *_args, **_kwargs:
@@ -300,9 +300,11 @@ def test_explicit_source_prefetch_reaches_streamed_builder(tmp_path, monkeypatch
     monkeypatch.setattr(model_profiles, "detect_profile", lambda _path: object())
     draw = dict(fit_ids_sha256="a" * 64, text_sha256="b" * 64, nsamples=512, seqlen=512, seed=0)
     monkeypatch.setattr(gpu_guard, "require_cuda_hot_path", lambda *_args: None)
-    monkeypatch.setattr(bridge, "load_measured_anchor_input", lambda _inputs: SimpleNamespace(
-        census={"model": "fixture", "attention_implementation": "eager"},
-        payload={"provenance": {"hessian": {"calibration_identity": draw}}}))
+    def intake(_inputs, **kwargs):
+        assert kwargs == ({"verify_payloads": False} if command == "prepare" else {})
+        return SimpleNamespace(census={"model": "fixture", "attention_implementation": "eager"},
+            payload={"provenance": {"hessian": {"calibration_identity": draw}}})
+    monkeypatch.setattr(bridge, "load_measured_anchor_input", intake)
     monkeypatch.setattr(calibration_data, "load_calibration_input", lambda *_args, **_kwargs:
         (torch.zeros((512, 512), dtype=torch.int64), {"provenance": draw}))
     prefetch = dict(max_cache_slots=24, prefetch_workers=4, prefetch_lookahead=4,
@@ -384,3 +386,23 @@ def test_sampling_refuses_unobserved_execution(tmp_path, monkeypatch, defect):
               "execution": {"production_act_scales": "0"}}
     with pytest.raises(ValueError, match="sampl|observed"):
         bridge.execute("prepare", config, plan_sha256="b" * 64)
+
+
+def test_prepare_metadata_intake_defers_heavy_files_but_keeps_strict_default(tmp_path, monkeypatch):
+    from prismaquant import tessera_joint_aura as bridge
+    config, names, fmt, _payload, _states = fixture(tmp_path)
+    calls = []
+    original = bridge._sha
+    def observed(path):
+        calls.append(Path(path))
+        return original(path)
+    monkeypatch.setattr(bridge, '_sha', observed)
+    metadata = bridge.load_measured_anchor_input(config, verify_payloads=False)
+    heavy = {Path(cell[k]) for cell in metadata.cells.values() for k in ('wire', 'render')}
+    assert not heavy.intersection(calls)
+    assert all('render_file_sha256' not in cell for cell in metadata.cells.values())
+    assert metadata.formats_by_qname == {name: (fmt, 'BF16') for name in names}
+    calls.clear()
+    strict = bridge.load_measured_anchor_input(config)
+    assert heavy <= set(calls)
+    assert all('render_file_sha256' in cell for cell in strict.cells.values())

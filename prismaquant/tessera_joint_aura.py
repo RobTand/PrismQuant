@@ -77,16 +77,19 @@ class MeasuredAnchorInput:
         return dict(sizes)
 
 
-def load_measured_anchor_input(inputs, *, file_hash_workers=1):
+def load_measured_anchor_input(inputs, *, file_hash_workers=1, verify_payloads=True):
     """Read a complete merged journal and select only its measured wire cells.
 
-    This is a hash/receipt intake. Tensor/source/encoder verification occurs in
+    The default hashes all payload files. Preparation may explicitly defer
+    payload reads to the existing PWC loader and wire verifier; metadata and
+    roster gates still run here. Tensor/source/encoder verification occurs in
     ``prepare_cache`` using actual source weights and the original capture.
     Interpolated menu rows are deliberately excluded rather than converted.
     """
     from .production_weight_cache import _cache_weight_filename
     from tools.dispatch_tessera_campaign import _require_receipts
 
+    _require(type(verify_payloads) is bool, "verify_payloads must be an explicit boolean")
     _require(type(file_hash_workers) is int and file_hash_workers > 0,
              "positive file_hash_workers required")
     paths = {key: _bound(inputs[key], key) for key in (
@@ -203,6 +206,9 @@ def load_measured_anchor_input(inputs, *, file_hash_workers=1):
             cells[name, fmt] = {"anchor": anchor, "record": record, "wire": str(wire.resolve()),
                                "render": str(render.resolve())}
         formats[name] = (*sorted(anchors), "BF16")
+    if not verify_payloads:
+        return MeasuredAnchorInput(dict(inputs), payload, manifest, census, plan, cells, formats)
+
     def verify_files(item):
         pair, cell = item
         wire, render = Path(cell["wire"]), Path(cell["render"])
@@ -293,7 +299,7 @@ def _live_targets(runner, names):
     return {name: targets[name] for name in names}
 
 
-def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
+def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None, file_load_workers=4):
     """Qualify original per-layer inputs and return the existing PWC object.
 
     Only the original calibration/PWC/source prefetch mechanisms own tensors.
@@ -330,6 +336,8 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
         metadata={"schema": PREPARED_SCHEMA, "inputs": data.inputs,
                   "reader_identity": None if reader is None else reader.identity})
     cache.enable_lru(max_render_bytes)
+    max_file_bytes = max(Path(cell["render"]).stat().st_size for cell in data.cells.values())
+    cache.enable_file_load_receipts(max_file_bytes=max_file_bytes)
     targets = _live_targets(runner, data.formats_by_qname)
     layers = defaultdict(list)
     for name in targets:
@@ -354,7 +362,8 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
                 expected_sha256=capture["sha256"], expected_identity=expected,
                 census=data.census, names=names, device=runner.device)
             calibration_source = th.activation_source(hessians, expected["calibration"])
-            stats = prefetch_joint_cache(cache, names, renders, max_resident_bytes=max_render_bytes)
+            stats = prefetch_joint_cache(cache, names, renders, max_resident_bytes=max_render_bytes,
+                                         max_workers=file_load_workers)
             for name in names:
                 source_weight = targets[name].weight.detach()
                 anchors = [tc.CampaignAnchor(**data.cells[name, fmt]["anchor"]) for fmt in renders[name]]
@@ -363,8 +372,12 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
                         static_scales=scales) as bound_unit:
                     for fmt in renders[name]:
                         cell = data.cells[name, fmt]
-                        _same(_sha(cell["render"]), cell["render_file_sha256"], f"{name}: original render file changed")
-                        rendered = cache.get(name, fmt).to(runner.device)
+                        resident = cache.get(name, fmt)
+                        receipt = cache.file_load_receipt((name, fmt), resident)
+                        if "render_file_sha256" in cell:
+                            _same(receipt["sha256"], cell["render_file_sha256"], f"{name}: original render file changed")
+                        cell["render_file_sha256"] = receipt["sha256"]
+                        rendered = resident.to(runner.device)
                         record = verify_anchor_render(cell, source_weight, rendered,
                             calibration_source=calibration_source,
                             projected_unit=projected.get(name), static_scales=scales,
@@ -374,7 +387,7 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
                               f"{name}@{fmt}: joint/campaign static scale")
                         record["activation"] = activation
                         verified[name, fmt] = record
-                        del rendered
+                        del rendered, resident
             telemetry.append({"layer": layer, **stats})
             print(json.dumps({"qualified_layer": layer, "qualified_cells": len(verified),
                               "total_cells": len(data.cells), "prefetch": stats}), flush=True)
@@ -384,6 +397,7 @@ def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
             runner.context.unload(layer)
             targets.update({member.qname: member for member in refresh_packed_expert_projections(members, runner.profile)})
     _same(set(verified), set(data.cells), "complete qualified wire/render roster")
+    cache.disable_file_load_receipts()
     cache.metadata.update({"verified_cells": verified, "prefetch": telemetry})
     return cache
 
@@ -496,7 +510,8 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
         _require(type(file_hash_workers) is int and 0 < file_hash_workers <= len(os.sched_getaffinity(0)),
                  "file_hash_workers exceeds PB-assigned CPU affinity")
         data = load_measured_anchor_input(config["inputs"],
-            **({} if file_hash_workers == 1 else {"file_hash_workers": file_hash_workers}))
+            **({} if file_hash_workers == 1 else {"file_hash_workers": file_hash_workers}),
+            **({"verify_payloads": False} if command == "prepare" else {}))
         result["file_hash_workers"] = file_hash_workers
         reader = load_declared_reader(config.get("reader"))
         reader_identity = None if reader is None else reader.identity
@@ -531,7 +546,8 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             completion_path = root / "prepared.json"
             _require(not completion_path.exists(), "prepared completion already exists; use its bound record")
             cache = prepare_cache(runner, data, capture=config["canonical_capture"],
-                                  max_render_bytes=config["max_render_bytes"], reader=reader)
+                                  max_render_bytes=config["max_render_bytes"], reader=reader,
+                                  file_load_workers=file_hash_workers)
             cache.metadata.update(plan_sha256=plan_sha256, source_model_identity=source,
                                   source_execution=source_execution, implementation_sha256=implementation)
             cache.compact_for_pickle()

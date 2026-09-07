@@ -70,12 +70,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import math
 import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import time
 
 import torch
@@ -282,6 +284,8 @@ class ProductionWeightCache:
     _lru_bytes: int = 0
     _lru_max_bytes: int = 0
     _cb_verified_keys: set[tuple[str, str]] | None = None
+    _file_load_max_bytes: int = 0
+    _file_load_receipts: dict | None = None
 
     def __post_init__(self) -> None:
         # Normalize to ``activation_max_abs`` if a caller used the legacy
@@ -325,6 +329,7 @@ class ProductionWeightCache:
         self._lru_order = []
         self._lru_paths = {}
         self._lru_bytes = 0
+        self._file_load_receipts = None
 
     def _evict_to_budget(self) -> None:
         if self._lru_order is None or self._lru_max_bytes <= 0:
@@ -339,6 +344,8 @@ class ProductionWeightCache:
                     self.weights[evict_key] = self._lru_paths[evict_key]
                 if self._cb_verified_keys is not None:
                     self._cb_verified_keys.discard(evict_key)
+                if self._file_load_receipts is not None:
+                    self._file_load_receipts.pop(evict_key, None)
 
     def compact_for_pickle(self) -> int:
         """Restore disk-backed resident tensors to path references.
@@ -366,6 +373,7 @@ class ProductionWeightCache:
         self._lru_order = [] if self._lru_order is not None else None
         self._lru_bytes = 0
         self._cb_verified_keys = None
+        self._file_load_receipts = None
         return compacted
 
     def release_resident_tensors(self) -> int:
@@ -730,6 +738,84 @@ class ProductionWeightCache:
             self._cb_verified_keys = set()
         self._cb_verified_keys.add(key)
 
+    def enable_file_load_receipts(self, *, max_file_bytes: int) -> None:
+        """Capture content provenance on the necessary, bounded PWC file read.
+
+        Receipts describe bytes actually deserialized, not a previous file scan.
+        They exist only while the matching tensor remains resident and unchanged.
+        This is opt-in for preparation; ordinary cache loads retain their path.
+        """
+        if type(max_file_bytes) is not int or max_file_bytes <= 0:
+            raise ValueError("PWC file receipt needs a positive read buffer bound")
+        if self._lru_order is None or self._lru_max_bytes <= 0:
+            raise RuntimeError("PWC file receipts require bounded LRU residency")
+        if any(isinstance(value, torch.Tensor) for value in self.weights.values()):
+            raise RuntimeError("PWC file receipt capture requires unloaded entries")
+        self._file_load_max_bytes = max_file_bytes
+        self._file_load_receipts = {}
+
+    def disable_file_load_receipts(self) -> None:
+        self._file_load_max_bytes = 0
+        self._file_load_receipts = None
+
+    @staticmethod
+    def _file_signature(value):
+        return (value.st_dev, value.st_ino, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns)
+
+    @staticmethod
+    def _file_tensor_guard(tensor):
+        return (tensor._version, tensor.untyped_storage().data_ptr(),
+                tensor.storage_offset(), tuple(tensor.shape), tuple(tensor.stride()),
+                str(tensor.dtype), str(tensor.device))
+
+    def _load_file_tensor(self, value):
+        path = Path(self._path_for_value(value)).absolute()
+        limit = getattr(self, "_file_load_max_bytes", 0)
+        if not limit:
+            return torch.load(path, map_location="cpu", weights_only=True), None
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError("PWC file receipt requires a regular file, not a symlink")
+        if before.st_size > limit:
+            raise RuntimeError("PWC file exceeds the explicit read buffer bound")
+        signature = self._file_signature(before)
+        with path.open("rb") as handle:
+            if self._file_signature(os.fstat(handle.fileno())) != signature:
+                raise RuntimeError("PWC file changed before its content read")
+            raw = handle.read(limit + 1)
+            if (len(raw) != before.st_size or self._file_signature(os.fstat(handle.fileno())) != signature
+                    or self._file_signature(path.lstat()) != signature):
+                raise RuntimeError("PWC file changed during its content read")
+        # The temporary serialized buffer is per loader worker and is released
+        # before its result enters the existing LRU. No whole-cache byte store.
+        receipt = {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        tensor = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
+        if not isinstance(tensor, torch.Tensor):
+            raise RuntimeError("PWC file receipt requires a tensor shard")
+        return tensor, (receipt, signature, self._file_tensor_guard(tensor))
+
+    def _record_file_load(self, key, tensor, observed) -> None:
+        if observed is not None and self.weights.get(key) is tensor:
+            if self._file_load_receipts is None:
+                self._file_load_receipts = {}
+            # This is the same resident object, released with its LRU entry.
+            self._file_load_receipts[key] = (tensor, observed)
+
+    def file_load_receipt(self, key, tensor) -> dict:
+        """Return a detached receipt for this exact resident tensor lifetime."""
+        entry = (self._file_load_receipts or {}).get(key)
+        if entry is None or entry[0] is not tensor or self.weights.get(key) is not tensor:
+            if self._file_load_receipts is not None:
+                self._file_load_receipts.pop(key, None)
+            raise RuntimeError("PWC file receipt has no matching resident tensor")
+        receipt, signature, guard = entry[1]
+        if (self._file_tensor_guard(tensor) != guard or
+                self._file_signature(Path(receipt["path"]).lstat()) != signature):
+            self._file_load_receipts.pop(key, None)
+            raise RuntimeError("PWC file receipt tensor or source file changed")
+        return dict(receipt)
+
     def prefetch(self, keys: Sequence[tuple[str, str]] | None = None,
                  max_workers: int = 4) -> int:
         """Eagerly load (a subset of) cache entries via a thread pool.
@@ -747,6 +833,9 @@ class ProductionWeightCache:
         """
         from concurrent.futures import ThreadPoolExecutor
 
+        if getattr(self, "_file_load_max_bytes", 0):
+            if type(max_workers) is not int or not 0 < max_workers <= len(os.sched_getaffinity(0)):
+                raise ValueError("PWC file receipt workers exceed assigned CPU affinity")
         if keys is None:
             keys = [k for k, v in self.weights.items()
                     if not isinstance(v, torch.Tensor)]
@@ -760,27 +849,21 @@ class ProductionWeightCache:
             value = self.weights.get(key)
             if value is None or isinstance(value, torch.Tensor):
                 return None
-            return (
-                key,
-                value,
-                torch.load(
-                    self._path_for_value(value),
-                    map_location="cpu",
-                    weights_only=True,
-                ),
-            )
+            tensor, receipt = self._load_file_tensor(value)
+            return key, value, tensor, receipt
 
         loaded_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for item in pool.map(_load_one, keys):
                 if item is None:
                     continue
-                key, original_value, tensor = item
+                key, original_value, tensor, receipt = item
                 if isinstance(self.weights.get(key), torch.Tensor):
                     continue
                 self._validate_loaded_cb_pair_tensor(key, tensor)
                 self.weights[key] = tensor
                 self._record_lru_load(key, original_value, tensor)
+                self._record_file_load(key, tensor, receipt)
                 loaded_count += 1
         return loaded_count
 
@@ -801,11 +884,11 @@ class ProductionWeightCache:
                 self._lru_order.append(key)
             return v
         # Treat anything non-tensor as a filename / path.
-        path = self._path_for_value(v)
-        loaded = torch.load(path, map_location="cpu", weights_only=True)
+        loaded, receipt = self._load_file_tensor(v)
         self._validate_loaded_cb_pair_tensor(key, loaded)
         self.weights[key] = loaded
         self._record_lru_load(key, v, loaded)
+        self._record_file_load(key, loaded, receipt)
         return loaded
 
     def get(self, name: str, fmt: str) -> torch.Tensor | None:
