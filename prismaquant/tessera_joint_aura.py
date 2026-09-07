@@ -77,7 +77,7 @@ class MeasuredAnchorInput:
         return dict(sizes)
 
 
-def load_measured_anchor_input(inputs):
+def load_measured_anchor_input(inputs, *, file_hash_workers=1):
     """Read a complete merged journal and select only its measured wire cells.
 
     This is a hash/receipt intake. Tensor/source/encoder verification occurs in
@@ -87,6 +87,8 @@ def load_measured_anchor_input(inputs):
     from .production_weight_cache import _cache_weight_filename
     from tools.dispatch_tessera_campaign import _require_receipts
 
+    _require(type(file_hash_workers) is int and file_hash_workers > 0,
+             "positive file_hash_workers required")
     paths = {key: _bound(inputs[key], key) for key in (
         "campaign_plan", "census", "campaign_receipts", "merged_cost", "merged_checkpoint")}
     census = json.loads(paths["census"].read_text())
@@ -196,12 +198,36 @@ def load_measured_anchor_input(inputs):
             wire = wire_dir / filename
             _require(not wire.is_symlink() and wire.resolve().parent == wire_dir.resolve(), f"{name}: escaping wire path")
             _same(wire.stat().st_size, record["blob_bytes"], f"{name}: wire size")
-            _same(_sha(wire), record["blob_sha256"], f"{name}: wire checksum")
             render = owners[name] / "cache" / _cache_weight_filename(name, fmt)
             _require(render.is_file(), f"{name}@{fmt}: original decoded PWC shard missing")
             cells[name, fmt] = {"anchor": anchor, "record": record, "wire": str(wire.resolve()),
-                               "render": str(render.resolve()), "render_file_sha256": _sha(render)}
+                               "render": str(render.resolve())}
         formats[name] = (*sorted(anchors), "BF16")
+    def verify_files(item):
+        pair, cell = item
+        wire, render = Path(cell["wire"]), Path(cell["render"])
+        # Metadata is only a race detector around the actual content hash.
+        # Every byte is still hashed; neither timestamps nor a previous run
+        # authorize reuse. Existing per-consumption render checks remain below.
+        def signature(path):
+            stat = path.stat()
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+        before = [signature(p) for p in (wire, render)]
+        _same(_sha(wire), cell["record"]["blob_sha256"], f"{pair}: wire checksum")
+        digest = _sha(render)
+        after = [signature(p) for p in (wire, render)]
+        _same(after, before, f"{pair}: input files changed while hashing")
+        return pair, digest
+
+    if file_hash_workers == 1:
+        verified_files = map(verify_files, cells.items())
+        for pair, digest in verified_files:
+            cells[pair]["render_file_sha256"] = digest
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=file_hash_workers, thread_name_prefix="anchor-file-hash") as workers:
+            for pair, digest in workers.map(verify_files, cells.items()):
+                cells[pair]["render_file_sha256"] = digest
     return MeasuredAnchorInput(dict(inputs), payload, manifest, census, plan, cells, formats)
 
 
@@ -385,6 +411,8 @@ def _load_plan(path, digest):
     _same(config.get("schema"), SCHEMA, "joint anchor plan schema")
     _source_prefetch(config)
     execution = config["execution"]
+    _require(type(config.get("file_hash_workers", 1)) is int and config.get("file_hash_workers", 1) > 0,
+             "positive file_hash_workers required")
     for name, minimum in (("n_calib_samples", 1), ("calib_seqlen", 1),
                           ("probe_microbatch", 1), ("n_probes", 2)):
         _require(type(execution.get(name)) is int and execution[name] >= minimum,
@@ -444,7 +472,12 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
     started, before_io = time.time(), _io_counters()
     profiler.enable()
     try:
-        data = load_measured_anchor_input(config["inputs"])
+        file_hash_workers = config.get("file_hash_workers", 1)
+        _require(type(file_hash_workers) is int and 0 < file_hash_workers <= len(os.sched_getaffinity(0)),
+                 "file_hash_workers exceeds PB-assigned CPU affinity")
+        data = load_measured_anchor_input(config["inputs"],
+            **({} if file_hash_workers == 1 else {"file_hash_workers": file_hash_workers}))
+        result["file_hash_workers"] = file_hash_workers
         _same(config["model"], data.census["model"], "requested source model")
         _same(data.census["attention_implementation"], "eager", "qualified source attention")
         ids, calibration = load_calibration_input(config["calibration_input"]["path"],

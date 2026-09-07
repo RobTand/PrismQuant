@@ -329,3 +329,23 @@ def test_source_prefetch_refuses_implicit_or_nonresident_settings(defect):
         config = {"source_prefetch": prefetch}
     with pytest.raises(ValueError, match="source_prefetch"):
         _source_prefetch(config)
+
+
+def test_parallel_intake_hashes_independent_files_without_changing_cells(tmp_path, monkeypatch):
+    import threading
+    from prismaquant import tessera_joint_aura as bridge
+    config, *_ = fixture(tmp_path)
+    expected = bridge.load_measured_anchor_input(config)
+    original = bridge._sha
+    barrier = threading.Barrier(2)
+    workers = set()
+    def observed(path):
+        if str(path).endswith('.tessera'):
+            workers.add(threading.get_ident())
+            barrier.wait(timeout=10)
+        return original(path)
+    monkeypatch.setattr(bridge, '_sha', observed)
+    actual = bridge.load_measured_anchor_input(config, file_hash_workers=2)
+    assert actual.cells == expected.cells
+    assert actual.formats_by_qname == expected.formats_by_qname
+    assert len(workers) == 2
