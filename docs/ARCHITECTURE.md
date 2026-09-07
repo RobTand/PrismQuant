@@ -3,6 +3,18 @@
 As of: 2026-09-07 · `codex/campaign-batched-anchors`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
+initialization**. The shared Transformers compatibility hook suppresses random
+initialization for from-config skeletons, but enables the genuine initializer
+inside ordinary checkpoint missing-state finalization. A context-local scope
+prevents exceptions or concurrent skeleton construction from leaking that
+permission. This restores nonpersistent buffers (including LFM rotary frequency
+buffers) rematerialized by Transformers with uninitialized storage. Successfully
+finalized models expose `prismaquant.pretrained_initialization.v1` through
+`pretrained_initialization_contract`; from-config models and malformed descriptors
+refuse. This descriptor records the checkpoint load phase, not later model
+mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
+
 Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
 expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
 optional `--anchor-batch-size` groups pending expert anchors with equal shape,
@@ -33,6 +45,7 @@ squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
 Host-interpreter specs remain supported. Census, anchor and materialization
 quanta share the same row builder; the adapter does no scheduling or fanout.
 Gate: `tests/test_tessera_campaign_container.py`.
+
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
