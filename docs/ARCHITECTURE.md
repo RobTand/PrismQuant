@@ -1,7 +1,24 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `claude/pq280-projection-family-ladder`. Stamps
+As of: 2026-09-06 · `main-campaign/pq284-readable-menu`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `main-campaign/pq284-readable-menu`) for **the
+contract-readable Tessera menu mode** (§4.10; RobTand/prismaquant#284). The
+menu had two modes and the pinned contract publishes three facts: which
+families a cell attests, and — in `formats[].reader_rate_range_q256` — which
+rates the plugin's decoder accepts at all. Nothing read the second, so a
+research campaign paid to encode bytes no reader will take: on the #275 LFM
+campaign, 168 rows × 27 s on `TESSERA_E2M1_K1`, a family the contract does not
+publish, plus two of three `TESSERA_E2M1_K2` anchors outside its `[896, 896]`
+range. `RouteAdmission` now derives `readable` from that field on both the
+dev-pin and the packaged path, `PRISMAQUANT_TESSERA_MENU=readable` admits
+`serialisable and readable`, and `menu_width_report` carries `readable_rungs`.
+Route status is untouched: readable is a decoder fact, not a served-KL
+receipt, so a readable-but-unattested rung still stamps `unattested` and the
+export gate still fails closed on it. No default, stage graph, format menu,
+serving lane, ship gate or byte changes. Gates:
+`tests/test_tessera_menu.py`, `tests/test_tessera_menu_real_table.py`.
 
 Re-stamped (2026-09-06, `claude/pq280-projection-family-ladder`) for **the
 nominal rung the campaign plans a packed-expert stack on** (§4.10;
@@ -6210,8 +6227,8 @@ attested menu is three rungs, measured on `[2048, 1024]`:
 | `TESSERA_BF16_K1_R1792` | 7.1406 | `w16a16-bf16-channel` |
 
 Every other BF16 rung is still reachable only under
-`PRISMAQUANT_TESSERA_MENU=research`, stamped `unattested`, for the export gate
-to fail closed on. **The rule did not bend to admit the family; the runtime
+`PRISMAQUANT_TESSERA_MENU=readable` or `=research`, stamped `unattested`, for
+the export gate to fail closed on. **The rule did not bend to admit the family; the runtime
 published a receipt and the rule read it** — which is the whole shape of P14,
 and is why the producer side needed no edit for the status to change. Its layout claim — `tessera_serving_route` answers
 `w16a16-bf16-channel`, terminal `BF16` — is a statement about what the decode
@@ -6462,8 +6479,23 @@ Under that pin the attested menu is **three rungs, not a range**:
 Each is one point of its family — the first two the family's native terminal
 rate, 0.078 bpp apart; the third the one rung the BF16 route's receipt covered
 — so **the attested menu has no rate axis at all** — the continuous axis is priced and allocatable
-only under `PRISMAQUANT_TESSERA_MENU=research`, and widening it is a change to
-Tessera's published `attested_rungs_q256`, not to anything here.
+only under `PRISMAQUANT_TESSERA_MENU=readable` or `=research`, and widening the
+*attested* set is a change to Tessera's published `attested_rungs_q256`, not to
+anything here.
+
+**The third mode reads the third fact (#284).** The same `formats[]` rows carry
+`reader_rate_range_q256` — `TESSERA_E2M1_K2` `[896, 896]`, `TESSERA_E4M3_K1`
+`[256, 2048]`, `TESSERA_BF16_K1` `[256, 4096]`, and no row at all for
+`TESSERA_E2M1_K1` — which says what the plugin's decoder accepts rather than
+what a cell attests. `PRISMAQUANT_TESSERA_MENU=readable` admits exactly that
+set (`RouteAdmission.readable`, derived from `TesseraContract.reader_rate_range`
+on the dev-pin path and from the packaged `formats` row on the other), giving
+`attested ⊆ readable ⊆ research`. It is a **campaign** economy and not a ship
+gate: route status stays `unattested`, so the export gate refuses a readable
+rung exactly as it refuses a research one. What it removes is encode time spent
+on bytes nothing can read — measured on the #275 LFM campaign as 168 rows × 27 s
+of `TESSERA_E2M1_K1` plus two of three `TESSERA_E2M1_K2` anchors, about two
+thirds of that campaign's encode budget.
 
 **Three since contract v5, and the third arrived by two independent changes
 meeting.** The runtime published `TESSERA_BF16_K1 @ q256 1792` with two dense

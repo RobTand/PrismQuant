@@ -42,8 +42,30 @@ wrong one sends a reader to re-pin a contract that already has the row.
 So the menu carries a **mode**, and the default is the attested one::
 
     MENU_ATTESTED  (default)   only rungs a pinned runtime attests
+    MENU_READABLE  (opt-in)    only rungs the pinned contract's own decoder
+                               accepts -- its family is published and the rate
+                               falls inside ``reader_rate_range_q256`` -- each
+                               still stamped ROUTE_STATUS_UNATTESTED
     MENU_RESEARCH  (opt-in)    every writable, shape-legal rung, each stamped
                                ROUTE_STATUS_UNATTESTED
+
+``MENU_READABLE`` sits between the two and is a *decoder* fact, not a receipt.
+A campaign under ``MENU_RESEARCH`` prices rungs no reader will ever accept --
+on the #275 LFM campaign, 168 rows at 27 s each on ``TESSERA_E2M1_K1``, a
+family the pinned contract does not publish at all, plus two of three
+``TESSERA_E2M1_K2`` anchors outside its ``[896, 896]`` reader range.  Those
+bytes cannot be served by anything, so measuring them buys nothing.  What
+``readable`` does NOT do is change any status: a readable-but-unattested rung
+carries :data:`ROUTE_STATUS_UNATTESTED` on every stamp, and the export gate
+fails closed on it exactly as it does under research mode.  It is a PRICING
+menu, and P9's route gate stays on ``route_status`` -- "the decoder reads
+these bytes" is not "the runtime serves them natively".
+
+Like the attestation, it is derived from whichever table answers: the
+``reader_rate_range`` of the dev-pin contract when ``PRISMAQUANT_TESSERA_DEV_
+PIN`` is set, and the packaged ``formats`` row's ``reader_rate_range_q256``
+otherwise.  Both publish the field, so ``readable`` is a usable menu with or
+without the pin -- unlike ``attested``, which needs the pin to admit anything.
 
 ``MENU_RESEARCH`` is not an override of the gate; it is the gate reporting
 itself.  Principle 1 is explicit that route status "never removes an honestly
@@ -101,6 +123,7 @@ __all__ = [
     "MENU_ATTESTED",
     "MENU_MODES",
     "MENU_MODE_ENV",
+    "MENU_READABLE",
     "MENU_RESEARCH",
     "MENU_TOKEN",
     "PARALLEL_COLUMN",
@@ -146,7 +169,13 @@ MENU_ATTESTED = "attested"
 #: Every writable, shape-legal rung, each stamped ``unattested``.  Opt-in, and
 #: refused by the export gate exactly as any other unattested unit is.
 MENU_RESEARCH = "research"
-MENU_MODES = frozenset({MENU_ATTESTED, MENU_RESEARCH})
+#: Only rungs the pinned contract's own decoder accepts: the family is
+#: published and the rate lies inside its ``reader_rate_range_q256``.  Opt-in,
+#: still stamped ``unattested``, and refused by the export gate exactly as any
+#: other unattested unit is -- it narrows what a CAMPAIGN pays to encode, not
+#: what an artifact may ship.
+MENU_READABLE = "readable"
+MENU_MODES = frozenset({MENU_ATTESTED, MENU_READABLE, MENU_RESEARCH})
 
 #: The lever that selects the mode.  ONE name, read in ONE place
 #: (:func:`menu_mode`), stamped into every allocation's provenance.  Unset is
@@ -159,9 +188,9 @@ def menu_mode(value: "str | None" = None) -> str:
     """The menu mode in force.  ``value`` overrides the environment.
 
     Explicit and refusing: an unrecognised spelling raises rather than falling
-    back to either mode, because both failure directions are bad -- silently
-    attested drops the whole menu, silently research ships an unattested
-    allocation.
+    back to any of the three, because every failure direction is bad --
+    silently attested drops the whole menu, silently readable or research
+    widens it onto rungs nothing attests.
     """
     import os
 
@@ -170,7 +199,9 @@ def menu_mode(value: "str | None" = None) -> str:
     if text not in MENU_MODES:
         raise TesseraMenuError(
             f"{MENU_MODE_ENV}={raw!r} is not a Tessera menu mode; expected one "
-            f"of {sorted(MENU_MODES)}"
+            f"of {sorted(MENU_MODES)} ({MENU_ATTESTED}: rungs a pinned runtime "
+            f"attests; {MENU_READABLE}: rungs the pinned contract's decoder "
+            f"accepts; {MENU_RESEARCH}: every writable, shape-legal rung)"
         )
     return text
 
@@ -256,6 +287,14 @@ class RouteAdmission:
     serving_context: "ServingContext | None" = None
     #: Whether this contract requires the complete serving scope for admission.
     requires_serving_context: bool = False
+    #: Does the pinned contract's own decoder accept these bytes?  DERIVED: the
+    #: contract publishes the family and the rung lies inside its
+    #: ``reader_rate_range_q256``.  This is a statement about the READER, not a
+    #: served-KL receipt, so it never moves :attr:`route_status` -- a readable
+    #: rung nothing attests is still ``unattested`` on every stamp.  ``False``
+    #: when no contract governs the family, which is the fail-closed direction:
+    #: absence is "no reader is published", never "any rate is fine".
+    readable: bool = False
 
     @property
     def attested(self) -> bool:
@@ -268,6 +307,8 @@ class RouteAdmission:
             return False
         if mode == MENU_RESEARCH:
             return True
+        if mode == MENU_READABLE:
+            return self.readable
         if mode == MENU_ATTESTED:
             return self.attested
         raise TesseraMenuError(
@@ -445,6 +486,49 @@ def _attested_cell_conditions(name: str, cells) -> tuple[str, tuple[str, ...]]:
         flag for cell in cells for flag in cell.requires_serve_flags))
 
 
+def _contract_reader_range(contract, family: str) -> "tuple[int, int] | None":
+    """The dev-pin contract's published reader range for one family, or ``None``.
+
+    ``None`` is "the contract publishes no reader for this family", which is
+    what :attr:`RouteAdmission.readable` fails closed on.  Read through
+    ``governs`` first so the two answers cannot disagree: ``governs`` IS
+    membership in ``reader_rate_range``, and asking it that way keeps this
+    from becoming a second copy of the same table read.
+    """
+    ranges = getattr(contract, "reader_rate_range", None)
+    if ranges is None or not contract.governs(family):
+        return None
+    try:
+        lo, hi = (int(v) for v in ranges[str(family)])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return lo, hi
+
+
+def _published_reader_range(formats, family: str) -> "tuple[int, int] | None":
+    """The packaged ``formats`` table's reader range for one family, or ``None``.
+
+    The field is ``reader_rate_range_q256`` and it is deliberately NOT
+    ``candidate_rungs_q256`` / ``attested_rungs_q256``: those name the rungs a
+    cell attests, which is the narrower question :attr:`RouteAdmission.attested`
+    already answers.  Only a rate-addressed row carries a reader range at all,
+    so a CB row (or an absent one) answers ``None``.
+    """
+    row = formats.get(str(family)) if hasattr(formats, "get") else None
+    if not isinstance(row, Mapping):
+        return None
+    try:
+        lo, hi = (int(v) for v in row["reader_rate_range_q256"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return lo, hi
+
+
+def _rate_is_readable(rung: int, span: "tuple[int, int] | None") -> bool:
+    """Inclusive membership, with absence meaning "no reader is published"."""
+    return span is not None and span[0] <= int(rung) <= span[1]
+
+
 def route_admission(
     name: str, *, serving_context: "ServingContext | None" = None,
 ) -> RouteAdmission:
@@ -499,6 +583,15 @@ def route_admission(
     an absent context cannot borrow the runtime or structure of another cell.
     A legacy contract retains its context-free admission but cannot attest a
     newly supplied runtime context it has no per-cell evidence to answer.
+
+    Beside the attestation it also derives :attr:`RouteAdmission.readable` --
+    does the pinned contract's own decoder accept this rate at all -- from the
+    same one read, on both paths: ``reader_rate_range`` on the dev-pin
+    contract and ``reader_rate_range_q256`` on the packaged ``formats`` row.
+    It is deliberately independent of the serving scope, of the release pin
+    and of the cell census, because none of those is what makes a reader
+    accept bytes; and it is deliberately NOT allowed to move ``route_status``,
+    which stays :data:`ROUTE_STATUS_UNATTESTED` until a cell attests the rung.
     """
     from .tessera_render import (
         _pinned_serving_table, tessera_attesting_cells, tessera_lane_admission,
@@ -517,8 +610,17 @@ def route_admission(
     flags: tuple[str, ...] = ()
     world: "int | None" = None
     requires_context = False
+    # The decoder fact, read from whichever table answered.  Deliberately
+    # independent of the serving scope and of the release pin: whether the
+    # plugin's reader accepts a rate is a property of the contract's published
+    # ``reader_rate_range_q256``, not of the cell census or of which build is
+    # installed, and conflating the two would make ``readable`` a second,
+    # weaker spelling of ``attested``.
+    readable = False
     if contract is not None:
         source = _tessera_attestation_source(contract)
+        readable = _rate_is_readable(
+            rung, _contract_reader_range(contract, family.name))
         world = contract.max_world_size.get(family.name)
         requires_context = bool(getattr(contract, "requires_serving_context", False))
         legacy_scope_reason = (
@@ -559,6 +661,8 @@ def route_admission(
     else:
         table, formats = _pinned_serving_table()
         source = _packaged_attestation_source(table)
+        readable = _rate_is_readable(
+            rung, _published_reader_range(formats, family.name))
         requires_context = table.schema in SCOPED_LANE_SCHEMAS
         scope = ({"serving_context": serving_context}
                  if serving_context is not None else {})
@@ -605,6 +709,7 @@ def route_admission(
         max_world_size=world,
         serving_context=serving_context,
         requires_serving_context=requires_context,
+        readable=readable,
     )
 
 
@@ -1482,18 +1587,32 @@ def menu_width_report(priced, admitted, dropped, explicit_refused, mode) -> tupl
     rungs by design, so the line says "admitted under research mode" rather
     than "attested by the pinned runtime": the count is honest either way,
     the label says which question it answers.
+
+    Readable mode gets its own count and its own label for the same reason.
+    ``readable`` is a claim about the pinned decoder and NOT a served-KL
+    receipt, so folding it into ``attested_rungs`` would put a producer-side
+    assertion in the field a reader takes for an attestation (P14). One count
+    is non-zero per run, and ``menu_mode`` says which.
     """
     research = mode == MENU_RESEARCH
+    readable = mode == MENU_READABLE
     widths = {
         "priced_rungs": len(priced),
-        "attested_rungs": 0 if research else len(admitted),
+        "attested_rungs": len(admitted) if mode == MENU_ATTESTED else 0,
         "research_admitted_rungs": len(admitted) if research else 0,
+        "readable_rungs": len(admitted) if readable else 0,
         "dropped_unattested_rungs": len(dropped),
         "explicit_unattested_rungs": len(explicit_refused),
         "menu_mode": mode,
     }
-    label = ("admitted under PRISMAQUANT_TESSERA_MENU=research (not attested by the "
-             "pinned runtime)" if research else "attested by the pinned runtime")
+    if research:
+        label = ("admitted under PRISMAQUANT_TESSERA_MENU=research (not attested by "
+                 "the pinned runtime)")
+    elif readable:
+        label = ("readable by the pinned decoder, not attested "
+                 "(PRISMAQUANT_TESSERA_MENU=readable)")
+    else:
+        label = "attested by the pinned runtime"
     line = (f"[alloc] Tessera menu: {len(admitted)} of {len(priced)} priced rungs are {label}"
             + (f" ({len(dropped)} dropped as unattested)" if dropped else "")
             + (f" ({len(explicit_refused)} explicitly named rungs are unattested; "
