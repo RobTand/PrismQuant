@@ -97,7 +97,14 @@ def main():
         physical_measurement_cap_gb=args.physical_cap_gb, guard_margin_gb=2,
         torch=torch.__version__, cuda=torch.version.cuda,
         device=torch.cuda.get_device_name(), cpu_affinity=sorted(os.sched_getaffinity(0)),
+        source_page_release_optin=os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1',
+        host_kernel_release=os.uname().release,
         phases=[], telemetry_errors=[])
+    try:
+        result['nfs_module_build_id_note_hex'] = Path(
+            '/sys/module/nfs/notes/.note.gnu.build-id').read_bytes().hex()
+    except OSError:
+        result['nfs_module_build_id_note_hex'] = None
     if binding:
         result['input_binding_sha256'] = args.input_binding_sha256
         result['source_files_sha256'] = {item['path']:item['sha256'] for item in binding['source_files']}
