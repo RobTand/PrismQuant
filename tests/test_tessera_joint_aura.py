@@ -247,6 +247,9 @@ def test_plan_refuses_unqualified_probe_or_activation_policies(tmp_path, field, 
         "seed_base": 7000, "token_scope": "all", "temperature": 1.0,
         "production_act_scales": "0"}, "profile_tool": "cprofile",
         "max_render_bytes": 1024, "max_gpu_bytes": 2048, "min_free_gib": 0}
+    config["source_prefetch"] = dict(max_cache_slots=24, prefetch_workers=4,
+        prefetch_lookahead=4, cache_headroom_gb=4.0,
+        prefetch_min_available_gb=2.0, require_prefetched_residency=True)
     config["execution"][field] = value
     path = tmp_path / "plan.json"; path.write_text(json.dumps(config))
     with pytest.raises(ValueError):
@@ -275,3 +278,54 @@ def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypat
     result = json.loads((tmp_path / "prepare/results.json").read_text())
     assert result["passed"] is False
     assert (tmp_path / "prepare/profile.pstats").is_file()
+
+
+@pytest.mark.parametrize("command", ["prepare", "run"])
+def test_explicit_source_prefetch_reaches_streamed_builder(tmp_path, monkeypatch, command):
+    import torch
+    from types import SimpleNamespace
+    from prismaquant import tessera_joint_aura as bridge, calibration_data, cost_streaming, gpu_guard
+    from prismaquant import model_profiles
+    monkeypatch.setattr(model_profiles, "detect_profile", lambda _path: object())
+    draw = dict(fit_ids_sha256="a" * 64, text_sha256="b" * 64, nsamples=512, seqlen=512, seed=0)
+    monkeypatch.setattr(gpu_guard, "require_cuda_hot_path", lambda *_args: None)
+    monkeypatch.setattr(bridge, "load_measured_anchor_input", lambda _inputs: SimpleNamespace(
+        census={"model": "fixture", "attention_implementation": "eager"},
+        payload={"provenance": {"hessian": {"calibration_identity": draw}}}))
+    monkeypatch.setattr(calibration_data, "load_calibration_input", lambda *_args, **_kwargs:
+        (torch.zeros((512, 512), dtype=torch.int64), {"provenance": draw}))
+    prefetch = dict(max_cache_slots=24, prefetch_workers=4, prefetch_lookahead=4,
+        cache_headroom_gb=4.0, prefetch_min_available_gb=2.0, require_prefetched_residency=True)
+    class Reached(Exception):
+        pass
+    def inspect(*_args, **kwargs):
+        assert {key: kwargs.get(key) for key in prefetch} == prefetch
+        raise Reached
+    monkeypatch.setattr(cost_streaming, "build_streamed_causal_lm", inspect)
+    config = {"model": "fixture", "inputs": {}, "output_root": str(tmp_path),
+        "source_prefetch": prefetch,
+        "calibration_input": {"path": "fixture", "sha256": "a" * 64},
+        "execution": {"production_act_scales": "0", "n_calib_samples": 512, "calib_seqlen": 512}}
+    with pytest.raises(Reached):
+        bridge.execute(command, config, plan_sha256="b" * 64)
+
+
+@pytest.mark.parametrize("defect", ["missing", "disabled", "auto_slots", "zero_workers",
+    "oversize_lookahead", "nonfinite_headroom", "extra_field"])
+def test_source_prefetch_refuses_implicit_or_nonresident_settings(defect):
+    from prismaquant.tessera_joint_aura import _source_prefetch
+    prefetch = dict(max_cache_slots=24, prefetch_workers=4, prefetch_lookahead=4,
+        cache_headroom_gb=4.0, prefetch_min_available_gb=2.0,
+        require_prefetched_residency=True)
+    if defect == "missing":
+        config = {}
+    else:
+        field, value = {"disabled": ("require_prefetched_residency", False),
+            "auto_slots": ("max_cache_slots", None), "zero_workers": ("prefetch_workers", 0),
+            "oversize_lookahead": ("prefetch_lookahead", 24),
+            "nonfinite_headroom": ("cache_headroom_gb", float("inf")),
+            "extra_field": ("unreviewed_fallback", True)}[defect]
+        prefetch[field] = value
+        config = {"source_prefetch": prefetch}
+    with pytest.raises(ValueError, match="source_prefetch"):
+        _source_prefetch(config)

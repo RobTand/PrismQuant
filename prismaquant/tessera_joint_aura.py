@@ -351,10 +351,32 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
     return cache
 
 
+def _source_prefetch(config):
+    prefetch = config.get("source_prefetch")
+    fields = {"max_cache_slots", "prefetch_workers", "prefetch_lookahead",
+              "cache_headroom_gb", "prefetch_min_available_gb",
+              "require_prefetched_residency"}
+    _require(isinstance(prefetch, dict) and set(prefetch) == fields,
+             "explicit complete source_prefetch settings required")
+    _require(prefetch["require_prefetched_residency"] is True,
+             "source_prefetch must require prefetched residency")
+    for name in ("max_cache_slots", "prefetch_workers", "prefetch_lookahead"):
+        _require(type(prefetch[name]) is int and prefetch[name] > 0,
+                 f"source_prefetch requires positive {name}")
+    _require(prefetch["prefetch_lookahead"] < prefetch["max_cache_slots"],
+             "source_prefetch lookahead must fit the declared cache slots")
+    for name in ("cache_headroom_gb", "prefetch_min_available_gb"):
+        _require(type(prefetch[name]) in (int, float) and
+                 math.isfinite(prefetch[name]) and prefetch[name] > 0,
+                 f"source_prefetch requires positive finite {name}")
+    return dict(prefetch)
+
+
 def _load_plan(path, digest):
     path = _bound({"path": str(path), "sha256": digest}, "joint anchor plan")
     config = json.loads(path.read_text())
     _same(config.get("schema"), SCHEMA, "joint anchor plan schema")
+    _source_prefetch(config)
     execution = config["execution"]
     for name, minimum in (("n_calib_samples", 1), ("calib_seqlen", 1),
                           ("probe_microbatch", 1), ("n_probes", 2)):
@@ -425,9 +447,12 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
         for name in ("fit_ids_sha256", "text_sha256", "nsamples", "seqlen", "seed"):
             _same(calibration["provenance"].get(name), original_draw.get(name), f"original full draw {name}")
         result["calibration_input"] = calibration
+        source_prefetch = _source_prefetch(config)
         runner = build_streamed_causal_lm(config["model"], device=torch.device("cuda"),
             dtype=torch.bfloat16, offload_folder=str(root / "offload"),
-            profile=detect_profile(config["model"]), attn_implementation="eager")
+            profile=detect_profile(config["model"]), attn_implementation="eager",
+            **source_prefetch)
+        result["source_prefetch"] = source_prefetch
         source = build_streamed_model_identity(runner, config["model"],
                                                identity_cache_path=root / "source-identity.json")
         source_execution = source_execution_identity(runner.model)

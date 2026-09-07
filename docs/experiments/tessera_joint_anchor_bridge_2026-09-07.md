@@ -105,3 +105,29 @@ one fixture expected 128 bytes instead of its actual 64 BF16 bytes; the first
 portable CPU environment lacked compressed-tensors and failed collection/setup.
 The fixture and scoped CPU dependencies were corrected before the green run.
 These are control-flow/contract tests, not real-wire numerical qualification.
+
+The source-prefetch follow-up makes residency settings explicit in the bound
+plan for both preparation and pricing: 24 cache slots, four workers, lookahead
+four, 4 GiB cache headroom, 2 GiB minimum available memory and required prefetched
+residency. Omitting or disabling these settings refuses. This fixes the initial
+builder call inheriting automatic cache sizing and cold-read fallback.
+PB `26622e88f99fce977aa7d8466ace3e0c7c19eb2c8d22744bc795dd05ce234343`
+demonstrated the missing builder arguments before the fix. The corrected bridge
+and policy/doc checks passed **48 tests, no skips**, with compile checks, in PB
+`427a2c72a1d2f82f84d13cb29fe28beec4ccdc0c10dbeba6980590b94c688857`
+on Sparky's CPU-only pinned container (four pytest workers/native threads one).
+Its terminal returned zero with complete cleanup; CAS payload
+`62b7bc4d7e562f72c456f8245df1d77813554b379030bbbffe6e9f770dfb0ddc`
+and canonical receipt
+`ac26d6949537c833fb479790ca5fb387a9f4f40ea6b0799015781cd087d41f64`
+were independently rehashed. This proves argument propagation and refusals;
+the full-model run must still measure its actual residency and memory peak.
+
+Preparation and pricing have separate buffer lifetimes. Preparation keeps the
+declared source cache and one layer's original X/H capture plus BF16 candidate
+renders; it decodes and compares one wire at a time. Pricing releases the
+qualification X/H tensors and keeps source cache, CPU boundaries/cotangents,
+one candidate layer's PWC renders and FP32 deltas, and backward temporaries.
+The 6 GiB PWC limit covers neither source nor derivative buffers. The common
+96 GiB aggregate / 40 GiB GPU reservation is provisional for both actions;
+actual peaks remain acceptance checks, not numbers inferred from that limit.

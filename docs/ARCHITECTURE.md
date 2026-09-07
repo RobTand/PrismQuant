@@ -18,7 +18,11 @@ and eviction; no encoder, cache store or dispatcher is added. A sealed prepared
 record binds every qualified render plus source/backend/calibration/implementation
 identity. The dependent run verifies those bindings and calls existing streamed
 joint AURA with explicit complete-sequence microbatches, global-row probes and
-durable checkpoints. Source BF16 remains the independent zero-cost terminal.
+durable checkpoints. Both preparation and pricing require explicit source-cache
+slots, prefetch workers/lookahead and memory floors, with strict prefetched
+residency enabled; omitted settings and cold-read fallback refuse at intake.
+The plan digest binds these settings through preparation and cost resume.
+Source BF16 remains the independent zero-cost terminal.
 Full-duration in-process profiles and allocation/IO records accompany these
 research actions; no format/default, wire or serving gate changes.
 Gate: `tests/test_tessera_joint_aura.py`.
