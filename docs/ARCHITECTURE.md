@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `integration/native-moe-panel`. Stamps
+As of: 2026-09-07 · `fix/fp8-native-parity`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/fp8-native-parity`) for **served FP8 activation
+arithmetic**. The shared dynamic activation adapter uses FP32 tensor-denominator
+division for per-token scales and direct divide/clamp/cast for codes, matching
+the stock vLLM native kernel's rounding and signed-zero behavior. Scalar
+division's rounded reciprocal can move a scale one ULP and cross FP8 midpoints.
+This applies to plain FP8 and Tessera routes inheriting that activation policy;
+the compressed-tensors weight quantizer, wire recipes, format menu and serving
+gates are unchanged. Existing producer source hashing distinguishes newly
+measured costs from prior arithmetic. Gate: `tests/test_fp8_dynamic_native_parity.py`.
 
 Re-stamped (2026-09-07, `integration/native-moe-panel`) for **whole routed native
 operator evidence** (#309). `prismaquant.native_moe_panel` retains original
