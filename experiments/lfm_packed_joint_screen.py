@@ -39,6 +39,11 @@ def main():
     parser.add_argument('--tokens', type=Path, required=True)
     parser.add_argument('--tokens-sha256', required=True)
     parser.add_argument('--row', type=int, default=0)
+    parser.add_argument('--rows', type=int, default=1)
+    parser.add_argument('--probe-microbatch', type=int, default=0)
+    parser.add_argument('--profile-tool', choices=['cprofile', 'torch', 'none'], default='cprofile')
+    parser.add_argument('--checkpoint-dir', type=Path)
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--subset-artifact', type=Path)
     parser.add_argument('--subset-artifact-sha256')
     parser.add_argument('--qualify-boundary', type=Path)
@@ -53,9 +58,9 @@ def main():
     all_ids = load_file(str(args.tokens))['calibration_ids']
     if all_ids.dtype != torch.int64 or all_ids.ndim != 2 or all_ids.shape[1] != 512:
         raise ValueError('screen needs the canonical int64 512-token draw')
-    ids_cpu = all_ids[args.row:args.row + 1].contiguous()
-    if ids_cpu.shape != (1, 512):
-        raise ValueError('screen row is absent')
+    ids_cpu = all_ids[args.row:args.row + args.rows].contiguous()
+    if args.row < 0 or args.rows < 1 or ids_cpu.shape != (args.rows, 512):
+        raise ValueError('requested canonical calibration rows are absent')
     subset_path = args.out / 'calibration_subset.safetensors'
     if args.subset_artifact is not None:
         subset_path = args.subset_artifact
@@ -63,7 +68,17 @@ def main():
                 load_file(str(subset_path))['calibration_ids'], ids_cpu):
             raise ValueError('published operator subset differs from actual source tokens')
     else:
-        save_file({'calibration_ids': ids_cpu}, str(subset_path))
+        from safetensors import safe_open
+        with safe_open(str(args.tokens), framework='pt', device='cpu') as source:
+            metadata = dict(source.metadata() or {})
+        calibration_provenance = json.loads(metadata.get('calibration_provenance', '{}'))
+        calibration_provenance.update(nsamples=args.rows, fit_tokens=ids_cpu.numel(),
+            fit_ids_sha256=hashlib.sha256(ids_cpu.to(torch.int32).numpy().tobytes()).hexdigest())
+        metadata['calibration_provenance'] = json.dumps(calibration_provenance, sort_keys=True)
+        metadata['operator_screen_parent'] = json.dumps({
+            'artifact': str(args.tokens), 'sha256': args.tokens_sha256,
+            'row_start': args.row, 'rows': args.rows})
+        save_file({'calibration_ids': ids_cpu}, str(subset_path), metadata=metadata)
     ids = ids_cpu.cuda()
     unit = 'model.layers.2.feed_forward.experts'
     names = [f'{unit}.{expert}.{role}' for expert in range(32) for role in ('w1', 'w3', 'w2')]
@@ -78,20 +93,40 @@ def main():
             'subset_artifact': str(subset_path), 'subset_artifact_sha256': file_sha(subset_path),
             'full_shape': list(all_ids.shape), 'row': args.row, 'shape': list(ids_cpu.shape),
             'dtype': str(ids_cpu.dtype), 'sha256': hashlib.sha256(ids_cpu.numpy().tobytes()).hexdigest(),
-            'scope': 'first_sequence_operator_screen'},
+            'scope': ('full_canonical_calibration' if args.row == 0 and args.rows == len(all_ids)
+                      else 'canonical_sequence_subset')},
+        'execution': {'probe_microbatch': args.probe_microbatch,
+                      'profile_tool': args.profile_tool},
+        'memory_observations': {'captured_boundary_bytes': 0, 'capture_batch_rows': [],
+                                'tail_shapes': [], 'tail_calls': 0},
         'probe_policy': policy, 'unit_names': names, 'phases': [], 'gradient_comparisons': []}
     def save():
         (args.out / 'results.json').write_text(json.dumps(result, indent=2, allow_nan=False) + '\n')
     def phase(label, call):
         torch.cuda.synchronize()
         started = time.time()
-        profiler = cProfile.Profile()
         try:
-            value = profiler.runcall(call)
+            if args.profile_tool == 'cprofile':
+                profiler = cProfile.Profile()
+                try:
+                    value = profiler.runcall(call)
+                finally:
+                    profiler.dump_stats(str(args.out / (label + '.pstats')))
+            elif args.profile_tool == 'torch':
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU,
+                                torch.profiler.ProfilerActivity.CUDA],
+                    profile_memory=True, record_shapes=False,
+                ) as profiler:
+                    value = call()
+                profiler.export_chrome_trace(str(args.out / (label + '.trace.json')))
+                (args.out / (label + '.profile.txt')).write_text(
+                    profiler.key_averages().table(sort_by='self_cuda_time_total', row_limit=100))
+            else:
+                value = call()
             torch.cuda.synchronize()
         finally:
-            profiler.dump_stats(str(args.out / (label + '.pstats')))
-            result['phases'].append({'phase': label, 'kind': 'profile',
+            result['phases'].append({'phase': label, 'kind': 'profile' if args.profile_tool != 'none' else 'correctness',
                                     'start_epoch': started, 'end_epoch': time.time()})
             save()
         return value
@@ -261,8 +296,29 @@ def main():
             raise TypeError('expected the existing ProductionWeightCache pickle')
         result['production_cache'] = {'path': str(args.cache), 'sha256': args.cache_sha256}
         formats = ['TESSERA_E4M3_K1_R1024', 'BF16']
+    original_capture = runner.capture_boundaries
+    original_tail = runner.tail_logits
+    def capture(ids):
+        batch = original_capture(ids)
+        observation = result['memory_observations']
+        observation['capture_batch_rows'].append(len(ids))
+        observation['captured_boundary_bytes'] += sum(x.numel() * x.element_size() for x in batch.activations_cpu)
+        save()
+        return batch
+    def tail(batch, hidden):
+        logits = original_tail(batch, hidden)
+        observation = result['memory_observations']
+        observation['tail_calls'] += 1
+        shape = list(logits.shape)
+        if shape not in observation['tail_shapes']:
+            observation['tail_shapes'].append(shape)
+        return logits
+    runner.capture_boundaries = capture
+    runner.tail_logits = tail
     def cost():
         return compute_aura_cost_streamed(runner, ids, formats, n_probes=4, seed_base=7000,
+            **({'probe_microbatch': args.probe_microbatch} if args.probe_microbatch else {}),
+            checkpoint_dir=args.checkpoint_dir, resume=args.resume,
             token_scope='all', temperature=1.0, min_free_gib=0, production_cache=cache,
             joint_activation=True, include_routed_experts=True, profile=profile,
             model_identity=model_identity, formats_by_qname={name: formats for name in names},
@@ -283,6 +339,7 @@ def main():
     result['passed'] = True
     result['env']['finished_epoch'] = time.time()
     result['peak_gpu_bytes'] = torch.cuda.max_memory_allocated()
+    result['peak_gpu_reserved_bytes'] = torch.cuda.max_memory_reserved()
     result['cost_sha256'] = file_sha(args.out / 'joint-cost.json')
     save()
     runner.context.shutdown()
