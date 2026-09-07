@@ -13,9 +13,14 @@ import sys
 import threading
 import time
 import traceback
-import urllib.request
 
 import torch
+
+from experiments.workspace_netdata import (
+    CHART_PATTERNS, MAX_CHARTS, MAX_RECORD_BYTES, MAX_RESPONSE_BYTES,
+    MAX_TOTAL_BYTES, SCHEMA as NETDATA_SCHEMA, SCOPE as NETDATA_SCOPE,
+    NetdataWriter, sample_netdata,
+)
 
 
 def digest_tensor(tensor):
@@ -162,6 +167,11 @@ def main():
         result['calibration_seed'] = binding['seed']
         result['corpus_sha256'] = binding['corpus_sha256']
         result['tokens_sha256'] = binding['tokens_sha256']
+    result['netdata_contract'] = dict(schema=NETDATA_SCHEMA, scope=NETDATA_SCOPE,
+        chart_patterns=CHART_PATTERNS, maximum_charts=MAX_CHARTS,
+        response_byte_cap=MAX_RESPONSE_BYTES, record_byte_cap=MAX_RECORD_BYTES,
+        total_byte_cap=MAX_TOTAL_BYTES, interval_seconds=1, hosts=['sparky', 'sparklina'])
+    telemetry_failed = threading.Event()
     stopped = threading.Event()
     guard_tripped = threading.Event()
     sampling_enabled = threading.Event()
@@ -185,6 +195,9 @@ def main():
                 ('MemFree','Cached','Buffers','Shmem','SReclaimable','SUnreclaim')})
 
     def check_guard(label, *, raise_on_trip=True):
+        if raise_on_trip and telemetry_failed.is_set():
+            result['status'] = 'failed'
+            raise RuntimeError('required workspace host telemetry is incomplete')
         path = cgroot/'memory.current'
         if not path.is_file():
             raise RuntimeError('workspace guard requires container cgroup memory observations')
@@ -273,16 +286,18 @@ def main():
 
     def monitor():
         with (args.out/'netdata.jsonl').open('w') as out:
+            writer = NetdataWriter(out)
             while not stopped.is_set():
                 for host in ('sparky', 'sparklina'):
                     try:
-                        with urllib.request.urlopen(
-                                f'http://{host}:19999/api/v1/allmetrics?format=json', timeout=5) as response:
-                            metrics = json.load(response)
-                        out.write(json.dumps(dict(host=host,time=time.time(),metrics=metrics))+'\n')
-                        out.flush()
+                        writer.write(sample_netdata(host))
                     except Exception as exc:
                         result['telemetry_errors'].append(dict(host=host,error=repr(exc)))
+                        result['status'] = 'failed'
+                        telemetry_failed.set()
+                        return
+                    finally:
+                        result['netdata_recorded_bytes'] = writer.bytes_written
                 stopped.wait(1)
 
     def sample_python():
@@ -499,7 +514,7 @@ def main():
             monitor_thread.join(timeout=12)
             memory_thread.join(timeout=2)
             sampler_thread.join(timeout=2)
-            if 'cleanup_failure' in result:
+            if 'cleanup_failure' in result or result['telemetry_errors']:
                 result['status'] = 'failed'
             if guard_tripped.is_set() and result['status'] == 'complete':
                 result['status'] = 'refused_by_memory_guard'

@@ -279,3 +279,33 @@ completed. The verified receipt, payload and exact source snapshot are in
 `review-02/workspace-unwind-diagnostics-cpu.json`; payload SHA256
 `cf362539c45d256cf117cb3cc15365ff4592c6d88bf77a81dcbb802f577307b3`,
 receipt `a438091e026f9431b534f82327fb1709132f4e0758a7a8d7e06dac60fba2929e`.
+
+
+The active prefix-04 snapshot also exposed an observer-output defect: the
+harness wrote every Netdata chart on both hosts each second, and its retained
+file reached 1,522,233,359 bytes before target batch 329. Those original bytes
+remain part of that run's evidence and owned file-charge analysis. A separate
+future-harness repair keeps the existing API but applies its documented
+server-side chart filter for CPU/load/pressure, RAM/reclaim/THP, NFS/mount, and
+GPU power/clocks/memory/PCIe. GPU chart identifiers use patterns rather than a
+fixed UUID. Retained read-only filtered API responses contain 49 charts each:
+24,995 bytes on Sparky and 24,976 on Lina. Request URLs, raw response hashes and
+API support attribution are in `review-02/netdata-filter-api-evidence.json`.
+These are response-size observations, not a measured runtime-overhead delta.
+
+Future samples declare `prismaquant.workspace_netdata.v2` and their scope.
+Responses are capped at 256 KiB, selected charts at 128, complete written
+records at 64 KiB and combined host output at 256 MiB. Required-chart omissions,
+API errors or caps fail the diagnostic; records are not silently truncated.
+The memory sampler still observes unwind. This does not alter the producer,
+the active prefix-04 snapshot or any memory guard threshold. The old extracted
+monitor behavior failed nine checks and passed one under PB
+`eb4b19f1a149666a0ee121e947c1cfe7278d29a9d1d6592118667cb1662ac703`.
+The replacement passed 25 CPU checks without skips under PB
+`f90e5a90e197cb1a4f03b86391b4bc2982e74881ca59ef65794f6e0ee582ba37`
+on dl380g10 (four xdist workers, one native thread each), preserving the live
+GPU measurements on both GB10 hosts. Exit was 0 and cleanup completed.
+Verified source bundle, receipt and payload are in
+`review-02/workspace-bounded-netdata-cpu.json`; payload SHA256
+`ba7026971ec0ad03f8cef7204e323dcf1f96da4b1ab1c0ce2bf7dcc03de70c78`,
+receipt `e2d653724931382aa8d5b4cfaa515df09fba514336b287c527ace9cb7e905edf`.
