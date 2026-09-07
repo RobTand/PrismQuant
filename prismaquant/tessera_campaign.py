@@ -1791,12 +1791,16 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None,
-                         boundary_consumer=None, forward_batch=None):
+                         boundary_consumer=None, forward_batch=None, resource_check=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
     observed input row, including when Hessians and retained scoring rows are
     disabled; they are calibration provenance, not a Hessian-computation flag.
+    ``resource_check(label)`` optionally enforces the caller's existing guard
+    before/after each output concat and Hessian CPU transfer. A refusal clears
+    owned output tensors before propagating; integer row observations remain
+    available for diagnostics. The default performs no additional checks.
 
     Three different things come out of the same hook, and they have different
     row budgets on purpose:
@@ -1968,33 +1972,64 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
-    # All forwards are complete: materialize each unit's maximum only once.
-    amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
-            for name, value in amax.items()}
-    # Do not retain both the original chunks and their concatenated outputs
-    # for the whole scope. Full-model captures can hold GiB of scoring rows.
-    rows = {}
-    for name in list(store):
-        chunks = store.pop(name)
-        rows[name] = torch.cat(chunks, dim=0) if chunks else None
-        del chunks
-    hessians = {}
-    if want_hessian:
-        # GB10 shares physical DRAM with CPU tensors. Releasing Python tensor
-        # references alone leaves the CUDA allocator's cached blocks resident,
-        # so periodically return those blocks while transferring the full H.
-        released_cuda_bytes = 0
-        for name in list(hess):
-            h = hess.pop(name)
-            hessians[name] = None if h is None else h.to(device="cpu")
-            if h is not None and h.is_cuda:
-                released_cuda_bytes += h.numel() * h.element_size()
-            del h
-            if released_cuda_bytes >= 256 * 1024**2:
+    # All forwards are complete. Keep integer `seen` available to failure
+    # diagnostics, but never pin a partial capture through this traceback.
+    rows, hessians = {}, {}
+    h = chunks = None
+    try:
+        if resource_check is not None:
+            resource_check('before_output_materialization')
+        # Materialize each unit's maximum only once.
+        amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
+                for name, value in amax.items()}
+        # Do not retain both original chunks and concatenated outputs for the
+        # whole scope. Full-model captures can hold GiB of scoring rows.
+        for name in list(store):
+            if resource_check is not None:
+                resource_check(f'before_rows_concat:{name}')
+            chunks = store.pop(name)
+            rows[name] = torch.cat(chunks, dim=0) if chunks else None
+            chunks = None
+            if resource_check is not None:
+                resource_check(f'after_rows_concat:{name}')
+        if want_hessian:
+            # GB10 shares physical DRAM with CPU tensors. Periodically return
+            # cached CUDA blocks while transferring the full H, but also let
+            # the caller refuse before the next unit if reserved blocks stay
+            # resident. Python-reference release alone cannot prove fit.
+            released_cuda_bytes = 0
+            for name in list(hess):
+                if resource_check is not None:
+                    resource_check(f'before_hessian_cpu_transfer:{name}')
+                h = hess.pop(name)
+                hessians[name] = None if h is None else h.to(device='cpu')
+                if h is not None and h.is_cuda:
+                    released_cuda_bytes += h.numel() * h.element_size()
+                h = None
+                if released_cuda_bytes >= 256 * 1024**2:
+                    torch.cuda.empty_cache()
+                    released_cuda_bytes = 0
+                if resource_check is not None:
+                    resource_check(f'after_hessian_cpu_transfer:{name}')
+            if released_cuda_bytes:
                 torch.cuda.empty_cache()
-                released_cuda_bytes = 0
-        if released_cuda_bytes:
-            torch.cuda.empty_cache()
+        if resource_check is not None:
+            resource_check('after_output_materialization')
+    except BaseException as error:
+        # Exception tracebacks keep this frame alive. Explicitly drain every
+        # output owner and loop temporary while retaining only row counters.
+        h = chunks = None
+        store.clear()
+        hess.clear()
+        amax.clear()
+        rows.clear()
+        hessians.clear()
+        if resource_check is not None and torch.device(device).type == 'cuda':
+            try:
+                torch.cuda.empty_cache()
+            except Exception as cleanup_error:
+                error.add_note(f'capture CUDA cache release failed: {cleanup_error!r}')
+        raise
     return rows, hessians, dict(seen), dict(amax)
 
 

@@ -334,3 +334,27 @@ observations, not a census or admission. PB
 passed 20 CPU checks without skips; exit 0 and cleanup complete. The exact
 source bundle, canonical receipt and payload are verified in
 `review-02/workspace-returned-row-cpu.json`.
+
+
+The H-return loop had no cooperative guard checkpoint, allowing transfers to
+continue after the observer latched refusal. The shared collector now accepts
+an optional `resource_check(label)` before/after each output-row concatenation
+and Hessian CPU transfer, and the workspace harness passes its existing guard.
+A refusal drains owned row/Hessian/maxima dictionaries and loop temporaries
+before propagating, preserving integer row counters in the retained collector
+frame. CUDA error cleanup also attempts allocator release without masking the
+original exception. Default callers perform no additional guard checks.
+This repair establishes a refusal boundary; it does not make the failed
+workspace fit. The unchanged numerical thresholds still apply.
+
+Before enforcement was added, PB
+`92331e1a7ddce99a9cba2c7254cee681d283d8e426d0e9299230ddf2ba6d846f`
+failed all five new callback-boundary checks. Final PB
+`b27b9c4322a1d5d26cbbe3d474633d9a3a4d0e465cad505f35f571ed57c77930`
+passed 61 CPU checks with seven skips on Sparky (eight xdist workers, one
+native thread each), including six guard/cleanup checks with real dense CPU tensors
+and explicitly mocked CUDA cache return. Exit was 0 and cleanup completed.
+The exact source bundle and verified receipt/payload are in
+`review-02/collector-resource-check-cpu.json`; payload SHA256
+`fdc8ead46efbaaa4d6551887e2c7326bb843e876593ea9cd2cd9c2f7fdb567fd`,
+receipt `a979cff1fda62fabf64f2b3abf25fb22521ccf7cd503a39183a084cd2cc1e873`.

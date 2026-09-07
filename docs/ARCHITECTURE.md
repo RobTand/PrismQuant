@@ -3,6 +3,17 @@
 As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the campaign
+collector's optional `resource_check(label)` output-materialization checkpoints.
+The bounded workspace diagnostic passes its existing memory guard before and
+after each scoring-row concatenation and Hessian CPU transfer, so a latched
+refusal stops before another unit is copied. A failed materialization clears
+owned row/Hessian/maxima tensors and temporaries before rethrowing, while
+retaining integer row observations for diagnostics. CUDA callers also attempt
+to return freed allocator blocks without masking the original failure. The
+collector default adds no checks; these checkpoints establish containment,
+not successful workspace admission or a new capture-fit allowance.
+
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the shared source
 reader's opt-in `PRISMAQUANT_RELEASE_SOURCE_PAGES=1`. CUDA gathers can advise
 complete consumed regular-file tensor payload pages after each existing reader

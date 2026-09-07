@@ -422,7 +422,7 @@ def main():
                             on_trace_ready=trace_ready) as prof:
                         acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
                             args.max_act_rows,runner.device,want_hessian=True,profile=profile,
-                            forward_batch=forward_batch)
+                            forward_batch=forward_batch, resource_check=check_guard)
                         audit_collector_rows(counts, targets, result, check_guard)
                 except BaseException as exc:
                     result['partial_target_row_observations'] = failed_collector_row_counts(
