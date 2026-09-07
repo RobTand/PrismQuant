@@ -372,3 +372,98 @@ def test_receipts_accept_a_memoized_row_and_refuse_a_failed_campaign(tmp_path):
     }))
     with pytest.raises(dispatch.MergeRefused, match="not every row is done"):
         dispatch._require_receipts(tmp_path, 2)
+
+
+# ---------------------------------------------------------------------------
+# Rows the pinned reader cannot decode: kept as evidence, never as a price.
+
+
+def _unservable_row(fmt="TESSERA_E2M1_K1_R512"):
+    return {"anchor": {"qname": "a", "format_name": fmt, "family": "e2m1_k1",
+                       "body_rate_q256": 512, "dloss": 3.0},
+            "wire_record": {"file": "a." + fmt + ".wire"},
+            "adopted_from": "seed checkpoint /x/cost.anchors.json"}
+
+
+def test_merge_unions_the_unservable_evidence_rather_than_copying_one_row_s():
+    import dispatch_tessera_campaign as dispatch
+
+    payloads = _payloads()
+    payloads["row-0000"]["provenance"]["unservable"] = {"a": _unservable_row()}
+    payloads["row-0001"]["provenance"]["unservable"] = {
+        "b": {"TESSERA_E2M1_K2_R128": _unservable_row()["anchor"]}}
+
+    merged = dispatch.merge_payloads(
+        payloads, census={"counts": {"a": 16384, "b": 16384}},
+        capture_sha256="merged-digest")
+
+    # Both rows' evidence survives.  The reference row's block alone would be
+    # the same shape and half the content, which is why this is a union and
+    # not the copy the rest of the reference provenance is.
+    assert sorted(merged["provenance"]["unservable"]) == ["a", "b"]
+    # And none of it reached a price.
+    assert sorted(merged["costs"]) == ["a", "b"]
+    assert merged["formats"] == ["E4M3_R512"]
+    assert all("E2M1" not in fmt
+               for rows in merged["costs"].values() for fmt in rows)
+
+
+def test_merge_refuses_two_rows_that_disagree_about_one_unservable_row():
+    import dispatch_tessera_campaign as dispatch
+
+    payloads = _payloads()
+    mine = _unservable_row()
+    theirs = copy.deepcopy(mine)
+    theirs["anchor"]["dloss"] = 9.0
+    payloads["row-0000"]["provenance"]["unservable"] = {"a": mine}
+    payloads["row-0001"]["provenance"]["unservable"] = {"a": theirs}
+
+    with pytest.raises(dispatch.MergeRefused, match="unservable evidence"):
+        dispatch.merge_payloads(
+            payloads, census={"counts": {"a": 16384, "b": 16384}},
+            capture_sha256="merged-digest")
+
+
+def test_a_seed_links_only_the_wire_bytes_its_adopter_will_price(tmp_path):
+    """The export intake reads the wire directory, so evidence stays out of it.
+
+    An adopted row outside this run's menu is a measurement, not a price. Its
+    blob must not appear where the export leg looks for priced bytes, and the
+    only place that decision can be made is at the link, before the adopter
+    ever sees the state.
+    """
+    from prismaquant.cost_stage_checkpoint import write_unit
+    from prismaquant import tessera_campaign as campaign
+
+    seed = tmp_path / "seed"
+    (seed / "cache" / "wire").mkdir(parents=True)
+    for name in ("priced.wire", "evidence.wire"):
+        (seed / "cache" / "wire" / name).write_bytes(b"x")
+    parts = seed / "cost.anchors.json.parts"
+    parts.mkdir()
+    state = {
+        "anchors": [
+            {"qname": "a", "format_name": "ON", "family": "f", "dloss": 1.0},
+            {"qname": "a", "format_name": "OFF", "family": "g", "dloss": 2.0},
+        ],
+        "wire_records": {"ON": {"file": "priced.wire"},
+                         "OFF": {"file": "evidence.wire"}},
+    }
+    write_unit(parts, stage="Tessera campaign", qname="a",
+               identity_sha256="seed-identity", state=state)
+    (seed / "cost.anchors.json").write_text(json.dumps({"identity_sha256": "seed"}))
+
+    wire_dir = tmp_path / "run-wire"
+    wire_dir.mkdir()
+    seen = {}
+    campaign._adopt_seed_checkpoint(
+        seed / "cost.anchors.json", None, targets=["a"], wire_dir=wire_dir,
+        adopt=lambda name, state, where: seen.update({name: state}),
+        admits=lambda name, fmt: fmt == "ON",
+        identity_sha256="run-identity")
+
+    assert sorted(p.name for p in wire_dir.iterdir()) == ["priced.wire"]
+    # The adopter still gets the whole state: deciding what to do with the
+    # row it will not price is the adopter's job, not the linker's.
+    assert sorted(record["format_name"] for record in seen["a"]["anchors"]) == \
+        ["OFF", "ON"]

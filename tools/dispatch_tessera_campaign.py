@@ -430,6 +430,10 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     anchor_groups: dict[str, list] = {}
     non_interpolable: list[dict] = []
     expert_wires: dict[str, dict] = {}
+    # Evidence, not prices: rows a shard adopted from another campaign whose
+    # rungs its menu does not admit.  The union is taken here for the same
+    # reason the prices are -- the reference row's block describes one slice.
+    unservable: dict[str, dict] = {}
     formats: set[str] = set()
     stopped_early = False
     wall_seconds = 0.0
@@ -458,6 +462,14 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         anchor_counts.update(payload["anchor_counts"])
         menu_sizes.update(payload["menu_sizes"])
         expert_wires.update(payload.get(EXPERT_WIRES_KEY, {}))
+        for qname, rungs in (prov.get("unservable") or {}).items():
+            held = unservable.setdefault(qname, {})
+            for fmt, record in rungs.items():
+                if fmt in held and held[fmt] != record:
+                    raise MergeRefused(
+                        f"{row_id}: it carries different unservable evidence for "
+                        f"{qname} {fmt} than an earlier row")
+                held[fmt] = record
         stopped_early = stopped_early or bool(prov["stopped_early"])
         wall_seconds += float(prov["wall_seconds"])
         rounds_run = max(rounds_run, int(prov["rounds_run"]))
@@ -486,6 +498,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     provenance.update({
         "surfaces": dict(sorted(surfaces.items())),
         "anchor_groups": dict(sorted(anchor_groups.items())),
+        "unservable": {name: {fmt: rungs[fmt] for fmt in sorted(rungs)}
+                       for name, rungs in sorted(unservable.items())},
         "stopped_early": stopped_early,
         "wall_seconds": wall_seconds,
         "rounds_run": rounds_run,

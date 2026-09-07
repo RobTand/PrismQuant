@@ -6948,6 +6948,25 @@ nothing pending in round one and the loop ends without reaching the flush that
 follows an encode; without that write the rows would price into `cost.pkl` and
 leave `merge` a journal missing exactly the units the seed contributed.
 
+An adopted row whose rung is **outside this run's menu** is neither priced nor
+refused: it is recorded as `unservable` evidence, in the journal shard and in
+`provenance["unservable"]`, and never in `costs`. The two are different
+failures. A row that disagrees with this run's weights, Hessian applicability
+or static scale is a row about some other campaign and is refused by name; a
+row this menu does not admit is a correct measurement of a rung the pinned
+reader cannot decode. Discarding it would mean re-encoding it to get the
+rate/distortion law back, and pricing it would put a rung nothing can serve in
+front of the allocator. The seed's wire bytes for such a row are **not** linked
+into the run's wire directory -- that directory is what the export intake reads
+-- and no fresh encode ever lands here, because the menu is what decides what
+gets encoded. Evidence the source had already set aside is carried forward, and
+a source that calls a rung unservable while this run's menu admits it is
+refused: the two disagree about where the line is. Which rungs the menu admits
+is the menu mode's answer, not this tool's; the contract-readable mode is
+RobTand/prismaquant#284, and a fanned-out run selects it the way it selects any
+campaign flag, through the spec's `campaign_argv`, with `merge` refusing rows
+whose `menu_mode` disagrees.
+
 `tools/dispatch_tessera_campaign.py` is `census` / `plan` / `submit` / `merge`
 over `pbcampaign`. Rows are portable (no host pin), GPU-demanding, not
 exclusive, `retry_safe`, and carry a memory demand computed from the
@@ -6967,6 +6986,9 @@ did not report as executed, a journal entry whose unit shard is absent, a
 mixed Hessian identity, a unit priced twice, a
 gap in the coverage, a capture whose seal disagrees with its own rows' stamps,
 and any static scale or producer projection the rows do not already share.
+The `unservable` evidence is **unioned** across rows rather than copied from
+the reference row, and two rows that carry different evidence for one
+`(unit, rung)` are refused.
 
 Equality is defined modulo what a wall clock writes: `encode_seconds`,
 `wall_seconds`, `rounds_run`, `stopped_early`, `cache_dir`, `wire_dir` and the

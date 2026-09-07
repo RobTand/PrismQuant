@@ -770,7 +770,7 @@ def _checkpoint_wire_record(anchor, wire_dir, identity, *, existing=None):
 
 
 def _adopt_seed_checkpoint(manifest_path, wire_dir_arg, *, targets, wire_dir,
-                           adopt, identity_sha256) -> dict:
+                           adopt, admits, identity_sha256) -> dict:
     """Offer another campaign's stored anchors to this run's row gates.
 
     A whole-scope campaign already priced rows this run would price again.  Its
@@ -829,7 +829,13 @@ def _adopt_seed_checkpoint(manifest_path, wire_dir_arg, *, targets, wire_dir,
                 f"--seed-checkpoint {manifest}: unit shard for {name} fails its "
                 "own payload digest")
         state = pickle.loads(payload)
-        for record in state.get("wire_records", {}).values():
+        # Only the rows this run's menu admits get their bytes linked in.  An
+        # unservable row's blob must not appear in this run's wire directory:
+        # that directory is what the export intake reads, and a wire nothing
+        # priced has no business being offered to it.
+        for fmt, record in state.get("wire_records", {}).items():
+            if not admits(name, fmt):
+                continue
             _link_seed_wire(seed_wire, wire_dir, record.get("file"))
         adopt(name, state, where=f"seed checkpoint {manifest}")
         adopted.append(name)
@@ -2208,6 +2214,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         qnames=targets,
     )
     measured: dict[str, dict[str, list[CampaignAnchor]]] = {}
+    # Rows adopted from another campaign whose rungs THIS run's menu does not
+    # admit.  They are measurements of the same rate/distortion law and cost
+    # the same GPU seconds to make, so they are carried rather than discarded;
+    # they are held apart from ``measured`` because a price the pinned reader
+    # cannot decode is not a price.  Nothing in ``costs`` is ever built from
+    # this, and no fresh encode ever lands here: the menu decides what is
+    # encoded, so a row can only become unservable by being adopted.
+    unservable: dict[str, dict[str, dict]] = {}
     wire_records = {name: {} for name in targets}
     dirty_checkpoint_units = set()
 
@@ -2218,10 +2232,24 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         adoption from another campaign's: what makes a stored row usable is
         that its inputs and its bytes are this run's, and that is checked here
         rather than inferred from which file the row came out of.
+
+        A stored row whose rung is outside this run's menu is neither priced
+        nor refused: it is recorded as ``unservable`` evidence.  The two are
+        different failures.  A row that disagrees with this run's weights,
+        Hessian applicability or static scale is a row about some other
+        campaign and is refused by name; a row this menu does not admit is a
+        correct measurement of a rung the pinned reader cannot decode, and the
+        honest thing to do with it is keep it out of the prices and in the
+        record.
         """
-        if set(state) != {"anchors", "wire_records"} or not isinstance(state["anchors"], list) \
+        if not isinstance(state, dict) \
+                or set(state) - {"unservable"} != {"anchors", "wire_records"} \
+                or not isinstance(state["anchors"], list) \
                 or not isinstance(state["wire_records"], dict):
             raise RuntimeError(f"{where} state has an invalid anchor/record envelope for {name}")
+        if name not in menus:
+            raise RuntimeError(f"{where} state names a unit this run does not price: {name}")
+        on_menu = {entry.format_name for entry in menus[name]}
         formats = set()
         for row in state["anchors"]:
             anchor = CampaignAnchor(**row)
@@ -2230,6 +2258,13 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             formats.add(anchor.format_name)
             if anchor.format_name not in state["wire_records"]:
                 raise RuntimeError(f"{where} anchor has no priced-wire receipt: {name}")
+            if anchor.format_name not in on_menu:
+                unservable.setdefault(name, {})[anchor.format_name] = {
+                    "anchor": dict(row),
+                    "wire_record": dict(state["wire_records"][anchor.format_name]),
+                    "adopted_from": where,
+                }
+                continue
             # Row level, the same rule: the row's inputs (Hessian
             # applicability, static scale) must be what this run's producer
             # stamps for its rung, then its wire receipt must verify.
@@ -2242,6 +2277,16 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             measured.setdefault(name, {}).setdefault(anchor.family, []).append(anchor)
         if formats != set(state["wire_records"]):
             raise RuntimeError(f"{where} has wire receipts outside its measured anchors: {name}")
+        # Evidence the source had already set aside stays set aside, unless
+        # this run's menu admits the rung -- in which case the source and this
+        # run disagree about what is servable, and a merge of the two would
+        # hold the same row on both sides of the line.
+        for fmt, record in (state.get("unservable") or {}).items():
+            if fmt in on_menu:
+                raise RuntimeError(
+                    f"{where} carries {fmt} for {name} as unservable and this "
+                    "run's menu admits that rung")
+            unservable.setdefault(name, {}).setdefault(fmt, record)
 
     for name, state in resumed.items():
         adopt_state(name, state, where="checkpoint")
@@ -2255,6 +2300,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             args.seed_checkpoint, args.seed_wire_dir,
             targets=[name for name in targets if name not in resumed],
             wire_dir=wire_dir, adopt=adopt_state,
+            admits=lambda name, fmt: any(
+                entry.format_name == fmt for entry in menus.get(name, ())),
             identity_sha256=identity_sha256)
         for name in seed_provenance["units"]:
             dirty_checkpoint_units.add(name)
@@ -2289,9 +2336,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         for name in sorted(dirty_checkpoint_units):
             rows = [vars(anchor) for anchors in measured.get(name, {}).values()
                     for anchor in anchors]
+            state = {"anchors": rows, "wire_records": wire_records[name]}
+            if unservable.get(name):
+                state["unservable"] = unservable[name]
             write_unit(journal, stage="Tessera campaign", qname=name,
-                       identity_sha256=identity_sha256,
-                       state={"anchors": rows, "wire_records": wire_records[name]})
+                       identity_sha256=identity_sha256, state=state)
         dirty_checkpoint_units.clear()
 
     # Adopted rows are journalled BEFORE the anchor loop, because the loop can
@@ -2605,6 +2654,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     for family, anchors in sorted(by_family.items())
                 }
                 for name, by_family in sorted(measured.items())
+            },
+            # Adopted rows this run's menu does not admit: the rate/distortion
+            # law keeps them, the allocator never sees them.  Always present,
+            # so "is there evidence outside the priced menu" is a lookup and
+            # not a distinction between an absent key and an empty one.
+            "unservable": {
+                name: {fmt: rows[fmt] for fmt in sorted(rows)}
+                for name, rows in sorted(unservable.items())
             },
             "loo_gate": float(args.loo_gate),
             "max_artifact_bpp": float(args.max_artifact_bpp),
