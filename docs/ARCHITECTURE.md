@@ -3,6 +3,19 @@
 As of: 2026-09-07 · `perf/joint-anchor-identity-reuse`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for an **explicitly
+versioned Tessera reader beside the frozen producer**. An optional plan `reader`
+record declares the external package path and exact source SHA256. The consumer
+loads under its own source-named namespace; imported files are checked against
+that sealed source tree, absolute primary-Tessera imports and serving modules
+are refused. Primary `tessera` still derives original source/H/settings/encoder
+identities. The separate reader verifies these actual expected identities and
+original wire grammar, then decodes bytes; it never substitutes its source seal
+into old producer receipts. Reader identity is bound into prepared PWC/completion
+records and dependent joint checkpoints. This is a producer/consumer boundary,
+not a serving-runtime import or a wire/default change.
+Gate: `tests/test_tessera_reader_namespace.py` plus original-wire old/new parity.
+
 Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for **bounded
 source/H identity reuse during anchor preparation**. The shared campaign seam
 can bind one unit's closed anchor roster from actual source/H tensors through
