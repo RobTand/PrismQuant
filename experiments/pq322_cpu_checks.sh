@@ -9,7 +9,11 @@ pq_python=/home/rob/venvs/pb-cpu/bin/python
 pq_tag="$($pq_python -c 'import sys; print(f"py{sys.version_info.major}{sys.version_info.minor}")')"
 pq_target="/home/rob/.cache/prismaquant/pq322-cpu-$pq_tag"
 "$pq_python" -m pip install --disable-pip-version-check --target "$pq_target" \
-  'transformers==5.16.1' 'pytest==9.0.2' 'pytest-xdist==3.8.0'
+  'transformers==5.16.1' 'pytest==9.0.2' 'pytest-xdist==3.8.0' \
+  'pydantic==2.12.5' 'loguru==0.7.3' 'psutil==7.2.2'
+# Keep the fleet's CPU torch; the remaining runtime dependencies are above.
+"$pq_python" -m pip install --disable-pip-version-check --target "$pq_target" \
+  --no-deps 'compressed-tensors==0.18.0'
 export PYTHONPATH="$PWD:$pq_target:/mnt/shared/tessera-measurements/first-model-20260907/inputs/tessera-382a1a97/src"
 export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

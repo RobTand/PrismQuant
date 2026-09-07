@@ -80,3 +80,28 @@ adding the difference to the largest seven-candidate layer suggests roughly
 30 GB allocated before slack. This is an estimate, not an observed full-model
 peak. Recompute from the complete actual roster before submission; partial
 telemetry is no basis for shrinking the reservation.
+
+Validation recorded on 2026-09-07: the test-first PB action
+`726501c99f7b842cbeedd2ede6f19a064c1ba31ddd0154d99533e0e8d1d8a6ec`
+failed with the missing bridge module. Initial implementation action
+`ead6ef02494e99826c9c1a4339c284eac39f2affd2d05aa2aaa472202dcd4890`
+passed 14 CPU checks on Sparklina. The final expanded action
+`49f45ef79d16c9ff9e7079e8689917db742d552555183f3018a56772c603ebdc`
+ran the importer, microbatch, packed-joint, exact-calibration, architecture and
+staleness tests on DL380: **64 passed in 9.94 s, no skips**, with touched Python
+modules compiled. CPU environment was Python 3.14.4, torch 2.11.0+cpu,
+Transformers 5.16.1 and compressed-tensors 0.18.0. Native threads were bounded to
+one per each of four pytest workers, with CPU 4/8 GiB admitted. Production GPU
+arithmetic remains qualified separately in the pinned original container.
+
+Actual terminal and cleanup succeeded; CAS payload
+`a0cb90beb94622d669e933def47a452a3b445cef777c1f4c7cc1e9fc351056fe`
+and receipt
+`321aec68b76d43c5d09f6ec04951d9880df0566ba6d20c4ba5f6c6002eac83cf`
+were independently rehashed. Raw logs, requests, summaries, receipts and payloads
+are retained under the first-model `full-model-joint-aura/receipts/`, with a
+hashed `evidence-manifest.json`. Negative intermediate attempts are retained:
+one fixture expected 128 bytes instead of its actual 64 BF16 bytes; the first
+portable CPU environment lacked compressed-tensors and failed collection/setup.
+The fixture and scoped CPU dependencies were corrected before the green run.
+These are control-flow/contract tests, not real-wire numerical qualification.
