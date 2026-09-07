@@ -10,6 +10,10 @@ from test_joint_aura_assignment_diagnostics import _row, _rebuild
 
 
 def fixture(names=None):
+    import torch
+    from tessera.cached_unit import tensor_identity
+    from prismaquant.production_weight_cache import _cb_cache_tensor_identity
+    from prismaquant.cost_stage_checkpoint import canonical_json_sha256
     from prismaquant.tessera_joint_aura import PREPARED_SCHEMA
 
     fmt = 'TESSERA_E4M3_K1_R1024'
@@ -24,13 +28,22 @@ def fixture(names=None):
             probe['source_model']['source'] = '/fixture/model'
         row = _rebuild(row, probe_change=probe_context)
         bf16 = _rebuild(bf16, probe_change=probe_context)
+        source = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+        canonical_source = _cb_cache_tensor_identity(source)
+        row = _rebuild(row, operator_change=lambda op: op.update(source_weight=canonical_source))
+        bf16 = _rebuild(bf16, operator_change=lambda op: op.update(
+            source_weight=canonical_source, rendered_weight=canonical_source))
         costs[name] = {fmt: row, 'BF16': bf16}
         op = row['joint_operator_identity']
         record = {'blob_sha256': 'a'*64, 'identity': {'unit': name,
-                  'source': {'shape': [2, 2], 'dtype': 'float32', 'sha256': op['source_weight']['content_sha256']}}}
+                  'source': tensor_identity(source)}}
+        # These two owner-defined hashes cover the same tensor with different
+        # grammars: raw values versus dtype/shape prefix plus raw values.
+        assert record['identity']['source']['sha256'] != canonical_source['content_sha256']
         units[name] = {'weight': copy.deepcopy(record['identity']['source'])}
         verified[name, fmt] = {**{k: copy.deepcopy(op[k]) for k in ('source_weight', 'rendered_weight', 'activation')},
-                               'wire_sha256': record['blob_sha256'], 'encoding_identity_sha256': 'b'*64}
+                               'wire_sha256': record['blob_sha256'],
+                               'encoding_identity_sha256': canonical_json_sha256(record['identity'], where='fixture encoding')}
         cells[name, fmt] = {'record': record}
     probe = costs[names[0]][fmt]['probe_identity']
     prepared_binding = {'path': '/fixture/prepared.json', 'sha256': 'c'*64}
@@ -82,7 +95,8 @@ def test_handoff_preserves_all_joint_prices_and_identities():
 
 
 @pytest.mark.parametrize('mutation', ['missing_unit', 'extra_format', 'source', 'render', 'activation',
-    'wire', 'calibration', 'prepared', 'shape', 'overwritten_metadata', 'nonzero_bf16'])
+    'wire', 'calibration', 'prepared', 'shape', 'overwritten_metadata', 'nonzero_bf16',
+    'encoding_identity', 'manifest_source'])
 def test_handoff_refuses_changed_evidence(mutation):
     from prismaquant.tessera_joint_allocation import bind_allocation_payload
     joint, data, prepared, metadata, kwargs = fixture()
@@ -95,6 +109,8 @@ def test_handoff_refuses_changed_evidence(mutation):
         joint['costs'][name][fmt] = _rebuild(row, operator_change=lambda op: op[field].update(content_sha256='9'*64))
     elif mutation == 'activation': metadata['verified_cells'][name, fmt]['activation']['clip_enabled'] = not row['joint_operator_identity']['activation']['clip_enabled']
     elif mutation == 'wire': metadata['verified_cells'][name, fmt]['wire_sha256'] = '8'*64
+    elif mutation == 'encoding_identity': metadata['verified_cells'][name, fmt]['encoding_identity_sha256'] = '8'*64
+    elif mutation == 'manifest_source': data.manifest['identity']['units'][name]['weight']['sha256'] = '8'*64
     elif mutation == 'calibration': prepared['calibration_input']['calibration_sha256'] = '7'*64
     elif mutation == 'prepared': kwargs['prepared_binding'] = {**kwargs['prepared_binding'], 'sha256': '6'*64}
     elif mutation == 'shape': joint['stats'][name]['n_params'] = 5

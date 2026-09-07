@@ -16,6 +16,7 @@ from pathlib import Path
 import pickle
 
 from .cluster_campaign import _atomic_write_new_bytes as atomic_write_bytes
+from .cost_stage_checkpoint import canonical_json_sha256
 from .tessera_joint_aura import PREPARED_SCHEMA, SCHEMA, _require, _same
 
 HANDOFF_SCHEMA = 'prismaquant.tessera_joint_allocation.v1'
@@ -99,7 +100,15 @@ def bind_allocation_payload(joint, data, prepared, cache_metadata, *, plan_sha25
             record = data.cells[pair]['record']
             _same(receipt['wire_sha256'], record['blob_sha256'], f'{name}@{fmt}: original wire')
             source_record = data.manifest['identity']['units'][name]['weight']
-            _same(source['content_sha256'], source_record['sha256'], f'{name}: original source bytes')
+            # Tessera hashes dtype/shape plus values; PWC hashes raw values.
+            # Preparation verified the original encoding identity against the
+            # actual source tensor and retained BOTH owner-defined receipts.
+            # Join through that authenticated encoding receipt, never compare
+            # hashes from different grammars or manufacture a conversion.
+            _same(receipt['encoding_identity_sha256'],
+                  canonical_json_sha256(record['identity'], where='original encoding'),
+                  f'{name}@{fmt}: prepared encoding identity')
+            _same(record['identity']['source'], source_record, f'{name}: original source identity')
             _same(source['shape'], source_record['shape'], f'{name}: original source dimensions')
             _same(source['dtype'].removeprefix('torch.'), source_record['dtype'].removeprefix('torch.'), f'{name}: original source dtype')
             anchor_row = data.payload['costs'][name][fmt]
