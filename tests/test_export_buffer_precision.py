@@ -38,7 +38,7 @@ from prismaquant.layer_streaming import (  # noqa: E402
 )
 
 # 0.5 and 0.5 + 2**-12 are two distinct FP32 values inside ONE BF16 ulp
-# (2**-9 at 0.5), so the cast collapses them onto each other. Two experts
+# (2**-8 at 0.5), so the cast collapses them onto each other. Two experts
 # whose biases differ by less than a BF16 ulp are exactly the case where
 # preserving the buffer decides the routing: in FP32 the second wins, and
 # after the narrowing they tie and top-1 falls back to the first.
@@ -150,7 +150,8 @@ def test_export_layer_read_is_wired_to_the_declared_buffer_dtypes():
     """The wiring itself, because dropping the kwarg is silent: nothing
     raises, the histogram still labels the buffer FP32, and only the
     emitted values change. Guards the one line the behaviour above
-    depends on inside a 7k-line function no unit test can drive."""
+    depends on. The full streaming-emission regression is in
+    test_export_buffer_resume.py."""
     tree = ast.parse(
         textwrap.dedent(inspect.getsource(materialize_tensors_streaming)))
     calls = [n for n in ast.walk(tree)
