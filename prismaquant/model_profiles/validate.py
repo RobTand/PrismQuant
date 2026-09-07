@@ -29,9 +29,10 @@ Checks performed:
      truth.
 
   4. **Name remap fixed points.** For every
-     `orig_to_new_prefix` entry in vLLM's `hf_to_vllm_mapper`,
-     `profile.to_vllm_internal_name(orig_prefix + ".x")` starts with
-     the expected `new_prefix`.
+     string-destination `orig_to_new_prefix` entry in vLLM's
+     `hf_to_vllm_mapper`, a probe at a real component boundary starts
+     with the expected `new_prefix`. Loader-only drops (`None`)
+     are counted separately and excluded from dispatch-name checks.
 
   5. **MTP module construction** (if `has_mtp()` is True). The
      profile can instantiate an MTP module from the model's text
@@ -230,8 +231,14 @@ def _check_name_remap(profile) -> CheckResult:
         return CheckResult("to_vllm_internal_name() obeys vLLM's prefix map",
                            True, "vLLM class has no hf_to_vllm_mapper")
     failures = []
+    excluded_drops = 0
     for src, dst in prefix_map.items():
-        probe_name = src + "x.y"
+        # Loader-only drops have no dispatch destination to cross-check.
+        if dst is None:
+            excluded_drops += 1
+            continue
+        separator = "" if not src or src.endswith(".") else "."
+        probe_name = src + separator + "x.y"
         got = profile.to_vllm_internal_name(probe_name)
         expected_prefix = dst
         if not got.startswith(expected_prefix):
@@ -240,7 +247,8 @@ def _check_name_remap(profile) -> CheckResult:
         return CheckResult("to_vllm_internal_name() obeys vLLM's prefix map",
                            False, "; ".join(failures))
     return CheckResult("to_vllm_internal_name() obeys vLLM's prefix map",
-                       True, f"{len(prefix_map)} prefix rewrites agree")
+                       True, f"{len(prefix_map) - excluded_drops} prefix rewrites agree; "
+                       f"{excluded_drops} loader-only drops excluded")
 
 
 def _check_mtp(profile, cfg: dict, model_path: str) -> CheckResult:
