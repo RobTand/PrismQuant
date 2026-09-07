@@ -1,7 +1,21 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
+As of: 2026-09-07 · `codex/joint-allocation-handoff`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/joint-allocation-handoff`) for the opt-in
+completed joint-table allocation handoff (#351). `tessera_joint_allocation`
+authenticates the original plan, joint table, preparation and PWC metadata by
+content hash, validates their exact measured candidate roster and source,
+render, activation, calibration and original wire identities, and carries the
+original Hessian/static-scale and expert projection/population receipts into a
+new table. All joint prices, signed components, probe/operator identities and
+statistics remain unchanged; scalar anchor losses are never copied. The handoff
+uses the existing measured-anchor intake and expert projection validator. It
+neither re-encodes weights nor re-probes them, adds no cache, and does not certify
+current wire bytes or runtime coverage: those remain existing export/serving
+gates. The CLI requires bound input hashes and new output/receipt paths.
+Gate: `tests/test_tessera_joint_allocation.py`.
 
 Re-stamped (2026-09-07, `fix/pr348-orphan-cache-root`) for missing-manifest
 export-cache refusal. Existing `layer_*.pt` files without a manifest are
