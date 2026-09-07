@@ -196,7 +196,22 @@ submission wrapper temporarily omits any remaining legacy external calibration
 symlinks while PB seals the checkout, restoring them in `finally`. Main removed
 these tracked links in #269; a checkout without them also passes this step.
 The experiment reads only its own frozen inputs. The source manifest records
-that omission; no deleted symlink belongs in the delivered commit.
+that omission; no deleted symlink belongs in the delivered commit. The manifest
+now names untracked closure entries and in-tree bytecode caches in their own
+fields rather than inside the opaque `status` text, and the reader refuses any
+importable entry under a root that the manifest does not list.
+
+Three later refusals extend that to the paths by which the interpreter can
+still reach unhashed bytes. The reader loads its own closure policy from the
+exact bytes it has just checked against the manifest, rather than by an import
+a shadowing package could answer. `__pycache__` is walked like any other
+directory, since redirecting cache lookups does not stop `__pycache__/x.py`
+from importing; only the tagged cache files inside it stay unsealed. And a
+symlink whose name or target can supply a module is admitted only when the code
+behind it is itself sealed, so a declared link to code outside the root is
+refused. A link to *data*, including the three `calibration/*.jsonl` links
+above, is unaffected: it names nothing the import system can load, and the
+manifest still pins its target string.
 
 ```bash
 python3 - <<'PY'
@@ -238,6 +253,11 @@ with tempfile.TemporaryDirectory(prefix='pq237-streamed-source-') as source:
       '-v', '/mnt/shared:/mnt/shared', '-w', '/workspace',
       '-e', 'OMP_NUM_THREADS=1', '-e', 'MKL_NUM_THREADS=1', '-e', 'OPENBLAS_NUM_THREADS=1',
       '-e', 'PYTHONPATH=/workspace:/tessera/src',
+      # Bytecode caching is redirected out of both sealed roots. A
+      # timestamp-validated .pyc under a root executes in place of the sealed
+      # source that names it, so verify_source_manifest refuses an in-tree
+      # __pycache__ unless the reader reads its cache from somewhere else.
+      '-e', 'PYTHONPYCACHEPREFIX=/pq237-pycache',
       'sha256:337dae6b15313ff7a46aad56ec200119c6416555fd21c1085661f1c7cbd13b88',
       'python3', '-u', 'experiments/pq237_joint_aura_streamed.py',
       '--model', str(inputs / 'Qwen3-0.6B'),
