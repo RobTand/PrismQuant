@@ -43,6 +43,53 @@ def unique_storage_bytes(tensors):
     return sum(storages.values())
 
 
+def failed_collector_row_counts(exc, collector, targets):
+    """Copy only integer counters from this collector's retained failure frame.
+
+    These are rows observed before failure, not captured Hessians, a census or
+    successful coverage. Missing/malformed state remains explicitly unknown.
+    """
+    unknown = dict(status='unknown', scope='partial_failed_collection_not_census',
+                   expected_qnames=sorted(targets))
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code is collector.__code__:
+            seen = tb.tb_frame.f_locals.get('seen')
+            if (not isinstance(seen, dict) or set(seen) != set(targets)
+                    or any(type(value) is not int or value < 0 for value in seen.values())):
+                return unknown
+            rows = {name: seen[name] for name in sorted(targets)}
+            return dict(status='observed_before_failure',
+                        scope='partial_failed_collection_not_census', rows=rows,
+                        positive_row_qnames=[name for name, count in rows.items() if count],
+                        zero_row_qnames=[name for name, count in rows.items() if not count])
+        tb = tb.tb_next
+    return unknown
+
+
+def watch_memory_samples(stopped, observe, write_record, on_error, interval=0.1):
+    """Keep observing through guard detection and actual execution unwind."""
+    while not stopped.is_set():
+        try:
+            write_record(observe())
+        except Exception as exc:
+            on_error(exc)
+        stopped.wait(interval)
+
+
+def finalize_workspace(shutdown, write_evidence, result, active_error):
+    """Finalize evidence even if shutdown fails; preserve an existing failure."""
+    try:
+        shutdown()
+    except BaseException as exc:
+        result['cleanup_failure'] = dict(type=type(exc).__name__, message=str(exc))
+        result['status'] = 'failed'
+        if active_error is None:
+            raise
+    finally:
+        write_evidence()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=Path, required=True)
@@ -137,7 +184,7 @@ def main():
             host_memory_bytes={name:host[name]*1024 for name in
                 ('MemFree','Cached','Buffers','Shmem','SReclaimable','SUnreclaim')})
 
-    def check_guard(label):
+    def check_guard(label, *, raise_on_trip=True):
         path = cgroot/'memory.current'
         if not path.is_file():
             raise RuntimeError('workspace guard requires container cgroup memory observations')
@@ -155,24 +202,30 @@ def main():
             guard_tripped.set()
         if guard_tripped.is_set():
             result['status'] = 'refused_by_memory_guard'
-            raise RuntimeError('workspace measurement reached its physical memory guard; '
-                               'no full-capture admission is established')
+            if raise_on_trip:
+                raise RuntimeError('workspace measurement reached its physical memory guard; '
+                                   'no full-capture admission is established')
 
     def watch_memory():
-        with (args.out/'cgroup-memory.jsonl').open('w') as out:
-            while not stopped.is_set():
-                try:
-                    check_guard('continuous_cgroup_sample')
-                    record = dict(time=time.time(),
-                        **physical_memory_record(),
+        def observe():
+            check_guard('continuous_cgroup_sample', raise_on_trip=False)
+            return dict(time=time.time(), **physical_memory_record(),
+                        cuda_allocated_bytes=torch.cuda.memory_allocated(),
+                        guard_tripped=guard_tripped.is_set(),
                         stats=proc_fields(cgroot/'memory.stat'))
-                    out.write(json.dumps(record)+'\n')
-                    out.flush()
-                except Exception as exc:
-                    result.setdefault('memory_guard_failure', dict(error=repr(exc),time=time.time()))
-                    guard_tripped.set()
-                    return
-                stopped.wait(0.1)
+
+        def on_error(exc):
+            failure = dict(error=repr(exc), time=time.time())
+            result.setdefault('memory_guard_failure', failure)
+            result.setdefault('memory_observer_error', failure)
+            result['status'] = 'refused_by_memory_guard'
+            guard_tripped.set()
+
+        with (args.out/'cgroup-memory.jsonl').open('w') as out:
+            def write_record(record):
+                out.write(json.dumps(record)+'\n')
+                out.flush()
+            watch_memory_samples(stopped, observe, write_record, on_error)
 
     def memory_record():
         record = dict(time=time.time(), allocated=torch.cuda.memory_allocated(),
@@ -338,6 +391,10 @@ def main():
                         acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
                             args.max_act_rows,runner.device,want_hessian=True,profile=profile,
                             forward_batch=forward_batch)
+                except BaseException as exc:
+                    result['partial_target_row_observations'] = failed_collector_row_counts(
+                        exc, _collect_activations, targets)
+                    raise
                 finally:
                     sampling_enabled.clear()
                     result['profile_windows'] = traces_written
@@ -427,23 +484,30 @@ def main():
         result['failure'] = dict(type=type(exc).__name__,message=str(exc))
         raise
     finally:
-        if runner is not None:
-            runner.shutdown()
-        if binding:
-            try:
-                verify_binding()
-                result['source_binding_unchanged_at_exit'] = True
-            except Exception as exc:
-                result['source_binding_unchanged_at_exit'] = False
-                result['source_binding_failure'] = repr(exc)
+        active_error = sys.exc_info()[1]
+
+        def write_evidence():
+            if binding:
+                try:
+                    verify_binding()
+                    result['source_binding_unchanged_at_exit'] = True
+                except Exception as exc:
+                    result['source_binding_unchanged_at_exit'] = False
+                    result['source_binding_failure'] = repr(exc)
+                    result['status'] = 'failed'
+            stopped.set()
+            monitor_thread.join(timeout=12)
+            memory_thread.join(timeout=2)
+            sampler_thread.join(timeout=2)
+            if 'cleanup_failure' in result:
                 result['status'] = 'failed'
-        stopped.set()
-        monitor_thread.join(timeout=12)
-        memory_thread.join(timeout=2)
-        sampler_thread.join(timeout=2)
-        result['begin'] = started
-        result['end'] = time.time()
-        (args.out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+            if guard_tripped.is_set() and result['status'] == 'complete':
+                result['status'] = 'refused_by_memory_guard'
+            result['begin'] = started
+            result['end'] = time.time()
+            (args.out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+        finalize_workspace(runner.shutdown if runner is not None else lambda: None,
+                           write_evidence, result, active_error)
     assert not result['telemetry_errors'], result['telemetry_errors']
     assert result['status'] == 'complete', result.get('source_binding_failure')
 

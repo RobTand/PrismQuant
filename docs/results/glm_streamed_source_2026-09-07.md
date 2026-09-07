@@ -261,3 +261,21 @@ receipt `06e86dd62c176fd8896003b8ae74509d6d5161f20c31df8352e689537f1feb08`.
 The receipt, bundle and current source bytes were checked in
 `review-02/chunk-source-page-release-cpu.json`. CUDA lifecycle remains mocked
 in these CPU checks; the chunk repair has no successful GPU qualification yet.
+
+
+The next workspace harness keeps memory observation active after guard
+detection through reader shutdown, then stops and joins its observers before
+writing the result. Its failure diagnostic copies only integer row counters
+from the exact collector code object's retained traceback; absent or malformed
+state is explicitly unknown. Positive rows describe partial observation, not
+successful capture or a census. Shutdown failures are recorded and evidence
+finalization still runs; an existing collector failure remains the propagated
+exception. Numerical guard thresholds and production APIs are unchanged.
+Final PB action
+`602526036cd00cb18d26a65943fca172584c22c20e15c4594a57d0b4858add96`
+passed 15 CPU checks without skips on Sparky (4 xdist workers, one native
+thread each), including eight diagnostic cases. Exit was 0 and cleanup
+completed. The verified receipt, payload and exact source snapshot are in
+`review-02/workspace-unwind-diagnostics-cpu.json`; payload SHA256
+`cf362539c45d256cf117cb3cc15365ff4592c6d88bf77a81dcbb802f577307b3`,
+receipt `a438091e026f9431b534f82327fb1709132f4e0758a7a8d7e06dac60fba2929e`.
