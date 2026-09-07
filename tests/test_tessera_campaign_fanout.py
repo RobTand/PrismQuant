@@ -490,3 +490,253 @@ def test_rows_per_box_is_checked_against_the_box_and_never_shrinks_a_demand():
         dispatch.require_rows_fit([40, 36], 3, 80)
     with pytest.raises(RuntimeError, match="at least 1"):
         dispatch.require_rows_fit([40], 0, 80)
+
+
+# ---------------------------------------------------------------------------
+# The expert sample
+#
+# A routed stack is priced from a subset of its experts because pricing all of
+# them is ~250 box-days at GLM scale.  What makes a subset an estimate rather
+# than a guess is that the draw is proportional to a per-expert importance the
+# probe already knows, and that the inclusion probability it was drawn under
+# travels with the prices.  These pin the draw's arithmetic, not its taste.
+# ---------------------------------------------------------------------------
+
+def _sizes(*values):
+    return {f"e{index}": float(value) for index, value in enumerate(values)}
+
+
+def test_the_draw_is_fixed_size_and_deterministic_from_its_seed():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    sizes = _sizes(*[1.0 + index for index in range(32)])
+    first = draw_stack_sample(sizes, 8, seed=0, stack="s:x|w1")
+    again = draw_stack_sample(sizes, 8, seed=0, stack="s:x|w1")
+    other = draw_stack_sample(sizes, 8, seed=1, stack="s:x|w1")
+    assert len(first["units"]) == 8
+    assert first["units"] == again["units"]
+    # A different seed is allowed to draw the same set, but not by
+    # construction: over a 32-unit frame these two must differ.
+    assert first["units"] != other["units"]
+    # And a different stack draws independently under one seed.
+    assert first["units"] != draw_stack_sample(
+        sizes, 8, seed=0, stack="s:x|w2")["units"]
+
+
+def test_inclusion_probabilities_sum_to_the_sample_size():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    # No unit dominates, so nothing lands in the certainty stratum and every
+    # pi is strictly interior.  sum(pi) == n is the identity that makes the
+    # Horvitz-Thompson estimator unbiased; if it does not hold, nothing
+    # downstream is an estimate of anything.
+    sizes = _sizes(*[1.0 + 0.1 * index for index in range(32)])
+    draw = draw_stack_sample(sizes, 8, seed=7, stack="s:y|w1")
+    total = sum(draw["inclusion_probability"].values())
+    assert abs(total - 8.0) < 1e-9
+    assert not draw["certainty"]
+    assert all(0.0 < value < 1.0
+               for value in draw["inclusion_probability"].values())
+
+
+def test_a_dominant_unit_is_taken_with_certainty_not_clipped():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    # One expert holding most of the stack's h_trace would want pi > 1 under a
+    # plain proportional rule.  Clipping it to 1 and leaving the others alone
+    # would make sum(pi) < n and bias the estimate low; the certainty stratum
+    # is the correction, and this is the case that tells them apart.
+    sizes = _sizes(1000.0, *[1.0] * 31)
+    draw = draw_stack_sample(sizes, 4, seed=0, stack="s:z|w1")
+    assert draw["certainty"] == ["e0"]
+    assert draw["inclusion_probability"]["e0"] == 1.0
+    assert "e0" in draw["units"]
+    assert len(draw["units"]) == 4
+    assert abs(sum(draw["inclusion_probability"].values()) - 4.0) < 1e-9
+
+
+def test_asking_for_the_whole_frame_is_a_census_not_a_sample():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    sizes = _sizes(1.0, 2.0, 3.0)
+    draw = draw_stack_sample(sizes, 8, seed=0, stack="s:z|w1")
+    assert draw["method"] == "census"
+    assert draw["units"] == ["e0", "e1", "e2"]
+    assert set(draw["inclusion_probability"].values()) == {1.0}
+
+
+def test_a_zero_importance_expert_gets_probability_zero_and_is_never_drawn():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    # Zero h_trace is exact, not small: under the campaign's Fisher convention
+    # a token never routed to an expert contributes zero gradient, so that
+    # expert's term in the stack total is zero and encoding it would buy
+    # nothing. A negative weight is not a size at all and refuses.
+    draw = draw_stack_sample(_sizes(1.0, 0.0, 1.1, 1.2, 1.3, 1.4), 3,
+                             seed=0, stack="s:z|w1")
+    assert draw["inclusion_probability"]["e1"] == 0.0
+    assert "e1" not in draw["units"] and draw["zero_size"] == ["e1"]
+    assert abs(sum(draw["inclusion_probability"].values()) - 3.0) < 1e-9
+    with pytest.raises(RuntimeError, match="negative"):
+        draw_stack_sample(_sizes(1.0, -1.0), 1, seed=0, stack="s:z|w1")
+
+
+def test_a_single_random_draw_is_refused_because_it_has_no_error_bar():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    # One random draw admits no variance estimate. Stamping 0.0 for it would
+    # read downstream as "measured exactly", so the refusal happens here --
+    # before any GPU second is spent on a sample nothing can bound.
+    with pytest.raises(RuntimeError, match="one randomly drawn expert"):
+        draw_stack_sample(_sizes(*[1.0 + index for index in range(32)]), 1,
+                          seed=0, stack="s:z|w1")
+
+
+def test_the_draw_stamps_what_a_variance_estimate_will_need():
+    from prismaquant.tessera_campaign import draw_stack_sample
+
+    # The permutation and the systematic start re-derive the sample
+    # arithmetically, so a reader checks the draw rather than trusting a PRNG
+    # to have been stable. The randomized order is not cosmetic: the practical
+    # variance estimator for this design is only justified under it.
+    draw = draw_stack_sample(_sizes(*[1.0 + index for index in range(32)]), 8,
+                             seed=3, stack="s:z|w1")
+    assert draw["method"] == "randomized_systematic_pps_with_take_all_v1"
+    assert 0.0 <= draw["start"] < 1.0
+    assert sorted(draw["permutation"]) == sorted(
+        name for name, value in draw["inclusion_probability"].items()
+        if 0.0 < value < 1.0)
+    assert draw["permutation"] != sorted(draw["permutation"])
+    assert draw["random_draws"] + len(draw["certainty"]) == 8
+    assert len(draw["size_sha256"]) == 64
+
+
+def test_the_audit_subsample_is_a_subset_that_cannot_move_the_estimate():
+    from prismaquant.tessera_campaign import audit_subsample, draw_stack_sample
+
+    sizes = _sizes(*[1.0 + index for index in range(32)])
+    draw = draw_stack_sample(sizes, 20, seed=0, stack="s:a|w1")
+    audit = audit_subsample(draw["units"], rate=10, seed=0, stack="s:a|w1")
+    assert len(audit) == 2 and set(audit) <= set(draw["units"])
+    assert audit == audit_subsample(draw["units"], rate=10, seed=0,
+                                    stack="s:a|w1")
+    # Changing the audit fraction must not disturb the draw the prices are
+    # built from -- it runs on a stream of its own.
+    wider = audit_subsample(draw["units"], rate=4, seed=0, stack="s:a|w1")
+    assert len(wider) == 5
+    assert draw_stack_sample(sizes, 20, seed=0, stack="s:a|w1")["units"] \
+        == draw["units"]
+    assert audit_subsample(["e00"], rate=10, seed=0, stack="s") == ["e00"]
+    assert audit_subsample([], rate=10, seed=0, stack="s") == []
+
+
+def test_a_v1_selection_that_samples_is_refused_by_its_own_schema(tmp_path):
+    from prismaquant.tessera_campaign import load_unit_selection
+
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps({
+        "schema": "prismaquant.tessera_campaign_units.v1",
+        "model": "m", "layer_stride": 1,
+        "groups": [{"key": "s:a", "members": ["a", "b"], "sampled": ["a"]}],
+    }))
+    with pytest.raises(RuntimeError, match="must say so in its schema"):
+        load_unit_selection(path)
+
+
+def test_a_sample_without_inclusion_probabilities_is_refused(tmp_path):
+    from prismaquant.tessera_campaign import load_unit_selection
+
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps({
+        "schema": "prismaquant.tessera_campaign_units.v2",
+        "model": "m", "layer_stride": 1,
+        "groups": [{"key": "s:a", "members": ["a", "b"], "sampled": ["a"]}],
+    }))
+    with pytest.raises(RuntimeError, match="inclusion probability"):
+        load_unit_selection(path)
+
+
+def test_the_sample_narrows_what_is_priced_but_not_what_the_group_is(tmp_path):
+    from prismaquant.tessera_campaign import (load_unit_selection,
+                                              selection_priced_units,
+                                              select_anchor_groups)
+
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps({
+        "schema": "prismaquant.tessera_campaign_units.v2",
+        "model": "m", "layer_stride": 1,
+        "groups": [{"key": "s:a", "members": ["a", "b", "c"],
+                    "sampled": ["a", "c"], "audit": ["c"],
+                    "inclusion_probability": {"a": 0.5, "c": 0.5}}],
+    }))
+    selection = load_unit_selection(path)
+    # The membership check still sees the WHOLE stack: a sampled run must not
+    # be able to pass a check a full run would fail.
+    assert select_anchor_groups(selection, {"s:a": ["a", "b", "c"]},
+                                where="t") == ["s:a"]
+    priced, audit, pi = selection_priced_units(selection)
+    assert priced == {"a", "c"} and audit == {"c"} and pi == {"a": 0.5, "c": 0.5}
+
+
+# ---------------------------------------------------------------------------
+# The rate band
+# ---------------------------------------------------------------------------
+
+def test_the_band_places_two_anchors_at_its_ends_not_across_the_range():
+    from prismaquant.tessera_campaign import round_one_rates
+
+    allowed = [256, 512, 768, 1024, 1280, 1536, 1792, 2048]
+
+    def snap(rate, allowed):
+        return min(allowed, key=lambda r: (abs(int(r) - int(rate)), int(r)))
+
+    # Unset: the historical schedule over the whole realisable range.
+    assert round_one_rates(allowed, band=None, anchors=3,
+                           snap=snap) == [256, 1024, 2048]
+    # Set: the ends of the band, and nothing outside it.
+    assert round_one_rates(allowed, band=(700, 1300), anchors=3,
+                           snap=snap) == [768, 1280]
+    # A family whose rungs do not reach the band says so by measuring nothing
+    # there rather than by being priced at a rate outside it.
+    assert round_one_rates(allowed, band=(4000, 5000), anchors=3,
+                           snap=snap) == []
+
+
+def test_the_audit_anchor_lands_inside_the_bracket_or_nowhere():
+    from prismaquant.tessera_campaign import audit_extra_rate
+
+    allowed = [256, 512, 768, 1024, 1280]
+
+    def snap(rate, allowed):
+        return min(allowed, key=lambda r: (abs(int(r) - int(rate)), int(r)))
+
+    inner = audit_extra_rate(allowed, [512, 1280], snap=snap)
+    assert inner is not None and 512 < inner < 1280
+    # Adjacent rungs have no interior, so there is no third anchor to place.
+    assert audit_extra_rate(allowed, [512, 768], snap=snap) is None
+    assert audit_extra_rate(allowed, [512], snap=snap) is None
+
+
+def test_a_malformed_band_is_refused():
+    from prismaquant.tessera_campaign import parse_rate_band
+
+    assert parse_rate_band(None) is None and parse_rate_band("") is None
+    assert parse_rate_band("256,896") == (256, 896)
+    for bad in ("256", "a,b", "896,256", "0,896", "1,2,3"):
+        with pytest.raises(RuntimeError):
+            parse_rate_band(bad)
+
+
+# ---------------------------------------------------------------------------
+# The empty menu
+# ---------------------------------------------------------------------------
+
+def test_units_with_no_admitted_rung_are_named_not_dropped(capsys):
+    from prismaquant.tessera_campaign import report_empty_menus
+
+    empty = report_empty_menus({"a": [object()], "b": [], "c": []},
+                               mode="readable")
+    assert empty == ["b", "c"]
+    printed = capsys.readouterr().out
+    assert "menu_sizes[b] = 0" in printed and "mode=readable" in printed
+    assert report_empty_menus({"a": [object()]}, mode="research") == []

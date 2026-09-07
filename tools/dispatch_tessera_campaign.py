@@ -282,7 +282,112 @@ def _parse_row_table(text: str) -> list[dict]:
 # plan
 # ---------------------------------------------------------------------------
 
+def load_probe_h_trace(path) -> dict:
+    """``{unit name: h_trace}`` from a probe, per expert, or a refusal.
+
+    The planner draws proportional to importance, so it needs a per-EXPERT
+    importance and not a per-stack one. A probe whose routed rows are still
+    packed stacks cannot answer that question, and the honest response is to
+    say so and stop: uniform sampling of a stack whose ``h_trace`` spans two
+    orders of magnitude is measurably biased (-6..-28 % on campaign-01's own
+    table) and the bias does not shrink with the sample size, so falling back
+    to it would silently trade a refusal for a wrong number.  Expanding a
+    packed probe row into per-expert rows is PrismaQuant #290's job.
+    """
+    import pickle
+
+    probe = pickle.loads(Path(path).read_bytes())
+    stats = probe.get("stats") if isinstance(probe, dict) else None
+    if not isinstance(stats, dict):
+        raise RuntimeError(f"--probe {path}: no 'stats' map to read h_trace from")
+    out: dict[str, float] = {}
+    for name, row in stats.items():
+        if not isinstance(row, dict) or "h_trace" not in row:
+            continue
+        value = row["h_trace"]
+        if value is None:
+            continue
+        out[str(name)] = float(value)
+    if not out:
+        raise RuntimeError(f"--probe {path}: no row carries an h_trace")
+    return out
+
+
+def unit_role(name: str) -> str:
+    """The projection a unit is, e.g. ``w1`` -- the last name segment."""
+    return name.rsplit(".", 1)[-1]
+
+
+def sample_stack_groups(groups, h_trace, *, stack_sample: int, seed: int,
+                        audit_rate: int) -> dict:
+    """``{group key: {sampled, audit, inclusion_probability, per_role}}``.
+
+    Only ``s:`` groups -- the packed routed stacks -- are sampled.  A dense
+    or fused group is the decision unit itself and is priced whole.
+
+    The draw is per (stack, ROLE), which is what the coordinator's measurement
+    is about: ``h_trace`` differs by role inside one stack (on LFM2.5 layer 18
+    the ``w2`` values are roughly twice the ``w1``/``w3`` ones), so one draw
+    over all three roles would be proportional to an average nobody allocates
+    on.  The three per-role draws share the group's rung grid, which is what
+    keeps the anchor placement a group property.
+    """
+    from prismaquant.tessera_campaign import audit_subsample, draw_stack_sample
+
+    sampled: dict[str, dict] = {}
+    for key, members in sorted(groups.items()):
+        if not str(key).startswith("s:"):
+            continue
+        by_role: dict[str, list[str]] = {}
+        for name in members:
+            by_role.setdefault(unit_role(name), []).append(name)
+        drawn: set[str] = set()
+        audit: set[str] = set()
+        pi: dict[str, float] = {}
+        per_role: dict[str, dict] = {}
+        for role, names in sorted(by_role.items()):
+            missing = [n for n in names if n not in h_trace]
+            if missing:
+                raise RuntimeError(
+                    f"anchor group {key} role {role}: the probe carries no "
+                    f"h_trace for {len(missing)} of {len(names)} experts "
+                    f"(e.g. {missing[0]}); a proportional draw is impossible "
+                    "and a uniform one is measurably biased. Expand the "
+                    "probe's packed rows per expert (PrismaQuant #290) or "
+                    "price the stack whole.")
+            draw = draw_stack_sample({n: h_trace[n] for n in names},
+                                     stack_sample, seed=seed,
+                                     stack=f"{key}|{role}")
+            role_audit = audit_subsample(draw["units"], rate=audit_rate,
+                                         seed=seed, stack=f"{key}|{role}")
+            drawn.update(draw["units"])
+            audit.update(role_audit)
+            pi.update({n: draw["inclusion_probability"][n]
+                       for n in draw["units"]})
+            # Everything a Horvitz-Thompson estimate and its Hartley-Rao
+            # standard error need, stamped where a reader can check the draw
+            # arithmetically instead of trusting a PRNG to be stable: the
+            # inclusion probabilities, the permutation and the systematic
+            # start re-derive the sample exactly. Computing that estimate is
+            # PrismaQuant #290's job, not this planner's.
+            per_role[role] = {
+                "method": draw["method"], "seed": draw["seed"],
+                "frame_size": draw["frame_size"],
+                "size_sha256": draw["size_sha256"],
+                "units": draw["units"], "certainty": draw["certainty"],
+                "random_draws": draw["random_draws"],
+                "permutation": draw["permutation"], "start": draw["start"],
+                "inclusion_probability": draw["inclusion_probability"],
+                "audit": role_audit}
+        sampled[key] = {"sampled": sorted(drawn), "audit": sorted(audit),
+                        "inclusion_probability": {n: pi[n] for n in sorted(pi)},
+                        "per_role": per_role}
+    return sampled
+
+
 def cmd_plan(args) -> int:
+    from prismaquant.tessera_campaign import UNITS_SCHEMA, UNITS_SCHEMA_V2
+
     spec = load_spec(Path(args.spec))
     workspace = Path(args.workspace)
     census = json.loads((workspace / "census.json").read_text())
@@ -294,6 +399,23 @@ def cmd_plan(args) -> int:
     if not groups:
         raise RuntimeError("census reports no anchor group to price")
 
+    stack_sample: dict[str, dict] = {}
+    if args.stack_sample is not None:
+        if not args.probe:
+            raise RuntimeError(
+                "--stack-sample needs --probe: the draw is proportional to "
+                "the probe's per-expert h_trace, and there is no unbiased "
+                "draw without it")
+        stack_sample = sample_stack_groups(
+            groups, load_probe_h_trace(args.probe),
+            stack_sample=int(args.stack_sample), seed=int(args.stack_sample_seed),
+            audit_rate=int(args.audit_rate))
+        priced = sum(len(entry["sampled"]) for entry in stack_sample.values())
+        frame = sum(len(groups[key]) for key in stack_sample)
+        print(f"[dispatch] sampled {priced} of {frame} routed expert units "
+              f"across {len(stack_sample)} stack(s), "
+              f"{sum(len(e['audit']) for e in stack_sample.values())} audited")
+
     units_dir = workspace / "units"
     units_dir.mkdir(parents=True, exist_ok=True)
     ordered = sorted(groups)
@@ -304,16 +426,28 @@ def cmd_plan(args) -> int:
     planned: list[dict] = []
     for index, bundle in enumerate(bundles):
         row_id = f"row-{index:04d}"
+        entries = []
+        for key in bundle:
+            entry = {"key": key, "members": sorted(groups[key])}
+            if key in stack_sample:
+                entry["sampled"] = list(stack_sample[key]["sampled"])
+                entry["audit"] = list(stack_sample[key]["audit"])
+                entry["inclusion_probability"] = dict(
+                    stack_sample[key]["inclusion_probability"])
+            entries.append(entry)
         selection = {
-            "schema": "prismaquant.tessera_campaign_units.v1",
+            # A file that samples says so in its schema; one that does not
+            # stays byte-identical to what every row before 2026-09-06 read.
+            "schema": (UNITS_SCHEMA_V2 if stack_sample else UNITS_SCHEMA),
             "model": spec["model"],
             "layer_stride": census["layer_stride"],
-            "groups": [{"key": key, "members": sorted(groups[key])} for key in bundle],
+            "groups": entries,
         }
         units_path = units_dir / f"{row_id}.json"
         units_path.write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
         row_dir = workspace / "rows" / row_id
-        members = [name for key in bundle for name in groups[key]]
+        members = [name for entry in entries
+                   for name in (entry.get("sampled") or entry["members"])]
         argv = [
             "--model", spec["model"],
             "--out", str(row_dir / "cost.pkl"),
@@ -354,6 +488,18 @@ def cmd_plan(args) -> int:
                               (entry["row_id"] for entry in planned), rows)},
         "seed_checkpoint": (None if not args.seed_checkpoint
                             else str(args.seed_checkpoint)),
+        # The draw itself, whole: which experts stand for their stack, under
+        # what inclusion probability, from which probe and which seed. It is
+        # here as well as in every units file because the plan is the thing a
+        # reader audits, and an estimate built on a sample is only checkable
+        # against the pi it was drawn under.
+        "stack_sample": {
+            "size": (None if args.stack_sample is None else int(args.stack_sample)),
+            "seed": int(args.stack_sample_seed),
+            "audit_rate": int(args.audit_rate),
+            "probe": (None if not args.probe else str(args.probe)),
+            "stacks": stack_sample,
+        },
         "rows": planned,
     }
     (workspace / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -915,6 +1061,18 @@ def main(argv=None) -> int:
                            "'box_memory_gb', when the spec declares one, and "
                            "recorded in the plan.")
     plan.add_argument("--timeout-s", type=int, default=14400)
+    plan.add_argument("--stack-sample", type=int, default=None,
+                      help="price each routed stack from this many experts "
+                           "per role, drawn proportional to the probe's "
+                           "h_trace. Unset prices every expert.")
+    plan.add_argument("--stack-sample-seed", type=int, default=0,
+                      help="the draw's seed; the same seed and the same probe "
+                           "draw the same experts.")
+    plan.add_argument("--audit-rate", type=int, default=10,
+                      help="one sampled expert in this many gets a third "
+                           "anchor and a leave-one-out check.")
+    plan.add_argument("--probe", default=None,
+                      help="a probe pickle carrying per-expert h_trace.")
     plan.add_argument("--seed-checkpoint", default=None,
                       help="a campaign checkpoint whose measured anchors every "
                            "row may adopt, subject to its own row gates")

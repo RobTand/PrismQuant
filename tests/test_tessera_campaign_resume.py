@@ -247,24 +247,32 @@ def test_refused_resume_leaves_the_surviving_tables_export_inputs(monkeypatch, t
     ``pq-audit-caches/pq-204/proofs/rejected_resume_postfix.py``; it needs
     Tessera's ``cached_unit`` receipt API to reach ``main()``'s resume.
     The menu is left empty (the ``priced=False`` fixture) so the refusal
-    exercises run-level identity independently of route admission.
+    exercises run-level identity independently of route admission.  Since
+    PrismaQuant #291 that empty menu is itself a refusal
+    (``EXIT_EMPTY_MENU``), which sharpens rather than weakens what is being
+    pinned here: the capture and the scales are facts about the CALIBRATION,
+    so a run that refuses on its menu still leaves them behind for the next
+    run, while a run that refuses on its identity must not overwrite them.
     """
     pytest.importorskip("tessera.cached_unit")
     campaign, checkpoint, argv, _model, inputs = _main_fixture(monkeypatch, tmp_path)
     argv[argv.index("--hessian") + 1] = "require"
-    assert campaign.main(argv) == 0
+    # Refused on the menu -- and no cost table written, which is #291 itself.
+    assert campaign.main(argv) == campaign.EXIT_EMPTY_MENU
+    assert not (tmp_path / "cost.pkl").exists()
     cache_dir = tmp_path / "cache"
     before = _export_inputs_state(cache_dir)
     original_manifest = checkpoint.read_bytes()
-    original_cost = (tmp_path / "cost.pkl").read_bytes()
     # Another draw's Hessian and another static A-side scale: exactly the run
-    # the run-level checkpoint identity refuses.
+    # the run-level checkpoint identity refuses.  It must refuse THERE, before
+    # it reaches the menu, and without having rewritten the export inputs on
+    # the way.
     inputs["hessian"] = 2 * torch.eye(256)
     inputs["max_abs"] *= 2
     with pytest.raises(RuntimeError, match="checkpoint identity mismatch"):
         campaign.main(argv)
     assert checkpoint.read_bytes() == original_manifest
-    assert (tmp_path / "cost.pkl").read_bytes() == original_cost
+    assert not (tmp_path / "cost.pkl").exists()
     assert _export_inputs_state(cache_dir) == before
 
 

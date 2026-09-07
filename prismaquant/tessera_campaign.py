@@ -82,23 +82,30 @@ from .tessera_expert_projection import EXPERT_WIRES_KEY, POPULATION_KEY, PROJECT
 
 __all__ = [
     "CENSUS_SCHEMA",
+    "EXIT_EMPTY_MENU",
     "SCHEMA",
     "UNITS_SCHEMA",
+    "UNITS_SCHEMA_V2",
     "CampaignAnchor",
     "ExpertPopulation",
     "anchor_group_key",
     "anchor_schedule",
+    "audit_subsample",
     "calibration_census",
     "campaign_cost_payload",
     "campaign_population_block",
     "census_max_abs",
     "census_token_counts",
+    "contract_source_label",
+    "draw_stack_sample",
     "load_calibration_census",
     "load_unit_selection",
     "main",
     "next_anchor_rate",
+    "report_empty_menus",
     "require_census_draw",
     "resolve_anchor_groups",
+    "round_one_rates",
     "select_anchor_groups",
     "write_export_inputs",
 ]
@@ -162,6 +169,75 @@ def anchor_schedule(lo: int, hi: int, count: int) -> list[int]:
     out = sorted({int(round(lo + i * step)) for i in range(count)})
     out[0], out[-1] = lo, hi
     return sorted(set(out))
+
+
+def parse_rate_band(text) -> "tuple[int, int] | None":
+    """``"lo,hi"`` in q256 body-rate units, or None when unset."""
+    if text is None or str(text).strip() == "":
+        return None
+    parts = str(text).split(",")
+    if len(parts) != 2:
+        raise RuntimeError(f"--rate-band {text!r}: want 'lo,hi' in q256 units")
+    try:
+        lo, hi = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise RuntimeError(f"--rate-band {text!r}: not two integers") from exc
+    if lo <= 0 or hi <= 0 or lo > hi:
+        raise RuntimeError(f"--rate-band {text!r}: want 0 < lo <= hi")
+    return lo, hi
+
+
+def round_one_rates(allowed: "Sequence[int]", *, band, anchors: int,
+                    snap) -> list[int]:
+    """Where round one puts this family's anchors on this group's grid.
+
+    Without a band the schedule spans the family's whole realisable range,
+    which is what every artifact before 2026-09-06 was priced under.  With
+    one, the anchors go at the ends of the **band**, and the reason is
+    measured rather than economised: the surface is not one line over the
+    whole 1--8 bit range.  On campaign-01 a two-anchor fit that spans the full
+    range and drops the interior anchor of a 1 / 4.5 / 8-bit triple misses the
+    interior by median 0.32 and p90 0.76 log2, with the same sign at both
+    ends -- curvature, not noise -- while the same construction inside a
+    one-bit bracket lands at median 0.08.  So the fix is not more anchors over
+    a range nothing will be allocated in; it is the same two anchors placed
+    around the rates the artifact will actually use.
+
+    A family whose realisable rungs do not reach the band gets no anchor here
+    and is left to say so, rather than being priced at a rate outside it.
+    """
+    if not allowed:
+        return []
+    if band is None:
+        return sorted({r for r in (snap(rate, allowed) for rate in
+                                   anchor_schedule(allowed[0], allowed[-1], anchors))
+                       if r is not None})
+    lo, hi = band
+    inside = [rate for rate in allowed if lo <= int(rate) <= hi]
+    if not inside:
+        return []
+    return sorted({snap(inside[0], allowed), snap(inside[-1], allowed)} - {None})
+
+
+def audit_extra_rate(allowed: "Sequence[int]", placed: "Sequence[int]",
+                     *, snap) -> "int | None":
+    """The one interior rung an audit unit measures on top of ``placed``.
+
+    Two anchors define a line and can never disagree with it, so a bracket
+    priced at its ends carries no evidence about its own interpolation.  The
+    audit subsample buys that evidence for the price of one extra encode per
+    ten sampled units: a third anchor in the middle of the bracket, which the
+    existing leave-one-anchor-out report then scores against the line the
+    other two draw.  Returns None when the bracket has no interior rung to
+    put it on.
+    """
+    if len(placed) < 2:
+        return None
+    lo, hi = int(min(placed)), int(max(placed))
+    interior = [int(r) for r in allowed if lo < int(r) < hi]
+    if not interior:
+        return None
+    return snap((lo + hi) // 2, interior)
 
 
 def next_anchor_rate(
@@ -1093,6 +1169,50 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     return out, text
 
 
+#: The exit status a run uses when the resolved menu admits nothing.  It is
+#: not 1: a menu that admits nothing is a configuration answer, not a crash,
+#: and a caller that fans out over hundreds of rows needs to tell the two
+#: apart without parsing a traceback.
+EXIT_EMPTY_MENU = 2
+
+
+def contract_source_label() -> str:
+    """Which Tessera contract the menu was resolved against, in one phrase.
+
+    A refusal has to say this or it is unactionable: ``attested`` resolves to
+    nothing at all unless the dev pin names a commit, and the difference
+    between "the pinned reader admits no rung of this shape" and "no contract
+    was consulted" is the whole diagnosis.
+    """
+    import os
+
+    from .tessera_runtime_contract import TESSERA_DEV_PIN_ENV
+
+    pin = str(os.environ.get(TESSERA_DEV_PIN_ENV, "")).strip()
+    if pin:
+        return f"{TESSERA_DEV_PIN_ENV}={pin}"
+    return "the packaged Tessera runtime_contract.json (no dev pin set)"
+
+
+def report_empty_menus(menus: "Mapping[str, Sequence]", *, mode: str) -> list[str]:
+    """The units with no admitted rung, printed with the mode and the contract.
+
+    Printed rather than raised, because one unit whose shape admits nothing is
+    a fact about that unit and the rest of the run is still a real answer --
+    it is stamped ``no_admitted_rung`` so a merge cannot mistake a refused
+    unit for one nobody selected.  Only the *total* emptiness is fatal, and
+    that decision is the caller's (:data:`EXIT_EMPTY_MENU`).
+    """
+    empty = sorted(name for name, menu in menus.items() if not menu)
+    if not empty:
+        return []
+    print(f"[campaign] {len(empty)} of {len(menus)} units admit no rung under "
+          f"mode={mode} against {contract_source_label()}:", flush=True)
+    for name in empty:
+        print(f"[campaign]   menu_sizes[{name}] = 0", flush=True)
+    return empty
+
+
 def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
                              parallel_kind,
                              context_by_unit: "Mapping[str, ServingContext] | None" = None,
@@ -1136,9 +1256,202 @@ def expand_menus_for_targets(weights, targets, *, mode, tp_degree,
 #: values do not depend on what else the run priced.
 UNITS_SCHEMA = "prismaquant.tessera_campaign_units.v1"
 
+#: The same selection, plus the planner's expert sample.  A ``v1`` file prices
+#: every member of every group it names; a ``v2`` file may additionally give a
+#: group a ``sampled`` subset (with the ``inclusion_probability`` it was drawn
+#: under and the ``audit`` units inside it).  The group's ``members`` list
+#: still names the WHOLE group in both, because that list is what
+#: :func:`select_anchor_groups` checks against this run's own grouping: the
+#: sample says which members are priced, never which members exist.  A run
+#: given a v1 file behaves exactly as it did before v2.
+UNITS_SCHEMA_V2 = "prismaquant.tessera_campaign_units.v2"
+
 #: The calibration census ``--calibration-census`` reads and ``--census-out``
 #: writes: the per-unit calibration row counts of the whole priced scope.
 CENSUS_SCHEMA = "prismaquant.tessera_campaign_census.v1"
+
+
+def _keystream(seed: int, label: str):
+    """A stable, dependency-free stream of uniforms in [0, 1).
+
+    SHA-256 in counter mode rather than :mod:`random`, because the draw is
+    stamped into a checkpoint identity: a sample that changed when CPython
+    changed its sampler would silently re-key every journal it appears in.
+    """
+    import hashlib
+
+    counter = 0
+    while True:
+        digest = hashlib.sha256(
+            f"{int(seed)}:{label}:{counter}".encode()).digest()
+        for offset in range(0, 32, 8):
+            yield int.from_bytes(digest[offset:offset + 8], "big") / float(1 << 64)
+        counter += 1
+
+
+def _permute(names: "Sequence[str]", stream) -> list[str]:
+    """Fisher-Yates over ``names`` from ``stream``."""
+    order = list(names)
+    for index in range(len(order) - 1, 0, -1):
+        pick = int(next(stream) * (index + 1))
+        pick = min(pick, index)
+        order[index], order[pick] = order[pick], order[index]
+    return order
+
+
+def draw_stack_sample(weights: "Mapping[str, float]", n: int, *,
+                      seed: int, stack: str) -> dict:
+    """A fixed-size PPS draw over one stack's experts, with exact ``pi``.
+
+    Randomized systematic (Madow) probability-proportional-to-size sampling
+    without replacement, with a take-all stratum.  Three parts, each of which
+    is load-bearing:
+
+    **Proportional to what.** The stack total the allocator needs is
+    ``sum_e h_e * mse_e``.  ``h_e`` is free (the probe already has it) and
+    ``mse_e`` costs an encode, so drawing proportional to ``h_e`` leaves only
+    the spread of ``mse_e`` in the estimator's variance.  On LFM2.5 layer 18
+    the per-expert ``h_trace`` spans 9.6e4 to 7.7e6 (CV ~1.0) while the
+    cross-expert spread of ``mse`` at a fixed rung is CV 0.33-0.55, so this is
+    where the variance is.  A uniform draw carries the product's spread and is
+    measurably biased on this table (-6..-28 %), and the bias does not shrink
+    with ``n``; that is why there is no uniform fallback anywhere below.
+
+    **The take-all stratum.** With ``h`` this dispersed, ``n * h_i / sum(h)``
+    exceeds one for the largest experts.  Clipping that to one would leave
+    ``sum(pi) < n`` and bias the estimate low.  Instead those experts are
+    taken with certainty, removed from the frame, and the rest re-solved --
+    iterated to a fixed point, which is ``pi_i = min(1, c*h_i)`` for the
+    unique ``c`` with ``sum_i min(1, c*h_i) = n``.  The post-conditions
+    asserted below (``sum(pi) == n``, every ``pi`` in ``[0, 1]``) are what
+    make the Horvitz-Thompson estimator downstream exactly unbiased rather
+    than approximately so.
+
+    **The randomized order.** The frame is permuted from the seeded stream
+    before the systematic pass.  This is not cosmetic: the practical variance
+    estimator for this design (Hartley-Rao, which #290 applies to the prices)
+    is derived for randomized-order systematic sampling and is not justified
+    under expert-index or ``h``-sorted order.
+
+    Determinism, and what the seed is deliberately NOT: the stream is keyed on
+    ``(seed, stack)`` only, never on ``h``.  The probe is not bit-reproducible
+    across runs, and systematic sampling is continuous in ``pi``, so a
+    re-probed ``h`` perturbs this draw slightly; hashing ``h`` into the seed
+    would instead redraw the whole stack on every re-probe.
+
+    An expert with ``h_e == 0`` gets ``pi_e = 0`` and is never encoded, which
+    is exact rather than a rounding: under the campaign's Fisher convention a
+    token never routed to an expert contributes zero gradient, so its term in
+    the total is zero, not merely small.
+
+    Returns the whole draw, including everything a variance estimate needs:
+    ``units``, ``inclusion_probability`` (over the full frame), ``certainty``,
+    ``permutation``, ``start``, ``size``, ``size_sha256``, ``frame_size``,
+    ``random_draws`` and ``method``.
+    """
+    import hashlib
+
+    names = sorted(weights)
+    if not names:
+        raise RuntimeError(f"stack {stack}: no unit to sample")
+    sizes = {name: float(weights[name]) for name in names}
+    if any(value < 0.0 for value in sizes.values()):
+        raise RuntimeError(f"stack {stack}: a size weight is negative")
+    digest = hashlib.sha256(
+        "|".join(f"{name}={sizes[name]!r}" for name in names).encode()
+    ).hexdigest()
+    want = int(n)
+    if want < 1:
+        raise RuntimeError(f"stack {stack}: --stack-sample must be at least 1")
+
+    frame = [name for name in names if sizes[name] > 0.0]
+    zero = [name for name in names if sizes[name] <= 0.0]
+    common = {"size": sizes, "size_sha256": digest, "seed": int(seed),
+              "stack": str(stack), "frame_size": len(frame),
+              "zero_size": zero}
+    if want >= len(frame):
+        return {**common, "units": list(frame), "method": "census",
+                "inclusion_probability": {name: (1.0 if sizes[name] > 0.0 else 0.0)
+                                          for name in names},
+                "certainty": list(frame), "permutation": list(frame),
+                "start": None, "random_draws": 0}
+
+    certainty: list[str] = []
+    rest = list(frame)
+    remaining = want
+    while rest and remaining > 0:
+        total = sum(sizes[name] for name in rest)
+        over = [name for name in rest if remaining * sizes[name] / total >= 1.0]
+        if not over:
+            break
+        certainty.extend(over)
+        rest = [name for name in rest if name not in set(over)]
+        remaining -= len(over)
+    certainty.sort()
+
+    # A single random draw has no variance estimate. Stamping 0.0 for it would
+    # read downstream as "measured exactly", so it refuses here instead --
+    # before any GPU second is spent on a sample nothing can put an error bar
+    # on. Either take one more expert, or take the stack whole.
+    if remaining == 1:
+        raise RuntimeError(
+            f"stack {stack}: --stack-sample {want} leaves exactly one "
+            f"randomly drawn expert after {len(certainty)} certainty unit(s); "
+            "a one-draw sample admits no variance estimate. Use "
+            f"--stack-sample {want + 1} or price the stack whole.")
+
+    pi = {name: 0.0 for name in names}
+    pi.update({name: 1.0 for name in certainty})
+    drawn = list(certainty)
+    stream = _keystream(seed, f"pps:{stack}")
+    permutation = _permute(rest, stream) if rest else []
+    start = None
+    if remaining > 0 and rest:
+        total = sum(sizes[name] for name in rest)
+        pi.update({name: remaining * sizes[name] / total for name in rest})
+        start = next(stream)
+        cumulative = 0.0
+        ladder = []
+        for name in permutation:
+            cumulative += pi[name]
+            ladder.append((cumulative, name))
+        # Renormalise the last edge so float drift cannot drop the final draw.
+        ladder[-1] = (float(remaining), ladder[-1][1])
+        step = 0
+        for edge, name in ladder:
+            while step < remaining and start + step < edge:
+                drawn.append(name)
+                step += 1
+    total_pi = sum(pi.values())
+    if abs(total_pi - want) > 1e-9:
+        raise RuntimeError(
+            f"stack {stack}: inclusion probabilities sum to {total_pi!r}, not "
+            f"{want}; the estimator built on them would be biased")
+    if len(set(drawn)) != want:
+        raise RuntimeError(
+            f"stack {stack}: the systematic pass drew {len(set(drawn))} "
+            f"distinct units, not {want}")
+    return {**common, "units": sorted(drawn),
+            "method": "randomized_systematic_pps_with_take_all_v1",
+            "inclusion_probability": {name: float(pi[name]) for name in names},
+            "certainty": certainty, "permutation": permutation,
+            "start": start, "random_draws": int(remaining)}
+
+
+def audit_subsample(drawn: "Sequence[str]", *, rate: int = 10, seed: int = 0,
+                    stack: str = "") -> list[str]:
+    """A simple random subsample of the draw: one unit in ``rate``, at least 1.
+
+    Drawn from a stream of its own, so changing the audit fraction cannot
+    disturb the sample the prices are built from -- the audit buys evidence
+    about interpolation, and must not be able to move the estimate.
+    """
+    units = sorted(drawn)
+    if not units:
+        return []
+    count = max(1, len(units) // int(rate))
+    stream = _keystream(seed, f"audit:{stack}")
+    return sorted(_permute(units, stream)[:count])
 
 
 def anchor_group_key(name: str, *, profile, expert_members: Mapping) -> str:
@@ -1177,9 +1490,11 @@ def resolve_anchor_groups(targets: Sequence[str], *, profile,
 def load_unit_selection(path) -> dict:
     """Read a ``--units`` selection file, refusing anything but this schema."""
     selection = json.loads(Path(path).read_text())
-    if not isinstance(selection, dict) or selection.get("schema") != UNITS_SCHEMA:
+    schema = None if not isinstance(selection, dict) else selection.get("schema")
+    if schema not in (UNITS_SCHEMA, UNITS_SCHEMA_V2):
         raise RuntimeError(
-            f"--units {path}: not a {UNITS_SCHEMA} selection")
+            f"--units {path}: not a {UNITS_SCHEMA} or {UNITS_SCHEMA_V2} "
+            "selection")
     groups = selection.get("groups")
     if not isinstance(groups, list) or not groups:
         raise RuntimeError(f"--units {path}: names no anchor group")
@@ -1190,7 +1505,58 @@ def load_unit_selection(path) -> dict:
                 or not all(isinstance(m, str) for m in entry["members"])):
             raise RuntimeError(
                 f"--units {path}: a group entry is not {{key, members[]}}")
+        if schema == UNITS_SCHEMA and any(
+                field in entry for field in ("sampled", "audit",
+                                             "inclusion_probability")):
+            raise RuntimeError(
+                f"--units {path}: group {entry['key']!r} carries a sample, "
+                f"which is a {UNITS_SCHEMA_V2} field; a file that samples "
+                "must say so in its schema")
+        members = set(entry["members"])
+        sampled = entry.get("sampled")
+        if sampled is not None:
+            if (not isinstance(sampled, list) or not sampled
+                    or not all(isinstance(m, str) for m in sampled)
+                    or not set(sampled) <= members):
+                raise RuntimeError(
+                    f"--units {path}: group {entry['key']!r} samples units "
+                    "that are not its members")
+            audit = entry.get("audit") or []
+            if not isinstance(audit, list) or not set(audit) <= set(sampled):
+                raise RuntimeError(
+                    f"--units {path}: group {entry['key']!r} audits units it "
+                    "did not sample")
+            pi = entry.get("inclusion_probability")
+            if not isinstance(pi, dict) or not set(sampled) <= set(pi):
+                raise RuntimeError(
+                    f"--units {path}: group {entry['key']!r} samples without "
+                    "an inclusion probability for every sampled unit; an "
+                    "unbiased estimate downstream is impossible without it")
+        elif entry.get("audit"):
+            raise RuntimeError(
+                f"--units {path}: group {entry['key']!r} audits without "
+                "sampling")
     return selection
+
+
+def selection_priced_units(selection: Mapping) -> tuple[set, set, dict]:
+    """``(priced, audit, inclusion_probability)`` a selection asks for.
+
+    ``priced`` is the sample where a group has one and the whole group where
+    it does not, so a v1 selection and an unsampled v2 selection are the same
+    run.  Nothing here decides what a group *is*: that check has already been
+    made against this run's own grouping.
+    """
+    priced: set = set()
+    audit: set = set()
+    pi: dict = {}
+    for entry in selection["groups"]:
+        sampled = entry.get("sampled")
+        priced.update(sampled if sampled else entry["members"])
+        audit.update(entry.get("audit") or ())
+        for name, value in (entry.get("inclusion_probability") or {}).items():
+            pi[str(name)] = float(value)
+    return priced, audit, pi
 
 
 def select_anchor_groups(selection: Mapping, resolved: Mapping[str, list[str]],
@@ -1871,6 +2237,13 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                          "caps how far the worst surface can be improved, "
                          "which is the opposite of what the adaptive loop is "
                          "for.")
+    ap.add_argument("--rate-band", default=None,
+                    help="'lo,hi' in q256 body-rate units. Round one puts a "
+                         "window family's two anchors at the ends of this "
+                         "band instead of at the ends of its whole realisable "
+                         "range, and an audited unit gets a third inside it. "
+                         "Unset reproduces every artifact built before "
+                         "2026-09-06.")
     ap.add_argument("--anchor-budget", type=int, default=12,
                     help="max anchors per (fused group, family) surface. The "
                          "adaptive loop keeps splitting the worst-predicted "
@@ -2016,19 +2389,35 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     selection = None
     selected_groups: list[str] = sorted(scope_groups)
+    audit_units: set = set()
+    inclusion_probability: dict = {}
     if args.units:
         selection = load_unit_selection(args.units)
         selected_groups = select_anchor_groups(
             selection, scope_groups, where=f"--units {args.units}")
-        keep = {name for key in selected_groups for name in scope_groups[key]}
+        priced, audit_units, inclusion_probability = selection_priced_units(
+            selection)
+        # The group's membership was already checked whole; what the sample
+        # narrows is only which of those members this run encodes. Keeping the
+        # two separate is what lets a sampled run stay identity-honest: the
+        # checkpoint's ``units`` map holds exactly the priced units, so a
+        # different draw is a different identity and cannot silently resume
+        # over this one.
+        keep = {name for key in selected_groups for name in scope_groups[key]
+                if name in priced}
         dense_targets = [name for name in dense_targets if name in keep]
         expert_targets = [name for name in expert_targets if name in keep]
         expert_members = {name: member for name, member in expert_members.items()
                           if name in keep}
         targets = [*dense_targets, *expert_targets]
+        sampled_groups = sum(1 for entry in selection["groups"]
+                             if entry.get("sampled"))
         print(f"[campaign] --units selects {len(selected_groups)} of "
               f"{len(scope_groups)} anchor groups: {len(dense_targets)} dense + "
-              f"{len(expert_targets)} projected expert units", flush=True)
+              f"{len(expert_targets)} projected expert units"
+              + (f"; {sampled_groups} group(s) sampled, "
+                 f"{len(audit_units)} audit unit(s)" if sampled_groups else ""),
+              flush=True)
         if not targets:
             raise RuntimeError(
                 f"--units {args.units}: the selection prices no unit")
@@ -2150,6 +2539,16 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         parallel_kind=PARALLEL_NONE,
         context_by_unit=context_by_unit,
     )
+    # PrismaQuant #291 (filed here first as #288). A narrowing menu mode --
+    # ``attested`` without a dev pin, ``readable`` against a contract that
+    # publishes no reader for these shapes -- used to resolve to nothing and
+    # let the run finish successfully with ``costs: {}``. A zero-row cost
+    # table is not a cheap answer, it is a missing one, and downstream it is
+    # indistinguishable from a scope that legitimately holds no unit. So the
+    # run refuses, and says which mode and which contract produced the
+    # emptiness. This is principle 1's line: the platform reports the gap
+    # instead of shipping a table nobody can tell is empty on purpose.
+    no_admitted_rung = report_empty_menus(menus, mode=mode)
 
     # The producer's projection of every in-scope stack, asked for ONCE (it
     # hashes the whole checkpoint), bound exactly to the profile-declared
@@ -2339,6 +2738,32 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         static_scale_policy=static_scale_policy,
     )
 
+    # PrismaQuant #291 (filed here first as #288). A narrowing menu mode --
+    # ``attested`` without a dev pin, ``readable`` against a contract that
+    # publishes no reader for these shapes -- used to resolve to nothing and
+    # let the run finish successfully with ``costs: {}``. A zero-row cost
+    # table is not a cheap answer, it is a missing one, and downstream it is
+    # indistinguishable from a scope that legitimately holds no unit. So the
+    # run refuses, and says which mode and which contract produced it.
+    #
+    # Two things about where this sits. It is AFTER the journal gates because
+    # an empty menu is the weakest diagnosis this run can offer: if the
+    # checkpoint it was pointed at also describes different weights, a
+    # different calibration or a different menu, THAT is what the operator has
+    # to fix, and refusing the other way round would hide it behind "no rung
+    # admitted". And it is after ``write_export_inputs`` because the Hessian
+    # capture and the static A-side scales are facts about the calibration,
+    # not about the menu: they were measured correctly, the next run under a
+    # menu that admits something will want them, and throwing them away would
+    # charge a second forward for a flag change. What is refused is the empty
+    # cost table, and only that -- nothing has been encoded here either way.
+    if menus and len(no_admitted_rung) == len(menus):
+        print(f"[campaign] mode={mode} admits no rung for any of "
+              f"{len(menus)} units against {contract_source_label()}; "
+              "refusing to write an empty cost table", file=sys.stderr,
+              flush=True)
+        return EXIT_EMPTY_MENU
+
     def flush_checkpoint() -> None:
         for name in sorted(dirty_checkpoint_units):
             rows = [vars(anchor) for anchors in measured.get(name, {}).values()
@@ -2436,6 +2861,12 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     # so a rung added for one sibling is measured for all of them anyway. The
     # gate closes for a GROUP surface only when it closes for every member.
     surface_stop: dict[tuple[str, str], str] = {}
+    rate_band = parse_rate_band(getattr(args, "rate_band", None))
+    if rate_band is not None:
+        print(f"[campaign] rate band q256 {rate_band[0]}..{rate_band[1]}: two "
+              "anchors per window family at the band ends"
+              + (f", a third for {len(audit_units)} audit unit(s)"
+                 if audit_units else ""), flush=True)
     round_index = 0
     while True:
         round_index += 1
@@ -2455,17 +2886,18 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     for m in members
                 ])) if members else []
                 if round_index == 1:
-                    want = [
-                        _snap(r, allowed) for r in
-                        anchor_schedule(allowed[0], allowed[-1], args.anchors)
-                    ]
-                    for rate in sorted({r for r in want if r is not None}):
-                        pending.extend(
-                            (m, family, rate) for m in members
-                            if rate not in sorted(
-                                a.body_rate_q256 for a
-                                in measured.get(m, {}).get(family, []))
-                        )
+                    want = round_one_rates(allowed, band=rate_band,
+                                           anchors=args.anchors, snap=_snap)
+                    extra = (None if not audit_units else
+                             audit_extra_rate(allowed, want, snap=_snap))
+                    for m in members:
+                        rates = set(want)
+                        if extra is not None and m in audit_units:
+                            rates.add(extra)
+                        have = {a.body_rate_q256
+                                for a in measured.get(m, {}).get(family, [])}
+                        pending.extend((m, family, rate)
+                                       for rate in sorted(rates - have))
                     continue
                 if len(grid) >= budget:
                     surface_stop.setdefault((key, family), "anchor_budget")
@@ -2571,6 +3003,23 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     provenance = {
         "provenance": {
             "menu_mode": mode,
+            # Units the mode admitted no rung for. Empty on a healthy run;
+            # never absent, so a reader never has to guess whether the run
+            # was asked the question.
+            "no_admitted_rung": list(no_admitted_rung),
+            # Where round one put the anchors, and (when the planner sampled)
+            # which experts stand for their stack and under what inclusion
+            # probability. This travels with the prices because an estimate
+            # built from them is only unbiased if the reader knows the pi it
+            # was drawn under; #290 turns these into the stack's row.
+            "rate_band": (None if rate_band is None
+                          else [int(rate_band[0]), int(rate_band[1])]),
+            "unit_selection_sample": {
+                "audit_units": sorted(audit_units),
+                "inclusion_probability": {
+                    name: float(inclusion_probability[name])
+                    for name in sorted(inclusion_probability)},
+            },
             "tp_degree": int(args.tp_degree),
             "model": str(args.model),
             "nsamples": int(args.nsamples),
