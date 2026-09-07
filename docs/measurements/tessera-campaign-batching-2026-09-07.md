@@ -76,5 +76,69 @@ identical tokens and source weights; the largest absolute H-entry difference is
 and comparison is in `capture.json`. No old expert cost is relabelled as a
 measurement on this new capture.
 
-The real cost-row A/B and paired in-process/host profiles are pending. No
-throughput or energy improvement is claimed by this correctness record.
+The original capture inherited the source identity's `fit_tokens_min=1`.
+Its observed selected-scope minimum is 84; individual counts were recorded
+correctly. `capture-scope-correction-v2.json` records that correction without
+mutating files already consumed by measurements. The retained harness now
+computes this field from fresh counts. This narrow scope does not demonstrate
+full-model routing coverage.
+
+## Real cost-row BF16 A/B
+
+On Sparklina GB10, producer `382a1a97`, the same known Docker image,
+Python 3.12.3 / Torch 2.13.0+cu130 / Triton 3.7.1, four PB-assigned CPU cores
+and 16 GiB aggregate reservation, eight `[1792,2048]` positive-route expert
+w1 units were measured at `TESSERA_BF16_K1_R1792`. Each arm used exactly the
+same source weight, freshly captured Hessian and scored activation rows.
+Inputs and activation factorizations were resident before timing. Each phase
+executes real encode, decode, production cost scoring, ProductionWeightCache
+write and wire persistence; calibration, model loading and journal publication
+are outside this timing. CLI/journal behavior is separately covered above.
+
+Both arms warmed up, followed by scalar / batch-eight / batch-eight / scalar.
+All wire SHA-256 values, measured dloss, memory costs, scales and H-applied flags
+were identical in every phase. Batch phases reached one eight-unit producer
+call. This is a layer-local cost-row comparison, not an end-to-end KL or served
+benchmark, and no serving gate is qualified by it.
+
+| Arm/order | Seconds for 8 rows | Rows/s | GPU joules | Rows/J |
+|---|---:|---:|---:|---:|
+| Scalar / 1 | 31.54958 | 0.253569 | 2501.66 | 0.003198 |
+| Batch 8 / 2 | 31.33940 | 0.255270 | 1979.42 | 0.004042 |
+| Batch 8 / 3 | 31.32566 | 0.255382 | 2483.03 | 0.003222 |
+| Scalar / 4 | 31.53244 | 0.253707 | 2569.75 | 0.003113 |
+
+Throughput is essentially flat: approximately 0.6% separates these two-arm
+means. GPU energy is integrated from Netdata's ten-second power samples,
+linearly interpolated at phase boundaries. The series brackets each interval
+without gaps, but each 31-second phase spans few power samples and batch-arm
+energy itself varies substantially. The aggregate work/J ordering favors
+batching in this run; this does **not** establish a repeatable energy gain.
+Power averaged 63.2–81.5 W against GB10's approximately 140 W envelope.
+Sparklina CPU activity averaged about 6.0% machine-wide, with 0.7–0.9% iowait.
+Both boxes' CPU, memory, I/O and GPU power series are retained; the other box's
+independent work is not charged to this action. GPU utilization is not used.
+
+The measured action is
+`3b12d6fa3f4c42d72d301e511661b87bd104845204b3bdb1254a6af3d384d7de`,
+exit zero; CAS receipt
+`fbcf392528ce1cfac35878e5d8d12481bc293eb3b5dee21126442f78fd317b6d`.
+`BF16/results.json` contains every phase, environment, source hashes and wire
+fingerprint; `BF16/netdata-both-hosts.json` contains raw series and integrals.
+
+Initial paired cProfile passes are retained as a diagnostic limitation:
+scalar accounts for 32.57 seconds of a 32.86-second wall interval, while batch
+accounts for only 3.57 seconds of a 32.64-second wall interval. The incomplete
+batch accounting cannot explain total wall time. Full native sampled profiles
+and the second format's A/B are being finalized; no acceleration claim follows
+from the incomplete profile.
+
+All artifact-relative paths above are beneath
+`/mnt/shared/tessera-measurements/pq300-batch-20260907/`. The `harness/` directory
+retains exact reproduction helpers and their SHA-256 manifest; PB receipts
+also identify the actual submitted checkout snapshot. `campaign.json` holds
+the two isolated measurement actions and `native-profile-campaign.json` the
+follow-up sampled-profile actions. Submit with the published `pbcampaign.py`
+from the measurement host; use new output directories because the harness
+refuses to overwrite an existing result.
+
