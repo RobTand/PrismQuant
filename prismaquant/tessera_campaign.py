@@ -39,7 +39,8 @@ to the dynamic quantiser.
 Rendering identity, and the wire
 --------------------------------
 The render is not ``render_tessera_weight``'s reconstruction; it is
-``read_unit_artifact(encode_linear(...).blob)`` -- **the bytes, decoded**.  So the
+``read_unit_artifact(encode_linear(...).blob)`` (or the equivalent batch
+entry) -- **the bytes, decoded**.  So the
 cache entry holds the wire beside the dequantised render. Checkpoint resume
 verifies those bytes against their producer input receipt. That proves the
 cached wire is the priced wire. The packed producer-plan/cached-wire bridge
@@ -140,6 +141,7 @@ class CampaignAnchor:
     activation_contract: str
     activation_quantized: bool
     wire_bytes: int
+    #: Encoding wall time; joined batches apportion it equally among units.
     seconds: float
     #: Was a Hessian actually applied to these bytes? Admission comes from the
     #: producer's ActivationSource settings for this rung's scale plane, via
@@ -151,6 +153,7 @@ class CampaignAnchor:
     #: on every other route.  Carried per row so the price's activation
     #: identity survives into the cost table beside the Hessian identity.
     input_global_scale: "float | None" = None
+    encoding_batch_size: int = 1
 
 
 def anchor_schedule(lo: int, hi: int, count: int) -> list[int]:
@@ -313,7 +316,7 @@ def _encode_and_render(weight, format_name: str, *, activation_kwargs=None,
     """``(render, blob)`` for one rung: the bytes, and what they decode to.
 
     A thin adapter over ``tessera_render.encode_tessera_unit``, which is the
-    **one** function in this tree that calls Tessera's byte path.  Everything
+    shared scalar/batch adapter that calls Tessera's byte path.  Everything
     that made this function worth having -- the render is
     ``read_unit_artifact(blob)``, i.e. the bytes decoded rather than a second
     reconstruction (principle 8), and ``verify=False`` because the tensor
@@ -362,12 +365,24 @@ def _measure_anchor(
     of a rung whose shipping bytes are H-aware is exactly that bug with
     different bytes.
     """
-    import torch
+    prepared = _prepare_anchor(
+        qname=qname, format_name=format_name,
+        activation_kwargs_for=activation_kwargs_for,
+        hessian_required=hessian_required, static_input_scale=static_input_scale)
+    started = time.time()
+    render, blob = _encode_and_render(
+        weight, format_name, recipe=prepared["wire"],
+        activation_kwargs=prepared["activation_kwargs"],
+        hessian_required=prepared["hessian_required"])
+    return _finish_anchor(qname=qname, weight=weight, activations=activations,
+        format_name=format_name, cache=cache, wire_dir=wire_dir,
+        prepared=prepared, render=render, blob=blob, elapsed=time.time() - started)
 
+
+def _prepare_anchor(*, qname, format_name, activation_kwargs_for,
+                    hessian_required, static_input_scale):
+    """Admit each unit's Hessian and served activation contract before encode."""
     from . import format_registry as fr
-    from .production_weight_cache import (
-        _local_forward_render_score, _store_rendered_weight_entry,
-    )
     from .tessera_formats import (
         parse_tessera_format_name, tessera_serving_route, tessera_wire_recipe,
     )
@@ -432,13 +447,22 @@ def _measure_anchor(
             raise HessianContractError(
                 f"{qname}: no Hessian for this Linear. A lookup that misses "
                 "must not fall through to a weights-only encode.")
-    started = time.time()
-    render, blob = _encode_and_render(
-        weight, format_name, recipe=wire, activation_kwargs=activation_kwargs,
-        hessian_required=hessian_required,
-    )
-    elapsed = time.time() - started
+    return dict(spec=spec, family=family, rung=rung, wire=wire,
+                activation_qdq=activation_qdq, input_scale=input_scale,
+                activation_kwargs=activation_kwargs,
+                hessian_required=hessian_required)
 
+
+def _finish_anchor(*, qname, weight, activations, format_name, cache, wire_dir,
+                   prepared, render, blob, elapsed, encoding_batch_size=1):
+    """Score decoded bytes and publish the existing cache/wire entries."""
+    import torch
+    from .production_weight_cache import (
+        _local_forward_render_score, _store_rendered_weight_entry)
+
+    spec, family, rung = (prepared[key] for key in ("spec", "family", "rung"))
+    activation_qdq, input_scale = (prepared[key] for key in (
+        "activation_qdq", "input_scale"))
     score, metric, quantized, _clipped = _local_forward_render_score(
         reference_weight=weight,
         rendered_weight=render,
@@ -451,7 +475,7 @@ def _measure_anchor(
     )
     if metric != "output_mse":
         raise RuntimeError(f"unexpected render-score metric {metric!r}")
-    hessian_applied = bool(activation_kwargs)
+    hessian_applied = bool(prepared["activation_kwargs"])
 
     _store_rendered_weight_entry(
         weights=cache.weights,
@@ -488,7 +512,55 @@ def _measure_anchor(
         seconds=elapsed,
         hessian_applied=hessian_applied,
         input_global_scale=input_scale,
+        encoding_batch_size=encoding_batch_size,
     )
+
+
+def _measure_anchor_batch(*, qnames, weights, activations, format_name,
+                          cache, wire_dir, activation_kwargs_for=None,
+                          hessian_required=True, static_input_scales=None):
+    """One producer batch, with the scalar path's per-unit gates and storage."""
+    from .tessera_render import encode_tessera_units
+
+    if not qnames or len(set(qnames)) != len(qnames):
+        raise ValueError("anchor batch needs distinct nonempty unit names")
+    if len(weights) != len(qnames) or len(activations) != len(qnames):
+        raise ValueError("anchor batch needs one weight and activation input per unit")
+    prepared = [_prepare_anchor(
+        qname=name, format_name=format_name,
+        activation_kwargs_for=activation_kwargs_for,
+        hessian_required=hessian_required,
+        static_input_scale=(static_input_scales or {}).get(name)) for name in qnames]
+    started = time.time()
+    encoded = encode_tessera_units(
+        weights, format_name, recipe=prepared[0]["wire"],
+        activation_kwargs=[entry["activation_kwargs"] for entry in prepared],
+        hessian_required=prepared[0]["hessian_required"])
+    # Batch wall time is apportioned, not attributed as a measured per-unit
+    # duration. Summing anchor.seconds still reports the actual encoding time.
+    elapsed = (time.time() - started) / len(qnames)
+    return [_finish_anchor(qname=name, weight=weight, activations=acts,
+        format_name=format_name, cache=cache, wire_dir=wire_dir, prepared=entry,
+        render=render, blob=blob, elapsed=elapsed, encoding_batch_size=len(qnames))
+        for name, weight, acts, entry, (render, blob) in zip(
+            qnames, weights, activations, prepared, encoded)]
+
+
+def _anchor_batches(pending, *, weights, expert_members, batch_size):
+    """Bound compatible expert encodes inside this action; never assign hosts."""
+    if batch_size < 1:
+        raise ValueError("anchor batch size must be positive")
+    if batch_size == 1:
+        return [[item] for item in pending]
+    groups = {}
+    for item in pending:
+        name, family, rung = item
+        weight = weights[name]
+        key = ((family, rung, tuple(weight.shape), weight.dtype, weight.device)
+               if name in expert_members else (name, family, rung))
+        groups.setdefault(key, []).append(item)
+    return [group[start:start + batch_size] for group in groups.values()
+            for start in range(0, len(group), batch_size)]
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +572,8 @@ def _measure_anchor(
 # serving-unit promotion already enforces that (``allocator_solver.
 # _packed_groups_by_profile`` keys ``...experts.gate_up_proj`` and
 # ``...experts.down_proj`` into the same ``__packed_format__`` group).  The
-# campaign, however, measures ONE EXPERT AT A TIME -- an encode is per Linear
-# -- and on a 32-expert stack a full census of every rung is 32x the GPU.
+# campaign measures separate expert Linears, optionally encoding compatible
+# units together. A full census still requires every expert's wire and score.
 #
 # So the campaign may measure a SAMPLE of experts and this module estimates the
 # stack from it.  Two things have to be right for that to be honest:
@@ -1196,6 +1268,9 @@ def campaign_cost_payload(
                     "activation_contract": anchor.activation_contract,
                     "wire_bytes": anchor.wire_bytes,
                     "encode_seconds": anchor.seconds,
+                    "encode_seconds_accounting": ("unit" if anchor.encoding_batch_size == 1
+                        else "batch_wall_time_divided_by_batch_size"),
+                    "encoding_batch_size": anchor.encoding_batch_size,
                     # The static A-side scale this row was scored under, when
                     # its route executes the static NVFP4 contract; the value
                     # identity the export's scale file must reproduce.
@@ -1339,8 +1414,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
 
     api = _checkpoint_identity_api()
     settings = vars(args).copy()
-    # Locations and a wall-clock interruption limit are not encoding/scoring
-    # inputs. All other explicit campaign settings remain bound by default.
+    # Locations, batch width and a wall-clock interruption limit are not
+    # encoding/scoring inputs. All other explicit campaign settings remain bound by default.
     #
     # ``units``, ``calibration_census`` and ``census_out`` are locations too,
     # and each one's load-bearing content is already bound by value somewhere
@@ -1357,7 +1432,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     # ``--seed-checkpoint``, one verified row at a time.
     for name in ("out", "cache_dir", "checkpoint", "deadline_seconds",
                  "units", "calibration_census", "census_out",
-                 "seed_checkpoint", "seed_wire_dir"):
+                 "capture_calibration_out", "calibration_cache", "calibration_cache_sha256",
+                 "seed_checkpoint", "seed_wire_dir", "anchor_batch_size"):
         settings.pop(name, None)
     return {
         **({"stack_sampling_identity": stack_sampling_identity}
@@ -1575,7 +1651,8 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
-                         *, want_hessian: bool = False, profile=None):
+                         *, want_hessian: bool = False, profile=None,
+                         boundary_consumer=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
@@ -1622,6 +1699,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
+    calibration_coordinates = None
+
+    def consume_boundary(qname, module, args, kwargs):
+        boundary_consumer(qname, module, args, kwargs, calibration_coordinates)
 
     def accumulate(name, x):
         # ONE accumulator for both populations: a dense Linear's pre-hook and
@@ -1636,8 +1717,13 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             return
         if name in routed_seen:
             routed_seen[name] += int(flat.shape[0])
-        amax[name] = max(
-            amax[name], float(flat.abs().amax().float().item()))
+        batch_max = flat.abs().amax().float()
+        previous_max = amax[name]
+        if not isinstance(previous_max, torch.Tensor):
+            previous_max = torch.zeros((), dtype=torch.float32, device=batch_max.device)
+        # Python max(previous, NaN) preserves previous. fmax keeps that exact
+        # policy while avoiding a device-to-host scalar read on every batch.
+        amax[name] = torch.fmax(previous_max, batch_max)
         seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
@@ -1714,6 +1800,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             model, {member.module_qname for member in inventory},
             module_token_budget=0, store_device=device, store_qnames=set(),
             profile=profile, row_consumer=consume_packed,
+            boundary_consumer=(consume_boundary if boundary_consumer is not None else None),
         )
     try:
         for name in targets:
@@ -1722,7 +1809,15 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         if packed_collector is not None:
             packed_collector.install()
         with torch.no_grad():
+            sample_offset = 0
             for batch in tokens:
+                if boundary_consumer is not None:
+                    if batch.ndim != 2:
+                        raise RuntimeError("boundary capture requires [sample, token] calibration IDs")
+                    sample_ids = torch.arange(sample_offset, sample_offset + batch.shape[0], dtype=torch.int64)
+                    positions = torch.arange(batch.shape[1], dtype=torch.int64)
+                    calibration_coordinates = torch.cartesian_prod(sample_ids, positions)
+                    sample_offset += batch.shape[0]
                 model(batch.to(device))
     finally:
         for handle in handles:
@@ -1734,14 +1829,33 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
-    rows = {
-        name: (torch.cat(chunks, dim=0) if chunks else None)
-        for name, chunks in store.items()
-    }
-    hessians = {
-        name: (None if h is None else h.to(device="cpu"))
-        for name, h in hess.items()
-    } if want_hessian else {}
+    # All forwards are complete: materialize each unit's maximum only once.
+    amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
+            for name, value in amax.items()}
+    # Do not retain both the original chunks and their concatenated outputs
+    # for the whole scope. Full-model captures can hold GiB of scoring rows.
+    rows = {}
+    for name in list(store):
+        chunks = store.pop(name)
+        rows[name] = torch.cat(chunks, dim=0) if chunks else None
+        del chunks
+    hessians = {}
+    if want_hessian:
+        # GB10 shares physical DRAM with CPU tensors. Releasing Python tensor
+        # references alone leaves the CUDA allocator's cached blocks resident,
+        # so periodically return those blocks while transferring the full H.
+        released_cuda_bytes = 0
+        for name in list(hess):
+            h = hess.pop(name)
+            hessians[name] = None if h is None else h.to(device="cpu")
+            if h is not None and h.is_cuda:
+                released_cuda_bytes += h.numel() * h.element_size()
+            del h
+            if released_cuda_bytes >= 256 * 1024**2:
+                torch.cuda.empty_cache()
+                released_cuda_bytes = 0
+        if released_cuda_bytes:
+            torch.cuda.empty_cache()
     return rows, hessians, dict(seen), dict(amax)
 
 
@@ -2288,7 +2402,8 @@ def select_anchor_groups(selection: Mapping, resolved: Mapping[str, list[str]],
 def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], *,
                        args, groups: Mapping, dense_targets: Sequence[str],
                        expert_targets: Sequence[str], shapes: Mapping,
-                       identity: Mapping, expert_projection=None) -> dict:
+                       identity: Mapping, expert_projection=None, model_load_contract=None,
+                       attention_implementation=None, capture_runtime=None) -> dict:
     """The whole priced scope, as one run that loaded the model saw it.
 
     Everything here is scope-wide and selection-independent, and it is here
@@ -2300,6 +2415,9 @@ def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], 
     """
     return {
         "schema": CENSUS_SCHEMA,
+        **({"model_load_contract": model_load_contract,
+            "attention_implementation": attention_implementation,
+            "capture_runtime": capture_runtime} if model_load_contract is not None else {}),
         "model": str(args.model),
         "nsamples": int(args.nsamples),
         "seqlen": int(args.seqlen),
@@ -2979,6 +3097,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--layer-stride", type=int, default=1,
                     help="price every Nth decoder layer (1 = every Linear)")
     ap.add_argument("--anchors", type=int, default=ROUND_ONE_ANCHORS)
+    ap.add_argument("--anchor-batch-size", type=int, default=1,
+                    help="maximum compatible expert anchors in one producer "
+                         "batch within this action (1 = scalar). Does not "
+                         "change the anchor schedule or PB placement.")
     ap.add_argument("--max-rounds", type=int, default=0,
                     help="hard stop on adaptive rounds (0 = governed by "
                          "--anchor-budget instead). Rounds are not the "
@@ -3055,7 +3177,31 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     help="collect the calibration census over the whole scope, "
                          "write it here and exit. No Hessians, no retained "
                          "scoring rows, no encodes.")
+    ap.add_argument("--attention-implementation", choices=("eager", "sdpa"), default=None,
+                    help="Explicit HF attention backend required for canonical census/capture.")
+    ap.add_argument("--capture-calibration-out", default=None,
+                    help="Capture full-census float32 prefix X and uncapped H once, then exit.")
+    ap.add_argument("--calibration-cache", default=None,
+                    help="Verified capture manifest; prefetch selected X/H before encoding.")
+    ap.add_argument("--calibration-cache-sha256", default=None,
+                    help="Expected capture manifest hash, sealed by the campaign planner.")
     args = ap.parse_args(argv)
+    if (args.census_out or args.capture_calibration_out or args.calibration_cache) and not args.attention_implementation:
+        ap.error("canonical census/capture requires explicit --attention-implementation")
+    if args.calibration_cache_sha256 and not args.calibration_cache:
+        ap.error("--calibration-cache-sha256 requires --calibration-cache")
+    if args.capture_calibration_out or args.calibration_cache:
+        if not args.calibration_census or args.census_out or args.hessian != "require":
+            ap.error("capture/reuse requires --calibration-census and --hessian require")
+        if args.capture_calibration_out and (args.units or args.calibration_cache):
+            ap.error("--capture-calibration-out requires the full scope and cannot also reuse")
+        if args.max_act_rows < 1:
+            ap.error("capture/reuse requires positive --max-act-rows")
+    if args.anchor_batch_size < 1:
+        ap.error("--anchor-batch-size must be positive")
+    if args.anchor_batch_size > 1:
+        from .tessera_render import require_tessera_batch_encoder
+        require_tessera_batch_encoder()
     serving_target = serving_target_from_args(args)
 
     mode = menu_mode(args.menu_mode)
@@ -3085,8 +3231,22 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map=device,
+        **({"attn_implementation": args.attention_implementation}
+           if args.attention_implementation is not None else {}),
     )
     model.eval()
+    model_load_contract = None
+    attention_implementation = None
+    capture_runtime = None
+    if args.census_out or args.capture_calibration_out or args.calibration_cache:
+        import importlib.metadata
+        from prismaquant import pretrained_initialization_contract
+        model_load_contract = pretrained_initialization_contract(model)
+        attention_implementation = model.config._attn_implementation
+        if attention_implementation != args.attention_implementation:
+            raise RuntimeError("loaded model attention backend differs from explicit request")
+        capture_runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
+            transformers=importlib.metadata.version("transformers"))
 
     from .model_profiles import detect_profile
 
@@ -3196,42 +3356,71 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     tokens, corpus_text = _calibration_tokens(
         args.model, args.nsamples, args.seqlen, args.seed)
-    # A census run needs the counts and the maxima, which every hook produces
-    # unconditionally; it needs neither the Hessians nor the retained scoring
-    # rows, because it encodes nothing.
-    want_h = args.hessian == "require" and not census_only
-    acts, hessians, hessian_rows, act_max_abs = _collect_activations(
-        model, targets, tokens, 0 if census_only else args.max_act_rows, device,
-        want_hessian=want_h, profile=profile)
-    # For the log line and the run-level provenance only; every encode is
-    # given its own Linear's count.
     census = (None if not args.calibration_census
               else load_calibration_census(args.calibration_census, args=args))
-    hessian_token_count, hessian_token_min = census_token_counts(
-        census, hessian_rows)
-    print(f"[campaign] activations collected "
-          f"(hessian={args.hessian}, rows/Linear "
-          f"{hessian_token_min}..{hessian_token_count})",
-          flush=True)
-
-    # The draw's identity, in Tessera's own required vocabulary and built by
-    # the function the production render also calls. An ActivationSource
-    # refuses a provenance missing any of the three, which is what makes
-    # "cost.pkl and the production cache are the same draw" a checkable claim.
+    want_h = args.hessian == "require" and not census_only
+    calibration_cache = None
+    capture_identity = None
+    if census is not None:
+        # Validate the whole scope before a selected unit's artifact is read.
+        if (set(census["counts"]) != set(census_targets) or
+                census["anchor_groups"] != scope_groups):
+            raise RuntimeError("calibration census scope differs from the loaded model")
+        scope_shapes = {name: list(dict(model.named_modules())[name].weight.shape)
+                        for name in census_dense_targets}
+        scope_shapes.update({member.qname: list(member.weight.shape)
+                             for member in population.members})
+        if census["unit_shapes"] != scope_shapes:
+            raise RuntimeError("calibration census geometry differs from the loaded model")
+    if args.capture_calibration_out or args.calibration_cache:
+        from . import tessera_calibration_cache as calibration_store
+        hi, lo = census_token_counts(census, {})
+        bound_calibration = th.calibration_identity(
+            corpus_text, tokens, fit_tokens=hi,
+            source="wikitext-2-raw-v1/train", split_role="calibration",
+            model=str(args.model), seed=int(args.seed), nsamples=int(args.nsamples),
+            seqlen=int(args.seqlen), fit_tokens_min=lo)
+        require_census_draw(census, bound_calibration, where="calibration capture")
+        capture_identity = calibration_store.capture_identity(
+            args.calibration_census, calibration=bound_calibration,
+            max_act_rows=args.max_act_rows, model_load_contract=model_load_contract,
+            attention_implementation=attention_implementation)
+    if args.capture_calibration_out:
+        completed_capture = Path(args.capture_calibration_out) / "capture_manifest.json"
+        if completed_capture.exists():
+            _values, record = calibration_store.prefetch_capture(
+                completed_capture, expected_identity=capture_identity,
+                census=census, names=census_targets, device="cpu")
+            print(f"[campaign] complete calibration capture reused: {record}", flush=True)
+            return 0
+    if args.calibration_cache:
+        values, calibration_cache = calibration_store.prefetch_capture(
+            args.calibration_cache, expected_identity=capture_identity,
+            census=census, names=targets, device=device,
+            expected_sha256=args.calibration_cache_sha256)
+        acts, hessians, hessian_rows, act_max_abs = values
+    else:
+        acts, hessians, hessian_rows, act_max_abs = _collect_activations(
+            model, targets, tokens, 0 if census_only else args.max_act_rows, device,
+            want_hessian=want_h, profile=profile)
+    hessian_token_count, hessian_token_min = census_token_counts(census, hessian_rows)
     hessian_identity = th.calibration_identity(
-        corpus_text, tokens,
-        fit_tokens=int(hessian_token_count),
-        source="wikitext-2-raw-v1/train",
-        split_role="calibration",
-        model=str(args.model),
-        seed=int(args.seed),
-        nsamples=int(args.nsamples),
-        seqlen=int(args.seqlen),
-        fit_tokens_min=int(hessian_token_min),
-    )
+        corpus_text, tokens, fit_tokens=int(hessian_token_count),
+        source="wikitext-2-raw-v1/train", split_role="calibration",
+        model=str(args.model), seed=int(args.seed), nsamples=int(args.nsamples),
+        seqlen=int(args.seqlen), fit_tokens_min=int(hessian_token_min))
     if census is not None:
         require_census_draw(census, hessian_identity,
                             where=f"--calibration-census {args.calibration_census}")
+    if args.capture_calibration_out:
+        calibration_cache = calibration_store.publish_capture(
+            args.capture_calibration_out, census_path=args.calibration_census,
+            identity=capture_identity, acts=acts, hessians=hessians,
+            counts=hessian_rows, maxima=act_max_abs)
+        print(f"[campaign] complete calibration capture: {calibration_cache}", flush=True)
+        return 0
+    print(f"[campaign] activations ready (hessian={args.hessian}, rows/Linear "
+          f"{hessian_token_min}..{hessian_token_count})", flush=True)
 
     # The static A-side calibration, from the same forward passes: one
     # input_global_scale per unit under the resolved contract policy, fused
@@ -3335,7 +3524,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             dense_targets=census_dense_targets,
             expert_targets=census_expert_targets,
             shapes={name: tuple(weight.shape) for name, weight in weights.items()},
-            identity=hessian_identity, expert_projection=expert_projection)
+            identity=hessian_identity, expert_projection=expert_projection,
+            model_load_contract=model_load_contract,
+            attention_implementation=attention_implementation,capture_runtime=capture_runtime)
         if set(payload["counts"]) != set(census_targets):
             raise RuntimeError(
                 "the census did not observe every unit in scope: missing "
@@ -3707,45 +3898,59 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             break
         print(f"[campaign] round {round_index}: {len(pending)} anchors",
               flush=True)
-        for index, (name, family, rung) in enumerate(pending):
+        batches = _anchor_batches(
+            [item for item in pending if acts.get(item[0]) is not None],
+            weights=weights, expert_members=expert_members,
+            batch_size=args.anchor_batch_size)
+        completed = 0
+        for batch in batches:
             if out_of_time():
                 stopped_early = True
                 print("[campaign] deadline reached; stopping", flush=True)
                 break
+            names = [item[0] for item in batch]
+            family, rung = batch[0][1:]
             fmt = f"{family}_R{rung}"
-            activations = acts.get(name)
-            if activations is None:
-                continue
             try:
-                anchor = _measure_anchor(
-                    qname=name, weight=weights[name].to(device),
-                    activations=activations.to(device),
-                    format_name=fmt, cache=cache, wire_dir=wire_dir,
+                common = dict(format_name=fmt, cache=cache, wire_dir=wire_dir,
                     activation_kwargs_for=(
                         _activation_kwargs_for if want_h else None),
-                    hessian_required=want_h,
-                    static_input_scale=static_scales.get(name),
-                )
+                    hessian_required=want_h)
+                if len(batch) == 1:
+                    name = names[0]
+                    anchors = [_measure_anchor(
+                        qname=name, weight=weights[name].to(device),
+                        activations=acts[name].to(device),
+                        static_input_scale=static_scales.get(name), **common)]
+                else:
+                    anchors = _measure_anchor_batch(
+                        qnames=names,
+                        weights=[weights[name].to(device) for name in names],
+                        activations=[acts[name].to(device) for name in names],
+                        static_input_scales=static_scales, **common)
             except (HessianContractError, ActivationScaleContractError):
-                # Never absorbed into "one anchor failed": a contract refusal
-                # is about every row this run would write, not this one.
                 raise
             except Exception as exc:
-                print(f"[campaign] {name} {fmt}: FAILED {type(exc).__name__}: "
+                print(f"[campaign] {names} {fmt}: FAILED {type(exc).__name__}: "
                       f"{exc}", flush=True)
                 continue
-            identity = _checkpoint_anchor_identity(
-                anchor, weights=weights, menus=menus,
-                calibration_source=calibration_source, static_scales=static_scales,
-                projected_units=projected_units)
-            wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
-            measured.setdefault(name, {}).setdefault(family, []).append(anchor)
-            dirty_checkpoint_units.add(name)
-            if index % 10 == 0:
+            for anchor in anchors:
+                name = anchor.qname
+                identity = _checkpoint_anchor_identity(
+                    anchor, weights=weights, menus=menus,
+                    calibration_source=calibration_source, static_scales=static_scales,
+                    projected_units=projected_units)
+                wire_records[name][fmt] = _checkpoint_wire_record(anchor, wire_dir, identity)
+                measured.setdefault(name, {}).setdefault(family, []).append(anchor)
+                dirty_checkpoint_units.add(name)
+            completed += len(anchors)
+            # Commit every joined quantum before advancing. The scalar mode
+            # keeps its existing ten-anchor flush cadence.
+            if args.anchor_batch_size > 1 or (completed - 1) % 10 == 0:
                 flush_checkpoint()
-                print(f"[campaign] r{round_index} {index}/{len(pending)} "
-                      f"{name} {fmt} mse={anchor.dloss:.6g} "
-                      f"{anchor.seconds:.1f}s", flush=True)
+                print(f"[campaign] r{round_index} {completed}/{len(pending)} "
+                      f"batch={len(anchors)} {fmt} "
+                      f"encode_seconds={sum(a.seconds for a in anchors):.3f}", flush=True)
         flush_checkpoint()
         if stopped_early:
             break
@@ -3892,6 +4097,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # unified. The served contract reads exactly one such scalar per
             # module (trellis_input_global_scale), so this block is what makes
             # "the priced A side is the served A side" checkable downstream.
+            "calibration_cache": calibration_cache,
             "activation_static_scales": {
                 "policy": str(static_scale_policy),
                 "source": "campaign_calibration_amax_fused_unified",

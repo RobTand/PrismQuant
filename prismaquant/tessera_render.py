@@ -1053,7 +1053,7 @@ def synthesize_tessera_spec(
 
 
 # ---------------------------------------------------------------------------
-# The encoder seam: one function owns the call into Tessera's byte path.
+# The encoder seam: scalar and batch entries share one input guard.
 # ---------------------------------------------------------------------------
 
 class HessianContractError(RuntimeError):
@@ -1273,6 +1273,17 @@ def encode_tessera_unit(
     """
     from tessera.unit_artifact import read_unit_artifact
 
+    kwargs = _tessera_unit_encode_kwargs(
+        format_name, activation_kwargs=activation_kwargs,
+        hessian_required=hessian_required, verify=verify, recipe=recipe)
+    unit = _tessera_export.encode_linear(weight, **kwargs)
+    render = read_unit_artifact(unit.blob, device=str(weight.device))
+    return render.to(dtype=weight.dtype, device=weight.device), unit.blob
+
+
+def _tessera_unit_encode_kwargs(format_name, *, activation_kwargs,
+                                hessian_required, verify, recipe):
+    """The shared single/batch admission and producer keyword contract."""
     from .tessera_formats import parse_tessera_format_name
 
     parsed = parse_tessera_format_name(format_name)
@@ -1341,14 +1352,63 @@ def encode_tessera_unit(
                 "object's output and nothing else."
             )
         kwargs.update(activation_kwargs)
-    unit = _tessera_export.encode_linear(weight, **kwargs)
-    render = read_unit_artifact(unit.blob, device=str(weight.device))
-    return render.to(dtype=weight.dtype, device=weight.device), unit.blob
+    return kwargs
+
+
+def require_tessera_batch_encoder():
+    """Refuse an explicitly requested batch before any campaign work starts."""
+    encoder = getattr(_tessera_export, "encode_linears", None)
+    if not callable(encoder):
+        raise RuntimeError(
+            "Tessera producer has no encode_linears API; anchor batching requires "
+            "a producer with Tessera #386 (382a1a97 or later).")
+    return encoder
+
+
+def encode_tessera_units(weights, format_name: str, *, activation_kwargs=None,
+                         hessian_required: bool = True, verify: bool = False,
+                         recipe=None):
+    """Encode compatible units at one rung with their own activation inputs.
+
+    Each wire retains the scalar adapter's artifact name and is decoded by the
+    same reader. All unit inputs pass the scalar guard before the producer runs;
+    Tessera owns the joined trellis and validation of shared encoder settings.
+    """
+    from tessera.unit_artifact import read_unit_artifact
+
+    weights = list(weights)
+    if not weights:
+        raise ValueError("encode_tessera_units needs at least one weight")
+    per_unit = ([None] * len(weights) if activation_kwargs is None
+                else list(activation_kwargs))
+    if len(per_unit) != len(weights):
+        raise ValueError("one activation input is required per batch weight")
+    first = weights[0]
+    if any((w.shape, w.dtype, w.device) !=
+           (first.shape, first.dtype, first.device) for w in weights):
+        raise ValueError("batch weights must share shape, dtype and device")
+    admitted = [_tessera_unit_encode_kwargs(
+        format_name, activation_kwargs=inputs,
+        hessian_required=hessian_required, verify=verify, recipe=recipe)
+        for inputs in per_unit]
+    common = {key: admitted[0][key] for key in ("grid", "q256", "verify")}
+    units = require_tessera_batch_encoder()(
+        weights, names=[entry["name"] for entry in admitted],
+        per_unit=[{key: value for key, value in entry.items()
+                   if key not in {"grid", "q256", "verify", "name"}}
+                  for entry in admitted], **common)
+    if len(units) != len(weights):
+        raise RuntimeError("Tessera batch returned the wrong number of units")
+    return [(read_unit_artifact(unit.blob, device=str(weight.device)).to(
+                dtype=weight.dtype, device=weight.device), unit.blob)
+            for weight, unit in zip(weights, units)]
 
 
 __all__ += [
     "HessianContractError",
     "encode_tessera_unit",
+    "encode_tessera_units",
+    "require_tessera_batch_encoder",
     "rung_accepts_hessian",
     "tessera_encoder_hessian_status",
 ]

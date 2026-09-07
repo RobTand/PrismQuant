@@ -40,6 +40,26 @@ finalized models expose `prismaquant.pretrained_initialization.v1` through
 refuse. This descriptor records the checkpoint load phase, not later model
 mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
 
+Re-stamped (2026-09-07, `feat/packed-joint-aura`) for **joint costs for
+profile-declared packed source Linears** (#313). Opt-in streamed joint AURA
+with routed experts extends `PackedExpertProjection` views over the original
+packed Parameters. Views refresh after each shared streaming install/unload;
+one gradient hook per physical leaf distributes the existing gradient into its
+logical projections. The signed residual lease observes the unchanged packed
+`F.linear` or `F.grouped_mm` calls, validates packed transposes and cumulative
+expert row offsets, splits fused outputs according to the profile, and restores
+its taps on success or failure. An unobserved packed implementation refuses.
+Each source Linear receives its own aligned joint row, source/render identities
+and activation policy. Probe identities also seal each module's resolved attention
+and expert backend; a changed backend refuses checkpoint resume, and mutation
+during measurement refuses before that layer's rows are written. Repeated calls and the three local residual terms sum
+while signed within that Linear before squaring. The allocator's additive
+per-Linear objective is unchanged. Original decoded `ProductionWeightCache`
+entries are required; the dense-only on-demand renderer refuses before the
+source forward. LFM exposes 96 w1/w3/w2 source rows per 32-expert block, while
+native runtime binding still assigns one whole-block measurement to that roster.
+Gates: `tests/test_joint_aura_packed.py`, `tests/test_joint_aura_lease_lifetime.py`.
+
 Re-stamped (2026-09-07, `integration/native-panel-267`) for **exact calibration
 draw intake** (#267, #237). The shared AURA CLI accepts an independently hashed
 safetensors token draw through `--calibration-input` plus
@@ -58,6 +78,130 @@ panel/runtime/route/tensor and resource-trace identities while retaining
 unknown fixed/full-model resources. Operator observations alone cannot become
 a measured-runtime table, and no pin, format default or serving gate changes.
 Gate: `tests/test_native_operator_panel.py`.
+
+Re-stamped (2026-09-07, `codex/campaign-capture-reuse-20260907`) for
+**reusable campaign calibration** (§4.10; #305). With an existing full census,
+`--capture-calibration-out` captures once and exits before encoding. The shared
+PB driver exposes this dependency as `capture`; `plan --calibration-cache`
+hash-binds the completed manifest into each ordinary fanout row. The
+existing activation-cache writer stores each unit's first scoring rows in
+float32, uncapped float32 Hessian, full row count and maximum; ordinary
+perturbed-cache precision and row selection remain unchanged. The existing
+cost-stage journal binds per-unit file hashes to a versioned complete manifest,
+the exact census/draw, source checkpoint bytes and full unit geometry. Its v2
+contract requires the actual checkpoint-initialization descriptor, explicit
+attention backend and matching Torch/CUDA/Transformers versions in both the
+census producer and the capture. Legacy unqualified v1 captures are refused.
+`--calibration-cache` verifies that identity and hashes source files anew, then
+loads only selected artifacts and makes X/H resident before encoding. Missing,
+corrupt or mismatched selected inputs refuse reuse. Completed full captures
+validate on resume without another forward. Cost provenance binds the manifest
+path and hash; merged rows must agree, and selected-wire materialization derives
+its cache from those priced bytes. Legacy campaigns without a capture continue
+with explicit model calibration. This changes no format, serving gate or wire
+recipe. Gate: `tests/test_tessera_calibration_cache.py`.
+
+Re-stamped (2026-09-07, `codex/canonical-campaign-census-20260907`) for
+**canonical census provenance** (§4.10; #305). Census production now requires
+an explicit `--attention-implementation eager|sdpa`. After checkpoint loading,
+the campaign obtains the shared initialization descriptor from the actual model
+and checks its resolved attention backend against the request. The census
+records that descriptor, actual backend, and Torch/CUDA/Transformers versions.
+An uninitialized model or backend mismatch refuses before calibration. Ordinary
+campaigns retain their library attention default unless explicitly configured.
+First-model calibration uses explicit eager attention. Gate:
+`tests/test_tessera_canonical_census.py`.
+
+Re-stamped (2026-09-07, `codex/campaign-amax-residency-20260907`) for
+**resident calibration maxima**. Campaign collection keeps each unit's running
+maximum on the model device and reads it once after the full draw. The full-row
+scope and Python-max NaN behavior remain unchanged. Gate:
+`tests/test_campaign_amax_residency.py`. This changes no format or serving gate.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **AURA attention
+backend parity**. AURA explicitly requests eager attention in both resident
+checkpoint and streamed skeleton construction. The shared streaming builder
+passes an optional explicit `attn_implementation` through the auto-model and
+resolved-class construction routes; callers that omit it retain Transformers'
+backend selection. Together with checkpoint initialization and buffer precision,
+this makes the LFM BF16 source forward comparable on the same exact token draw;
+it does not loosen the full-vocabulary tolerance or quantization gates.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **declared buffer
+precision in shared checkpoint loading**. Resident materialization and streamed
+cold/prefetch/cache paths cast parameters to the requested compute dtype while
+retaining each model buffer's declared dtype. This preserves FP32 LFM expert
+bias arithmetic when BF16 router scores are corrected before top-k selection;
+representable bias values alone do not make a BF16 buffer equivalent. The
+existing layer cache carries these tensors without a parallel residency path.
+Gate: `tests/test_streaming_buffer_precision.py`.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
+initialization**. The shared Transformers compatibility hook suppresses random
+initialization for from-config skeletons, but enables the genuine initializer
+inside ordinary checkpoint missing-state finalization. A context-local scope
+prevents exceptions or concurrent skeleton construction from leaking that
+permission. This restores nonpersistent buffers (including LFM rotary frequency
+buffers) rematerialized by Transformers with uninitialized storage. Successfully
+finalized models expose `prismaquant.pretrained_initialization.v1` through
+`pretrained_initialization_contract`; from-config models and malformed descriptors
+refuse. This descriptor records the checkpoint load phase, not later model
+mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
+
+Re-stamped (2026-09-07, `codex/selected-wire-materialization-20260907`) for
+**selected expert-wire materialization** (§4.10; #301). The allocator's opt-in
+`--tessera-materialization-plan` writes a versioned, non-exportable selection
+request before the existing complete-wire allocation gate. The request binds
+the original cost bytes and preserves packed decisions and sampled estimates.
+`tessera_materialization plan` turns census anchor stacks with missing selected
+wires into ordinary PrismaBuild rows; complete stacks require no new quantum.
+Each row captures only its selected source units on the same calibration draw,
+uses the campaign encoder and `ProductionWeightCache` (including its opt-in
+`--anchor-batch-size` adapter), verifies existing
+producer receipts, and journals only the selected missing renders. Finalization
+verifies source bytes, producer recipe, every selected wire, and exact equality
+of overlapping Hessians before binding the verified capture union and publishing
+the packed allocation through the existing receipt and priced-input gates.
+Static-scale preflight expands the explicit member map and checks each source
+scalar; unequal expert scales cannot be replaced by a packed scalar. The
+producer's source-unit plan view remains a downstream export product. No
+format, pricing estimate, production default or serving admission changes.
+Gates: `tests/test_tessera_materialization.py`,
+`tests/test_tessera_packed_export_scope.py`.
+
+
+Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
+expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
+optional `--anchor-batch-size` groups pending expert anchors with equal shape,
+dtype, device, family and rung inside the existing admitted action. The
+adaptive schedule still chooses every anchor; PrismaBuild still assigns the
+actions. `tessera_render.encode_tessera_units` reuses the scalar input guard
+and calls Tessera's `encode_linears` with each unit's own ActivationSource
+mapping. Each result uses the scalar path's served activation scale, wire
+decoder, production scorer and cache writer. Per-unit wire identity and
+journal envelopes remain unchanged; each completed batch is journalled before
+the next starts. Batch width is excluded from input identity, so a resume can
+change execution width without repricing completed rows. Measured rows record
+batch width and identify equally apportioned batch encoding time; that is
+accounting, not independently measured per-unit latency. Default width remains
+one pending performance qualification. No serving pin, wire recipe, cost
+currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
+
+
+Re-stamped (2026-09-07, `codex/first-model-integration-20260907`) for
+**campaign quanta in the declared Docker runtime** (§4.10). The shared fanout
+spec accepts an optional `container` block with `image` and explicit absolute
+`mounts` (`source`, `target`, optional `readonly`). The worker resolves the image
+once, logs its immutable ID and executes that ID; use a digest in versioned
+specs when retries must retain the same runtime. The existing environment is
+passed into the container. Its source is the PB worker's sealed checkout at
+`/workspace`, read-only; data mounts cannot hide that source. The container
+runs with the worker's UID/GID so shared output remains writable under NFS root
+squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
+Host-interpreter specs remain supported. Census, anchor and materialization
+quanta share the same row builder; the adapter does no scheduling or fanout.
+Gate: `tests/test_tessera_campaign_container.py`.
+
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
@@ -6285,6 +6429,32 @@ seam.
 
 ### 4.10 The Tessera continuous menu — `FORMATS=TESSERA` (2026-09-02)
 
+For a sampled allocation that selects source wires not yet encoded, the opt-in
+completion path is:
+
+```mermaid
+flowchart LR
+  costs[Sampled campaign costs] --> selection[Non-exportable packed selection request]
+  census[Calibration census] --> plan[Selected-wire PB manifest]
+  selection --> plan
+  plan --> groups[Census stack quanta: capture, verify, encode missing selected wires]
+  groups --> finalize[Verify receipts and Hessian union]
+  finalize --> gate[Existing strict allocation and priced-input gates]
+  gate --> allocation[Final packed allocation]
+```
+
+Run `python -m prismaquant.tessera_materialization plan --request REQUEST
+--census CENSUS --workspace WORKSPACE --spec CAMPAIGN_SPEC`, submit its
+`WORKSPACE/manifest.json` through PrismaBuild's published `pbcampaign.py`, and
+run `python -m prismaquant.tessera_materialization finalize --plan
+WORKSPACE/plan.json` inside an admitted action. `final/result.json` names the
+final allocation, capture, scales and wire directory for the export leg.
+The request itself is never an exporter input. Interrupted groups resume through
+the existing identity-bound journal; contradictory or unjournaled wire bytes
+refuse instead of being replaced. These selected wire measurements do not
+re-solve the allocation or turn sampled stack estimates into census prices.
+
+
 **Fan-out journal integrity.** Each source journal must pass the same
 manifest, unit identity and payload checksum checks as ordinary resume.
 The merger also checks that the listed units equal the journal identity's
@@ -7132,9 +7302,24 @@ row computes them once. `--census-out` runs the prologue over the whole scope
 and writes `prismaquant.tessera_campaign_census.v1`: the per-unit calibration
 row counts, the per-unit activation maxima, the anchor grouping, the unit
 shapes, the draw's own `text_sha256`/`fit_ids_sha256`, and the producer's
-expert projection of every declared stack. `--calibration-census` reads it
-back, refuses a census of another draw or scope, checks every unit the run
-hooked against it, and only then stamps the scope's values.
+expert projection of every declared stack. Census production requires explicit
+`--attention-implementation` and records the actual loaded model's checkpoint
+initialization descriptor, attention backend, and Torch/CUDA/Transformers
+versions. `--calibration-census` reads it back, refuses a census of another
+draw or scope, checks every observed unit against it, and only then stamps the
+scope's values.
+
+An optional dependent `capture` action (`--capture-calibration-out`) computes
+all uncapped Hessians and first-row float32 scoring inputs once using the same
+census and exits before encoding. The existing activation-cache writer and
+cost-stage journal seal a complete `prismaquant.tessera_calibration_cache.v2`
+manifest. `plan --calibration-cache` binds that manifest path and SHA256 into
+each anchor action. The action verifies its actual initializer, backend,
+runtime, complete source bytes, calibration and geometry, then prefetches only
+its selected X/H artifacts before encoding. Cost provenance retains the same
+manifest; selected-wire materialization derives reuse from that provenance.
+Legacy unqualified capture manifests refuse. Without a cache, each row still
+performs its own selected-unit calibration over the exact draw.
 
 * **`fit_tokens` is a maximum over the scope**, and Tessera seals it into every
   H-aware wire receipt (`cached_unit.encoding_input_identity`), so a shard
@@ -7148,8 +7333,8 @@ hooked against it, and only then stamps the scope's values.
   side no module executes. Taking the scope's maxima removes the dependence.
 * **The producer's expert projection is rebound at allocation** against every
   stack the carried block names (`carried_units`), so a block trimmed to one
-  shard's stacks is refused there; and the request hashes the whole checkpoint,
-  which must not land on every row.
+  shard's stacks is refused there. Reuse readers verify complete checkpoint
+  bytes anew even though projection and calibration outputs are shared.
 
 `--seed-checkpoint` offers another campaign's stored anchors to this run's own
 row gates rather than resuming its journal: a journal binds the run identity
