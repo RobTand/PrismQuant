@@ -129,9 +129,8 @@ fingerprint; `BF16/netdata-both-hosts.json` contains raw series and integrals.
 Initial paired cProfile passes are retained as a diagnostic limitation:
 scalar accounts for 32.57 seconds of a 32.86-second wall interval, while batch
 accounts for only 3.57 seconds of a 32.64-second wall interval. The incomplete
-batch accounting cannot explain total wall time. Full native sampled profiles
-and the second format's A/B are being finalized; no acceleration claim follows
-from the incomplete profile.
+batch accounting cannot explain total wall time. Full native sampled profiles were collected separately (below); no
+acceleration claim follows from the incomplete cProfile accounting.
 
 All artifact-relative paths above are beneath
 `/mnt/shared/tessera-measurements/pq300-batch-20260907/`. The `harness/` directory
@@ -142,3 +141,79 @@ follow-up sampled-profile actions. Submit with the published `pbcampaign.py`
 from the measurement host; use new output directories because the harness
 refuses to overwrite an existing result.
 
+
+## Real cost-row E2M1 A/B
+
+The same eight-unit input, resident preparation, environment, four-core
+reservation and cost-row timing scope were then measured at
+`TESSERA_E2M1_K2_R896`. Wire bytes and all numerical cost fields again matched
+exactly in both warmups, all four measured phases and both cProfile phases.
+The first call warmed scalar for 102.83 seconds and batch-eight for 24.53
+seconds; these are excluded from the table.
+
+| Arm/order | Seconds for 8 rows | Rows/s | GPU joules | Rows/J |
+|---|---:|---:|---:|---:|
+| Scalar / 1 | 98.83112 | 0.080946 | 1973.32 | 0.004054 |
+| Batch 8 / 2 | 23.77231 | 0.336526 | 467.66 | 0.017106 |
+| Batch 8 / 3 | 23.74366 | 0.336932 | 536.65 | 0.014907 |
+| Scalar / 4 | 98.83196 | 0.080945 | 1680.14 | 0.004761 |
+
+The aggregate comparison is **4.1599× rows/s and 3.6378× rows/J** on this
+workload. Scalar and batch arms each measured 16 total rows: 197.6631 versus
+47.5160 seconds, and 3653.46 versus 1004.31 GPU joules. Energy uses the same
+bracket-checked ten-second Netdata interpolation as BF16 and includes device
+baseline power. It is GPU energy, not wall-plug system energy. The short batch
+phases limit its precision; both batch observations nevertheless exceed both
+scalar observations in work/J in this run.
+
+Average GPU power was only 17.0–22.6 W; machine-wide CPU activity was about
+6.0–6.1%, with 0.7–0.8% iowait. These measurements establish a family-specific
+latency and energy benefit and substantial unused GPU power headroom. They do
+not establish GPU saturation or identify its cause. The default remains one.
+
+Action `c4c08a329ba4cbb86d299ee2d91382e467c724d60001159b5af332e8afafb7b9`
+completed on Sparklina, exit zero, 509.72 seconds; CAS receipt
+`e0ec6b724209b7744909cdc57d21269f99700314041c7f48e77747b01357fe5c`.
+The raw measurements, paired cProfile files and both-host telemetry are under
+`E2M1/`. Sampled native profiles remain a separate pair of admitted actions.
+
+
+## Full-call native profile follow-up
+
+A separate admitted profile action warmed both complete eight-unit arms and
+sampled one scalar and one batch call at 100 Hz using py-spy native/Python
+stacks. These profiled wall times are excluded from the throughput comparison.
+Each profile receipt verifies its binary, output and log SHA-256 values and
+positive sample count. This bounds memory without retaining an unbounded CUDA
+event table. Native categories are inclusive and may overlap; they are sampled
+host stacks, not GPU kernel durations. Per-thread coverage is explicit in
+`profile-summary.json`.
+
+BF16 produced 3,463 scalar and 3,242 batch main-thread samples, representing
+34.63 and 32.42 sampled thread-seconds; timed cost-row walls were 34.19 and
+32.66 seconds. The small window difference includes sampling/phase bookkeeping
+and sampling resolution. Inclusive CUDA stream synchronization occupied 22.26
+versus 21.25 sampled seconds. The dominant source callsite is
+Tessera `window_viterbi.py:771`, `sse += float(final.sum())`, with 22.19 versus
+21.16 sampled seconds. Inclusive `viterbi_window_fused` occupies 30.77 versus
+29.01 sampled seconds. This broadly unchanged full-call profile supports the
+flat throughput finding and replaces the incomplete batch cProfile account.
+A synchronization wait includes outstanding GPU work; its duration alone is
+not a promise of removable latency.
+
+BF16 native action
+`d9cacad92f402405ba1cdd0413e92bed4fc8eab0eaa0785710267e457df59534`
+completed on Sparklina, exit zero, 145.57 seconds; CAS receipt
+`551d095978f5d2a55c5eed1849df6b8770251487d2c30733c9dc188f7d5cb349`.
+Raw profiles, verified profile receipts and both-host Netdata series are under
+`BF16-native-profile/`.
+
+The E2M1 cProfile already accounts for 100.40 of 100.54 scalar wall seconds
+and 25.00 of 25.34 batch wall seconds. `viterbi_columns` calls fall from
+2,048 to 256, with cumulative time 89.56 to 14.46 seconds. Its
+`_TCQPlan.sse` host scalar read (`encode.py:573`) accounts for 89.10 to
+14.38 seconds; unit-local refit work remains near 6.9 seconds. The producer's
+`_run_joined` discards the returned scalar SSE. That is an attributable
+follow-up seam for Tessera #385, reported to its owner; this integration does
+not change the producer, and further speedup from suppressing the readback is
+unmeasured. The full native E2M1 pair is still pending.
