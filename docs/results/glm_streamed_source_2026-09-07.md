@@ -380,3 +380,13 @@ payload and canonical receipt were verified in
 `review-02/current-main-guard-integration-cpu.json`; payload SHA256
 `e6476746bf4b43ec356928b710e7b097762399f57c59951b162fdc5aa9c78b7f`,
 receipt `43ec1025a7cab4005d5988d54fc3f1c7f7c4371af6adefb1ecaa2e65cd10c6fd`.
+
+A separate test-wrapper defect found while resolving those skips was fixed:
+the ARM CPU container now forwards the caller's explicit `TESSERA_REPO`, just
+as the x86 wrapper already did. It neither chooses a new producer checkout
+nor enables GPU visibility. PB
+`7e4b196c2dbf54aa504ddea07f69041ccc05b8d132c3ae8a1d3e1ca36c948db7`
+passed all 16 packed-campaign CPU checks on Sparky without skips in 33.43
+seconds, with four xdist workers and one native thread each. Exit was 0 and
+cleanup completed; exact wrapper/collector/test source, bundle and CAS hashes
+are verified in `review-02/arm-producer-tool-forwarding-cpu.json`.

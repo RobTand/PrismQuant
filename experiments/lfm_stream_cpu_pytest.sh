@@ -7,6 +7,6 @@ exec docker run --rm --user "$(id -u):$(id -g)" \
   -e PYTHONDONTWRITEBYTECODE=1 -e CUDA_VISIBLE_DEVICES -e NVIDIA_VISIBLE_DEVICES=void \
   -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
   -e XDG_CACHE_HOME=/tmp/pq-stream-cpu-cache -e HF_HOME=/tmp/pq-stream-cpu-hf \
-  -e PRISMABUILD_CONTAINER_OWNER \
+  -e PRISMABUILD_CONTAINER_OWNER -e TESSERA_REPO \
   -e "PYTHONPATH=/workspace:$input_root/tessera-382a1a97/src:$input_root/container-compatible-deps:/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/pytest-deps:/mnt/shared/tessera-measurements/lfm-streamed-parity-20260907/pytest-deps" \
   "$image" -m pytest "$@"
