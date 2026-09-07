@@ -1,7 +1,10 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/tessera-joint-anchor-bridge`. Stamps
+As of: 2026-09-07 · `fix/native-workspace-receipt`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/native-workspace-receipt`) for the native MoE
+workspace receipt binding described below (#328).
 
 Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
 from completed measured Tessera anchors** (#322). The explicit
@@ -71,9 +74,11 @@ panel. The existing packed-expert
 reference applies the shared activation QDQ at both GEMM boundaries. Native
 measurements bind all aligned joint rows through `RuntimeBinding`; no new
 scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace
-is recorded separately from layer residency and per-apply scratch, with
-full-model fixed resources and workspace composition still unknown. This is a
-research boundary; no format, pin, serving gate or production default changes.
+is recorded separately from layer residency and per-apply scratch. Its identity
+is carried in the complete frozen receipt panel and joined to the resource
+observation's workspace digest and byte count; the reader requires no duplicate
+top-level workspace fields. Full-model fixed resources and workspace composition
+remain unknown. This is a research boundary; no format, pin, serving gate or production default changes.
 The research CLI `experiments/pq309_native_moe_panel.py` consumes the existing
 canonical capture-v2 PAC boundary and original PWC/wire artifacts; it re-derives
 encoder identities from the pinned full Hessians and retains lossless routing
