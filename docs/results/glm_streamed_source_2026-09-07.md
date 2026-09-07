@@ -108,3 +108,40 @@ qualification root's `packer-ab-01/` and `lfm-packer-ab-01/` directories.
 The recorded baseline function SHA256 is
 `d9eeacfe684472bc2ffa27e529ea2480f195f59fd8b621a52da9dcf238e4db6e`,
 from commit `1c7492333`; the complete immutable fixture is checked in.
+
+Final focused CPU checks on the committed packer/resource-plan state completed
+on dl380g10: 34 passed, no skips, four xdist workers, Python 3.14.4,
+PyTorch 2.11.0+cpu and Transformers 5.16.1. PB action
+`4b227765ec04ff04951d29202a460ba803fa83856393da58257adbdf89ca1957`
+exited 0; verified payload
+`2d8b8946e3b9a2c72db28d98af0f99039a48fadb6316242ad8da73fe498031d1`,
+receipt `24162937a96496c4e3d0500d3e9873eeb49fd1184a0206fdae6b8f6b5c9b84f6`.
+
+The subsequent DSA-layer-4 workspace experiment **failed qualification**.
+It ran all 512 original B1 samples of 512 tokens with real GLM source weights,
+two source-cache slots, next-layer prefetch and 8 GiB of explicitly synthetic
+current boundaries (seed 17092026). Experts 1, 48, 60, 98 and 254 received no
+routed rows: 15 of 867 requested targets were unobserved. The existing
+collector refused before the final full-H transfer to CPU. No routes were
+forced and no missing H was fabricated. This is retained partial-workspace
+evidence, not a completed capture or a proof that the proposed draw fits.
+
+PB action `380caee08fabf78dbb070806744d7237cf3a6811ca06f97bb5491b5ca9b53c8a`
+ran on Lina with CPU 6, physical reservation 104 GiB and GPU subset 92 GiB,
+and exited 1. The experiment took 690.45 seconds. Peak CUDA allocated/reserved
+was 85.8875/90.5137 GiB; the largest sampled conservative cgroup-plus-CUDA
+reservation sum was 96.9208 GiB and minimum host MemAvailable was 18.3401 GiB.
+There were zero CUDA allocator retries, CUDA OOMs or cgroup OOMs. Source/H/X
+lifetimes after collector return remain unmeasured by this failed action.
+Both-host Netdata recorded 523 power samples per host: Lina 4–39 W, mean
+28.74 W; its first-two-batch profiler covers cold allocation/setup, with
+132.61 seconds CPU and 1.55 seconds CUDA. Neither this cold profile nor the
+failed capture establishes steady-state performance or work per joule.
+
+The failed terminal, cleanup evidence and SHA256 inventory of the result,
+512 per-batch records, continuous memory samples, CPU/CUDA trace and both-host
+Netdata are recorded in `review-02/workspace-dsa-failed.json` under the shared
+qualification root. PB did not publish a success CAS receipt for this nonzero
+action. The practical lesson is that random residual boundaries do not ensure
+real MoE routing coverage, even after 262,144 tokens; a source-prefix fixture
+is needed to attempt the missing transfer and cleanup measurement.
