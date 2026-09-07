@@ -34,7 +34,10 @@ field may degrade to `None`. Identity is CONTENT, not path: a relocated
 checkpoint still resumes, a same-size same-header value edit does not. The hash
 runs only when a cache dir was requested, and a `source_identity_cache.json`
 beside the manifest keys each digest to the shard's full stat fingerprint
-(`ctime_ns` included), so a resume costs one `stat` per shard. Gate:
+(`ctime_ns` included), so unchanged shards can reuse their recorded content
+digests. Resume still performs source discovery, metadata reads, digest-cache
+JSON handling, identity construction and manifest admission; primitive stat
+timings do not measure that full path. Gate:
 `tests/test_export_resume_source_identity.py`, which drives the real streaming
 exporter and asserts on whether a `layer_*.pt` was read at all. No served
 artifact gate is claimed.
