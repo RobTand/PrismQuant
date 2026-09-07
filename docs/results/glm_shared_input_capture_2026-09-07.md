@@ -275,3 +275,40 @@ are sealed by `review-02/shared-input-full-prefix-refusal.json` under
 includes the actual terminal, source-bundle comparison, admission, samples and
 artifact hashes. A failed action has no success CAS receipt. No repeat,
 guard increase, energy ranking or full-fit performance claim followed.
+
+### Completed current-source release candidate: CPU evidence
+
+The full-prefix refusal exposed a source-lifetime issue: the collector's
+packed projection views retained the current raw weight slab after model
+unload and cache discard. An admitted CPU regression using a real tiny GLM
+checkpoint failed on that storage-lifetime assertion before the view-owner
+cleanup (`09e5e51e6f7fc290535c917c40a1e4f01796932e1df3fe2186013b2af040eafa`,
+DL380, exit 1, cleanup complete). This is a correctness/lifetime reproduction,
+not a measured explanation of the full GPU peak.
+
+The new default-off `--release-completed-source` path waits for every forward
+and hook removal, clears packed view owners, then uses the existing streaming
+context unload and layer-cache discard for the completed current layer.
+It preserves the next layer's prefetch future, cache storage and hidden-state
+continuation. The existing one-pass output drain is unchanged. Exact shared
+output-group progress, allocator observations and before/after source-owner
+metadata are now retained for a subsequent fit attempt.
+
+Final CPU validation ran through PrismaBuild action
+`a0dca68ddd0ee7f01003fc98836721e22e7431041bf3973e00eed489c0ec00af` on SPARKLINA
+with 8 physical CPU slots, 12 GiB reserved memory, native threads bounded to
+one and CUDA hidden in the established container: **169 passed, zero skips**
+in 41.12 seconds, followed by explicit compile checks, exit 0 and complete
+scope cleanup. Tests prove current-source storage expires, next storage and
+future identity survive, next installation needs no cold read, and returned
+X/H, counts and hidden continuation are exact. Failure cases verify hook and
+capture cleanup, and group-boundary failures retain exact progress.
+
+The terminal, manifest, receipt and payload hashes, red/green source bundles,
+commands and whole-tree source comparison are sealed in
+`/mnt/shared/tessera-measurements/glm-streaming-source-20260907/review-02/current-source-release-cpu.json`.
+The final payload is
+`26711e4e447e937348bc265a7ceddab94c02c1b4ca372acad23129d1e7deb8d0`;
+receipt `5634b47ab57ea308340cd78e03829093241afbd24a6f3c570ab2573822f83e0c`.
+No GPU fit, runtime improvement or energy claim is established by these CPU
+checks. The memory guard and original source/calibration binding are unchanged.

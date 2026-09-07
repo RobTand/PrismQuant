@@ -1792,7 +1792,7 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None,
                          boundary_consumer=None, forward_batch=None, resource_check=None,
-                         shared_packed_inputs: bool = False):
+                         shared_packed_inputs: bool = False, on_forwards_complete=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
@@ -1802,6 +1802,11 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     before/after each output concat and Hessian CPU transfer. A refusal clears
     owned output tensors before propagating; integer row observations remain
     available for diagnostics. The default performs no additional checks.
+    ``on_forwards_complete()`` is an optional source-lifecycle boundary after
+    every original forward, hook removal and release of local packed weight
+    views. It runs before CPU output materialization, within failure cleanup.
+    The caller can release only exhausted source state while retaining the
+    next resident layer and current hidden boundaries. The default is None.
 
     ``shared_packed_inputs`` is an experimental, default-off collector policy.
     Only packed siblings with the same module, expert and derived input kind
@@ -1853,6 +1858,8 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
+    inventory = by_name = selected_by_module = parents = None
+    member = selected = unique = consume_packed = None
     calibration_coordinates = None
 
     def consume_boundary(qname, module, args, kwargs):
@@ -2003,7 +2010,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                     sample_offset += batch.shape[0]
                 (model if forward_batch is None else forward_batch)(batch.to(device))
     except BaseException as error:
-        if shared_packed_inputs:
+        if shared_packed_inputs or on_forwards_complete is not None:
             store.clear()
             hess.clear()
             amax.clear()
@@ -2018,9 +2025,16 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             handle.remove()
         if packed_collector is not None:
             packed_collector.remove()
+        if on_forwards_complete is not None:
+            # Hook removal alone leaves row_consumer's closure and these
+            # PackedExpertProjection.weight views owning the old packed slabs.
+            # Loop variables own views too, even after their dictionaries die.
+            packed_collector = None
+            inventory = by_name = selected_by_module = parents = None
+            member = selected = unique = consume_packed = None
     unobserved = [name for name, count in routed_seen.items() if not count]
     if unobserved:
-        if shared_packed_inputs:
+        if shared_packed_inputs or on_forwards_complete is not None:
             store.clear()
             hess.clear()
             amax.clear()
@@ -2032,6 +2046,8 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     rows, hessians = {}, {}
     h = chunks = cpu_rows = cpu_h = None
     try:
+        if on_forwards_complete is not None:
+            on_forwards_complete()
         if resource_check is not None:
             resource_check('before_output_materialization')
         # Materialize each unit's maximum only once.
@@ -2043,6 +2059,8 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             # cached allocator blocks) must not accumulate behind those clones.
             maxima = {}
             for name, members in group_members.items():
+                if resource_check is not None:
+                    resource_check(f'before_output_group:{name}')
                 if resource_check is not None:
                     resource_check(f'before_rows_concat:{name}')
                 chunks = store.pop(name)
@@ -2076,6 +2094,8 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                     if resource_check is not None:
                         resource_check(f'after_output_clone:{member_name}')
                 cpu_rows = cpu_h = None
+                if resource_check is not None:
+                    resource_check(f'after_output_group:{name}')
             amax = maxima
         # Do not retain both original chunks and concatenated outputs for the
         # whole scope. Full-model captures can hold GiB of scoring rows.
@@ -2119,7 +2139,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         amax.clear()
         rows.clear()
         hessians.clear()
-        if resource_check is not None and torch.device(device).type == 'cuda':
+        if (resource_check is not None or on_forwards_complete is not None) and torch.device(device).type == 'cuda':
             try:
                 torch.cuda.empty_cache()
             except Exception as cleanup_error:
@@ -3396,6 +3416,9 @@ def _run_streamed_calibration(args, runner, profile, *, mode, population,
             _checked_projected_units(projection['stacks'],
                 weights={m.qname: m.weight for m in live}, model_path=args.model,
                 source=projection['producer']['source'], measured={m.qname for m in live})
+        # The source identity check is complete. The collector creates its own
+        # live views; this caller must not pin old packed storage through return.
+        del live
         before = time.perf_counter()
         acts, hessians, rows, amax = _collect_activations(runner.model, names, tokens,
             args.max_act_rows if writer is not None else 0, runner.device,
@@ -3412,7 +3435,7 @@ def _run_streamed_calibration(args, runner, profile, *, mode, population,
                 for t in [*acts.values(), *hessians.values()] if t is not None))
         telemetry.append(record)
         print(json.dumps({'streamed_calibration_layer': record}), flush=True)
-        del acts, hessians, live
+        del acts, hessians
         if runner.device.type == 'cuda':
             torch.cuda.empty_cache()
 

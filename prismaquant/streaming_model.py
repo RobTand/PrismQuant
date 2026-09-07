@@ -884,9 +884,78 @@ class StreamingContext:
             raise RuntimeError("streaming initialization audit was not started")
         return audit.complete()
 
-    def unload(self, L: int):
+    def unload(self, L: int, *, trim_cache: bool = True):
         _unload(self.model, [f"{self.layers_prefix}{L}."])
-        return self.layer_cache.trim_for_memory_pressure()
+        return self.layer_cache.trim_for_memory_pressure() if trim_cache else 0
+
+    def release_completed_layer(self, L: int):
+        """Release an exhausted layer without disturbing its resident successor.
+
+        The caller must have completed every source forward and released its
+        own parameter views. Other traversals retain the normal unload/cache
+        policy; this explicit boundary is for one-pass collection.
+        """
+        if type(L) is not int or not 0 <= L < self.num_layers:
+            raise ValueError('completed source layer is outside the model')
+        with self._inflight_lock:
+            if L in self._inflight:
+                raise RuntimeError('completed source layer still has an unclaimed prefetch')
+        # Pressure trimming could spend the next layer's prefetch pin. This
+        # transition releases only the layer the caller has finished using.
+        self.unload(L, trim_cache=False)
+        self.layer_cache.discard(L)
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    def source_residency_snapshot(self, layer_indices):
+        """Describe existing layer owners without retaining any tensor views.
+
+        Pending prefetches remain pending; inspection never waits, claims a
+        future, refreshes LRU state or loads a missing source layer.
+        """
+        owners, all_storages = [], {}
+
+        def describe(layer, owner, tensors, **extra):
+            storages = {}
+            count = 0
+            for tensor in tensors:
+                if tensor.is_meta:
+                    continue
+                count += 1
+                storage = tensor.untyped_storage()
+                key = (str(tensor.device), storage.data_ptr())
+                storages[key] = storage.nbytes()
+            all_storages.update(storages)
+            owners.append(dict(layer=layer, owner=owner, tensor_count=count,
+                unique_storage_bytes=sum(storages.values()),
+                storages=[dict(device=device, pointer=pointer, bytes=size)
+                          for (device, pointer), size in sorted(storages.items())], **extra))
+
+        for layer in layer_indices:
+            if type(layer) is not int or not 0 <= layer < self.num_layers:
+                raise ValueError('source residency layer is outside the model')
+            module = self.layers[layer]
+            describe(layer, 'installed_model', [*module.parameters(), *module.buffers()])
+            cached = self.layer_cache._cache.get(layer)
+            describe(layer, 'layer_cache', () if cached is None else cached.values())
+            with self._inflight_lock:
+                future = self._inflight.get(layer)
+            if future is None:
+                describe(layer, 'prefetch_future', (), state='absent')
+            elif future.cancelled():
+                describe(layer, 'prefetch_future', (), state='cancelled')
+            elif not future.done():
+                describe(layer, 'prefetch_future', (), state='pending', bytes_known=False)
+            else:
+                try:
+                    delivered = future.result()
+                except Exception as exc:
+                    describe(layer, 'prefetch_future', (), state='failed', error=repr(exc))
+                else:
+                    describe(layer, 'prefetch_future', () if not delivered else delivered.values(),
+                             state='completed', bytes_known=True)
+        return dict(schema='prismaquant.source_residency_snapshot.v1', owners=owners,
+                    unique_storage_bytes=sum(all_storages.values()))
 
     def shutdown(self):
         self.prefetch_pool.shutdown(wait=True)

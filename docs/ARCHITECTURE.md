@@ -1,7 +1,27 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `experiment/glm-shared-input-capture`. Stamps
+As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the **opt-in
+completed-current-source release boundary**. The bounded workspace's
+`--release-completed-source` requires shared-input collection and the original
+source-prefix route. After all original forwards and hook removal, the
+collector drops its packed source views before invoking the optional
+`on_forwards_complete` callback. The existing `StreamingContext` unload and
+`LayerCache.discard(current)` then release only the exhausted layer, without
+pressure-trimming its resident successor. Next-layer cache/future ownership,
+hidden boundaries and the strict next-prefetch gate remain intact. No new
+cache, source reader or two-pass output drain is introduced.
+
+Callback failures clear capture owners and retain integer row observations.
+The diagnostic records actual group start/completion boundaries, completed
+qnames, the foreground refusal checkpoint and allocator state, plus source
+owner metadata before/after release. The normal campaign does not enable this
+release callback; its checked live projection views are dropped after identity
+validation. This option remains default-off pending a reviewed GPU fit result;
+the retained full-prefix-05 shared collector still refused at the original
+memory guard before this lifecycle change.
 
 Re-stamped (2026-09-07, `experiment/glm-shared-input-capture`) for the
 **default-off shared packed-input collector experiment**. The private

@@ -89,6 +89,38 @@ def failed_collector_row_counts(exc, collector, targets):
                                 scope='partial_failed_collection_not_census')
 
 
+def record_materialization_checkpoint(result, label, observation):
+    """Record foreground group transitions before a latched guard can raise."""
+    if label.startswith('before_output_group:'):
+        progress = result.setdefault('output_materialization_progress', dict(
+            scope='observed_shared_group_materialization_not_completed_capture', groups_started=0,
+            groups_completed=0, qnames_completed=0, current_group=None,
+            completed_groups=[], group_boundaries=[]))
+        if progress['current_group'] is not None:
+            raise RuntimeError('collector began a group before completing its predecessor')
+        progress['current_group'] = label.split(':', 1)[1]
+        progress['groups_started'] += 1
+    progress = result.get('output_materialization_progress')
+    if progress is None:
+        return
+    if label.startswith('after_output_clone:'):
+        progress['qnames_completed'] += 1
+    if label.startswith('after_output_group:'):
+        name = label.split(':', 1)[1]
+        if progress['current_group'] != name:
+            raise RuntimeError('collector completed a different output group')
+        progress['completed_groups'].append(name)
+        progress['groups_completed'] += 1
+        progress['current_group'] = None
+    progress['last_checkpoint'] = label
+    progress['last_observation'] = dict(observation)
+    if label.startswith(('before_output_group:', 'after_output_group:')):
+        progress['group_boundaries'].append(dict(checkpoint=label,
+            groups_started=progress['groups_started'],
+            groups_completed=progress['groups_completed'],
+            qnames_completed=progress['qnames_completed'], **observation))
+
+
 def watch_memory_samples(stopped, observe, write_record, on_error, interval=0.1):
     """Keep observing through guard detection and actual execution unwind."""
     while not stopped.is_set():
@@ -127,6 +159,8 @@ def main():
     parser.add_argument('--input-binding-sha256')
     parser.add_argument('--shared-packed-inputs', action='store_true',
                         help='experimental shared-input collector; full fit remains unqualified')
+    parser.add_argument('--release-completed-source', action='store_true',
+                        help='opt-in current-source release before shared collector CPU return')
     parser.add_argument('--qualify-shared-inputs', action='store_true',
                         help='bounded exact real-input collector replay, not a full capture')
     parser.add_argument('--qualification-expert-ids', type=int, nargs='+')
@@ -137,6 +171,9 @@ def main():
         parser.error('replay requires source-prefix and explicit expert IDs, without --shared-packed-inputs')
     if args.qualification_fixture_mib <= 0:
         parser.error('qualification fixture budget must be positive')
+    if args.release_completed_source and (not args.shared_packed_inputs or
+            args.boundary_mode != 'source-prefix' or args.qualify_shared_inputs):
+        parser.error('source release requires shared-packed-inputs and source-prefix full collection')
     args.out.mkdir(parents=True, exist_ok=False)
     assert torch.cuda.is_available()
     assert 1 < args.physical_cap_gb <= 104, 'measurement must fit the declared worker capacity'
@@ -180,6 +217,7 @@ def main():
         device_uuid=str(getattr(torch.cuda.get_device_properties(0), 'uuid', '')),
         source_page_release_optin=os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1',
         shared_packed_inputs=args.shared_packed_inputs,
+        release_completed_source=args.release_completed_source,
         collector_replay_qualification=args.qualify_shared_inputs,
         host_kernel_release=os.uname().release,
         phases=[], telemetry_errors=[])
@@ -226,6 +264,17 @@ def main():
                 ('MemFree','Cached','Buffers','Shmem','SReclaimable','SUnreclaim')})
 
     def check_guard(label, *, raise_on_trip=True):
+        if raise_on_trip:
+            checkpoint = dict(time=time.time(), label=label)
+            if label.startswith(('before_output_', 'after_output_', 'before_rows_',
+                                 'after_rows_', 'before_hessian_', 'after_hessian_')):
+                allocator = torch.cuda.memory_stats()
+                checkpoint.update(cuda_allocated_bytes=torch.cuda.memory_allocated(),
+                    cuda_reserved_bytes=torch.cuda.memory_reserved(),
+                    inactive_split_bytes=allocator.get('inactive_split_bytes.all.current'),
+                    allocation_retries=allocator.get('num_alloc_retries'), ooms=allocator.get('num_ooms'))
+            result['last_foreground_checkpoint'] = checkpoint
+            record_materialization_checkpoint(result, label, checkpoint)
         if raise_on_trip and telemetry_failed.is_set():
             result['status'] = 'failed'
             raise RuntimeError('required workspace host telemetry is incomplete')
@@ -247,6 +296,7 @@ def main():
         if guard_tripped.is_set():
             result['status'] = 'refused_by_memory_guard'
             if raise_on_trip:
+                result['memory_guard_refusal_checkpoint'] = dict(checkpoint)
                 raise RuntimeError('workspace measurement reached its physical memory guard; '
                                    'no full-capture admission is established')
 
@@ -451,6 +501,16 @@ def main():
                         return torch.profiler.ProfilerAction.RECORD
                     return torch.profiler.ProfilerAction.NONE
 
+                def release_completed_source():
+                    if next_batch != args.nsamples:
+                        raise RuntimeError('cannot release source before all original forwards')
+                    layers = range(args.layer, min(args.layer + 2, runner.num_layers))
+                    before = runner.context.source_residency_snapshot(layers)
+                    mark('before_completed_source_release', source_owners=before)
+                    runner.context.release_completed_layer(args.layer)
+                    after = runner.context.source_residency_snapshot(layers)
+                    mark('after_completed_source_release', source_owners=after)
+
                 # Observe cold and later windows in the original traversal;
                 # no additional forwards or changed microbatches are needed.
                 sampling_enabled.set()
@@ -462,7 +522,9 @@ def main():
                         acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
                             args.max_act_rows,runner.device,want_hessian=True,profile=profile,
                             forward_batch=forward_batch, resource_check=check_guard,
-                            shared_packed_inputs=args.shared_packed_inputs)
+                            shared_packed_inputs=args.shared_packed_inputs,
+                            on_forwards_complete=(release_completed_source
+                                if args.release_completed_source else None))
                         audit_collector_rows(counts, targets, result, check_guard)
                 except BaseException as exc:
                     result['partial_target_row_observations'] = failed_collector_row_counts(
