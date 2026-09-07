@@ -1,7 +1,29 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/canonical-campaign-census-20260907`. Stamps
+As of: 2026-09-07 · `codex/capture-delivery-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/campaign-capture-reuse-20260907`) for
+**reusable campaign calibration** (§4.10; #305). With an existing full census,
+`--capture-calibration-out` captures once and exits before encoding. The shared
+PB driver exposes this dependency as `capture`; `plan --calibration-cache`
+hash-binds the completed manifest into each ordinary fanout row. The
+existing activation-cache writer stores each unit's first scoring rows in
+float32, uncapped float32 Hessian, full row count and maximum; ordinary
+perturbed-cache precision and row selection remain unchanged. The existing
+cost-stage journal binds per-unit file hashes to a versioned complete manifest,
+the exact census/draw, source checkpoint bytes and full unit geometry. Its v2
+contract requires the actual checkpoint-initialization descriptor, explicit
+attention backend and matching Torch/CUDA/Transformers versions in both the
+census producer and the capture. Legacy unqualified v1 captures are refused.
+`--calibration-cache` verifies that identity and hashes source files anew, then
+loads only selected artifacts and makes X/H resident before encoding. Missing,
+corrupt or mismatched selected inputs refuse reuse. Completed full captures
+validate on resume without another forward. Cost provenance binds the manifest
+path and hash; merged rows must agree, and selected-wire materialization derives
+its cache from those priced bytes. Legacy campaigns without a capture continue
+with explicit model calibration. This changes no format, serving gate or wire
+recipe. Gate: `tests/test_tessera_calibration_cache.py`.
 
 Re-stamped (2026-09-07, `codex/canonical-campaign-census-20260907`) for
 **canonical census provenance** (§4.10; #305). Census production now requires
@@ -13,9 +35,6 @@ An uninitialized model or backend mismatch refuses before calibration. Ordinary
 campaigns retain their library attention default unless explicitly configured.
 First-model calibration uses explicit eager attention. Gate:
 `tests/test_tessera_canonical_census.py`.
-
-As of: 2026-09-07 · `fix/lfm-streamed-parity`. Stamps
-follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-07, `codex/campaign-amax-residency-20260907`) for
 **resident calibration maxima**. Campaign collection keeps each unit's running
@@ -7207,9 +7226,24 @@ row computes them once. `--census-out` runs the prologue over the whole scope
 and writes `prismaquant.tessera_campaign_census.v1`: the per-unit calibration
 row counts, the per-unit activation maxima, the anchor grouping, the unit
 shapes, the draw's own `text_sha256`/`fit_ids_sha256`, and the producer's
-expert projection of every declared stack. `--calibration-census` reads it
-back, refuses a census of another draw or scope, checks every unit the run
-hooked against it, and only then stamps the scope's values.
+expert projection of every declared stack. Census production requires explicit
+`--attention-implementation` and records the actual loaded model's checkpoint
+initialization descriptor, attention backend, and Torch/CUDA/Transformers
+versions. `--calibration-census` reads it back, refuses a census of another
+draw or scope, checks every observed unit against it, and only then stamps the
+scope's values.
+
+An optional dependent `capture` action (`--capture-calibration-out`) computes
+all uncapped Hessians and first-row float32 scoring inputs once using the same
+census and exits before encoding. The existing activation-cache writer and
+cost-stage journal seal a complete `prismaquant.tessera_calibration_cache.v2`
+manifest. `plan --calibration-cache` binds that manifest path and SHA256 into
+each anchor action. The action verifies its actual initializer, backend,
+runtime, complete source bytes, calibration and geometry, then prefetches only
+its selected X/H artifacts before encoding. Cost provenance retains the same
+manifest; selected-wire materialization derives reuse from that provenance.
+Legacy unqualified capture manifests refuse. Without a cache, each row still
+performs its own selected-unit calibration over the exact draw.
 
 * **`fit_tokens` is a maximum over the scope**, and Tessera seals it into every
   H-aware wire receipt (`cached_unit.encoding_input_identity`), so a shard
@@ -7223,8 +7257,8 @@ hooked against it, and only then stamps the scope's values.
   side no module executes. Taking the scope's maxima removes the dependence.
 * **The producer's expert projection is rebound at allocation** against every
   stack the carried block names (`carried_units`), so a block trimmed to one
-  shard's stacks is refused there; and the request hashes the whole checkpoint,
-  which must not land on every row.
+  shard's stacks is refused there. Reuse readers verify complete checkpoint
+  bytes anew even though projection and calibration outputs are shared.
 
 `--seed-checkpoint` offers another campaign's stored anchors to this run's own
 row gates rather than resuming its journal: a journal binds the run identity

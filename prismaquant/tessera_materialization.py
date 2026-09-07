@@ -221,7 +221,10 @@ def run(plan_path, group_index, *, anchor_batch_size=1):
     _verify_source(model_path, source)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     profile = detect_profile(model_path)
-    model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16, device_map=device)
+    cache_record = provenance.get('calibration_cache')
+    attention_implementation = census.get('attention_implementation') if cache_record else None
+    model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16, device_map=device,
+        **({'attn_implementation':attention_implementation} if attention_implementation else {}))
     model.eval()
     population = tc._require_campaign_population(model, profile, provenance['layer_stride'])
     members = {member.qname: member for member in population.members}
@@ -230,9 +233,21 @@ def run(plan_path, group_index, *, anchor_batch_size=1):
     tokens, corpus = tc._calibration_tokens(model_path, provenance['nsamples'],
                                            provenance['seqlen'], provenance['seed'])
     want_h = provenance['hessian']['supplied']
-    acts, hessians, counts, maxima = tc._collect_activations(
-        model, names, tokens, provenance['max_act_rows'], device,
-        want_hessian=want_h, profile=profile)
+    if cache_record is not None:
+        from prismaquant import pretrained_initialization_contract
+        from . import tessera_calibration_cache as calibration_store
+        cache_identity = calibration_store.capture_identity(
+            data['census_path'], calibration=provenance['hessian']['calibration_identity'],
+            max_act_rows=provenance['max_act_rows'],
+            model_load_contract=pretrained_initialization_contract(model),
+            attention_implementation=model.config._attn_implementation)
+        (acts,hessians,counts,maxima), _record = calibration_store.prefetch_capture(
+            cache_record['path'],expected_sha256=cache_record['sha256'],
+            expected_identity=cache_identity,census=census,names=names,device=device)
+    else:
+        acts, hessians, counts, maxima = tc._collect_activations(
+            model, names, tokens, provenance['max_act_rows'], device,
+            want_hessian=want_h, profile=profile)
     hi, lo = tc.census_token_counts(census, counts)
     calibration = th.calibration_identity(corpus, tokens, fit_tokens=hi,
         source='wikitext-2-raw-v1/train', split_role='calibration', model=str(model_path),

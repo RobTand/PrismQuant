@@ -7818,7 +7818,10 @@ class _PackedExpertActivationCollector:
     An optional ``row_consumer(qname, X)`` observes each full, live input before
     storage selection. It must consume synchronously rather than retain X;
     campaigns use it to accumulate full-calibration Hessians without creating
-    a second module-input cache. The default leaves reservoir sampling intact.
+    a second module-input cache. An optional boundary_consumer receives the
+    original module, positional and keyword arguments before row selection or
+    dtype conversion, preserving actual routing tensors for native validation.
+    The default leaves reservoir sampling intact.
     """
 
     def __init__(
@@ -7832,10 +7835,12 @@ class _PackedExpertActivationCollector:
         profile=None,
         store_qnames: set[str] | None = None,
         row_consumer=None,
+        boundary_consumer=None,
     ):
         self.model = model
         self.profile = profile
         self.row_consumer = row_consumer
+        self.boundary_consumer = boundary_consumer
         # #145: ``experts_qnames`` is the enumeration the collector HOOKS --
         # the full visible module set -- and ``store_qnames`` narrows only
         # which modules keep full activation tensors. One shared generator
@@ -7871,12 +7876,16 @@ class _PackedExpertActivationCollector:
 
     def install(self) -> None:
         for qname, mod in self._modules_by_qname.items():
-            self._handles.append(
-                mod.register_forward_pre_hook(self._make_hook(qname))
-            )
+            if self.boundary_consumer is None:
+                handle = mod.register_forward_pre_hook(self._make_hook(qname))
+            else:
+                handle = mod.register_forward_pre_hook(self._make_hook(qname), with_kwargs=True)
+            self._handles.append(handle)
 
     def _make_hook(self, qname: str):
-        def hook(module, args):
+        def hook(module, args, kwargs=None):
+            if self.boundary_consumer is not None:
+                self.boundary_consumer(qname, module, args, kwargs or {})
             if not args or not isinstance(args[0], torch.Tensor):
                 return
             x = args[0]

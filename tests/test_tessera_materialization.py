@@ -20,6 +20,10 @@ from test_tessera_export_projection import case, _meta, _units, FMT, STACK, N, D
 @pytest.fixture
 def selection(case, tmp_path):
     _pack(case)
+    # This materialization fixture checks actual source bytes as well as headers.
+    source = case.payload['__prismaquant__'][tep.PROJECTION_KEY]['producer']['source']
+    source['files'] = {name:tm._sha(case.model/name) for name in source['files']}
+    source['config_sha256'] = tm._sha(case.model/'config.json')
     config = copy.deepcopy(case.payload)
     assignment = canonicalize_assignment(config)
     meta = config['__prismaquant__']
@@ -250,7 +254,8 @@ def test_complete_selected_stack_needs_no_materialization_quantum(selection, mon
 
 
 @pytest.mark.parametrize('batch_size', [1, 2])
-def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(selection, monkeypatch, batch_size):
+@pytest.mark.parametrize('reuse', [False, True])
+def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(selection, monkeypatch, batch_size, reuse):
     from transformers import AutoModelForCausalLM
     from prismaquant import tessera_hessian as th
     s = selection
@@ -261,6 +266,24 @@ def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(s
         s.cost_path.write_bytes(pickle.dumps(s.cost))
         tm.write_selection_request(s.request, layer_config=s.config, assignment=s.assignment,
             cost_path=s.cost_path, cost_payload=s.cost, output_path=s.output)
+    if reuse:
+        from prismaquant import tessera_calibration_cache as cc
+        census = json.loads(s.census.read_text())
+        from test_tessera_calibration_cache import canonical_fields
+        import prismaquant
+        census.update(canonical_fields())
+        s.census.write_text(json.dumps(census))
+        monkeypatch.setattr(prismaquant,'pretrained_initialization_contract',lambda model:canonical_fields()['model_load_contract'])
+        cache_identity = cc.capture_identity(s.census,
+            calibration=s.cost['provenance']['hessian']['calibration_identity'],max_act_rows=4,
+            model_load_contract=canonical_fields()['model_load_contract'],attention_implementation='eager')
+        record = cc.publish_capture(s.workspace/'capture',census_path=s.census,
+            identity=cache_identity,acts={n:torch.ones(4,N) for n in _units()},
+            hessians={n:torch.eye(N) for n in _units()},counts=census['counts'],maxima=census['max_abs'])
+        s.cost['provenance']['calibration_cache'] = record
+        s.cost_path.write_bytes(pickle.dumps(s.cost))
+        tm.write_selection_request(s.request,layer_config=s.config,assignment=s.assignment,
+            cost_path=s.cost_path,cost_payload=s.cost,output_path=s.output)
     path, _data, _calls = _plan(s, monkeypatch)
     api = ReceiptAPI()
     api.make_unit_record = lambda blob, identity, filename: dict(file=filename,
@@ -271,7 +294,7 @@ def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(s
     weight = torch.ones(N,N)
     monkeypatch.setattr(tep, 'source_unit_weight', lambda *args:weight)
     monkeypatch.setattr(AutoModelForCausalLM, 'from_pretrained',
-                        lambda *args, **kwargs:SimpleNamespace(eval=lambda:None))
+                        lambda *args, **kwargs:SimpleNamespace(eval=lambda:None,config=SimpleNamespace(_attn_implementation="eager")))
     monkeypatch.setattr(tc, '_require_campaign_population', lambda *args:SimpleNamespace(
         members=[SimpleNamespace(qname=n, weight=weight) for n in _units()]))
     monkeypatch.setattr(tc, '_calibration_tokens', lambda *args:(torch.ones(2,4), 'fixture'))
@@ -279,6 +302,7 @@ def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(s
     monkeypatch.setattr(th, 'calibration_identity', lambda *args, **kwargs:calibration)
     captures = []
     def collect(model, targets, tokens, max_rows, device, **kwargs):
+        assert not reuse, 'materialization repeated the calibration forward'
         captures.append((list(targets), max_rows))
         return ({n:torch.ones(4,N) for n in targets}, {}, {n:8 for n in targets}, {n:1.0 for n in targets})
     monkeypatch.setattr(tc, '_collect_activations', collect)
@@ -306,13 +330,19 @@ def test_run_encodes_only_missing_selection_and_resume_verifies_existing_bytes(s
     tm.run(path, 0, anchor_batch_size=batch_size)
     assert measured == [(n,FMT) for n in expected_missing]
     assert batches == ([] if batch_size == 1 else [expected_missing])
-    assert captures == [(sorted(_units()),4)]
+    assert captures == ([] if reuse else [(sorted(_units()),4)])
     assert not s.output.exists()
     tm.run(path, 0, anchor_batch_size=1)
     assert measured == [(n,FMT) for n in expected_missing]
     report = tm.finalize(path)
     assert report['verified_source_units'] == len(_units())
 
+
+    if reuse:
+        with open(record['path'],'a') as handle:
+            handle.write(' ')
+        with pytest.raises(RuntimeError,match='priced calibration capture manifest changed'):
+            tm.run(path,0)
 
 def test_real_producer_wire_materialization_and_translator_handoff(tmp_path, monkeypatch):
     """Real source/capture/encoder/receipt/translator; no served-route scoring."""
