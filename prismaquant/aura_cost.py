@@ -1873,6 +1873,7 @@ def compute_aura_cost_streamed(
     include_routed_experts: bool = False,
     diagnostic_weight_mse_pairs: Sequence[tuple[str, str]] | None = None,
     joint_activation: bool = False,
+    joint_projection_backend=None,
     profile=None,
 ) -> dict:
     """Layer-streamed KL-adjoint with identity-bound per-Linear shards.
@@ -1894,6 +1895,8 @@ def compute_aura_cost_streamed(
         raise ValueError("probe_microbatch must be a nonnegative integer")
     if calib_ids.ndim != 2 or min(calib_ids.shape) < 1:
         raise ValueError("streamed AURA needs nonempty [rows, sequence] calibration")
+    if joint_projection_backend is not None and not joint_activation:
+        raise ValueError("joint_projection_backend requires joint_activation")
     if probe_microbatch and not joint_activation:
         raise ValueError("streamed probe_microbatch currently requires joint_activation")
     batch_rows = min(probe_microbatch or len(calib_ids), len(calib_ids))
@@ -2101,6 +2104,8 @@ def compute_aura_cost_streamed(
     joint_cache_renders: dict[str, dict[str, dict]] = {}
     joint_prefetch_stats: list[dict] = []
     if joint_activation:
+        from prismaquant.joint_projection_backend import prewarm_projection_backend
+        joint_projection_backend = prewarm_projection_backend(joint_projection_backend, device=runner.device)
         from prismaquant.cost_streaming import validate_streamed_model_identity
         from prismaquant.joint_aura import (
             SignedJointProjectionLease, activation_identity, arithmetic_identity,
@@ -2111,7 +2116,7 @@ def compute_aura_cost_streamed(
         from prismaquant.production_weight_cache import _cb_cache_tensor_identity
 
         joint_probe_identity = {
-            "schema": "prismaquant.joint_aura.probes.v1",
+            "schema": "prismaquant.joint_aura.probes.v2",
             "source_model": validate_streamed_model_identity(model_identity, where="joint AURA"),
             "calibration_sha256": hashlib.sha256(calib_ids.detach().cpu().contiguous().numpy().tobytes()).hexdigest(),
             "calibration_shape": list(calib_ids.shape),
@@ -2121,7 +2126,7 @@ def compute_aura_cost_streamed(
             "distribution": "rademacher", "normalization": "global_kl_fisher",
             "producer_source_sha256": _aura_source_sha256(),
             "source_execution": source_execution_identity(runner.model),
-            "arithmetic": arithmetic_identity(runner.dtype),
+            "arithmetic": arithmetic_identity(runner.dtype, joint_projection_backend),
         }
         if probe_layout is not None:
             joint_probe_identity["noise_layout"] = probe_layout
@@ -2145,7 +2150,7 @@ def compute_aura_cost_streamed(
                     }
                 production_cache.compact_for_pickle()
         joint_run_identity = {
-            "schema": "prismaquant.joint_aura.run.v1",
+            "schema": "prismaquant.joint_aura.run.v2",
             "probe_identity": joint_probe_identity,
             "cached_rendered_weights": joint_cache_renders,
             "activation_contracts": ({
@@ -2547,7 +2552,7 @@ def compute_aura_cost_streamed(
         if name not in joint_source_tensors:
             joint_source_tensors[name] = _cb_cache_tensor_identity(source)
         joint_operators[(name, fmt)] = {
-            "schema": "prismaquant.joint_aura.operator.v1",
+            "schema": "prismaquant.joint_aura.operator.v2",
             "qname": name, "format": fmt,
             "source_weight": joint_source_tensors[name],
             "rendered_weight": rendered_identity,
@@ -2927,6 +2932,7 @@ def compute_aura_cost_streamed(
                     {name: linears[name] for name in pending},
                     {name: {fmt: fr.get_format(fmt) for fmt in render_formats[name]} for name in pending},
                     d_weights, activation_max_abs=getattr(cache_owner, "activation_max_abs", None),
+                    projection_backend=joint_projection_backend,
                 )
             try:
                 if joint_lease is not None:
@@ -3130,6 +3136,7 @@ def run_streamed_production_anchor_aura(
     allow_packed_expert_omission: bool = False,
     collect_col_energy: bool = False,
     joint_activation: bool = False,
+    joint_projection_backend=None,
     profile=None,
 ) -> dict:
     """Run one streamed KL adjoint over an exact production-anchor plan.
@@ -3317,6 +3324,7 @@ def run_streamed_production_anchor_aura(
         allow_packed_expert_omission=allow_packed_expert_omission,
         collect_col_energy=collect_col_energy,
         joint_activation=joint_activation,
+        joint_projection_backend=joint_projection_backend,
         checkpoint_dir=checkpoint_dir,
         resume=resume,
         model_identity=model_identity,
