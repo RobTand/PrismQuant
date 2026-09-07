@@ -359,3 +359,98 @@ def test_recipe_change_refuses_replay(tmp_path):
     assert not list(cache.glob("layer_*.pt")), (
         "a recipe change left the previous recipe's payloads replayable")
     assert json.loads((cache / "manifest.json").read_text()) == second
+
+
+# --------------------------------------------------------------------------
+# The source is not only its weight bytes. `config.json` decides the skeleton
+# the payloads were quantized against; the index decides which shard each
+# tensor comes from. Both can change while every shard byte stays identical.
+# --------------------------------------------------------------------------
+
+def _write_config(source: Path, **fields) -> None:
+    payload = {
+        "architectures": ["ToyForCausalLM"],
+        "num_hidden_layers": 1,
+        "tie_word_embeddings": False,
+        "torch_dtype": "bfloat16",
+    }
+    payload.update(fields)
+    (source / "config.json").write_text(json.dumps(payload, indent=2))
+
+
+def test_changed_config_json_refuses_replay(tmp_path, monkeypatch):
+    """Identical shards, one changed field in `config.json`. The cached
+    layers were quantized against the other skeleton, so replay must refuse
+    before any payload is read."""
+    run, source = _exporter(tmp_path, monkeypatch)
+    cache = tmp_path / "resume"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+    _write_config(source)
+    run(cache)
+    assert list(cache.glob("layer_*.pt")), "fixture wrote no layer cache"
+
+    _write_config(source, tie_word_embeddings=True)
+    replays: list = []
+    run(cache, replay_log=replays)
+    assert replays == [], (
+        f"replayed payloads quantized against another config.json: {replays}")
+
+
+def test_config_json_is_part_of_the_content_identity(tmp_path):
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    source = tmp_path / "source"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+    _write_config(source)
+    before = build_source_checkpoint_identity(str(source))
+
+    _write_config(source, num_hidden_layers=2)
+    after = build_source_checkpoint_identity(str(source))
+    assert before["content_sha256"] != after["content_sha256"]
+    assert [row["name"] for row in before["metadata"]] == ["config.json"]
+
+
+def test_appearing_config_json_is_a_different_source(tmp_path):
+    """An absent file contributes no row, so a config.json that appears
+    later must not compare equal to the run that had none."""
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    source = tmp_path / "source"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+    bare = build_source_checkpoint_identity(str(source))
+    assert bare["metadata"] == []
+
+    _write_config(source)
+    assert (build_source_checkpoint_identity(str(source))["content_sha256"]
+            != bare["content_sha256"])
+
+
+def test_changed_index_json_is_a_different_source(tmp_path):
+    """`model.safetensors.index.json` decides which shard a tensor is read
+    from; the shards it names can be byte-identical either way."""
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    source = tmp_path / "source"
+    source.mkdir(parents=True, exist_ok=True)
+    save_file({"model.layers.0.proj.weight": _WEIGHT_A.clone()},
+              str(source / "model-00001-of-00001.safetensors"))
+    index = source / "model.safetensors.index.json"
+
+    def _write_index(**extra):
+        payload = {
+            "metadata": {"total_size": 8},
+            "weight_map": {
+                "model.layers.0.proj.weight":
+                    "model-00001-of-00001.safetensors",
+            },
+        }
+        payload["metadata"].update(extra)
+        index.write_text(json.dumps(payload, indent=2))
+
+    _write_index()
+    before = build_source_checkpoint_identity(str(source))
+    _write_index(total_size=16)
+    after = build_source_checkpoint_identity(str(source))
+
+    assert before["shards"] == after["shards"], "the shard bytes did not move"
+    assert before["content_sha256"] != after["content_sha256"]
