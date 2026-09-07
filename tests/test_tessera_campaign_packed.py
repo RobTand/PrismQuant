@@ -346,6 +346,14 @@ def _bridge_main_fixture(monkeypatch, tmp_path, *, perturb=None):
         pytest.skip(f"producer projection tool unavailable: {exc}")
 
     model = _WideRoutedModel().to(dtype=torch.bfloat16)
+    # The fixture substitutes HF loading; checkpoint-initialization behavior
+    # is separately exercised with real HF modules in its own contract tests.
+    import prismaquant
+    import importlib.metadata
+    model.config._attn_implementation = "eager"
+    monkeypatch.setattr(prismaquant, "pretrained_initialization_contract", lambda model: dict(
+        schema="prismaquant.pretrained_initialization.v1",scope="checkpoint_missing_state",
+        status="completed",transformers_version=importlib.metadata.version("transformers")))
     source = tmp_path / "source"
     _write_source_checkpoint(model, source, perturb=perturb)
     transformers = ModuleType("transformers")
@@ -387,7 +395,8 @@ def _bridge_main_fixture(monkeypatch, tmp_path, *, perturb=None):
     monkeypatch.setattr(tessera_campaign, "_measure_anchor", measure_without_route_admission)
     argv = ["--model", str(source), "--out", str(tmp_path / "cost.pkl"),
             "--cache-dir", str(tmp_path / "cache"), "--hessian", "off",
-            "--menu-mode", "research", "--max-rounds", "1"]
+            "--menu-mode", "research", "--max-rounds", "1",
+            "--attention-implementation", "eager"]
     return tessera_campaign, argv, model, encoded
 
 

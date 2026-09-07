@@ -2387,7 +2387,8 @@ def select_anchor_groups(selection: Mapping, resolved: Mapping[str, list[str]],
 def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], *,
                        args, groups: Mapping, dense_targets: Sequence[str],
                        expert_targets: Sequence[str], shapes: Mapping,
-                       identity: Mapping, expert_projection=None) -> dict:
+                       identity: Mapping, expert_projection=None, model_load_contract=None,
+                       attention_implementation=None, capture_runtime=None) -> dict:
     """The whole priced scope, as one run that loaded the model saw it.
 
     Everything here is scope-wide and selection-independent, and it is here
@@ -2399,6 +2400,9 @@ def calibration_census(counts: Mapping[str, int], max_abs: Mapping[str, float], 
     """
     return {
         "schema": CENSUS_SCHEMA,
+        **({"model_load_contract": model_load_contract,
+            "attention_implementation": attention_implementation,
+            "capture_runtime": capture_runtime} if model_load_contract is not None else {}),
         "model": str(args.model),
         "nsamples": int(args.nsamples),
         "seqlen": int(args.seqlen),
@@ -3158,7 +3162,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                     help="collect the calibration census over the whole scope, "
                          "write it here and exit. No Hessians, no retained "
                          "scoring rows, no encodes.")
+    ap.add_argument("--attention-implementation", choices=("eager", "sdpa"), default=None,
+                    help="Explicit HF attention backend required for canonical census.")
     args = ap.parse_args(argv)
+    if args.census_out and not args.attention_implementation:
+        ap.error("canonical census requires explicit --attention-implementation")
     if args.anchor_batch_size < 1:
         ap.error("--anchor-batch-size must be positive")
     if args.anchor_batch_size > 1:
@@ -3193,8 +3201,22 @@ def main(argv: "Sequence[str] | None" = None) -> int:
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map=device,
+        **({"attn_implementation": args.attention_implementation}
+           if args.attention_implementation is not None else {}),
     )
     model.eval()
+    model_load_contract = None
+    attention_implementation = None
+    capture_runtime = None
+    if args.census_out:
+        import importlib.metadata
+        from prismaquant import pretrained_initialization_contract
+        model_load_contract = pretrained_initialization_contract(model)
+        attention_implementation = model.config._attn_implementation
+        if attention_implementation != args.attention_implementation:
+            raise RuntimeError("loaded model attention backend differs from explicit request")
+        capture_runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
+            transformers=importlib.metadata.version("transformers"))
 
     from .model_profiles import detect_profile
 
@@ -3443,7 +3465,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             dense_targets=census_dense_targets,
             expert_targets=census_expert_targets,
             shapes={name: tuple(weight.shape) for name, weight in weights.items()},
-            identity=hessian_identity, expert_projection=expert_projection)
+            identity=hessian_identity, expert_projection=expert_projection,
+            model_load_contract=model_load_contract,
+            attention_implementation=attention_implementation,capture_runtime=capture_runtime)
         if set(payload["counts"]) != set(census_targets):
             raise RuntimeError(
                 "the census did not observe every unit in scope: missing "

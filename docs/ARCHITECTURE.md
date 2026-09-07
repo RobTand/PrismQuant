@@ -1,5 +1,19 @@
 # PrismaQuant Architecture
 
+As of: 2026-09-07 · `codex/canonical-campaign-census-20260907`. Stamps
+follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/canonical-campaign-census-20260907`) for
+**canonical census provenance** (§4.10; #305). Census production now requires
+an explicit `--attention-implementation eager|sdpa`. After checkpoint loading,
+the campaign obtains the shared initialization descriptor from the actual model
+and checks its resolved attention backend against the request. The census
+records that descriptor, actual backend, and Torch/CUDA/Transformers versions.
+An uninitialized model or backend mismatch refuses before calibration. Ordinary
+campaigns retain their library attention default unless explicitly configured.
+First-model calibration uses explicit eager attention. Gate:
+`tests/test_tessera_canonical_census.py`.
+
 As of: 2026-09-07 · `fix/lfm-streamed-parity`. Stamps
 follow, newest first, each recording its own branch and date.
 
