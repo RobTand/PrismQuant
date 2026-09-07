@@ -2527,8 +2527,9 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
                                projection=None) -> tuple[dict, dict]:
     """Ask the producer to project every in-scope stack; bind it; check the bytes.
 
-    One subprocess for the whole campaign (the producer hashes the checkpoint
-    to identify its source).  The answer is bound exactly to the
+    Each request covers the whole campaign (the producer hashes the checkpoint
+    to identify its source); family retries never request one stack at a time.
+    The answer is bound exactly to the
     profile-declared units -- no name outside the profile's declaration, no
     2-D slice PrismaQuant chose -- and each unit's source tensor is read from
     the shard the producer hashed and compared byte-for-byte with the live
@@ -2613,14 +2614,26 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
         raise RuntimeError(
             "Tessera campaign cannot ask the producer for its expert projection; "
             f"refusing to price it: {exc} (PrismaQuant #183).") from exc
+    # Keep every previously attempted mixed nominal plan. Also ask at each
+    # common family by NAME: different stack menus can place E4M3 at different
+    # indices, so moving all ladders together can miss the one routed family
+    # even when every stack offers it (#295). At most two plans per distinct
+    # family count, never the Cartesian product of stack assignments and never
+    # one checkpoint-hashing producer call per stack.
+    plans = [{stack: ladder[min(index, len(ladder) - 1)]
+              for stack, ladder in ladders.items()}
+             for index in range(max(map(len, ladders.values())))]
+    by_family = {stack: dict(ladder) for stack, ladder in ladders.items()}
+    common_families = set.intersection(*(set(rows) for rows in by_family.values()))
+    for grid in next(iter(by_family.values())):
+        if grid in common_families:
+            asked = {stack: (grid, rows[grid]) for stack, rows in by_family.items()}
+            if asked not in plans:
+                plans.append(asked)
     attempts: list[dict] = []
     stacks: dict[str, tuple[str, int]] = {}
     answer = bound = None
-    for round_index in range(max(len(ladder) for ladder in ladders.values())):
-        asked = {stack: ladder[min(round_index, len(ladder) - 1)]
-                 for stack, ladder in ladders.items()}
-        if asked == stacks:
-            break                       # every ladder exhausted; nothing new to ask
+    for asked in plans:
         stacks = asked
         try:
             answer = request_expert_projection(model_path, stacks, out_path=out_path)
@@ -2634,7 +2647,7 @@ def _project_expert_population(population: ExpertPopulation, *, weights, menus,
     if bound is None or answer is None:
         raise RuntimeError(
             "Tessera campaign cannot bind the producer's expert projection to the "
-            "profile-declared population on any family in the menu; refusing to "
+            "profile-declared population on the attempted nominal family plans; refusing to "
             "price it: "
             + " || ".join(a["refused"] for a in attempts)
             + " (PrismaQuant #183).")
