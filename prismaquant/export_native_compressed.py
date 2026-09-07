@@ -8532,6 +8532,10 @@ def _render_lever_provenance() -> dict:
     cache.
     """
     return {
+        # Older layer_*.pt payloads may already contain narrowed persistent
+        # buffers. Recompute them even when the source and render knobs match:
+        # replay bypasses the corrected reader and cannot recover lost bits.
+        "persistent_buffer_read_policy": "model_declared_v1",
         "PRISMAQUANT_DO_NO_HARM": os.environ.get(
             "PRISMAQUANT_DO_NO_HARM", "1"),
         "PRISMAQUANT_GPTQ_DAMP_SWEEP": os.environ.get(
