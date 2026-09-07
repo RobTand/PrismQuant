@@ -89,3 +89,20 @@ inside an admitted action. `WORKSPACE/final/result.json` names the exact final
 allocation, Hessian capture, scale file and wire directory. This opt-in step
 requires the dispatcher/container adapter and shared batch adapter commits;
 no format default or serving gate changes.
+
+## Integration review
+
+The root reviewer read the final materializer and packed-scale gate, verified
+both original PB payload hashes, and checked the real producer 2-of-3 fixture.
+The combined materializer, batch, container, projection and documentation suite
+then passed on the CPU fleet worker `dl380g10`: **135 passed, 2 expected skips**,
+PB `70538e0ed5bde8b8226b11206891b8b757ed6a9bb2d6db5e07e86613bd705170`,
+receipt `3f4612f36ba32ce074c600c40f765321c12f2cdf4c440f6ee83f4496bbd8324a`,
+payload `997efe6d45ea7d9d16f0154b45e0bde9fc81568b60a59c22a4a78768d09d61ea`.
+The skipped cases are the obsolete absent-producer-seal case and the separate
+CUDA-only batch CLI case; the batch PR supplies that CUDA qualification.
+This run used Python 3.12.11, Torch 2.10.0 CPU, Transformers 5.16.1,
+compressed-tensors 0.15.0, eight pytest workers, native threads of one and a
+20 GiB aggregate reservation. An earlier attempt stopped at collection because
+`psutil` was absent; scoped dependency installation preceded the passing retry.
+No GPU or full-model quality claim follows from this CPU integration run.
