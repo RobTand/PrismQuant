@@ -8,5 +8,7 @@ docker run --rm --gpus all --ipc=host --user "$(id -u):$(id -g)" \
   -v "$PWD:/workspace:ro" -v /mnt/shared:/mnt/shared -w /workspace \
   --entrypoint python3 -e PYTHONDONTWRITEBYTECODE=1 \
   -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
+  -e PRISMAQUANT_PROD_ACT_SCALES=0 -e XDG_CACHE_HOME=/tmp/pq-fp8-cache \
+  -e TORCH_EXTENSIONS_DIR=/tmp/pq-fp8-extensions \
   -e "PYTHONPATH=.:$root/inputs/tessera-382a1a97/src:$root/inputs/container-compatible-deps" \
   "$image" -m "$module" "$@"
