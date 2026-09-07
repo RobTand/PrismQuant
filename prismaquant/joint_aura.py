@@ -105,7 +105,7 @@ def arithmetic_identity(measurement_dtype) -> dict:
     }
 
 
-def prefetch_joint_cache(cache, names, formats_by_qname, *, max_resident_bytes):
+def prefetch_joint_cache(cache, names, formats_by_qname, *, max_resident_bytes, max_workers=4):
     """Use the production cache's key resolver and prefetch; own no tensors."""
     keys = set()
     for name in names:
@@ -117,7 +117,7 @@ def prefetch_joint_cache(cache, names, formats_by_qname, *, max_resident_bytes):
     nbytes = cache.estimate_nbytes(list(keys))
     if nbytes > max_resident_bytes:
         raise RuntimeError("joint AURA production cache prefetch exceeds resident budget")
-    loaded = cache.prefetch(list(keys))
+    loaded = cache.prefetch(list(keys), max_workers=max_workers)
     return {"entries": len(keys), "resident_bytes": nbytes, "loaded": loaded, "misses": 0}
 
 
