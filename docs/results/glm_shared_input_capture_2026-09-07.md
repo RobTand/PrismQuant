@@ -112,3 +112,116 @@ are in `/mnt/shared/tessera-measurements/glm-streaming-source-20260907/review-02
 An initial implicit-host-pinned submission was withdrawn from ready before
 execution and superseded by this portable action. The active bounded GPU
 replay checkout was untouched; no full-prefix candidate run was submitted.
+
+
+# Bounded real GLM collector replay — 2026-09-07
+
+The shared-input collector is bitwise and serialization-exact on the 48 selected
+real GLM projections. The recorded isolated collector runs take 13.069–13.205 s
+with sharing versus 23.211–23.339 s for the legacy collector. Raw GPU profiles
+show the duplicate wide Grams and hot-loop scoring-row transfers disappearing.
+These timings include profiling and complete selected CPU H/X return; they
+exclude original source forwards and routing/SwiGLU derivation. They are not a
+full-prefix fit, full-model throughput, quality or serving result. Shared-arm
+energy is unresolved at the monitor's 10-second cadence, so no work/J improvement
+or energy ranking is claimed.
+
+## Exact workload and completion
+
+Reviewed source `d4a21a882799048c92259d5c5adba0b20d6aae25` executed as sealed PB
+snapshot `fa7bb428f3b2dbb1f14e5df034b52b3db94b3283`. All seven checked
+collector/harness/test/architecture/wrapper files are byte-identical to CPU
+qualification snapshot `45bb0cbbf48b396d17a739b75c9c954790003f16`; only the
+provenance document and PB closure metadata differ between whole trees.
+
+PB `41c0afedbdd0c6b7966b312c31797b468ddeba58f0c10054ab5b5aa6f14e0621`
+ran on Sparky's GB10 UUID `e76c7efc-c157-b1f4-1348-83e4eb5092f4`, Torch
+2.13.0+cu130/CUDA 13.0, driver 595.84, kernel 6.17.0-1032-nvidia. The reviewed
+immutable producer container, patched NFS module, original 512×512/B=1/seed-0
+input binding and source fingerprints were checked before submission and by
+the run. PB admitted six preferred CPUs, 104 GiB physical memory and a 92 GiB
+GPU subset as a measurement with no prior GPU member. The 102 GiB conservative
+guard and 8 GiB host-available floor remained active. Exit was 0, cleanup and
+scope release completed, source binding was unchanged and no telemetry or
+memory-guard failure occurred.
+
+One original prefix traversal reached target layer 4 and completed all 512
+target source forwards. It froze the actual BF16 gate/up/down tensors for
+explicit experts 0–15 of `model.language_model.layers.4.mlp.experts`: 4096-wide
+gate/up inputs and 2048-wide down inputs. The bounded fixture occupied
+1,448,472,576 bytes below its 2 GiB cap. All selected scoring prefixes reached
+512 rows by batch 91. Every arm consumed all original 512 input records in order
+and returned 2,751,463,424 bytes of independent compact CPU H/X storage.
+Source counts, maxima, all H/X tensor bytes and per-qname serialized payloads
+matched across all four arms. This is selection-scoped equality over every
+observed row; the H/count/max population was never capped at 512.
+
+## Recorded timing and profiler evidence
+
+| Arm | Wall seconds, including profiles and CPU return | Median completed-batch interval | Retained CPU reference at start |
+|---|---:|---:|---:|
+| Legacy 0 | 23.3394 | 43.105 ms | 0 |
+| Shared 1 | 13.2050 | 23.934 ms | 2,751,463,424 B |
+| Shared 2 | 13.0692 | 23.885 ms | 2,751,463,424 B |
+| Legacy 3 | 23.2109 | 43.158 ms | 2,751,463,424 B |
+
+The matched later traces show the mechanism directly:
+
+- In the two row-filled batches, legacy executes 64 width-4096 Grams and 32
+  width-2048 Grams; shared executes 32 of each. Actual GPU kernels fall from
+  672 to 448, with kernel interval union 86.141 ms versus 47.726 ms.
+- Across the cold two batches, `cudaMemcpyAsync` calls fall from 98 to 2:
+  96 synchronous scoring-prefix copies leave the forward loop. The remaining
+  two are the original token-input delivery. Matched host copy API interval
+  union falls from 54.037 ms to 0.166 ms; physical GPU copy time is a separate
+  quantity and is not equated with those host waits.
+- All twelve cold, row-filled and full CPU-return traces are nonempty. Actual
+  kernel categories are counted separately from GPU ProfilerStep annotations.
+  Async kernel tails can outlive CPU step intervals; inclusive host calls and
+  GPU intervals overlap and are never added into a fabricated total.
+
+Peak CUDA allocated memory falls by exactly 832 MiB on this selection: 1 GiB
+of duplicate H removed minus 192 MiB of device scoring prefixes. CUDA reserved
+peaks remain identical at 57,438,896,128 bytes. With the same retained CPU
+reference, sampled conservative cgroup-plus-CUDA-reserved peaks are 77.096 GB
+and 77.162 GB for shared versus 77.218 GB for the later legacy arm. These do not
+establish a material physical-memory saving. The first legacy arm lacks the
+CPU reference and is unsuitable as a memory baseline. A full 288-expert fit
+must still be measured through complete independent CPU output materialization.
+
+Both-host telemetry is retained. Mean Sparky CPU non-idle is 13.20% and 11.78%
+for shared versus 10.66% for the matched later legacy arm; Lina's corresponding
+1.72%, 1.73% and 2.10% are external-load context. The legacy arms have two
+in-arm power updates each and coarse gross estimates of 964.595 J and
+843.099 J. Each 13-second shared arm has only one in-arm update, so the declared
+energy rule correctly emits null. This practical limit prevents an energy
+ranking; it does not invalidate exact arithmetic/ownership checks. No GPU
+utilization percentage is used.
+
+## Sealed evidence and remaining gate
+
+All artifacts live under
+`/mnt/shared/tessera-measurements/glm-shared-input-capture-20260907/`:
+
+- `cpu-final-01.json`: 109 CPU tests, zero skips, two subtests, explicit compile,
+  exact tested source/bundle/CAS verification.
+- `bounded-replay-command-01.json`, `gpu-preflight-01.json`,
+  `gpu-submission-01.json`, `gpu-admission-01.json`: exact reviewed command,
+  source/runtime checks and actual admission.
+- `gpu-terminal-verified-01.json`: exit/cleanup, whole GPU-source bundle,
+  CPU-to-GPU file equality, small output hashes and CAS receipt. GPU payload
+  SHA256 `44526036cb5d874a8c3c2d2a48b07a17647837215419e70dce2c83af5c6284ff`;
+  canonical receipt `b01f3894f00e6964a4ee244b0c50376729e9e0d8e9cbe3fed004bdc412e96aa1`.
+- `real-routed-replay-01/`: actual result, input manifest, four-arm report,
+  twelve traces, bounded both-host Netdata and continuous physical-guard data.
+- `replay-analysis-01.json` and `replay-analysis-verified-01.json`: raw trace
+  categories/shapes/interval unions, matched sampled memory and host context,
+  with every trace and telemetry file sealed. PB CPU analysis
+  `52b813773d76b18444d6536c045e3cb0023d4c9ee8a83f056a26006387da8085` completed
+  on DL380 with exit 0 and cleanup verified; twelve independent parsers used
+  the admitted CPU action. No giant trace was parsed on the GPU host during
+  measurement.
+
+The option remains default-off. Root review of this bounded result is required
+before the separate full 512-sample candidate fit. No repeat of the failed full
+legacy H return and no full-prefix-05 run were submitted by this work.
