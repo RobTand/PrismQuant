@@ -277,6 +277,64 @@ class StreamedCausalLM:
     def shutdown(self) -> None:
         self.context.shutdown()
 
+    def visit_layer_batches(self, input_batches, visitor, *, output_consumer=None):
+        """Visit each resident layer over the original ordered microbatches.
+
+        ``visitor(layer, forward_batch)`` may install collection hooks, drive
+        the ordinary sample loop through ``forward_batch``, and drain its
+        layer-owned results before returning. The callback must consume every
+        batch exactly once. Only each batch's current hidden state survives;
+        source residency remains owned by this runner's existing context.
+        Derived mask/position kwargs are rebuilt for one original batch at a
+        time through the same preparation path, then released. Masks, mHC adapters and one distinct pass-state per original batch are
+        the same as an ordinary streamed forward. Batches are never combined.
+        """
+        if self._pinned_layer is not None:
+            raise RuntimeError("layer-batch traversal cannot start with a pinned layer")
+        states = []
+        with torch.no_grad():
+            for input_ids in input_batches:
+                ids, positions, hidden, embeddings, mask = self._prepare(input_ids)
+                states.append([ids, hidden, self.profile.new_forward_pass_state()])
+                del positions, embeddings, mask
+            if not states:
+                raise ValueError("layer-batch traversal requires calibration batches")
+            for depth in range(min(self.num_layers, self.prefetch_lookahead + 1)):
+                self.context.schedule_prefetch(depth)
+            for layer in range(self.num_layers):
+                self.context.install(layer, require_prefetched=self.require_prefetched_residency)
+                self.context.schedule_prefetch(layer + self.prefetch_lookahead)
+                next_batch = 0
+
+                def forward_batch(input_ids):
+                    nonlocal next_batch
+                    if next_batch >= len(states):
+                        raise RuntimeError("layer visitor repeated a calibration batch")
+                    ids, hidden, pass_state = states[next_batch]
+                    if not torch.equal(input_ids, ids):
+                        raise RuntimeError("layer visitor changed calibration batch order or tokens")
+                    # Recompute through the ordinary source preparation path:
+                    # position/mask values may depend on the original IDs or
+                    # embeddings. Retain no derived per-B1 tables across layers.
+                    _ids, positions, initial, embeddings, mask = self._prepare(ids)
+                    del initial
+                    batch = StreamedForwardBoundaries(_ids, positions, embeddings, mask, [], None)
+                    states[next_batch][1] = self._call(layer, hidden, batch=batch, pass_state=pass_state)
+                    next_batch += 1
+
+                try:
+                    visitor(layer, forward_batch)
+                    if next_batch != len(states):
+                        raise RuntimeError("layer visitor omitted calibration batches")
+                finally:
+                    self.context.unload(layer)
+            if output_consumer is not None:
+                for index, (ids, hidden, _pass_state) in enumerate(states):
+                    _ids, positions, initial, embeddings, mask = self._prepare(ids)
+                    del initial
+                    batch = StreamedForwardBoundaries(_ids, positions, embeddings, mask, [], None)
+                    output_consumer(index, self.tail_logits(batch, hidden))
+
 
 def build_streamed_causal_lm(
     model_path: str,

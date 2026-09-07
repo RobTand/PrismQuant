@@ -30,6 +30,7 @@ stable public API that both sides share.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -81,6 +82,120 @@ from .layer_streaming import (
     set_module_tensor_to_device,
 )
 from .tied_embeddings import resolve_tied_output_embedding
+
+
+_STREAMING_INITIALIZATION_SCHEMA = "prismaquant.streaming_initialization.v1"
+
+
+def _initialization_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    allow_nan=False).encode()).hexdigest()
+
+
+def validate_streaming_initialization_contract(value):
+    """Read completed source-forward coverage; never accept a pending skeleton."""
+    keys = {"schema", "scope", "status", "transformers_version", "model_class",
+            "dtype", "layers_prefix", "num_layers", "persistent_tensors",
+            "derived_buffers", "state_sha256", "source_map_sha256"}
+    if (not isinstance(value, dict) or set(value) != keys or
+            value.get("schema") != _STREAMING_INITIALIZATION_SCHEMA or
+            value.get("scope") != "streamed_text_source_forward" or
+            value.get("status") != "completed" or
+            any(not isinstance(value.get(k), str) or not value[k]
+                for k in ("transformers_version", "model_class", "dtype", "layers_prefix")) or
+            any(type(value.get(k)) is not int or value[k] < minimum
+                for k, minimum in (("num_layers", 1), ("persistent_tensors", 1), ("derived_buffers", 0))) or
+            any(not isinstance(value.get(k), str) or not re.fullmatch(r"[0-9a-f]{64}", value[k])
+                for k in ("state_sha256", "source_map_sha256"))):
+        raise ValueError("Missing or incomplete streaming initialization contract")
+    return dict(value)
+
+
+class _StreamingInitializationAudit:
+    """Observe the shared loader's actual installed state before consumption.
+
+    This does not initialize tensors, replace the loader, or claim an HF
+    checkpoint-load stamp. It requires every persistent source-forward slot
+    to be delivered by the existing loader, every derived buffer to be real
+    and finite, and every decoder layer to be observed before completion.
+    Vision and MTP are outside this text-forward witness; the capture's source
+    identity still seals the complete checkpoint including those regions.
+    """
+
+    def __init__(self, context):
+        self.context = context
+        self.records = {}
+        self.layers_seen = set()
+        base_prefix = context.layers_prefix.removesuffix(".layers.")
+        if context.layers_prefix == "layers.":
+            base_prefix = ""
+        heads = _head_prefixes(context.model, base_prefix)
+        self._observe(heads, delivered=None)
+
+    def _observe(self, prefixes, *, delivered):
+        model = self.context.model
+        for name, tensor in [*model.named_parameters(remove_duplicate=False),
+                             *model.named_buffers(remove_duplicate=False)]:
+            if not any(name.startswith(prefix) for prefix in prefixes):
+                continue
+            owner_name, _, attr = name.rpartition(".")
+            owner = model.get_submodule(owner_name) if owner_name else model
+            derived = attr in getattr(owner, "_non_persistent_buffers_set", ())
+            if tensor.is_meta:
+                raise RuntimeError(f"streaming initialization left {name} on meta")
+            if not derived:
+                if delivered is not None and name not in delivered:
+                    raise RuntimeError(f"streaming initialization did not load source slot {name}")
+                if delivered is None and name not in self.context.weight_ckpt:
+                    # Tied heads are a real alias established by the shared
+                    # loader, not an invented missing-checkpoint fallback.
+                    embedding = model.get_input_embeddings().weight
+                    head = model.get_output_embeddings().weight
+                    if tensor is not head or head is not embedding:
+                        raise RuntimeError(f"streaming initialization has no source for {name}")
+            record = {"shape": list(tensor.shape), "dtype": str(tensor.dtype),
+                      "kind": "derived_buffer" if derived else "checkpoint"}
+            if derived:
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(f"streaming initialization has nonfinite buffer {name}")
+                raw = tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
+                record["sha256"] = hashlib.sha256(raw).hexdigest()
+            previous = self.records.get(name)
+            if previous is not None and previous != record:
+                raise RuntimeError(f"streaming initialization state changed for {name}")
+            self.records[name] = record
+
+    def observe_layer(self, layer, delivered):
+        if layer in self.layers_seen:
+            return
+        expected = set(self.context.install_resolvers[layer])
+        missing = expected - set(delivered)
+        if missing:
+            raise RuntimeError(f"streaming initialization omitted source slots: {sorted(missing)[:8]}")
+        self._observe([f"{self.context.layers_prefix}{layer}."], delivered=delivered)
+        self.layers_seen.add(layer)
+
+    def complete(self):
+        import transformers
+        if self.layers_seen != set(range(self.context.num_layers)):
+            raise RuntimeError("streaming initialization has not observed every source layer")
+        if not self.records:
+            raise RuntimeError("streaming initialization observed no source state")
+        mapping = {name: {"tensor": key, "file": os.path.basename(self.context.weight_shard[name])}
+                   for name, key in self.context.weight_ckpt.items()}
+        model_class = type(self.context.model)
+        return validate_streaming_initialization_contract({
+            "schema": _STREAMING_INITIALIZATION_SCHEMA,
+            "scope": "streamed_text_source_forward", "status": "completed",
+            "transformers_version": transformers.__version__,
+            "model_class": f"{model_class.__module__}.{model_class.__qualname__}",
+            "dtype": str(self.context.dtype), "layers_prefix": self.context.layers_prefix,
+            "num_layers": self.context.num_layers,
+            "persistent_tensors": sum(r["kind"] == "checkpoint" for r in self.records.values()),
+            "derived_buffers": sum(r["kind"] == "derived_buffer" for r in self.records.values()),
+            "state_sha256": _initialization_digest(self.records),
+            "source_map_sha256": _initialization_digest(mapping),
+        })
 
 
 def _bypass_hf_fp8_module_rewrite(model_path: str) -> bool:
@@ -742,6 +857,9 @@ class StreamingContext:
             L, require_prefetched=require_prefetched,
         )
         _fast_install(self.install_resolvers[L], tensors, self.device, model=self.model)
+        audit = getattr(self, "_source_initialization_audit", None)
+        if audit is not None:
+            audit.observe_layer(L, tensors)
         # Re-derive the lookahead window now that this layer's slot is free.
         self._top_up_prefetch(L)
         # v20 step 3+4: value-aware retention. The historical
@@ -755,6 +873,16 @@ class StreamingContext:
         # Layers the scheduler has provably finished with are filtered
         # out via mark_done (v20 step 2).
         return src
+
+    def begin_source_initialization_audit(self):
+        """Require actual source-state coverage for this complete traversal."""
+        self._source_initialization_audit = _StreamingInitializationAudit(self)
+
+    def source_initialization_contract(self):
+        audit = getattr(self, "_source_initialization_audit", None)
+        if audit is None:
+            raise RuntimeError("streaming initialization audit was not started")
+        return audit.complete()
 
     def unload(self, L: int):
         _unload(self.model, [f"{self.layers_prefix}{L}."])

@@ -28,6 +28,7 @@ and clamped to [1, num_layers]. Explicit env overrides always win.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -52,6 +53,145 @@ DEFAULT_DTYPE_BYTES = 2      # bf16
 # calibration size.
 DEFAULT_FULL_GRAPH_ACT_MULT = 48   # 64 layers × sqrt ≈ 8 × 6 (per-layer-mix overshoot)
 DEFAULT_FIXED_OVERHEAD_GB = 15.0   # HF transformers + tokenizer + Python heap floor
+
+
+def streamed_calibration_resources(model_path, *, unit_shapes, counts,
+                                   nsamples, seqlen, max_act_rows, cache_slots,
+                                   prefetch_workers, headroom_gb):
+    """Bound canonical capture using the shared loader's actual source layout.
+
+    Headers and profile mappings determine source residency. Capture owns one
+    current hidden boundary per original sample, one layer's X/H, and one
+    microbatch transition. The shared expert packer's fused slabs and original
+    source allocations are charged separately from its final prefetch window.
+    The declared headroom is additional forward/allocator/runtime workspace.
+    """
+    import math
+    from .artifact_completeness import read_artifact_header
+    from .model_profiles import detect_profile
+    if (any(type(v) is not int or v < 1 for v in
+            (nsamples, seqlen, max_act_rows, cache_slots, prefetch_workers)) or
+            cache_slots < 2 or not math.isfinite(headroom_gb) or headroom_gb < 0):
+        raise ValueError('invalid streamed calibration resource dimensions')
+    profile = detect_profile(str(model_path))
+    cfg = json.loads((Path(model_path)/'config.json').read_text())
+    text = cfg.get('text_config') or cfg
+    layers = _num_layers(cfg)
+    hidden = _hidden_size(cfg)
+    if layers < 1 or hidden < 1:
+        raise ValueError('streamed calibration needs explicit decoder geometry')
+    header = read_artifact_header(model_path)
+    # Price source tensors with the declared HF precision policy. GLM's
+    # strict FP32 convolution is stored as three BF16 tensors, so on-disk
+    # bytes alone undercount even the final resident layer.
+    import torch
+    from transformers import AutoConfig
+    from transformers.core_model_loading import build_glob_alternation
+    from .streaming_model import _resolve_declared_model_cls
+    declared_config = AutoConfig.from_pretrained(str(model_path), trust_remote_code=True)
+    declared_class = _resolve_declared_model_cls(declared_config, None)
+    get_dtype_plan = getattr(declared_class, '_get_dtype_plan', None)
+    dtype_plan = get_dtype_plan(declared_class, torch.bfloat16) if callable(get_dtype_plan) else {}
+    dtype_pattern, dtype_groups, _ = build_glob_alternation(list(dtype_plan)) if dtype_plan else (None, {}, None)
+    fp4_experts = declared_fp4_expert_dtype(str(model_path))
+    multimodal = profile.requires_multimodal_skeleton()
+    body_prefix = profile.body_layer_prefix()+'.'
+    live_probe = profile.checkpoint_to_live_name(body_prefix+'0.weight', multimodal=multimodal)
+    if live_probe is None or '.0.' not in live_probe:
+        raise ValueError('profile cannot map the decoder prefix for resource admission')
+    live_prefix = live_probe.rsplit('.0.', 1)[0]+'.'
+    body, fixed, pack, concat = {}, 0, {}, {}
+    packed_regex = profile.per_expert_moe_regex()
+    packed_pattern = (re.compile(packed_regex.removeprefix('re:')) if packed_regex else None)
+    for key, meta in header.items():
+        name = profile.checkpoint_to_live_name(key, multimodal=multimodal)
+        if name is None:
+            continue
+        shape = meta['shape']
+        numel = math.prod(shape)
+        begin, end = meta['data_offsets']
+        stored = int(end)-int(begin)
+        floating = _safetensors_source_float_bytes(str(meta['dtype']).upper())
+        target_name = name
+        for target, sources, _axis in profile.concat_merge_groups():
+            for suffix in sources:
+                if name.endswith(suffix):
+                    target_name = name[:-len(suffix)]+target
+        match = None if dtype_pattern is None else dtype_pattern.search(target_name)
+        target_bytes = 2 if match is None else torch.empty((), dtype=dtype_plan[dtype_groups[match.lastgroup]]).element_size()
+        size = max(stored, numel*target_bytes) if floating is not None else stored
+        if (fp4_experts and str(meta['dtype']).upper() in _PACKED_BYTE_DTYPES
+                and declared_expert_dtype_covers(key)):
+            size = stored*4
+        if not name.startswith(live_prefix):
+            fixed += size
+            continue
+        index = name[len(live_prefix):].split('.', 1)[0]
+        if not index.isdigit() or not 0 <= int(index) < layers:
+            raise ValueError(f'out-of-body source tensor is still live: {name}')
+        layer = int(index)
+        body[layer] = body.get(layer, 0)+size
+        leaf = name.removesuffix('.weight')
+        if packed_pattern is not None and (packed_pattern.match(leaf) or
+                packed_pattern.match(profile.to_vllm_internal_name(leaf))):
+            owner, projection = leaf.rsplit('.', 1)
+            expert_path, expert = owner.rsplit('.', 1)
+            parent = profile.packed_expert_parent_for_projection(projection)
+            if parent is not None and expert.isdigit():
+                group = (layer, expert_path, parent)
+                pack[group] = pack.get(group, 0)+size
+        for target, sources, _axis in profile.concat_merge_groups():
+            if any(name.endswith(suffix) for suffix in sources):
+                group = (layer, target)
+                concat[group] = concat.get(group, 0)+size
+    if set(body) != set(range(layers)):
+        raise ValueError('source headers do not cover every decoder layer')
+    # Original source groups coexist with the largest intermediate fused group
+    # and the final packed layer until packing completes.
+    pack_peak = [sum(size for key, size in pack.items() if key[0] == layer) +
+                 max((size for key, size in pack.items() if key[0] == layer), default=0)
+                 for layer in range(layers)]
+    loader_transient = min(prefetch_workers, cache_slots) * (
+        max(pack_peak, default=0)+max(concat.values(), default=0))
+    h_by_layer, x_by_layer = {}, {}
+    total_h, total_x, widest_unit = 0, 0, 0
+    for name, shape in unit_shapes.items():
+        if not name.startswith(live_prefix):
+            raise ValueError(f'capture unit is outside the decoder source scope: {name}')
+        layer = int(name[len(live_prefix):].split('.', 1)[0])
+        columns = int(shape[1])
+        h = columns*columns*4
+        x = min(int(counts[name]), max_act_rows)*columns*4
+        h_by_layer[layer] = h_by_layer.get(layer, 0)+h
+        x_by_layer[layer] = x_by_layer.get(layer, 0)+x
+        total_h += h
+        total_x += x
+        widest_unit = max(widest_unit, h+x)
+    hc_mult = max(1, int(text.get('hc_mult', 1)))
+    boundary = nsamples*seqlen*hidden*hc_mult*2
+    transition = seqlen*hidden*hc_mult*2
+    # Derived metadata is ephemeral for one original B1 batch. Conservatively
+    # allow a dense FP32 mask and full-hidden-width rotary pairs; original IDs
+    # remain resident for all samples and have an explicit int64 allowance.
+    masks_positions = seqlen*seqlen*4 + seqlen*hidden*4 + nsamples*seqlen*8
+    terms = dict(source_window_bytes=sum(sorted(body.values(), reverse=True)[:cache_slots]),
+        nonbody_source_bytes=fixed, loader_transient_bytes=loader_transient,
+        current_boundary_bytes=boundary, microbatch_transition_bytes=transition,
+        masks_positions_bytes=masks_positions,
+        layer_hessian_bytes=max(h_by_layer.values(), default=0),
+        layer_prefix_bytes=max(x_by_layer.values(), default=0),
+        entry_validation_bytes=widest_unit,
+        declared_headroom_bytes=math.ceil(headroom_gb*1024**3))
+    # One new entry may coexist with the old one during atomic replacement;
+    # metadata/journals have an explicit per-unit serialization allowance.
+    disk = total_h+total_x+widest_unit+len(unit_shapes)*16384
+    return dict(schema='prismaquant.streamed_calibration_resources.v1',
+        source_header_sha256=hashlib.sha256(json.dumps(header, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest(),
+        terms=terms, memory_bytes=sum(terms.values()), disk_bytes=disk,
+        full_hessian_bytes=total_h, full_prefix_bytes=total_x,
+        body_layer_bytes={str(k): v for k, v in sorted(body.items())},
+        transient_status='original sources plus largest fused expert group')
 
 
 def _num_layers(cfg: dict) -> int:

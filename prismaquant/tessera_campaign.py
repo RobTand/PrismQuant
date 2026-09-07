@@ -60,6 +60,7 @@ one for the other.
 from __future__ import annotations
 
 import argparse
+import re
 import functools
 import json
 import math
@@ -1790,7 +1791,7 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None,
-                         boundary_consumer=None):
+                         boundary_consumer=None, forward_batch=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
@@ -1956,7 +1957,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                     positions = torch.arange(batch.shape[1], dtype=torch.int64)
                     calibration_coordinates = torch.cartesian_prod(sample_ids, positions)
                     sample_offset += batch.shape[0]
-                model(batch.to(device))
+                (model if forward_batch is None else forward_batch)(batch.to(device))
     finally:
         for handle in handles:
             handle.remove()
@@ -3204,6 +3205,111 @@ def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
     return hessian_capture_path, input_scales_path, capture_sha256
 
 
+def _run_streamed_calibration(args, runner, profile, *, mode, population,
+                              dense_targets, expert_targets, scope_groups,
+                              tokens, corpus_text, census, context_by_unit,
+                              attention_implementation, capture_runtime):
+    """Wire canonical collection to the existing resident layer traversal."""
+    import torch
+    from . import tessera_calibration_cache as store
+    from .routed_experts import refresh_packed_expert_projections
+    from .tessera_menu import PARALLEL_NONE
+
+    targets = [*dense_targets, *expert_targets]
+    modules = dict(runner.model.named_modules())
+    # Meta views are used only for shape/menu/projection planning. Live views
+    # are refreshed from the shared loader at each layer's consumption.
+    weights = {name: modules[name].weight for name in dense_targets}
+    weights.update({member.qname: member.weight for member in population.members})
+    shapes = {name: list(weight.shape) for name, weight in weights.items()}
+    names_by_layer = {}
+    for name in targets:
+        names_by_layer.setdefault(runner.layer_index_for_qname(name), []).append(name)
+    menus = expand_menus_for_targets(weights, targets, mode=mode, tp_degree=args.tp_degree,
+        parallel_kind=PARALLEL_NONE, context_by_unit=context_by_unit)
+    report_empty_menus(menus, mode=mode)
+    projection = None
+    if population.declared:
+        projection, _ = _project_expert_population(population, weights=weights,
+            menus=menus, model_path=args.model, cache_dir=Path(args.cache_dir),
+            measured=set(), projection=None if census is None else census.get('expert_projection'))
+    del weights
+
+    writer = None
+    if census is not None:
+        if (census.get('model_load_contract') or {}).get('schema') != 'prismaquant.streaming_initialization.v1':
+            raise RuntimeError('streamed capture requires a census from the qualified streaming source route')
+        hi, lo = census_token_counts(census, {})
+        calibration = th.calibration_identity(corpus_text, tokens, fit_tokens=hi,
+            source="wikitext-2-raw-v1/train", split_role="calibration", model=str(args.model),
+            seed=args.seed, nsamples=args.nsamples, seqlen=args.seqlen, fit_tokens_min=lo)
+        require_census_draw(census, calibration, where="streamed calibration capture")
+        # The recorded witness describes the census. The new traversal's own
+        # witness is compared at completion; no from-config model is stamped
+        # as an already completed checkpoint load before it runs.
+        identity = store.capture_identity(args.calibration_census, calibration=calibration,
+            max_act_rows=args.max_act_rows, model_load_contract=census['model_load_contract'],
+            attention_implementation=attention_implementation)
+        writer = store.CaptureWriter(args.capture_calibration_out,
+            census_path=args.calibration_census, identity=identity)
+
+    counts, maxima, telemetry = {}, {}, []
+    runner.context.begin_source_initialization_audit()
+
+    def visit(layer, forward_batch):
+        names = names_by_layer.get(layer, [])
+        members = [m for m in population.members if m.qname in names]
+        live = refresh_packed_expert_projections(members, profile)
+        if live:
+            _checked_projected_units(projection['stacks'],
+                weights={m.qname: m.weight for m in live}, model_path=args.model,
+                source=projection['producer']['source'], measured={m.qname for m in live})
+        before = time.perf_counter()
+        acts, hessians, rows, amax = _collect_activations(runner.model, names, tokens,
+            args.max_act_rows if writer is not None else 0, runner.device,
+            want_hessian=writer is not None, profile=profile, forward_batch=forward_batch)
+        collected = time.perf_counter()
+        counts.update(rows)
+        maxima.update(amax)
+        if writer is not None:
+            writer.write(acts=acts, hessians=hessians, counts=rows, maxima=amax)
+        flushed = time.perf_counter()
+        record = dict(layer=layer, units=len(names), collect_seconds=collected-before,
+            flush_seconds=flushed-collected,
+            capture_tensor_bytes=sum(t.numel()*t.element_size()
+                for t in [*acts.values(), *hessians.values()] if t is not None))
+        telemetry.append(record)
+        print(json.dumps({'streamed_calibration_layer': record}), flush=True)
+        del acts, hessians, live
+        if runner.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    runner.visit_layer_batches(tokens, visit)
+    contract = runner.context.source_initialization_contract()
+    if set(counts) != set(targets) or any(value <= 0 for value in counts.values()):
+        raise RuntimeError('streamed calibration did not observe every in-scope unit')
+    hi, lo = census_token_counts(census, counts)
+    calibration = th.calibration_identity(corpus_text, tokens, fit_tokens=hi,
+        source="wikitext-2-raw-v1/train", split_role="calibration", model=str(args.model),
+        seed=args.seed, nsamples=args.nsamples, seqlen=args.seqlen, fit_tokens_min=lo)
+    if writer is not None:
+        census_max_abs(census, maxima)
+        receipt = writer.finish(model_load_contract=contract)
+        print(f"[campaign] complete streamed calibration capture: {receipt}", flush=True)
+    else:
+        payload = calibration_census(counts, maxima, args=args, groups=scope_groups,
+            dense_targets=dense_targets, expert_targets=expert_targets, shapes=shapes,
+            identity=calibration, expert_projection=projection, model_load_contract=contract,
+            attention_implementation=attention_implementation, capture_runtime=capture_runtime)
+        from .cost_stage_checkpoint import atomic_write_bytes
+        atomic_write_bytes(Path(args.census_out),
+            (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)+'\n').encode())
+        print(f"[campaign] wrote streamed calibration census {args.census_out}", flush=True)
+    telemetry_path = Path(args.cache_dir)/'streamed-calibration-telemetry.json'
+    telemetry_path.write_text(json.dumps(telemetry, indent=2, sort_keys=True)+'\n')
+    return 0
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
@@ -3317,6 +3423,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                          "scoring rows, no encodes.")
     ap.add_argument("--attention-implementation", choices=("eager", "sdpa"), default=None,
                     help="Explicit HF attention backend required for canonical census/capture.")
+    ap.add_argument("--streaming", action="store_true",
+                    help="Use the existing source layer cache for canonical census/capture.")
+    ap.add_argument("--streaming-cache-slots", type=int, default=2)
+    ap.add_argument("--streaming-prefetch-workers", type=int, default=1)
+    ap.add_argument("--streaming-cache-headroom-gb", type=float, default=24)
     ap.add_argument("--capture-calibration-out", default=None,
                     help="Capture full-census float32 prefix X and uncapped H once, then exit.")
     ap.add_argument("--calibration-cache", default=None,
@@ -3324,6 +3435,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--calibration-cache-sha256", default=None,
                     help="Expected capture manifest hash, sealed by the campaign planner.")
     args = ap.parse_args(argv)
+    if args.streaming and (not (args.census_out or args.capture_calibration_out) or args.units):
+        ap.error("--streaming currently requires full-scope --census-out or --capture-calibration-out")
+    if args.streaming and (args.streaming_cache_slots < 2 or args.streaming_prefetch_workers < 1):
+        ap.error("streaming calibration requires at least two cache slots and one prefetch worker")
     if (args.census_out or args.capture_calibration_out or args.calibration_cache) and not args.attention_implementation:
         ap.error("canonical census/capture requires explicit --attention-implementation")
     if args.calibration_cache_sha256 and not args.calibration_cache:
@@ -3365,13 +3480,27 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         Path(args.out).with_suffix(".anchors.json")
     )
 
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.bfloat16, device_map=device,
-        **({"attn_implementation": args.attention_implementation}
-           if args.attention_implementation is not None else {}),
-    )
+    from .model_profiles import detect_profile
+    profile = detect_profile(args.model)
+    runner = None
+    if args.streaming:
+        from .cost_streaming import build_streamed_causal_lm
+        runner = build_streamed_causal_lm(args.model, device=torch.device(device), dtype=torch.bfloat16,
+            profile=profile, offload_folder=str(cache_dir/'source-offload'),
+            max_cache_slots=args.streaming_cache_slots,
+            prefetch_workers=args.streaming_prefetch_workers,
+            cache_headroom_gb=args.streaming_cache_headroom_gb,
+            prefetch_min_available_gb=args.streaming_cache_headroom_gb,
+            prefetch_lookahead=args.streaming_cache_slots-1, require_prefetched_residency=True,
+            attn_implementation=args.attention_implementation)
+        model = runner.model
+    else:
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.bfloat16, device_map=device,
+            **({"attn_implementation": args.attention_implementation}
+               if args.attention_implementation is not None else {}),
+        )
     model.eval()
     model_load_contract = None
     attention_implementation = None
@@ -3379,16 +3508,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     if args.census_out or args.capture_calibration_out or args.calibration_cache:
         import importlib.metadata
         from prismaquant import pretrained_initialization_contract
-        model_load_contract = pretrained_initialization_contract(model)
+        if runner is None:
+            model_load_contract = pretrained_initialization_contract(model)
         attention_implementation = model.config._attn_implementation
         if attention_implementation != args.attention_implementation:
             raise RuntimeError("loaded model attention backend differs from explicit request")
         capture_runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
             transformers=importlib.metadata.version("transformers"))
 
-    from .model_profiles import detect_profile
-
-    profile = detect_profile(args.model)
     # The packed expert population the producer bridge covers, or a refusal by
     # name before calibration.  Its members are priced as the producer's
     # projected units below (PrismaQuant #183).
@@ -3401,7 +3528,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             continue
         if name.endswith("lm_head") or "embed" in name:
             continue
-        if profile.is_pinned_name(name):
+        if profile.is_pinned_name(name) or (profile.probe_linear_exclude_extra() and
+                re.search(profile.probe_linear_exclude_extra(), name)):
             pinned.append(name)
             continue
         all_dense.append(name)
@@ -3510,6 +3638,15 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                              for member in population.members})
         if census["unit_shapes"] != scope_shapes:
             raise RuntimeError("calibration census geometry differs from the loaded model")
+    if runner is not None:
+        try:
+            return _run_streamed_calibration(args, runner, profile, mode=mode, population=population,
+                dense_targets=census_dense_targets, expert_targets=census_expert_targets,
+                scope_groups=scope_groups, tokens=tokens, corpus_text=corpus_text, census=census,
+                context_by_unit=context_by_unit, attention_implementation=attention_implementation,
+                capture_runtime=capture_runtime)
+        finally:
+            runner.shutdown()
     if args.capture_calibration_out or args.calibration_cache:
         from . import tessera_calibration_cache as calibration_store
         hi, lo = census_token_counts(census, {})

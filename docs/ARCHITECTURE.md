@@ -3,6 +3,31 @@
 As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **bounded canonical
+source calibration**. Full-scope census/capture may explicitly select
+`--streaming`, reusing the shared model construction, resident layer cache,
+prefetch and profile forward adapters. The original ordered sample microbatches
+drive the existing activation collector unchanged: float32 prefix X, uncapped
+H, routed counts and maxima retain their canonical semantics. Only current
+sample boundaries survive between layers; masks/positions are ephemeral per
+original batch, and each completed layer's capture is drained to the existing
+activation-cache writer/journal before the source layer unloads.
+
+This route produces `prismaquant.streaming_initialization.v1` only after actual
+installed source state has been observed across every decoder layer. Its scope
+is the text source forward; vision/MTP are outside that witness. A streamed
+capture requires a census from the same route and verifies its own completed
+initialization witness before publishing the full manifest. Legacy pretrained
+contracts remain readable through the strict schema dispatcher. Interrupted
+capture entries must replay with exact X/H/metadata; incomplete traversal cannot
+publish a complete capture. Header-derived admission charges the source window,
+loader transients, current boundaries, one layer's H/X, entry validation and
+explicit workspace; disk admission charges all H/X plus atomic replacement.
+PB owns admission and placement. Defaults are two cache slots, one prefetch
+worker and 24 GiB explicit headroom; no complete BF16 model is materialized.
+Gates: `tests/test_glm_campaign_streaming.py`,
+`tests/test_tessera_calibration_cache.py` and native GLM source parity.
+
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **checkpoint loader
 precision parity**. Shared resident materialization, cold reads and prefetched
 layer reads apply Hugging Face's declared dtype plan, including strict FP32

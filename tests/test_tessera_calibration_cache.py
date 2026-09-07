@@ -92,6 +92,48 @@ def test_completed_journal_revalidates_artifacts(capture):
             hessians=hessians,counts=census['counts'],maxima=census['max_abs'])
 
 
+def test_layer_writer_requires_full_scope_and_actual_witness(capture, tmp_path):
+    _root, path, census, identity, acts, hessians, _record = capture
+    root = tmp_path/'layer-writer'
+    writer = cc.CaptureWriter(root, census_path=path, identity=identity)
+    def write(name):
+        writer.write(acts={name: acts[name]}, hessians={name: hessians[name]},
+            counts={name: census['counts'][name]}, maxima={name: census['max_abs'][name]})
+    write('a')
+    assert (root/'inputs/a.pt').is_file()
+    assert not (root/'capture_manifest.json').exists()
+    with pytest.raises(RuntimeError, match='full census'):
+        writer.finish(model_load_contract=identity['model_load_contract'])
+    write('b')
+    wrong = dict(identity['model_load_contract'], transformers_version='wrong-runtime')
+    with pytest.raises(RuntimeError, match='actual capture initialization'):
+        writer.finish(model_load_contract=wrong)
+    assert not (root/'capture_manifest.json').exists()
+    record = writer.finish(model_load_contract=identity['model_load_contract'])
+    assert cc.require_capture_contract(record['path'])['status'] == 'complete'
+
+
+def test_layer_writer_replay_refuses_changed_hessian(capture, tmp_path):
+    _root, path, census, identity, acts, hessians, _record = capture
+    root = tmp_path/'interrupted'
+    writer = cc.CaptureWriter(root, census_path=path, identity=identity)
+    writer.write(acts={'a':acts['a']}, hessians={'a':hessians['a']},
+                 counts={'a':5}, maxima={'a':4.})
+    resumed = cc.CaptureWriter(root, census_path=path, identity=identity)
+    with pytest.raises(RuntimeError, match='replayed capture differs'):
+        resumed.write(acts={'a':acts['a']}, hessians={'a':hessians['a']+torch.eye(2)},
+                      counts={'a':5}, maxima={'a':4.})
+    assert not (root/'capture_manifest.json').exists()
+
+
+def test_layer_writer_refuses_insufficient_disk(capture, tmp_path, monkeypatch):
+    import shutil
+    _root, path, census, identity, acts, hessians, _record = capture
+    monkeypatch.setattr(shutil, 'disk_usage', lambda _: SimpleNamespace(free=1))
+    with pytest.raises(RuntimeError, match='additional disk bytes'):
+        cc.CaptureWriter(tmp_path/'no-space', census_path=path, identity=identity)
+
+
 def test_cli_capture_then_reuse_never_repeats_forward(monkeypatch,tmp_path):
     from test_tessera_campaign_resume import _main_fixture,UNIT
     tc,_,argv,model,inputs = _main_fixture(monkeypatch,tmp_path)
