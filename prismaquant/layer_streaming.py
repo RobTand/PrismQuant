@@ -786,6 +786,38 @@ def _apply_fp8_dequant_inplace(
     return dequanted
 
 
+def _model_tensor_dtypes(model: nn.Module, dtype: torch.dtype) -> dict[str, torch.dtype]:
+    """Use the checkpoint loader's dtype policy for live source slots.
+
+    Constructor-declared buffers retain their precision. HF's own dtype plan
+    additionally retains strict FP32 parameters, including architecture-specific
+    convolution, recurrence and routing state. Match it with the same glob
+    helper used by HF after checkpoint conversion, rather than guessing names.
+    """
+    result = {name: value.dtype for name, value in
+              model.named_buffers(remove_duplicate=False)}
+    get_plan = getattr(model, '_get_dtype_plan', None)
+    plan = get_plan(dtype) if callable(get_plan) else {}
+    if plan:
+        from transformers.core_model_loading import build_glob_alternation
+        pattern, by_group, _ = build_glob_alternation(list(plan))
+        for name, _value in [*model.named_parameters(remove_duplicate=False),
+                             *model.named_buffers(remove_duplicate=False)]:
+            match = pattern.search(name)
+            if match is not None:
+                result[name] = plan[by_group[match.lastgroup]]
+    return result
+
+
+def _source_tensor_dtypes(model: nn.Module, dtype: torch.dtype, concat_merger=None):
+    """Propagate the resolved live precision to explicitly split source slots."""
+    result = _model_tensor_dtypes(model, dtype)
+    for source, target in getattr(concat_merger, 'source_targets', {}).items():
+        if target in result:
+            result[source] = result[target]
+    return result
+
+
 def _materialize(model: nn.Module, prefixes: list[str],
                  model_to_shard: dict[str, str],
                  model_to_ckpt: dict[str, str],
@@ -802,7 +834,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
     cast to bf16. See `_dequant_fp8_block_weight`.
 
     Returns count of tensors loaded."""
-    buffer_dtypes = {name: value.dtype for name, value in model.named_buffers(remove_duplicate=False)}
+    buffer_dtypes = _model_tensor_dtypes(model, dtype)
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
         if any(model_name.startswith(p) for p in prefixes):
@@ -1042,6 +1074,14 @@ def _build_concat_merger(model: nn.Module, weight_ckpt: dict[str, str]):
         _merge_concat_sources(
             out, groups=active, live_param_shape=live_shapes.get)
 
+    # The shared reader must preserve the final parameter's declared dtype
+    # while loading its split sources, before any lossy cast can occur.
+    _merger.source_targets = {
+        name: name[:-len(source)]+target
+        for name in weight_ckpt
+        for target, sources, _dim in active
+        for source in sources if name.endswith(source)
+    }
     return _merger
 
 
@@ -1327,8 +1367,8 @@ def _read_layer_to_device(prefix: str,
     """Read all tensors under `prefix` from safetensors and place them
     on `device`. Returns {model_name: device_tensor}.
 
-    `buffer_dtypes` preserves model-declared buffer precision independently
-    of the requested parameter dtype (for example FP32 router bias).
+    `buffer_dtypes` carries resolved model-declared tensor precision independently
+    of the requested dtype (including buffers and strict FP32 parameters).
 
     When `fp8_scale_inv_map` is provided, native-FP8 block-scaled
     weights are kept compressed through the host-side read and moved to

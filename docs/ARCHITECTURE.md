@@ -3,6 +3,16 @@
 As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **checkpoint loader
+precision parity**. Shared resident materialization, cold reads and prefetched
+layer reads apply Hugging Face's declared dtype plan, including strict FP32
+parameters. Split checkpoint sources inherit their final concatenated live
+parameter's dtype before any conversion. Model buffers retain their declared
+precision and layer-cache sizing charges the resolved loaded dtype. This keeps
+GLM KDA convolution, recurrence and routing state consistent with the source
+checkpoint loader under BF16 execution.
+Gate: `tests/test_streaming_buffer_precision.py` and native GLM source parity.
+
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **GLM live KDA
 pin aliases**. The profile's existing immutable attention scope also names
 `self_attn.forget_gate.f_a_proj` and `f_b_proj`, the live spellings produced by

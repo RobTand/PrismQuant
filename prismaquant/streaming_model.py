@@ -65,6 +65,8 @@ from .layer_streaming import (
     _build_fp8_scale_inv_map,
     LayerCache,
     _build_concat_merger,
+    _model_tensor_dtypes,
+    _source_tensor_dtypes,
     _build_expert_packer,
     _build_install_resolver,
     _build_weight_map,
@@ -293,6 +295,7 @@ def _estimate_layer_cache_bytes(
     num_layers: int,
     target_dtype: torch.dtype,
     fp4_experts: bool = False,
+    tensor_dtypes: dict[str, torch.dtype] | None = None,
 ) -> tuple[int, list[int]]:
     """Estimate dequanted cache bytes per decoder layer without loading data.
 
@@ -302,7 +305,7 @@ def _estimate_layer_cache_bytes(
     price as MXFP4 nibble-packs (2 logical elements/byte at the execution
     dtype) instead of verbatim int8."""
     pat = re.compile(rf"^{re.escape(layers_prefix)}(?P<idx>\d+)\.")
-    by_shard: dict[str, list[tuple[int, str, bool]]] = {}
+    by_shard: dict[str, list[tuple[int, str, bool, torch.dtype]]] = {}
     for model_name, shard in weight_shard.items():
         m = pat.match(model_name)
         if m is None:
@@ -313,19 +316,20 @@ def _estimate_layer_cache_bytes(
         by_shard.setdefault(shard, []).append((
             idx, weight_ckpt[model_name],
             bool(fp4_experts and declared_expert_dtype_covers(model_name)),
+            (tensor_dtypes or {}).get(model_name, target_dtype),
         ))
 
     sizes = [0 for _ in range(num_layers)]
     try:
         for shard, pairs in by_shard.items():
             with safe_open(shard, framework="pt") as f:
-                for idx, ckpt_name, fp4_packed in pairs:
+                for idx, ckpt_name, fp4_packed, load_dtype in pairs:
                     sl = f.get_slice(ckpt_name)
                     n = 1
                     for dim in sl.get_shape():
                         n *= int(dim)
                     sizes[idx] += n * _safetensors_cache_dtype_bytes(
-                        sl.get_dtype(), target_dtype,
+                        sl.get_dtype(), load_dtype,
                         fp4_packed=fp4_packed)
     except Exception:
         return 0, sizes
@@ -432,8 +436,7 @@ class StreamingContext:
         self.install_resolvers = install_resolvers
         self.weight_shard = weight_shard
         self.weight_ckpt = weight_ckpt
-        self.buffer_dtypes = {name: value.dtype for name, value in
-                              model.named_buffers(remove_duplicate=False)}
+        self.buffer_dtypes = _source_tensor_dtypes(model, dtype, concat_merger)
         self.layer_cache = layer_cache
         self.prefetch_pool = prefetch_pool
         self.device = device
@@ -1336,8 +1339,7 @@ def _build_streaming_context(model_path: str, *,
                 visual_prefix + ".",
                 weight_shard, weight_ckpt, dtype, device,
                 fp8_scale_inv_map=fp8_scale_inv_map,
-                buffer_dtypes={name: value.dtype for name, value in
-                               model.named_buffers(remove_duplicate=False)})
+                buffer_dtypes=_model_tensor_dtypes(model, dtype))
             print(f"{log_prefix} materializing visual tower: "
                   f"{len(tensors)}/{len(vis_keys)} tensors -> {device}", flush=True)
             if _module_has_meta_tensors(visual_module):
@@ -1420,6 +1422,7 @@ def _build_streaming_context(model_path: str, *,
               f"+ safety={autoscale_diag['safety_gb']:.1f} GB "
               f"(lps={autoscale_diag['layers_per_shard']})", flush=True)
 
+    concat_merger = _build_concat_merger(model, weight_ckpt)
     estimated_layer_bytes, layer_bytes = _estimate_layer_cache_bytes(
         weight_shard=weight_shard,
         weight_ckpt=weight_ckpt,
@@ -1427,6 +1430,7 @@ def _build_streaming_context(model_path: str, *,
         num_layers=num_layers,
         target_dtype=dtype,
         fp4_experts=declared_fp4_expert_dtype(model_path),
+        tensor_dtypes=_source_tensor_dtypes(model, dtype, concat_merger),
     )
     worker_count, worker_src = _auto_prefetch_workers(
         cache_bytes, estimated_layer_bytes, requested=prefetch_workers)
@@ -1469,5 +1473,5 @@ def _build_streaming_context(model_path: str, *,
         prefetch_workers=worker_count,
         prefetch_min_available_bytes=min_available_bytes,
         expert_packer=_build_expert_packer(model, weight_ckpt),
-        concat_merger=_build_concat_merger(model, weight_ckpt),
+        concat_merger=concat_merger,
     )
