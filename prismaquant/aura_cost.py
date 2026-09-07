@@ -3510,9 +3510,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument(
         "--include-routed-experts",
         action="store_true",
-        help="Include profile-declared per-expert nn.Linear targets in the "
-        "streamed smooth AURA pass. This remains route-flip-blind and "
-        "refuses packed expert Parameters.",
+        help="Include profile-declared expert targets in streamed AURA. "
+        "Packed source Parameters require --joint-activation and decoded "
+        "production-cache renders; the local derivative remains route-flip-blind.",
     )
     p.add_argument("--collect-col-energy", action="store_true",
                    default=os.environ.get("PRISMAQUANT_FISHER_COL_WEIGHTS") == "1",

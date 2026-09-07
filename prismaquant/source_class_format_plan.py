@@ -16,8 +16,8 @@ truncating a legal candidate set.
 ``serving_backed_profile`` is the one declared narrowing of "complete
 family", and it is a *serving-legality* restriction, never a demand or disk
 one.  A caller that names a serving profile restricts the family to the
-rungs that profile's fused mid-M lane actually instantiates under the pinned
-Gridbook runtime (``serving_profile_specs/*.json`` ->
+rungs that profile's fused mid-M lane actually instantiates under the selected
+serving profile (``serving_profile_specs/*.json`` ->
 ``fused_mid_m.rungs_by_runtime_version``, resolved through
 ``serving_profiles.serving_lane_route``).  Nothing about the caller's budget,
 cache or preference enters: the set is read off the same immutable pin the
@@ -417,7 +417,7 @@ def build_source_class_format_plan(
     family member; this module intentionally contains no bpp formula.
 
     ``serving_backed_profile`` names a serving profile whose fused mid-M lane
-    bounds the family under the pinned Gridbook runtime (see the module
+    bounds the family under the selected serving profile (see the module
     docstring).  ``None`` -- the default -- keeps the unrestricted contract and
     an unchanged plan body.
     """
@@ -634,7 +634,7 @@ def load_format_plan(
     }
     # A restricted plan carries its own restriction, so the load path
     # re-derives it from the CURRENT pin and refuses on drift: a plan written
-    # under one Gridbook backed set must not be silently reused under another.
+    # under one serving-backed set must not be silently reused under another.
     stored_restriction = raw.get("serving_backed_restriction")
     if stored_restriction is not None and not isinstance(
         stored_restriction, Mapping
