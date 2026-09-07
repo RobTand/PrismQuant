@@ -28,7 +28,12 @@ def run_child(output, command):
     result = {"schema": "prismaquant.profiled_command_exit.v1", "command": command,
               "started_unix": started, "returncode": None}
     try:
-        child = subprocess.run(command, check=False)
+        start_path = output / "child-start.json"
+        write_json(start_path, {"schema": "prismaquant.profiled_command_start.v1",
+                               "wrapper_pid": os.getpid(), "command": command,
+                               "started_unix": started})
+        environment = dict(os.environ, PRISMAQUANT_SAMPLER_SESSION=str(start_path))
+        child = subprocess.run(command, check=False, env=environment)
         result["returncode"] = child.returncode
         return child.returncode
     finally:
@@ -52,7 +57,7 @@ def run_profile(output, command, *, profiler, rate):
     receipt = output / "child-exit.json"
     if receipt.is_file():
         result["child"] = json.loads(receipt.read_text())
-    for path in (receipt, raw, output / "sampler.log"):
+    for path in (output / "child-start.json", receipt, raw, output / "sampler.log"):
         if path.is_file():
             blob = path.read_bytes()
             result["artifacts"][path.name] = {"bytes": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}

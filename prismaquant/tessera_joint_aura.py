@@ -425,7 +425,8 @@ def _load_plan(path, digest):
     _same(execution.get("token_scope"), "all", "full-draw joint token scope")
     _same(execution.get("temperature"), 1.0, "joint probe temperature")
     _same(execution.get("production_act_scales"), "0", "campaign optional activation clipping")
-    _same(config.get("profile_tool"), "cprofile", "full-duration in-process profiler")
+    _require(config.get("profile_tool") in {"cprofile", "py-spy"},
+             "explicit supported full-duration profiler required")
     for name in ("max_render_bytes", "max_gpu_bytes"):
         _require(type(config.get(name)) is int and config[name] > 0, f"positive {name} required")
     _require(type(config.get("min_free_gib")) in (int, float) and config["min_free_gib"] >= 0,
@@ -471,11 +472,25 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                   "started_epoch": time.time(), "torch": str(torch.__version__),
                   "cuda": torch.version.cuda, "affinity": sorted(os.sched_getaffinity(0))},
               "phases": [], "passed": False}
-    profiler = cProfile.Profile()
+    profile_tool = config.get("profile_tool", "cprofile")
+    profiler = cProfile.Profile() if profile_tool == "cprofile" else None
+    result["profile_tool"] = profile_tool
+    if profiler is None:
+        session_path = Path(os.environ.get("PRISMAQUANT_SAMPLER_SESSION", ""))
+        _require(session_path.is_file(), "sampling must run through the checked profiler launcher")
+        session_bytes = session_path.read_bytes()
+        session = json.loads(session_bytes)
+        _same(session.get("schema"), "prismaquant.profiled_command_start.v1", "sampler session schema")
+        _same(session.get("wrapper_pid"), os.getppid(), "actual sampler child parent")
+        _same(session.get("command", [])[1:4],
+              ["-m", "prismaquant.tessera_joint_aura", command], "observed joint command")
+        result["sampling_session"] = {"path": str(session_path),
+                                      "sha256": hashlib.sha256(session_bytes).hexdigest()}
     runner = None
     completion_path = completion = output = payload = None
     started, before_io = time.time(), _io_counters()
-    profiler.enable()
+    if profiler is not None:
+        profiler.enable()
     try:
         file_hash_workers = config.get("file_hash_workers", 1)
         _require(type(file_hash_workers) is int and 0 < file_hash_workers <= len(os.sched_getaffinity(0)),
@@ -589,11 +604,12 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             result["cost"] = {"path": str(output), "sha256": _sha(output)}
         result["passed"] = True
     finally:
-        profiler.disable()
-        profiler.dump_stats(str(root / "profile.pstats"))
-        text = io.StringIO()
-        pstats.Stats(profiler, stream=text).sort_stats("cumulative").print_stats(100)
-        (root / "profile.txt").write_text(text.getvalue())
+        if profiler is not None:
+            profiler.disable()
+            profiler.dump_stats(str(root / "profile.pstats"))
+            text = io.StringIO()
+            pstats.Stats(profiler, stream=text).sort_stats("cumulative").print_stats(100)
+            (root / "profile.txt").write_text(text.getvalue())
         result["env"]["finished_epoch"] = time.time()
         result["phases"].append({"phase": command, "kind": "profile", "start_epoch": started,
                                  "end_epoch": result["env"]["finished_epoch"]})

@@ -1,7 +1,20 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `perf/joint-anchor-identity-reuse`. Stamps
+As of: 2026-09-07 · `codex/joint-sampling-profiler`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/joint-sampling-profiler`) for **sampling joint
+preparation and cost execution**. The explicit plan profiler may be `py-spy`:
+the admitted container runs a pinned sampler as the command's ancestor, with
+50 Hz Python stack sampling across its subprocesses. The joint process binds
+its actual wrapper's start receipt; the wrapper separately records the observed
+command's exit status. Completion requires both successful child execution and
+nonempty sampled stacks, checked through `profile-result.json` alongside the
+PB terminal and CAS receipt. Sampling avoids deterministic callbacks on every
+grid/hash call. Explicit `cprofile` remains supported for retained plans.
+Both-host Netdata and per-process IO observations remain required when reporting
+performance; sampled stack fractions are not isolated throughput measurements.
+Gate: `tests/test_profile_command.py`, with real sampler cases run under PB.
 
 Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for an **explicitly
 versioned Tessera reader beside the frozen producer**. An optional plan `reader`

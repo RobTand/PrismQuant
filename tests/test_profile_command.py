@@ -14,7 +14,10 @@ from experiments.profile_command import run_profile
 def test_sampler_preserves_observed_child_result_and_stack_bytes(tmp_path, exit_code):
     profiler = os.environ["PQ_TEST_PY_SPY"]
     target = tmp_path / "target.py"
-    target.write_text("import time\nend=time.monotonic()+1.0\n"
+    target.write_text("import time, os, json\nfrom pathlib import Path\n"
+                      "session=json.loads(Path(os.environ['PRISMAQUANT_SAMPLER_SESSION']).read_text())\n"
+                      "assert session['wrapper_pid'] == os.getppid()\n"
+                      "end=time.monotonic()+1.0\n"
                       "while time.monotonic()<end:\n    sum(range(1000))\n"
                       f"raise SystemExit({exit_code})\n")
     output = tmp_path / "capture"

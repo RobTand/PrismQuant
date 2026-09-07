@@ -9,4 +9,4 @@ exec docker run --rm --gpus all --ipc=host --network=host --user "$(id -u):$(id 
   -e HF_HOME=/tmp/pq-joint-anchor-hf -e HF_MODULES_CACHE=/tmp/pq-joint-anchor-modules \
   -e PRISMABUILD_CONTAINER_OWNER -e PRISMAQUANT_PROD_ACT_SCALES=0 \
   -e "PYTHONPATH=/workspace:$input_root/tessera-382a1a97/src:$input_root/container-compatible-deps" \
-  "$image" -m prismaquant.tessera_joint_aura "$@"
+  "$image" -m experiments.pq_joint_profile_entry "$@"

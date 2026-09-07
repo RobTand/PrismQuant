@@ -18,5 +18,5 @@ if [ "${PQ_PROFILE_CONTAINER:-0}" = 1 ]; then pq_profile_python=python3; fi
   'py-spy==0.4.2' 'pytest==9.0.2' 'pytest-xdist==3.8.0'
 export PYTHONPATH="$PWD:$pq_profile_deps:/mnt/shared/tessera-measurements/first-model-20260907/inputs/tessera-382a1a97/src${PYTHONPATH:+:$PYTHONPATH}"
 export PQ_TEST_PY_SPY="$pq_profile_deps/bin/py-spy"
-"$pq_profile_python" -m pytest -n 2 tests/test_profile_command.py -q -p no:cacheprovider
-"$pq_profile_python" -m compileall -q experiments/profile_command.py tests/test_profile_command.py
+"$pq_profile_python" -m pytest -n 2 tests/test_profile_command.py tests/test_tessera_joint_aura.py tests/test_tessera_reader_namespace.py -q -p no:cacheprovider
+"$pq_profile_python" -X "pycache_prefix=$pq_profile_deps/pycache" -m compileall -q experiments/profile_command.py experiments/pq_joint_profile_entry.py prismaquant/tessera_joint_aura.py tests/test_profile_command.py tests/test_tessera_joint_aura.py
