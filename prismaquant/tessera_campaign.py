@@ -847,6 +847,7 @@ def _stack_cost_rows(
     menus: "Mapping[str, list]",
     hessian_identity: dict,
     refused: list,
+    wire_backed: "frozenset[str] | set[str]" = frozenset(),
 ) -> "tuple[dict[str, dict], object]":
     """Build every measured + interpolated row for one packed stack."""
     from .tessera_rate_surface import (
@@ -1012,6 +1013,14 @@ def _stack_cost_rows(
             })
             continue
         surfaces[family] = surface
+        if sample.is_census and all(
+                member in wire_backed for members in sample.members.values()
+                for member in members):
+            # A full census handed to the cached-wire exporter can select
+            # only rungs with actual member bytes. Keep its surface for
+            # diagnostics, as the dense path does, but never price an
+            # interpolated rung as though the corresponding wires existed.
+            continue
         low, high = surface.q256_range
         template = next(r for r in rows.values()
                         if r["tessera_family"] == family)
@@ -1255,7 +1264,7 @@ def campaign_cost_payload(
             costs[qname] = rows
     for packed_qname, sample in sorted(samples.items()):
         stack_rows, stack_surfaces = _stack_cost_rows(
-            sample, anchors, menus, hessian_identity, refused)
+            sample, anchors, menus, hessian_identity, refused, wire_backed=wire_backed)
         if not stack_rows:
             continue
         costs[packed_qname] = stack_rows
