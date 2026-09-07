@@ -701,8 +701,9 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     """Re-resolve selected Tessera units before the external translator runs.
 
     The existing translator still owns serialization and expert aggregation.
-    This gate accepts exact two-dimensional source units, not a guessed slice
-    of a packed source tensor.  For a dense unit these are source-member
+    Packed allocation decisions resolve through their population member map
+    to exact two-dimensional producer source units for these checks. The
+    serialized allocation remains packed. For a dense unit these are source-member
     shapes, not a claim about a fused execution unit, so a predicated cell is
     refused.  A routed expert unit resolves the same way UNLESS the allocation
     carries the producer's own projection (PrismaQuant #183), which unlocks
@@ -727,6 +728,10 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     )
     from .layer_config import load_assignment, read_layer_config_metadata
     from .model_profiles import detect_profile
+    from .tessera_expert_projection import (
+        POPULATION_KEY, PROJECTION_KEY, ExpertProjectionError, carried_units,
+        expand_stack_decision_assignment,
+    )
     from .tessera_serving_scope import ServingTarget, unit_structure_from_profile
 
     path = packaged_contract_path()
@@ -738,8 +743,7 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
     if target is None:
         require_serving_target(target, table=table)
     try:
-        selected = {name: fmt for name, fmt in load_assignment(assignment_path).items()
-                    if fmt.startswith("TESSERA_")}
+        assignment = load_assignment(assignment_path)
         meta = read_layer_config_metadata(assignment_path)
         scope = meta.get("tessera_serving_scope")
         if not isinstance(scope, Mapping):
@@ -757,6 +761,20 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
         by_unit = scope["by_unit"]
         if not isinstance(by_unit, Mapping):
             raise TesseraExportLaneError("allocation scope.by_unit must be an object")
+        population = meta.get(POPULATION_KEY)
+        member_owners = {}
+        if isinstance(population, Mapping) and "stack_decisions" in population:
+            # Resolve only the population's explicit map. The config retains
+            # packed decisions; geometry and wire checks operate on the exact
+            # source units the producer projected for those decisions.
+            try:
+                _source, source_units, stack_of = carried_units(meta.get(PROJECTION_KEY))
+                assignment, member_owners = expand_stack_decision_assignment(
+                    assignment, population, units=source_units, stack_of=stack_of)
+            except ExpertProjectionError as exc:
+                raise TesseraExportLaneError(f"expert projection: {exc}") from exc
+        selected = {name: fmt for name, fmt in assignment.items()
+                    if fmt.startswith("TESSERA_")}
         profile = detect_profile(str(model_path))
         shards: dict[str, str] = {}
         shapes = _source_unit_shapes(model_path, profile, shards)
@@ -782,7 +800,11 @@ def require_assignment_scope(model_path: str | Path, assignment_path: str | Path
                 geometry = matches[0][1]
             structure = structures[name]
             expected = target.context(structure)
-            context_payload = by_unit.get(name)
+            owner = member_owners.get(name, name)
+            context_payload = by_unit.get(owner)
+            if name != owner and name in by_unit and by_unit[name] != context_payload:
+                raise TesseraExportLaneError(
+                    f"{name}: source serving context disagrees with packed decision {owner}")
             if not isinstance(context_payload, Mapping):
                 raise TesseraExportLaneError(f"{name}: allocation is missing per-unit serving context")
             recorded = ServingContext(**context_payload)

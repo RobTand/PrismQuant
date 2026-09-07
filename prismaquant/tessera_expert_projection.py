@@ -503,6 +503,59 @@ STACK_FORMATS_KEY = "tessera_expert_stack_formats"
 WIRE_DIR_KEY = "tessera_expert_wire_dir"
 
 
+def expand_stack_decision_assignment(assignment: Mapping[str, Any], population: Any,
+                                     *, units: Mapping[str, Any], stack_of: Mapping[str, str],
+                                     costs: Mapping[str, Any] | None = None) -> tuple[dict, dict]:
+    """Resolve explicit packed decisions to producer source units in memory.
+
+    The population's complete member map owns the expansion. Return the source
+    assignment and each expanded member's packed owner, without mutating either
+    the serialized assignment or its metadata. Allocation and export share the
+    ownership, coverage and contradictory-assignment checks here.
+    """
+    projected_assignment = dict(assignment)
+    decisions = population.get("stack_decisions", {}) if isinstance(population, Mapping) else {}
+    if not isinstance(decisions, Mapping):
+        raise ExpertProjectionError("population stack_decisions must be an object")
+    member_owner = {}
+    for packed, decision in sorted(decisions.items()):
+        packed_parameters = population.get("enumerated", {}).get("packed_parameters", {})
+        if (packed not in packed_parameters or
+                packed not in population.get("enumerated", {}).get("routed_experts", ()) or
+                not isinstance(decision, Mapping)):
+            raise ExpertProjectionError(f"{packed}: stack decision is not an enumerated packed parameter")
+        members = decision.get("members")
+        sampled = decision.get("sampled_members")
+        if (not isinstance(members, list) or not members or
+                any(not isinstance(n, str) or not n for n in members) or
+                len(set(members)) != len(members) or
+                not isinstance(sampled, list) or not sampled or
+                any(not isinstance(n, str) for n in sampled) or
+                len(set(sampled)) != len(sampled) or not set(sampled) <= set(members)):
+            raise ExpertProjectionError(f"{packed}: stack decision has invalid source members")
+        if packed not in assignment:
+            raise ExpertProjectionError(f"{packed}: packed stack decision is not in the assignment")
+        for name in members:
+            if name in member_owner:
+                raise ExpertProjectionError(f"{name}: source member belongs to multiple stack decisions")
+            member_owner[name] = packed
+            if name not in units or stack_of[name] != decision.get("stack"):
+                raise ExpertProjectionError(f"{packed}: source member {name} is outside its producer stack")
+            if (costs or {}).get(name):
+                raise ExpertProjectionError(f"{name}: both source member and packed decision have cost rows")
+            fmt = assignment[packed]
+            if name in assignment and assignment[name] != fmt:
+                raise ExpertProjectionError(f"{name}: source assignment disagrees with packed decision {packed}")
+            projected_assignment[name] = fmt
+        projected_assignment.pop(packed, None)
+    missing = sorted(set(units) - set(projected_assignment))
+    if missing:
+        raise ExpertProjectionError(
+            f"{len(missing)} of {len(units)} projected expert units are not in the "
+            f"assignment (first: {missing[0]}); the producer executes every stack whole")
+    return projected_assignment, member_owner
+
+
 def allocation_expert_projection_block(payload: Mapping[str, Any],
                                        assignment: Mapping[str, Any]) -> dict:
     """What an allocation carries about the expert population it selected from.
@@ -602,45 +655,8 @@ def allocation_expert_projection_block(payload: Mapping[str, Any],
                 "the wires cannot be bound to any executed unit")
         return block
     _source, units, stack_of = carried_units(carried)
-    projected_assignment = dict(assignment)
-    decisions = population.get("stack_decisions", {}) if isinstance(population, Mapping) else {}
-    if not isinstance(decisions, Mapping):
-        raise ExpertProjectionError("population stack_decisions must be an object")
-    member_owner = {}
-    for packed, decision in sorted(decisions.items()):
-        packed_parameters = population.get("enumerated", {}).get("packed_parameters", {})
-        if (packed not in packed_parameters or
-                packed not in population.get("enumerated", {}).get("routed_experts", ()) or
-                not isinstance(decision, Mapping)):
-            raise ExpertProjectionError(f"{packed}: stack decision is not an enumerated packed parameter")
-        members = decision.get("members")
-        sampled = decision.get("sampled_members")
-        if (not isinstance(members, list) or not members or
-                any(not isinstance(n, str) or not n for n in members) or
-                len(set(members)) != len(members) or
-                not isinstance(sampled, list) or not sampled or
-                any(not isinstance(n, str) for n in sampled) or
-                len(set(sampled)) != len(sampled) or not set(sampled) <= set(members)):
-            raise ExpertProjectionError(f"{packed}: stack decision has invalid source members")
-        if packed not in assignment:
-            raise ExpertProjectionError(f"{packed}: packed stack decision is not in the assignment")
-        for name in members:
-            if name in member_owner:
-                raise ExpertProjectionError(f"{name}: source member belongs to multiple stack decisions")
-            member_owner[name] = packed
-            if name not in units or stack_of[name] != decision.get("stack"):
-                raise ExpertProjectionError(f"{packed}: source member {name} is outside its producer stack")
-            if payload.get("costs", {}).get(name):
-                raise ExpertProjectionError(f"{name}: both source member and packed decision have cost rows")
-            fmt = assignment[packed]
-            if name in assignment and assignment[name] != fmt:
-                raise ExpertProjectionError(f"{name}: source assignment disagrees with packed decision {packed}")
-            projected_assignment[name] = fmt
-    missing = sorted(set(units) - set(projected_assignment))
-    if missing:
-        raise ExpertProjectionError(
-            f"{len(missing)} of {len(units)} projected expert units are not in the "
-            f"assignment (first: {missing[0]}); the producer executes every stack whole")
+    projected_assignment, _owners = expand_stack_decision_assignment(
+        assignment, population, units=units, stack_of=stack_of, costs=payload.get("costs", {}))
     selected = {name: str(projected_assignment[name]) for name in units}
     stack_formats = require_stack_uniform_assignment(selected, stack_of, units)
     wire_dir = provenance.get("wire_dir")
@@ -703,6 +719,7 @@ __all__ = [
     "UNIT_IDENTITY_KEYS",
     "WIRE_DIR_KEY",
     "allocation_expert_projection_block",
+    "expand_stack_decision_assignment",
     "bind_expert_projection",
     "cached_units_manifest",
     "check_expert_wire_receipt",
