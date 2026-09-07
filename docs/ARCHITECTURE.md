@@ -3,6 +3,45 @@
 As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/pr348-orphan-cache-root`) for missing-manifest
+export-cache refusal. Existing `layer_*.pt` files without a manifest are
+discarded through the same refusal path as mismatched fingerprints before
+any layer can be replayed. A fresh empty cache retains its initialization
+behavior. Real streaming-export regressions check emitted bytes and absence
+of orphaned payload reads for both unchanged and changed source weights.
+
+Re-stamped (2026-09-07, `triage/340-export-resume-source-identity`) for the
+standalone compressed-tensors export resume cache's **source identity** (#340).
+`--export-cache-dir` replays `layer_NNN.pt` payloads whenever the manifest
+matches. The manifest bound the render levers and named no source, so the same
+cache dir reused against a different checkpoint replayed the first checkpoint's
+quantized bytes; the `assignment_hash` beside them compared nothing either,
+because `hashlib` was in scope nowhere inside `materialize_tensors_streaming`
+and the swallowed `NameError` stamped a null on every manifest ever written.
+`_export_resume_fingerprint()` now adds three fields the payloads silently bake
+in: `source_identity` (the sha256 of every safetensors shard the run consumes
+AND of the non-shard files it reads from the checkpoint root — `config.json`,
+which decides the skeleton the payloads were quantized against, and
+`model.safetensors.index.json`, which decides where each tensor is read from,
+and every root `*.py` (all of them, not only the ones `auto_map` names), which
+a `trust_remote_code` checkpoint is built through — via the
+shared `cost_streaming.build_source_checkpoint_identity()`),
+`requested_dtype`, and `declared_buffer_dtypes`, and it computes the recipe
+hash with no swallow. `_admit_export_resume_cache()` decides admission
+before any payload is read and fails closed: a manifest missing any of those
+keys — every pre-fix cache — is refused, not treated as a weaker match, and no
+field may degrade to `None`. Identity is CONTENT, not path: a relocated
+checkpoint still resumes, a same-size same-header value edit does not. The hash
+runs only when a cache dir was requested, and a `source_identity_cache.json`
+beside the manifest keys each digest to the shard's full stat fingerprint
+(`ctime_ns` included), so unchanged shards can reuse their recorded content
+digests. Resume still performs source discovery, metadata reads, digest-cache
+JSON handling, identity construction and manifest admission; primitive stat
+timings do not measure that full path. Gate:
+`tests/test_export_resume_source_identity.py`, which drives the real streaming
+exporter and asserts on whether a `layer_*.pt` was read at all. No served
+artifact gate is claimed.
+
 Re-stamped (2026-09-07, `fix/profile-dispatch-identity`) for declared
 scheme-dispatch identity rewrites. `ModelProfile.to_vllm_internal_name()` now
 honors a matched structure-spec rule even when the spelling stays unchanged.
@@ -9901,8 +9940,11 @@ allocator/floor distinction on disk, so `breakdown.dense` is `0` there by constr
 the split is only meaningful in the pre-export `assignment_read_traffic` form.
 
 Also on the card: exact `artifact_bytes`, format histogram, the render-lever
-echo (`_render_lever_provenance()`, shared with the export cache's fingerprint so the two
-cannot drift), and the `PRISMAQUANT_ALLOW_KV_SHARED_FISHER` / `PRISMAQUANT_KV_COTANGENT` state
+echo (`_render_lever_provenance()`, which the export cache's fingerprint folds in whole so
+the render levers cannot drift between the two; the cache additionally binds the source
+checkpoint identity, requested dtype and declared buffer dtypes, which are cache-admission
+facts rather than render levers — see the #340 stamp), and the
+`PRISMAQUANT_ALLOW_KV_SHARED_FISHER` / `PRISMAQUANT_KV_COTANGENT` state
 so an allocation that rode an unvalidated Fisher correction is visible on the artifact rather
 than only in a probe log (D24) — and since 2026-09-03 `verify` refuses a card carrying
 `unvalidated_kv_fisher_correction=true`, and shape-replays the stamped forensic hashes

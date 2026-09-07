@@ -414,6 +414,247 @@ def _local_checkpoint_shards(
     return None, None
 
 
+SOURCE_CHECKPOINT_IDENTITY_SCHEMA = (
+    "prismaquant.source_checkpoint.identity.v1"
+)
+# The non-shard files the standalone export reads from the checkpoint root:
+# `config.json` through `stage_text_only`/`AutoConfig` (streaming_model.py:102
+# and the exporter's skeleton build) and the index through
+# `_local_checkpoint_shards` and export_native_compressed.py:6092.  A file that
+# is absent contributes no row, so one appearing later is a different source.
+SOURCE_CHECKPOINT_METADATA_FILES = (
+    "config.json",
+    "model.safetensors.index.json",
+)
+# ... plus every `*.py` at the checkpoint root, because a `trust_remote_code`
+# checkpoint executes modules from there to build the skeleton (MiniMax-M2
+# ships `configuration_minimax_m2.py` and `modeling_minimax_m2.py`;
+# DeepSeek-V4 uses the same pattern), discovered per call rather than named
+# here.  Every one of
+# them is bound, whether or not `auto_map` names it: binding a module nobody
+# imports can cost a false refusal, naming only some can cost a false
+# admission.
+SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA = (
+    "prismaquant.source_checkpoint.digest_cache.v1"
+)
+
+
+def _read_source_checkpoint_digest_cache(
+    cache_path: Path,
+) -> dict[str, dict[str, object]]:
+    """Digests keyed by the six-field stat fingerprint of the file they cover.
+
+    A corrupt or foreign cache is not an error: it simply reuses nothing, and
+    every shard is hashed. The cache can only ever make the identity CHEAPER,
+    never different -- the fingerprint it keys on includes ``ctime_ns``, which
+    ``utime`` cannot restore after an in-place same-size rewrite.
+    """
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA
+    ):
+        return {}
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return {}
+    reusable: dict[str, dict[str, object]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        fingerprint = entry.get("fingerprint")
+        digest = str(entry.get("sha256", "")).lower()
+        if (
+            not isinstance(fingerprint, dict)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            continue
+        reusable[canonical_fingerprint_key(fingerprint)] = {
+            "fingerprint": fingerprint,
+            "sha256": digest,
+        }
+    return reusable
+
+
+def canonical_fingerprint_key(fingerprint: dict[str, object]) -> str:
+    return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+
+
+def build_source_checkpoint_identity(
+    source_model: str | Path,
+    *,
+    extra_shard_paths: object = (),
+    digest_cache_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Content identity of the exact safetensors byte set a run consumes.
+
+    This is the runner-free half of :func:`build_streamed_model_identity`, for
+    consumers that hold a checkpoint path rather than a live streaming runner
+    -- the standalone compressed-tensors export resume cache is the first
+    (PrismaQuant #340). It binds file CONTENT, so a same-size, same-header
+    value edit is a different source, and the same bytes under a different
+    directory are the same source.
+
+    The weight bytes are not the whole source.
+    :data:`SOURCE_CHECKPOINT_METADATA_FILES` names the non-shard files the
+    export reads from the checkpoint root, and their sha256 is folded into
+    the same ``content_sha256``: ``config.json`` decides the skeleton the
+    payloads were quantized against -- the dtype map, ``tie_word_embeddings``,
+    any ``quantization_config``, the layer counts -- and
+    ``model.safetensors.index.json`` decides which shard each tensor is read
+    from.  Every ``*.py`` at the checkpoint root joins them, because a
+    ``trust_remote_code`` checkpoint executes modules from there to build the
+    skeleton; all of them are bound rather than only those ``auto_map`` names,
+    which can refuse falsely but never admit falsely.
+    Editing any of them changes what a replayed ``layer_NNN.pt`` means while
+    every shard byte stays identical.  They are kilobytes, so they are hashed
+    on every call rather than cached.
+
+    ``digest_cache_path`` makes the read happen once per (file, machine): a
+    shard whose complete stat fingerprint still matches reuses its recorded
+    digest instead of rereading that shard. Discovery, metadata hashing,
+    digest-cache JSON handling and identity construction still run. Without
+    this cache, every call hashes every shard.
+    """
+    from prismaquant.cost_stage_checkpoint import canonical_json_sha256
+
+    root = Path(source_model)
+    _, indexed_shards = _local_checkpoint_shards(source_model)
+    shard_paths = {Path(path).resolve() for path in (indexed_shards or ())}
+    for path in extra_shard_paths or ():
+        shard_paths.add(Path(path).resolve())
+    missing = sorted(str(path) for path in shard_paths if not path.is_file())
+    if missing:
+        raise RuntimeError(
+            f"source checkpoint identity references missing shards: "
+            f"{missing[:8]}"
+        )
+    if not shard_paths:
+        raise RuntimeError(
+            f"source checkpoint identity found no safetensors shards under "
+            f"{root}; refusing to stamp an unidentified source"
+        )
+    ordered = sorted(shard_paths, key=str)
+    # Name each shard by its position INSIDE the checkpoint. A Hugging Face
+    # snapshot dir holds symlinks into `blobs/`, so the resolved path is named
+    # by an LFS hash; naming shards by that would make the SAME checkpoint
+    # reached through a snapshot and through a plain directory two different
+    # sources. Recover the in-checkpoint spelling from the directory listing.
+    name_by_resolved: dict[str, str] = {}
+    if root.is_dir():
+        for entry in root.rglob("*.safetensors"):
+            try:
+                name_by_resolved.setdefault(
+                    str(entry.resolve()), str(entry.relative_to(root))
+                )
+            except (OSError, ValueError):
+                continue
+
+    reusable = (
+        _read_source_checkpoint_digest_cache(Path(digest_cache_path))
+        if digest_cache_path is not None
+        and Path(digest_cache_path).is_file()
+        else {}
+    )
+
+    entries: list[dict[str, object]] = []
+    shards: list[dict[str, object]] = []
+    for path in ordered:
+        fingerprint = _streamed_identity_stat_fingerprint(path)
+        cached = reusable.get(canonical_fingerprint_key(fingerprint))
+        digest = str(cached["sha256"]) if cached is not None else None
+        if digest is None:
+            digest = _file_sha256(path)
+            if _streamed_identity_stat_fingerprint(path) != fingerprint:
+                raise RuntimeError(
+                    f"source checkpoint shard changed while hashing: {path}"
+                )
+        entries.append({"fingerprint": fingerprint, "sha256": digest})
+        # Relocating a checkpoint does not change its bytes, so the identity
+        # is never keyed on the absolute path.
+        name = name_by_resolved.get(str(path))
+        if name is None:
+            try:
+                name = str(path.relative_to(root.resolve()))
+            except ValueError:
+                name = path.name
+        shards.append({
+            "name": name,
+            "size": int(fingerprint["size"]),
+            "sha256": digest,
+        })
+    shards.sort(key=lambda row: (str(row["name"]), str(row["sha256"])))
+
+    # The non-shard files the export reads.  Kilobytes each, so no digest
+    # cache: hashing them costs less than deciding not to.
+    metadata_names = list(SOURCE_CHECKPOINT_METADATA_FILES)
+    if root.is_dir():
+        # `trust_remote_code` checkpoints build their skeleton from modules at
+        # the checkpoint root, so those are read bytes too.  All of them, not
+        # only the ones `auto_map` names: over-binding refuses falsely, and
+        # under-binding admits falsely.
+        metadata_names += sorted(
+            path.name for path in root.glob("*.py") if path.is_file()
+        )
+    metadata: list[dict[str, object]] = []
+    for name in metadata_names:
+        path = root / name
+        if not path.is_file():
+            continue
+        fingerprint = _streamed_identity_stat_fingerprint(path)
+        digest = _file_sha256(path)
+        if _streamed_identity_stat_fingerprint(path) != fingerprint:
+            raise RuntimeError(
+                f"source checkpoint metadata changed while hashing: {path}"
+            )
+        metadata.append({
+            "name": name,
+            "size": int(fingerprint["size"]),
+            "sha256": digest,
+        })
+    metadata.sort(key=lambda row: str(row["name"]))
+
+    identity = {
+        "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
+        "shards": shards,
+        "metadata": metadata,
+        "content_sha256": canonical_json_sha256(
+            {
+                "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
+                "shards": shards,
+                "metadata": metadata,
+            },
+            where="source checkpoint content identity",
+        ),
+    }
+
+    if digest_cache_path is not None:
+        from prismaquant.cost_stage_checkpoint import atomic_write_bytes
+
+        try:
+            atomic_write_bytes(
+                Path(digest_cache_path),
+                json.dumps(
+                    {
+                        "schema": SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA,
+                        "entries": entries,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8"),
+            )
+        except OSError:
+            # The digest cache is an optimization. A read-only or full cache
+            # directory costs a re-read next time; it never changes identity.
+            pass
+    return identity
+
+
 def _read_streamed_model_identity_cache(
     cache_path: Path,
     *,
