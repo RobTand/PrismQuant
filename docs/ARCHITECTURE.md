@@ -1,7 +1,111 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/joint-aura-calibration-microbatch`. Stamps
+As of: 2026-09-07 · `perf/joint-prepare-single-read`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `perf/joint-prepare-single-read`) for **verified
+single-read PWC preparation**. Joint-anchor preparation performs complete
+metadata/roster/producer-receipt intake, then verifies payload bytes on their
+necessary layer-scoped consumption. The existing PWC loader can capture a
+SHA256 receipt from one explicitly bounded serialized-file read and deserialize
+those exact bytes. Its receipt is valid only for the same unchanged resident
+tensor and donor-file signature; eviction and compaction discard it. Temporary
+serialized buffers use each file's observed size, capped before any prefetch
+by the declared PWC budget; they are bounded per admitted loader worker and
+never persist as another cache. Preparation uses this load receipt instead of global and
+post-prefetch render scans; the existing verifier reads each original wire,
+checks its recorded SHA/source/H/settings, and compares decoded values exactly.
+Prepared completion remains withheld until every measured cell qualifies.
+The strict intake API default and cost/resume payload scans remain unchanged.
+Gate: `tests/test_pwc_file_load_receipts.py`, `tests/test_tessera_joint_aura.py`,
+and equal-work original fourteen-cell qualification with reader/identity held fixed.
+
+Re-stamped (2026-09-07, `codex/joint-sampling-profiler`) for **sampling joint
+preparation and cost execution**. The explicit plan profiler may be `py-spy`:
+the admitted container runs a pinned sampler as the command's ancestor, with
+50 Hz Python stack sampling across its subprocesses. The joint process binds
+its actual wrapper's start receipt; the wrapper separately records the observed
+command's exit status. Completion requires both successful child execution and
+nonempty sampled stacks, checked through `profile-result.json` alongside the
+PB terminal and CAS receipt. Sampling avoids deterministic callbacks on every
+grid/hash call. Explicit `cprofile` remains supported for retained plans.
+Both-host Netdata and per-process IO observations remain required when reporting
+performance; sampled stack fractions are not isolated throughput measurements.
+Gate: `tests/test_profile_command.py`, with real sampler cases run under PB.
+
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for an **explicitly
+versioned Tessera reader beside the frozen producer**. An optional plan `reader`
+record declares the external package path and exact source SHA256. The consumer
+loads under its own source-named namespace; imported files are checked against
+that sealed source tree, absolute primary-Tessera imports and serving modules
+are refused. Primary `tessera` still derives original source/H/settings/encoder
+identities. The separate reader verifies these actual expected identities and
+original wire grammar, then decodes bytes; it never substitutes its source seal
+into old producer receipts. Reader identity is bound into prepared PWC/completion
+records and dependent joint checkpoints. This is a producer/consumer boundary,
+not a serving-runtime import or a wire/default change.
+Gate: `tests/test_tessera_reader_namespace.py` plus original-wire old/new parity.
+
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for **bounded
+source/H identity reuse during anchor preparation**. The shared campaign seam
+can bind one unit's closed anchor roster from actual source/H tensors through
+Tessera's unchanged producer API. Source finite checks, source/H hashes and the
+PWC source receipt are derived once for that lifetime; storage, version, device,
+shape, stride, dtype, calibration settings and projection guards refuse stale
+reuse. Each format still resolves Tessera's canonical recipe and retains its
+anchor/static-scale/H applicability checks, original wire grammar/hash checks
+and exact decoded-render comparison. The binding closes before source unload;
+it accepts no caller-supplied prehash and creates no tensor cache or dispatcher.
+Gate: `tests/test_tessera_bound_identity.py` plus original-wire qualification.
+Strict intake wire/render verification may use explicit `file_hash_workers`,
+bounded by PB-assigned CPU affinity. Preparation instead uses that worker bound
+for the existing PWC loader and its single-read receipts described above.
+Exact content hashes and consumption lifetime guards remain mandatory; placement
+stays PB's.
+
+Re-stamped (2026-09-07, `fix/native-workspace-receipt`) for the native MoE
+workspace receipt binding described below (#328).
+
+Re-stamped (2026-09-07, `codex/runtime-provenance-relation`) for **explicit
+cross-run runtime provenance** (#323). Opt-in measured-runtime context/table v2
+binds a separately hashed relation while retaining original native and engine
+manifests. Admission checks exhaustive production-library relationships,
+observed instrumentation source/build artifacts, canonical loaded package
+origins/bytes, source-archive packaging subsets, configuration, stock core and
+the same GPU identity. Exact pinned manifest bytes relate Docker manifest and
+config ID representations; original IDs and producer/installed source seals
+remain distinct. Native rows still pass their original same-panel numerical,
+route, tensor and resource-trace gates. Parsing v2 cannot supply allocation
+resources. Loading remains fail-closed because no qualified recomputable
+full-engine fixed resource/timing partition is yet supported; raw ledgers and
+completion flags cannot fill that gap. This adds no measured table, serving
+import, SLO attestation, format/default change or release-pin promotion.
+Contract: [runtime provenance relation](design/runtime_provenance_relation.md).
+Gate: `tests/test_runtime_provenance.py`.
+
+Re-stamped (2026-09-07, `feat/tessera-joint-anchor-bridge`) for **joint AURA
+from completed measured Tessera anchors** (#322). The explicit
+`prismaquant.tessera_joint_aura.plan.v1` intake binds a complete campaign fanout,
+its fleet receipts, merged scalar payload/journal, full census and canonical
+token/capture artifacts. Only journaled measured wire cells enter the exact
+per-Linear format plan; interpolated MSE rows never become joint prices.
+Preparation derives the producer's encoding identity from actual streamed source
+weights and original prefetched Hessians, verifies original wire bytes, and
+requires their decoded BF16 values to equal original PWC shards. Fused-census
+maxima use the existing static-scale contract and must reproduce measured E2M1
+scales. The existing PWC indexes original absolute donor paths and owns prefetch
+and eviction; no encoder, cache store or dispatcher is added. A sealed prepared
+record binds every qualified render plus source/backend/calibration/implementation
+identity. The dependent run verifies those bindings and calls existing streamed
+joint AURA with explicit complete-sequence microbatches, global-row probes and
+durable checkpoints. Both preparation and pricing require explicit source-cache
+slots, prefetch workers/lookahead and memory floors, with strict prefetched
+residency enabled; omitted settings and cold-read fallback refuse at intake.
+The plan digest binds these settings through preparation and cost resume.
+Source BF16 remains the independent zero-cost terminal.
+Full-duration in-process profiles and allocation/IO records accompany these
+research actions; no format/default, wire or serving gate changes.
+Gate: `tests/test_tessera_joint_aura.py`.
 
 Re-stamped (2026-09-07, `feat/joint-aura-calibration-microbatch`) for
 **bounded full-calibration streamed joint AURA** (#318). Explicit
@@ -47,9 +151,11 @@ panel. The existing packed-expert
 reference applies the shared activation QDQ at both GEMM boundaries. Native
 measurements bind all aligned joint rows through `RuntimeBinding`; no new
 scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace
-is recorded separately from layer residency and per-apply scratch, with
-full-model fixed resources and workspace composition still unknown. This is a
-research boundary; no format, pin, serving gate or production default changes.
+is recorded separately from layer residency and per-apply scratch. Its identity
+is carried in the complete frozen receipt panel and joined to the resource
+observation's workspace digest and byte count; the reader requires no duplicate
+top-level workspace fields. Full-model fixed resources and workspace composition
+remain unknown. This is a research boundary; no format, pin, serving gate or production default changes.
 The research CLI `experiments/pq309_native_moe_panel.py` consumes the existing
 canonical capture-v2 PAC boundary and original PWC/wire artifacts; it re-derives
 encoder identities from the pinned full Hessians and retains lossless routing
@@ -200,7 +306,6 @@ format, pricing estimate, production default or serving admission changes.
 Gates: `tests/test_tessera_materialization.py`,
 `tests/test_tessera_packed_export_scope.py`.
 
-
 Re-stamped (2026-09-07, `codex/campaign-batched-anchors`) for **bounded
 expert anchor batches** (§4.10; #300, #275; Tessera #385). The campaign's
 optional `--anchor-batch-size` groups pending expert anchors with equal shape,
@@ -218,7 +323,6 @@ accounting, not independently measured per-unit latency. Default width remains
 one pending performance qualification. No serving pin, wire recipe, cost
 currency or format menu changes. Gate: `tests/test_tessera_campaign_batch.py`.
 
-
 Re-stamped (2026-09-07, `codex/first-model-integration-20260907`) for
 **campaign quanta in the declared Docker runtime** (§4.10). The shared fanout
 spec accepts an optional `container` block with `image` and explicit absolute
@@ -232,7 +336,6 @@ squashing. Docker's ordinary PB shim retains CPU affinity and scope ownership.
 Host-interpreter specs remain supported. Census, anchor and materialization
 quanta share the same row builder; the adapter does no scheduling or fanout.
 Gate: `tests/test_tessera_campaign_container.py`.
-
 
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved

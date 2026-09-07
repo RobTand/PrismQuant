@@ -1,0 +1,133 @@
+# Completed Tessera anchors to full-model joint AURA
+
+Issue #322 adds a checked bridge from a completed Tessera campaign into existing
+streamed joint AURA. The scalar campaign establishes which exact wires and BF16
+decoded renders exist; its MSE and interpolated prices never become joint costs.
+Preparation verifies actual source weights, original prefetched Hessians and
+encoding settings against every wire receipt, decodes that wire, and requires
+exact equality with its original PWC render. Pricing uses precisely those
+per-Linear formats plus source BF16. This research bridge changes no wire format,
+menu default, allocator default, export lane or serving gate.
+
+No full-model joint result has been produced by this bridge at this writing.
+The first-model invocation uses all 2,142 census Linears in all 38 groups from
+`full-model-anchors-02`, with the original 512 × 512 token artifact and capture.
+Settings are all-token joint activation pricing, complete-sequence microbatch 1,
+four global-row Rademacher probes, seed 7000, temperature 1, source BF16, FP32
+weight deltas and optional production activation clipping disabled. Measured
+E2M1 retains its unified fused-module static scale. The plan and prepared record
+bind source/backend/calibration and implementation identities. Resume requires
+the exact existing checkpoint identity; subset draws and mixed checkpoints fail.
+
+The plan schema is `prismaquant.tessera_joint_aura.plan.v1`. Its `inputs` contains
+independently bound `{path, sha256}` entries for campaign plan, census, complete
+fleet receipts, merged cost and merged checkpoint, plus `required_source_units`
+and `required_campaign_groups`. Model, token input, canonical capture, execution
+settings, output root, PWC/GPU budgets, memory floor and profiler are explicit.
+The concrete first-model plan sealer and provisional calculation are retained at
+`/mnt/shared/tessera-measurements/first-model-20260907/full-model-joint-aura/`.
+They cannot seal a plan until required merged artifacts and receipts exist.
+
+After independently verifying the merged campaign and importer qualification,
+use these dependent PB actions. Supply the actual plan SHA256; independently
+rehash the completed preparation record after checking its fleet terminal,
+logs, CAS receipt and contents. Neither action uses a latest-file pointer.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /home/rob/tmp/pq-joint-anchor-bridge --tag gb10 \
+  --cpus 4 --gpu --demand mem_gb=96 --gpu-memory-gb 40 \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+  --detach -- bash experiments/pq322_joint_anchor_run.sh prepare \
+  --plan "$JOINT_PLAN" --plan-sha256 "$PLAN_SHA256"
+
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /home/rob/tmp/pq-joint-anchor-bridge --tag gb10 \
+  --cpus 4 --gpu --demand mem_gb=96 --gpu-memory-gb 40 \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+  --detach -- bash experiments/pq322_joint_anchor_run.sh run \
+  --plan "$JOINT_PLAN" --plan-sha256 "$PLAN_SHA256" \
+  --prepared "$PREPARED_RECORD" --prepared-sha256 "$PREPARED_SHA256"
+```
+
+The pinned known-good container preserves PB affinity and ownership. PB owns
+placement; preparation and pricing have an actual data dependency. Existing
+streamed pass/calibration/probe semantics do not expose independent model-layer
+jobs, so the bridge adds no dispatcher. Existing completed-layer checkpoints
+retain their restart semantics and are additionally bound to the input plan.
+
+Each action writes full-duration `profile.pstats`, readable `profile.txt`,
+`/proc/self/io` counters, CUDA allocation peaks, source identity, phase epochs and
+`results.json`. Collect both boxes' Netdata series with the existing
+`/mnt/shared/tessera-measurements/pq300-batch-20260907/harness/collect_netdata.py`
+against each result, retaining raw series and any coverage errors. Shared-host
+profiles describe this run and establish no isolated speedup. Check terminal
+status and cleanup, output roster/hashes, CAS payload and receipt before consuming
+`prepare/prepared.json` or `run/joint-cost.pkl`.
+
+The provisional reservation is CPU 4/native 1, 96 GiB aggregate and a 40 GiB GPU
+subset on GB10. The earlier 96-unit, one-render full-calibration run measured
+20,751,726,080 CUDA allocated bytes and 23,603,445,760 reserved bytes, with
+26,843,545,600 CPU boundary bytes. Four rolling BF16 cotangent planes add about
+4 GiB. The largest census decoder layer has 362,807,296 quantizable parameters
+in 100 Linears. At seven measured candidates each, simultaneously resident FP32
+deltas need 10,158,604,288 bytes and CPU BF16 PWC renders need 5,079,302,144 bytes.
+The explicit 6 GiB PWC cap covers only these renders. Source residency, deltas,
+boundary/cotangent planes, activation/backward temporaries, Hessian qualification
+buffers and allocator slack remain inside the aggregate/GPU reservation.
+The measured GPU baseline includes source residency and one-candidate deltas;
+adding the difference to the largest seven-candidate layer suggests roughly
+30 GB allocated before slack. This is an estimate, not an observed full-model
+peak. Recompute from the complete actual roster before submission; partial
+telemetry is no basis for shrinking the reservation.
+
+Validation recorded on 2026-09-07: the test-first PB action
+`726501c99f7b842cbeedd2ede6f19a064c1ba31ddd0154d99533e0e8d1d8a6ec`
+failed with the missing bridge module. Initial implementation action
+`ead6ef02494e99826c9c1a4339c284eac39f2affd2d05aa2aaa472202dcd4890`
+passed 14 CPU checks on Sparklina. The final expanded action
+`49f45ef79d16c9ff9e7079e8689917db742d552555183f3018a56772c603ebdc`
+ran the importer, microbatch, packed-joint, exact-calibration, architecture and
+staleness tests on DL380: **64 passed in 9.94 s, no skips**, with touched Python
+modules compiled. CPU environment was Python 3.14.4, torch 2.11.0+cpu,
+Transformers 5.16.1 and compressed-tensors 0.18.0. Native threads were bounded to
+one per each of four pytest workers, with CPU 4/8 GiB admitted. Production GPU
+arithmetic remains qualified separately in the pinned original container.
+
+Actual terminal and cleanup succeeded; CAS payload
+`a0cb90beb94622d669e933def47a452a3b445cef777c1f4c7cc1e9fc351056fe`
+and receipt
+`321aec68b76d43c5d09f6ec04951d9880df0566ba6d20c4ba5f6c6002eac83cf`
+were independently rehashed. Raw logs, requests, summaries, receipts and payloads
+are retained under the first-model `full-model-joint-aura/receipts/`, with a
+hashed `evidence-manifest.json`. Negative intermediate attempts are retained:
+one fixture expected 128 bytes instead of its actual 64 BF16 bytes; the first
+portable CPU environment lacked compressed-tensors and failed collection/setup.
+The fixture and scoped CPU dependencies were corrected before the green run.
+These are control-flow/contract tests, not real-wire numerical qualification.
+
+The source-prefetch follow-up makes residency settings explicit in the bound
+plan for both preparation and pricing: 24 cache slots, four workers, lookahead
+four, 4 GiB cache headroom, 2 GiB minimum available memory and required prefetched
+residency. Omitting or disabling these settings refuses. This fixes the initial
+builder call inheriting automatic cache sizing and cold-read fallback.
+PB `26622e88f99fce977aa7d8466ace3e0c7c19eb2c8d22744bc795dd05ce234343`
+demonstrated the missing builder arguments before the fix. The corrected bridge
+and policy/doc checks passed **48 tests, no skips**, with compile checks, in PB
+`427a2c72a1d2f82f84d13cb29fe28beec4ccdc0c10dbeba6980590b94c688857`
+on Sparky's CPU-only pinned container (four pytest workers/native threads one).
+Its terminal returned zero with complete cleanup; CAS payload
+`62b7bc4d7e562f72c456f8245df1d77813554b379030bbbffe6e9f770dfb0ddc`
+and canonical receipt
+`ac26d6949537c833fb479790ca5fb387a9f4f40ea6b0799015781cd087d41f64`
+were independently rehashed. This proves argument propagation and refusals;
+the full-model run must still measure its actual residency and memory peak.
+
+Preparation and pricing have separate buffer lifetimes. Preparation keeps the
+declared source cache and one layer's original X/H capture plus BF16 candidate
+renders; it decodes and compares one wire at a time. Pricing releases the
+qualification X/H tensors and keeps source cache, CPU boundaries/cotangents,
+one candidate layer's PWC renders and FP32 deltas, and backward temporaries.
+The 6 GiB PWC limit covers neither source nor derivative buffers. The common
+96 GiB aggregate / 40 GiB GPU reservation is provisional for both actions;
+actual peaks remain acceptance checks, not numbers inferred from that limit.
