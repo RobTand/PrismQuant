@@ -1,7 +1,17 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `main-campaign/pq290-stack-payload`. Stamps
+As of: 2026-09-06 · `review/pq-joint-evidence-20260906`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `review/pq-joint-evidence-20260906`) for **expert
+projection retries across different stack menus** (RobTand/prismaquant#295).
+The campaign preserves its existing nominal plan attempts and also asks the
+producer at each family shared by every stack, matched by family name rather
+than menu position. Each request covers the whole population and retains the
+producer's exact projection and source-byte checks. Attempts remain bounded
+by twice the maximum number of distinct families in a stack menu; this is not
+an exhaustive search of arbitrary mixed-family plans. No format menu, serving
+admission, numerical pricing or exported bytes change.
 
 Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **what a
 campaign quantum measures: the expert sample, the rate band, and the refusal
@@ -7158,16 +7168,20 @@ Two properties make the numbers comparable with the rest of the menu:
   projections *and* for which the producer's projection tool is declared and
   present; anything else in scope is refused by name before calibration, and
   the stride's leftovers are recorded as omitted. After the menus exist the
-  campaign asks the producer ONCE (`_project_expert_population`:
-  `experiments/tessera_producer_plan.py` over every in-scope stack, one
-  subprocess because the producer hashes the whole checkpoint), binds the
+  campaign asks the producer over every in-scope stack in each nominal-plan
+  attempt (`_project_expert_population`:
+  `experiments/tessera_producer_plan.py`, never a subprocess per stack because
+  the producer hashes the whole checkpoint), binds the
   answer exactly to the profile-declared units, reads each unit's source
   tensor from the shard the producer hashed and refuses, by name, a live view
   that is not byte-for-byte that tensor. The plan names a nominal rung per
   stack, and the producer checks only that its *family* has an expert route on
   its build; the menu is ordered by rate, so the campaign asks family by family
   in menu order and keeps the first the producer accepts, carrying every
-  refusal in `plan_attempts` (PrismaQuant #280). At tessera `ba582d47` the LFM
+  refusal in `plan_attempts` (PrismaQuant #280). When stack menus differ,
+  additional requests align their shared families by name, preserving the
+  existing mixed nominal plans and admitting a common routed family at
+  different menu positions (#295). At tessera `ba582d47` the LFM
   expert stacks plan on `TESSERA_E4M3_K1` only -- `scheme.MOE_BUILDERS` names
   `TESSERA_FP8` alone -- which is what the pinned contract's attested
   `routed_moe` menu independently publishes. Expert anchors are grouped per

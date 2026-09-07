@@ -586,3 +586,41 @@ def test_projection_walks_the_menu_to_a_family_with_an_expert_route(monkeypatch,
     grids = {entry["grid"] for entry in carried["request"].values()}
     assert grids == {entry["grid"] for entry in attempts[-1]["request"].values()}
     assert "E2M1" not in "".join(grids)
+
+
+def test_projection_matches_family_names_across_different_stack_menus(monkeypatch, tmp_path):
+    """Different menu positions must not hide a common routable family."""
+    from safetensors.torch import load_file, save_file
+    from prismaquant.model_profiles.lfm2_moe import Lfm2MoeProfile
+
+    campaign, _argv, model, _encoded = _bridge_main_fixture(monkeypatch, tmp_path)
+    second_stack = STACK.replace("layers.2", "layers.3")
+    layer = torch.nn.Module()
+    layer.feed_forward = _RoutedBlock()
+    layer.feed_forward.experts = _WideExperts().to(dtype=torch.bfloat16)
+    model.model.layers.append(layer)
+    source = tmp_path / "source"
+    tensors = load_file(str(source / "model.safetensors"))
+    tensors.update({name.replace(STACK, second_stack): value.clone()
+                    for name, value in list(tensors.items()) if name.startswith(STACK)})
+    save_file(tensors, str(source / "model.safetensors"))
+    config = json.loads((source / "config.json").read_text())
+    config["num_hidden_layers"] = 4
+    (source / "config.json").write_text(json.dumps(config))
+
+    population = campaign._require_campaign_population(model, Lfm2MoeProfile(), 1)
+    assert set(population.declared) == {STACK, second_stack}
+    weights = {member.qname: member.weight.detach() for member in population.members}
+    first = ["TESSERA_E2M1_K2_R128", RUNG]
+    second = [RUNG, "TESSERA_BF16_K1_R1792"]
+    menus = {name: [SimpleNamespace(format_name=fmt) for fmt in
+                   (first if name.startswith(STACK + ".") else second)]
+             for name in weights}
+
+    carried, projected = campaign._project_expert_population(
+        population, weights=weights, menus=menus,
+        model_path=str(source), cache_dir=tmp_path / "cache")
+
+    assert set(projected) == set(weights)
+    assert {row["grid"] for row in carried["request"].values()} == {"E4M3"}
+    assert carried["plan_attempts"][-1]["refused"] is None
