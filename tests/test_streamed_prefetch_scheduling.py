@@ -57,6 +57,7 @@ def _make_ctx(
     ctx.num_layers = num_layers
     ctx.weight_shard = {}
     ctx.weight_ckpt = {}
+    ctx.buffer_dtypes = {}
     ctx.device = torch.device("cpu")
     ctx.dtype = torch.float32
     ctx.fp8_scale_inv_map = {}

@@ -291,6 +291,7 @@ def build_streamed_causal_lm(
     prefetch_min_available_gb: float | str | None = None,
     prefetch_lookahead: int = 2,
     require_prefetched_residency: bool = False,
+    attn_implementation: str | None = None,
 ) -> StreamedCausalLM:
     """Build the repository's existing streaming context and wrap it."""
     from prismaquant.streaming_model import _build_streaming_context
@@ -305,6 +306,7 @@ def build_streamed_causal_lm(
         prefetch_workers=prefetch_workers,
         prefetch_min_available_gb=prefetch_min_available_gb,
         log_prefix="[cost-streaming]",
+        attn_implementation=attn_implementation,
     )
     effective_lookahead = max(0, int(prefetch_lookahead))
     if context.max_cache_slots is not None:

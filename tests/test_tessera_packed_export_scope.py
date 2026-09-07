@@ -105,3 +105,32 @@ def test_packed_static_route_still_requires_its_priced_scales(case):
     _save(case)
     with pytest.raises(export.TesseraExportLaneError, match='static activation contract.*no --input-scales'):
         export.require_priced_export_inputs(case.assignment)
+
+
+@pytest.mark.parametrize('defect', [None, 'missing', 'mismatch'])
+def test_packed_static_scales_bind_each_source_member(case, tmp_path, defect):
+    import torch
+    from safetensors.torch import save_file
+    parameters = _pack(case)
+    for name in parameters:
+        case.payload[name]['tessera_format'] = 'TESSERA_E2M1_K2_R896'
+    values = {name: float(i + 1) for i, name in enumerate(sorted(_units()))}
+    _meta(case)['tessera_activation_static_scales'] = {
+        'schema': export.PRICED_STATIC_SCALES_SCHEMA, 'units': values}
+    _save(case)
+    tensors = {name + '.input_global_scale': torch.tensor(value)
+               for name, value in values.items()}
+    key = sorted(tensors)[-1]
+    if defect == 'missing':
+        del tensors[key]
+    elif defect == 'mismatch':
+        tensors[key] = tensors[key] + 1
+    scales = tmp_path / 'scales.safetensors'
+    save_file(tensors, str(scales))
+    if defect:
+        with pytest.raises(export.TesseraExportLaneError, match='carries no input_global_scale|but the allocation priced'):
+            export.require_priced_export_inputs(case.assignment, input_scales_path=scales)
+    else:
+        report = export.require_priced_export_inputs(case.assignment, input_scales_path=scales)
+        assert report['input_scales_bound_units'] == len(values)
+        assert report['input_global_scales'] == {n + '.input_global_scale': v for n, v in values.items()}

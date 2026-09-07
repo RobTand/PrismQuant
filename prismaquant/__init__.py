@@ -13,6 +13,10 @@ Older cross-layer allocators are archived under archive/cross_layer_2026-05-09
 for artifact replay and comparison.
 """
 import contextlib as _contextlib
+from contextvars import ContextVar as _ContextVar
+
+_checkpoint_initializing = _ContextVar("prismaquant_checkpoint_initializing", default=False)
+_INITIALIZATION_CONTRACT_ATTRIBUTE = "_prismaquant_pretrained_initialization_contract"
 
 from .format_registry import FormatSpec, REGISTRY, register_format
 
@@ -92,34 +96,44 @@ def _polyfill_transformers() -> None:
     except Exception:
         pass
     try:
-        # `_init_weights` is wasted work across every prismaquant
-        # model-load path: we build a meta skeleton via `from_config`
-        # then immediately overwrite every parameter from the
-        # checkpoint via `_materialize` / `_fast_install`. Running
-        # `_init_weights` in between costs bounded real time on small
-        # models and is a compatibility landmine on remote modeling
-        # files — transformers 5.x's `_init_weights` now expects
-        # rotary modules to expose `compute_default_rope_parameters`,
-        # which older remote modeling files (MiniMax M2/M2.7) don't
-        # provide. No-op it globally at import time.
-        #
-        # The no-op is only sound for callers that overwrite every
-        # parameter afterwards. A caller that *uses* a from-config model
-        # -- a test fixture, an eval harness building a random reference --
-        # gets whatever the allocator last left in the pages backing the
-        # parameters a modeling file allocates with a bare `torch.empty()`
-        # (transformers' own `nn.Linear`/`nn.Embedding` still self-init in
-        # their constructors; the raw `nn.Parameter(torch.empty(...))` ones
-        # do not). Keep the real method reachable so such a caller can
-        # restore it -- see `genuine_weight_initialization` below.
+        # From-config meta skeletons overwrite checkpoint parameters later,
+        # so they retain the existing no-init policy. Ordinary checkpoint
+        # loads must still initialize missing state, including nonpersistent
+        # buffers that Transformers rematerializes with empty_like.
         import transformers.modeling_utils as _mu
         if hasattr(_mu, "PreTrainedModel") and \
                 not getattr(_mu.PreTrainedModel, "_prismaquant_init_noop", False):
-            _mu.PreTrainedModel._prismaquant_real_initialize_weights = (
-                _mu.PreTrainedModel._initialize_weights)
-            _mu.PreTrainedModel._initialize_weights = (
-                lambda self, *a, **kw: None)
-            _mu.PreTrainedModel._prismaquant_init_noop = True
+            model_class = _mu.PreTrainedModel
+            real_initialize = model_class._initialize_weights
+            real_missing = model_class._initialize_missing_keys
+            model_class._prismaquant_real_initialize_weights = real_initialize
+
+            def _initialize_for_checkpoint(self, *args, **kwargs):
+                if _checkpoint_initializing.get():
+                    return real_initialize(self, *args, **kwargs)
+                return None
+
+            def _initialize_missing_checkpoint_state(self, *args, **kwargs):
+                import transformers
+                # An unsuccessful repeated finalization must not retain an
+                # earlier completion descriptor.
+                self.__dict__.pop(_INITIALIZATION_CONTRACT_ATTRIBUTE, None)
+                token = _checkpoint_initializing.set(True)
+                try:
+                    result = real_missing(self, *args, **kwargs)
+                finally:
+                    _checkpoint_initializing.reset(token)
+                setattr(self, _INITIALIZATION_CONTRACT_ATTRIBUTE, {
+                    "schema": "prismaquant.pretrained_initialization.v1",
+                    "scope": "checkpoint_missing_state",
+                    "status": "completed",
+                    "transformers_version": transformers.__version__,
+                })
+                return result
+
+            model_class._initialize_weights = _initialize_for_checkpoint
+            model_class._initialize_missing_keys = _initialize_missing_checkpoint_state
+            model_class._prismaquant_init_noop = True
     except Exception:
         pass
     try:
@@ -177,14 +191,36 @@ def _polyfill_transformers() -> None:
         pass
 
 
+def validate_pretrained_initialization_contract(value):
+    """Validate and copy a checkpoint initialization provenance descriptor."""
+    if not isinstance(value, dict) or set(value) != {
+        "schema", "scope", "status", "transformers_version"
+    } or value.get("schema") != "prismaquant.pretrained_initialization.v1" \
+            or value.get("scope") != "checkpoint_missing_state" \
+            or value.get("status") != "completed" \
+            or not isinstance(value.get("transformers_version"), str) \
+            or not value["transformers_version"].strip():
+        raise ValueError("Missing or invalid pretrained initialization contract")
+    return dict(value)
+
+
+def pretrained_initialization_contract(model):
+    """Require evidence that this model completed checkpoint initialization.
+
+    From-config skeletons have no such descriptor. This records the load
+    phase, not a general certification of subsequent model mutations.
+    """
+    return validate_pretrained_initialization_contract(
+        getattr(model, _INITIALIZATION_CONTRACT_ATTRIBUTE, None))
+
+
 @_contextlib.contextmanager
 def genuine_weight_initialization():
     """Build a model the way transformers would, inside a PrismaQuant process.
 
-    `_polyfill_transformers` no-ops `PreTrainedModel._initialize_weights`
-    for the whole process at import time, because every PrismaQuant load
-    path builds a `from_config` skeleton and then overwrites every
-    parameter from the checkpoint. That makes `from_config` construction
+    `_polyfill_transformers` suppresses `PreTrainedModel._initialize_weights`
+    outside checkpoint missing-state finalization, because streaming loads
+    build a `from_config` skeleton and overwrite checkpoint parameters. That makes `from_config` construction
     silently return **uninitialized** parameters for any tensor the
     modeling file allocates as a bare `nn.Parameter(torch.empty(...))` --
     routed-expert weights and hyper-connection tensors are the common

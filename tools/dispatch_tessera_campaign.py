@@ -66,6 +66,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __package__:
+    from .tessera_campaign_container import validate_container
+else:
+    from tessera_campaign_container import validate_container
+
 PBCAMPAIGN = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py")
 
 #: What ``plan`` writes beside the manifest, so ``merge`` reads the row layout
@@ -78,7 +83,7 @@ PLAN_SCHEMA = "prismaquant.tessera_campaign_plan.v1"
 SHARED_PROVENANCE = (
     "menu_mode", "tp_degree", "model", "nsamples", "seqlen", "max_act_rows",
     "layer_stride", "anchors_round_one", "max_rounds", "anchor_budget",
-    "loo_gate", "max_artifact_bpp", "cost_mode", "rate_band",
+    "loo_gate", "max_artifact_bpp", "cost_mode", "rate_band", "calibration_cache",
 )
 
 #: Hessian identity fields every row must already agree on.  ``capture_sha256``
@@ -110,7 +115,8 @@ def load_spec(path: Path) -> dict:
             raise RuntimeError(f"{path}: spec has no {field!r}")
     forbidden = {"--model", "--out", "--cache-dir", "--checkpoint", "--units",
                  "--calibration-census", "--census-out", "--seed-checkpoint",
-                 "--seed-wire-dir"}
+                 "--seed-wire-dir", "--capture-calibration-out",
+                 "--calibration-cache", "--calibration-cache-sha256"}
     named = forbidden.intersection(spec["campaign_argv"])
     if named:
         raise RuntimeError(
@@ -125,6 +131,8 @@ def load_spec(path: Path) -> dict:
         raise RuntimeError(
             f"{path}: campaign_argv sets --deadline-seconds; a fanned-out row "
             "takes its deadline from the fleet, not from inside the round loop")
+    if "container" in spec:
+        validate_container(spec)
     return spec
 
 
@@ -180,9 +188,16 @@ def require_rows_fit(mem_gb: "list[int]", per_box: int, budget) -> int:
     return widest
 
 
-def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int) -> dict:
+def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int,
+         module: str = "prismaquant.tessera_campaign") -> dict:
+    command = [spec["python"], "-u", "-m", module, *argv]
+    if "container" in spec:
+        validate_container(spec)
+        command = ["python3", "-m", "tools.tessera_campaign_container", "--spec",
+                   json.dumps({"container": spec["container"], "env": spec["env"]},
+                              sort_keys=True), "--", *command]
     row = {
-        "argv": [spec["python"], "-u", "-m", "prismaquant.tessera_campaign", *argv],
+        "argv": command,
         "cwd": spec["cwd"],
         "demand": {"gpu": 1, "cpu": int(spec.get("cpus", 4)), "mem_gb": int(mem_gb)},
         "env": dict(spec["env"]),
@@ -223,6 +238,41 @@ def cmd_census(args) -> int:
         return _pbcampaign(manifest, wait_s=args.wait_s,
                            receipts=workspace / "census-receipts.json")
     return 0
+
+
+def cmd_capture(args) -> int:
+    """Submit one dependent full-scope capture through the existing PB adapter."""
+    spec = load_spec(Path(args.spec))
+    workspace = Path(args.workspace)
+    census_path = workspace / "census.json"
+    census = json.loads(census_path.read_text())
+    if census.get("model") != spec["model"]:
+        raise RuntimeError("capture census and spec name different models")
+    manifest = workspace / "capture-manifest.json"
+    row = _row(spec, ["--model", spec["model"],
+        "--out", str(workspace / "capture-unused.pkl"),
+        "--cache-dir", str(workspace / "capture-cache"),
+        "--calibration-census", str(census_path),
+        "--capture-calibration-out", str(workspace / "calibration-cache"),
+        *spec["campaign_argv"]],
+        mem_gb=_row_memory_gb(spec, sorted(census["counts"]), census),
+        timeout_s=int(args.timeout_s))
+    manifest.write_text(json.dumps([row], indent=2) + "\n")
+    if args.submit:
+        return _pbcampaign(manifest, wait_s=args.wait_s,
+                           receipts=workspace / "capture-receipts.json")
+    return 0
+
+
+def _calibration_cache_binding(path, census_path):
+    from prismaquant.tessera_calibration_cache import require_capture_contract, sha256
+    if not path:
+        return None
+    path = Path(path).resolve()
+    capture = require_capture_contract(path)
+    if capture["identity"].get("census_sha256") != sha256(census_path):
+        raise RuntimeError("planning requires a complete capture bound to this census")
+    return dict(path=str(path), sha256=sha256(path))
 
 
 def _pbcampaign(manifest: Path, *, wait_s: int, receipts: Path | None = None) -> int:
@@ -382,6 +432,8 @@ def cmd_plan(args) -> int:
         raise RuntimeError(
             f"census was taken on {census.get('model')!r}, the spec names "
             f"{spec['model']!r}")
+    calibration_cache = _calibration_cache_binding(
+        getattr(args, "calibration_cache", None), workspace / "census.json")
     groups = census["anchor_groups"]
     if not groups:
         raise RuntimeError("census reports no anchor group to price")
@@ -441,6 +493,9 @@ def cmd_plan(args) -> int:
             "--calibration-census", str(workspace / "census.json"),
             *spec["campaign_argv"],
         ]
+        if calibration_cache:
+            argv += ["--calibration-cache", calibration_cache["path"],
+                     "--calibration-cache-sha256", calibration_cache["sha256"]]
         if args.seed_checkpoint:
             argv += ["--seed-checkpoint", str(args.seed_checkpoint)]
             if args.seed_wire_dir:
@@ -464,6 +519,7 @@ def cmd_plan(args) -> int:
         "schema": PLAN_SCHEMA,
         "model": spec["model"],
         "census": str(workspace / "census.json"),
+        "calibration_cache": calibration_cache,
         "manifest": str(manifest),
         "groups_per_row": int(args.groups_per_row),
         "rows_per_box": per_box,
@@ -1081,9 +1137,19 @@ def main(argv=None) -> int:
     census.add_argument("--submit", action="store_true")
     census.set_defaults(func=cmd_census)
 
+    capture = sub.add_parser("capture", help="capture full-census X/H once before planning rows")
+    capture.add_argument("--spec", required=True)
+    capture.add_argument("--workspace", required=True)
+    capture.add_argument("--timeout-s", type=int, default=7200)
+    capture.add_argument("--wait-s", type=int, default=14400)
+    capture.add_argument("--submit", action="store_true")
+    capture.set_defaults(func=cmd_capture)
+
     plan = sub.add_parser("plan", help="lay the campaign out as pbcampaign rows")
     plan.add_argument("--spec", required=True)
     plan.add_argument("--workspace", required=True)
+    plan.add_argument("--calibration-cache", default=None,
+                      help="complete capture manifest to hash-bind into every row")
     plan.add_argument("--groups-per-row", type=int, default=1)
     plan.add_argument("--rows-per-box", type=int, default=1,
                       help="how many of these rows one box is meant to run at "
