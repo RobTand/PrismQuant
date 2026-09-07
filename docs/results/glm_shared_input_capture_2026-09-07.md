@@ -84,3 +84,31 @@ trip threshold, 8 GiB host-available floor and 92 GiB GPU subset. Root approved
 one such PB measurement after the CPU/source review. No GPU result is recorded
 by this commit. A separate full 512-sample candidate fit requires review of
 that bounded A/B; the known failed full legacy H return is not repeated.
+
+## Integration qualification, 2026-09-07
+
+The candidate was integrated into PR #341 as `1ec2c07cbe`, on top of the
+current-main streaming branch `be82b2f3`. The collector, workspace CLI, replay,
+both new test files and ARM CPU wrapper are byte-identical to the previously
+tested `45bb0cbbf48b396d17a739b75c9c954790003f16` snapshot. Architecture
+integration preserves the complete prior stamp/body suffix and adds the shared
+collector stamp without a conflict.
+
+PB action `0dc6b54c9f0dae5d1a7ca6b68cb0592ed64071a3796a1bf8f4aad0b35ba34f53`
+ran on DL380 with eight physical CPU cores, 12 GiB reserved memory, one native
+thread per worker and explicit pinned `TESSERA_REPO`. Candidate, guard, row
+counts, bounded telemetry, GLM streaming, source-transition and documentation
+checks passed: **147 tests, two subtests, zero skips**, in 86.92 seconds.
+Explicit compilation of the collector, workspace/replay and both new tests
+also passed. This is CPU integration evidence, not a GPU performance result.
+
+The terminal exit is zero, scope cleanup and release completed, and the
+result/snapshot blob hashes and canonical receipt were independently checked.
+Snapshot: `7904c94727da6fc4f5f7fc34a04b4590b93a7078`.
+Result SHA256: `3766c057e5422d2a74ea7d8e029b3e2eebcab5079c82644d46e85b3dbf71e7cd`.
+Receipt SHA256: `d430561502eab657892a86ed68563a64759a5c0c742d2293116529fc7de7129b`.
+The complete command, environment, source hashes and admission/cleanup evidence
+are in `/mnt/shared/tessera-measurements/glm-streaming-source-20260907/review-02/shared-input-integration-cpu.json`.
+An initial implicit-host-pinned submission was withdrawn from ready before
+execution and superseded by this portable action. The active bounded GPU
+replay checkout was untouched; no full-prefix candidate run was submitted.
