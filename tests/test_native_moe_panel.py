@@ -368,3 +368,52 @@ def test_raw_boundary_changes_cannot_enter_native_protocol(raw_boundary, change)
         manifest["identity"]["source_files"]["fixture.safetensors"] = "0" * 64
     with pytest.raises(ValueError):
         routed_boundary_inputs(raw, calibration_receipt=calibration, capture_manifest=manifest, device="cpu")
+
+
+def token_receipt(tokens):
+    identity = tensor_id(tokens)
+    return {"schema": "prismaquant.calibration_input.v1", "shape": identity["shape"],
+            "dtype": identity["dtype"], "calibration_sha256": identity["content_sha256"]}
+
+
+def test_subset_probe_verifies_actual_ids_and_keeps_full_parent_distinct():
+    from prismaquant.native_moe_panel import verified_probe_subset, _probe_calibration
+    parent = torch.tensor([[1, 2], [3, 4]])
+    subset = parent[:1].clone()
+    full_receipt, subset_receipt = token_receipt(parent), token_receipt(subset)
+    scope = verified_probe_subset(parent, subset, parent_calibration=full_receipt, subset_calibration=subset_receipt)
+    assert scope["parent_calibration_sha256"] != scope["subset_calibration_sha256"]
+    assert _probe_calibration({"calibration": full_receipt, "probe_calibration": subset_receipt, "probe_scope": scope}) == subset_receipt
+    with pytest.raises(ValueError, match="actual first calibration sequence"):
+        verified_probe_subset(parent, parent[1:], parent_calibration=full_receipt, subset_calibration=token_receipt(parent[1:]))
+    with pytest.raises(ValueError, match="actual subset calibration_sha256"):
+        verified_probe_subset(parent, subset, parent_calibration=full_receipt, subset_calibration=subset_receipt | {"calibration_sha256": "0" * 64})
+
+
+def test_subset_joint_panel_retains_both_calibration_scopes(joined):
+    from prismaquant.native_moe_panel import verified_probe_subset
+    inputs, preflight, old_rows = joined
+    parent = torch.tensor([[1, 2], [3, 4]])
+    inputs["calibration"] = token_receipt(parent)
+    inputs["probe_calibration"] = token_receipt(parent[:1])
+    inputs["probe_scope"] = verified_probe_subset(parent, parent[:1], parent_calibration=inputs["calibration"],
+                                                  subset_calibration=inputs["probe_calibration"])
+    for key, value in (("calibration_shape", [2, 2]), ("calibration_sha256", inputs["calibration"]["calibration_sha256"])):
+        inputs["routing_capture"][key] = value
+    inputs["routing_capture_sha256"] = identity_sha256(inputs["routing_capture"])
+    preflight["operator"]["routing_capture_sha256"] = inputs["routing_capture_sha256"]
+    rows = {}
+    for name, row in old_rows.items():
+        probe = copy.deepcopy(row["probe_identity"])
+        probe.update(calibration_shape=[1, 2], calibration_sha256=inputs["probe_calibration"]["calibration_sha256"])
+        operator = copy.deepcopy(row["joint_operator_identity"])
+        operator["probe_identity_sha256"] = identity_sha256(probe)
+        rows[name] = make_joint_aura_entry(operator_identity=operator, probe_identity=probe,
+            signed_components=[{"weight": v, "activation": 0., "mixed": 0., "total": v} for v in (.1, -.2, .3)])
+    panel = freeze_moe_panel(inputs, preflight, rows, cost_sha256="4" * 64)
+    assert panel["calibration_sha256"] == inputs["probe_calibration"]["calibration_sha256"]
+    assert panel["probe_scope"]["parent_calibration_sha256"] == inputs["calibration"]["calibration_sha256"]
+    assert panel["probe_scope"]["scope"] == "first_sequence_integration_screen"
+    inputs["probe_scope"]["sample_indices"] = [1]
+    with pytest.raises(ValueError, match="first-sequence screen"):
+        freeze_moe_panel(inputs, preflight, rows, cost_sha256="4" * 64)

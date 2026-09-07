@@ -17,7 +17,10 @@ research boundary; no format, pin, serving gate or production default changes.
 The research CLI `experiments/pq309_native_moe_panel.py` consumes the existing
 canonical capture-v2 PAC boundary and original PWC/wire artifacts; it re-derives
 encoder identities from the pinned full Hessians and retains lossless routing
-transport. It does not render a replacement cache.
+transport. An optional first-sequence integration screen verifies actual subset
+IDs against the full draw and preserves both identities in `probe_scope`; it
+never relabels subset joint rows as full-draw quality. It does not render a
+replacement cache.
 Gate: `tests/test_native_moe_panel.py`.
 
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state

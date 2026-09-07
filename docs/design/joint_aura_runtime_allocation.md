@@ -238,3 +238,11 @@ Hessians before checking original wire decode against PWC. The original router
 weights remain unchanged, with int32 IDs and FP32 weights used only as verified
 lossless transport. The adapter requires the canonical capture-v2 implementation
 and real materialization outputs; historical captures cannot qualify it.
+
+A bounded native integration screen may use only sample zero for its joint
+probes. Preparation verifies the actual subset IDs against the full token draw
+and keeps the full capture/Hessian provenance intact. `probe_scope` binds the
+parent and subset calibration hashes and sample index in the frozen panel and
+observation; the subset hash is the joint currency. Full-draw probes omit the
+subset receipt and carry null `probe_scope`. A subset screen cannot be reported
+as full-draw quality evidence.

@@ -164,7 +164,8 @@ def packed_reference(experts_module, x, ids, weights, gate_up_weight, down_weigh
 def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, shape, routing,
                        calibration_receipt, routing_capture, experts_module, profile,
                        wire_blobs, wire_records, encoding_identities, numerics,
-                       max_resident_bytes, max_temporary_bytes, runtime_image, serving_config_sha256, probe_request):
+                       max_resident_bytes, max_temporary_bytes, runtime_image, serving_config_sha256, probe_request,
+                       probe_calibration_receipt=None, probe_scope=None):
     """Prepare one complete routed reference from existing resident PWC data.
 
     Member records explicitly declare the expert/role order. Source tensors and
@@ -181,6 +182,8 @@ def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, s
     _member_roster(unit, members, shape)
     validate_routing(routing)
     _calibration_and_capture(calibration_receipt, routing_capture, unit=unit, shape=shape, routing=routing)
+    _probe_calibration({"calibration": calibration_receipt, "probe_calibration": probe_calibration_receipt,
+                        "probe_scope": probe_scope})
     if set(numerics) != {"atol", "rtol"}:
         raise ValueError("native MoE needs predeclared numerical tolerances")
     for name, value in numerics.items():
@@ -272,7 +275,8 @@ def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, s
     reference_file = Path(inspect.getfile(type(experts_module)))
     return {"schema": INPUT_SCHEMA, "unit": unit, "format": FORMAT, "shape": dict(shape),
             "members": actual_members, "profile_role_order": list(ROLES), "routing": dict(routing), "execution": dict(EXECUTION),
-            "calibration": calibration_receipt, "routing_capture": routing_capture,
+            "calibration": calibration_receipt, "probe_calibration": probe_calibration_receipt,
+            "probe_scope": probe_scope, "routing_capture": routing_capture,
             "routing_capture_sha256": identity_sha256(routing_capture),
             "numerics": dict(numerics), "runtime_image": runtime_image, "serving_config_sha256": serving_config_sha256, "probe_request": probe_request,
             "reference": {"operation": "prismaquant.measure_quant_cost._packed_experts_forward_with_weights",
@@ -405,8 +409,9 @@ def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
     _equal(canonical_streamed_model_semantic_config(inputs["routing_capture"]["runtime_config"], where="captured config"),
            canonical_streamed_model_semantic_config(probe["source_model"]["config"], where="probe config"),
            "capture/probe runtime config")
+    probe_calibration = _probe_calibration(inputs)
     for field, key in (("calibration_sha256", "calibration_sha256"), ("calibration_shape", "shape"), ("calibration_dtype", "dtype")):
-        _equal(probe[field], inputs["calibration"][key], f"joint {field}")
+        _equal(probe[field], probe_calibration[key], f"joint {field}")
     for member in members:
         joint = rows[member["unit"]]["joint_operator_identity"]
         for key, expected in (("qname", member["unit"]), ("format", member["format"]),
@@ -452,6 +457,7 @@ def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
         "shape": inputs["shape"], "members": members, "profile_role_order": list(ROLES),
         "routing": inputs["routing"], "routing_capture_sha256": inputs["routing_capture_sha256"],
         "source_sha256": probe["source_model"]["content_sha256"], "calibration_sha256": probe["calibration_sha256"],
+        "probe_scope": inputs.get("probe_scope"),
         "cost_sha256": cost_sha256, "serving_config_sha256": inputs["serving_config_sha256"], "probe_identity_sha256": first["probe_identity_sha256"],
         "runtime_binding": binding.as_dict(), "execution": dict(EXECUTION), "runtime": preflight["runtime"],
         "native_tensors_sha256": preflight["native_tensors_sha256"], "scheme_sha256": preflight["scheme_sha256"],
@@ -617,7 +623,8 @@ def consume_moe_receipt(path, *, expected_sha256, expected_panel, memory_trace_p
     return {"schema": "prismaquant.native_moe_observation.v1", "status": "operator_evidence",
             "unit": expected_panel["unit"], "format": FORMAT, "runtime_binding": binding.as_dict(),
             "panel_sha256": identity_sha256(expected_panel), "receipt_sha256": expected_sha256,
-            "cost_sha256": expected_panel["cost_sha256"], "phases": observations,
+            "cost_sha256": expected_panel["cost_sha256"], "probe_scope": expected_panel.get("probe_scope"),
+            "phases": observations,
             "serialized_unit_bytes": sum(_bytes(member["wire"]["blob_bytes"], "member wire") for member in members),
             "resident_bytes": _bytes(resources["resident_bytes"], "native layer resident"),
             "workspace_resident_bytes": workspace_bytes, "workspace_sha256": expected_panel["workspace_sha256"],
@@ -698,3 +705,48 @@ def routed_boundary_inputs(payload, *, calibration_receipt, capture_manifest, de
         if name in identity["source_files"]:
             _equal(digest, identity["source_files"][name], f"boundary/capture source {name}")
     return capture, values, bias.to(device)
+
+
+def _probe_calibration(inputs):
+    """Keep a bounded joint screen distinct from full render/capture provenance."""
+    parent = inputs["calibration"]
+    subset, scope = inputs.get("probe_calibration"), inputs.get("probe_scope")
+    if subset is None and scope is None:
+        return parent
+    if (not isinstance(subset, dict) or subset.get("schema") != "prismaquant.calibration_input.v1"
+            or not isinstance(scope, dict) or set(scope) != {"schema", "parent_calibration_sha256",
+                "subset_calibration_sha256", "sample_indices", "scope"}
+            or scope["schema"] != "prismaquant.native_probe_subset.v1"
+            or scope["sample_indices"] != [0] or scope["scope"] != "first_sequence_integration_screen"
+            or subset.get("shape") != [1, parent["shape"][1]] or subset.get("dtype") != parent["dtype"]):
+        raise ValueError("native MoE subset probe needs its explicit first-sequence screen binding")
+    _equal(scope["parent_calibration_sha256"], parent["calibration_sha256"], "probe parent calibration")
+    _equal(scope["subset_calibration_sha256"], _sha(subset["calibration_sha256"], "probe subset"), "probe subset calibration")
+    return subset
+
+
+def verified_probe_subset(parent_tokens, subset_tokens, *, parent_calibration, subset_calibration):
+    """Verify actual exact IDs before a first-sequence screen is authorized.
+
+    Full Hessian/reference provenance remains in the original capture. The
+    subset is separate joint currency, never relabeled as the full draw.
+    """
+    import torch
+    from .production_weight_cache import _cb_cache_tensor_identity
+    for tokens, receipt, label in ((parent_tokens, parent_calibration, "parent"),
+                                   (subset_tokens, subset_calibration, "subset")):
+        if (not isinstance(tokens, torch.Tensor) or tokens.ndim != 2 or tokens.dtype != torch.int64
+                or receipt.get("schema") != "prismaquant.calibration_input.v1"):
+            raise ValueError("native MoE probe subset requires exact int64 calibration tensors")
+        actual = _cb_cache_tensor_identity(tokens)
+        for key, expected in (("shape", actual["shape"]), ("dtype", actual["dtype"]),
+                              ("calibration_sha256", actual["content_sha256"])):
+            _equal(receipt[key], expected, f"actual {label} {key}")
+    if not torch.equal(parent_tokens[:1].cpu(), subset_tokens.cpu()):
+        raise ValueError("native MoE probe subset differs from actual first calibration sequence")
+    scope = {"schema": "prismaquant.native_probe_subset.v1",
+        "parent_calibration_sha256": parent_calibration["calibration_sha256"],
+        "subset_calibration_sha256": subset_calibration["calibration_sha256"],
+        "sample_indices": [0], "scope": "first_sequence_integration_screen"}
+    _probe_calibration({"calibration": parent_calibration, "probe_calibration": subset_calibration, "probe_scope": scope})
+    return scope

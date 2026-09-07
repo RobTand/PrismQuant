@@ -39,7 +39,7 @@ def prepare(args):
     from tessera import cached_unit
     from prismaquant.calibration_data import load_calibration_input
     from prismaquant.native_moe_panel import (EXECUTION, FORMAT, ROLES, _equal, _member_roster,
-        prepare_moe_inputs, routed_boundary_inputs)
+        prepare_moe_inputs, routed_boundary_inputs, verified_probe_subset)
     from prismaquant.model_profiles import profile_from_model
     from prismaquant.tessera_calibration_cache import require_capture_contract, prefetch_capture
     from prismaquant.tessera_formats import parse_tessera_format_name
@@ -56,6 +56,17 @@ def prepare(args):
     calibration = capture["identity"]["calibration"]
     tokens, receipt = load_calibration_input(plan["calibration_input"],
         expected_sha256=plan["calibration_input_sha256"], n_samples=calibration["nsamples"], seqlen=calibration["seqlen"])
+    probe_calibration, probe_scope = None, None
+    subset_keys = {"probe_calibration_input", "probe_calibration_input_sha256"}
+    present = subset_keys & plan.keys()
+    if present and present != subset_keys:
+        raise ValueError("native MoE subset input and independent hash must be paired")
+    if present:
+        subset_tokens, probe_calibration = load_calibration_input(plan["probe_calibration_input"],
+            expected_sha256=plan["probe_calibration_input_sha256"], n_samples=1, seqlen=calibration["seqlen"])
+        probe_scope = verified_probe_subset(tokens, subset_tokens, parent_calibration=receipt,
+                                            subset_calibration=probe_calibration)
+        del subset_tokens
     del tokens
     for key in ("fit_ids_sha256", "text_sha256", "source", "seed", "nsamples", "seqlen"):
         _equal(receipt["provenance"][key], calibration[key], f"capture/token {key}")
@@ -130,7 +141,8 @@ def prepare(args):
         experts_module=experts, profile=profile_from_model(skeleton), wire_blobs=blobs, wire_records=records,
         encoding_identities=encodings, numerics=plan["numerics"], max_resident_bytes=plan["max_resident_bytes"],
         max_temporary_bytes=plan["max_temporary_bytes"], runtime_image=plan["runtime_image"],
-        serving_config_sha256=plan["serving_config_sha256"], probe_request=request)
+        serving_config_sha256=plan["serving_config_sha256"], probe_request=request,
+        probe_calibration_receipt=probe_calibration, probe_scope=probe_scope)
     tensors["routing_bias"] = bias
     args.out.mkdir(parents=True, exist_ok=False)
     dump(args.out / "preparation-plan.json", plan)

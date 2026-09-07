@@ -109,3 +109,28 @@ independently derived from `carried_units` on the canonical census plus actual
 source weights and full Hessians. Original campaign wire records are preserved
 without rewrapping them as plain encoding-only records. The source weights are
 read through the existing `source_unit_weight` bridge.
+
+
+## Bounded first native integration screen
+
+The coordinator froze the first joint/native integration screen at four
+Rademacher probes (seeds 7000–7003), token scope `all`, temperature 1.0 and
+`global_kl_fisher` normalization, using exactly sample zero of the full canonical
+512 × 512 draw. This is a `[1,512]` subset screen, not full-draw quality currency.
+The actual source activation/Hessian capture remains the complete canonical
+draw and is never relabeled. Optional preparation fields
+`probe_calibration_input` and `probe_calibration_input_sha256` must be paired.
+The adapter loads both actual token tensors, verifies subset equality to full
+row zero, and records the distinct parent/subset hashes and exact sample index
+in `probe_scope`. This scope is carried through the immutable panel and final
+observation; panel calibration identity is the subset's actual joint currency.
+Tessera's producer validates the closed scope record but PQ owns the independent
+parent/capture join. No native tensor or source weight is changed by this scope.
+
+The subset binding, real profile regression, native consumers, and docs passed
+87 checks plus adapter compilation through PB
+`39323c408f7d01bfb22281e8a72f5fc542b8c5a7ad2c1ecc25bc6d038c6870b3`,
+DL380g10, CPU-only, four workers, native threads one, no skips, exit 0.
+Receipt `942023b516dd292f22403f929f22c4135c9593a64ee953858b94bcb52631a91e`;
+CAS result independently rehashed. This does not qualify the pending real
+subset joint/native run.
