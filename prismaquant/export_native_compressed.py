@@ -6353,6 +6353,19 @@ def materialize_tensors_streaming(
     weight_shard, weight_ckpt = _build_weight_map(
         model_path, multimodal=multimodal_skeleton)
     source_dtype_by_name = _build_source_dtype_map(weight_shard, weight_ckpt)
+    # Persistent buffers are emitted verbatim (3e), so the read must not
+    # narrow them to the parameter dtype the way `_read_layer_to_device`
+    # narrows weights: `_passthrough_tensor` restores the DECLARED dtype
+    # but cannot restore discarded values, and for a router bias the dtype
+    # is arithmetic rather than storage -- a BF16 score plus an FP32 bias
+    # sums in FP32, a BF16 bias rounds before top-k. Same map the resident
+    # and streaming source loads build (`layer_streaming._materialize`,
+    # `StreamingContext.buffer_dtypes`); walked once here rather than per
+    # layer because the skeleton's buffer declarations never change.
+    declared_buffer_dtypes = {
+        name: value.dtype
+        for name, value in model.named_buffers(remove_duplicate=False)
+    }
     # Per-expert -> packed-3D bridge for checkpoints that ship MoE experts
     # unfused while the live module is packed (driven by the model profile;
     # None for every other model). Keeps the exporter's source read aligned
@@ -6637,7 +6650,8 @@ def materialize_tensors_streaming(
         tensors = _read_layer_to_device(
             f"{layers_prefix}{L}.", weight_shard, weight_ckpt, dtype, device,
             fp8_scale_inv_map=fp8_scale_inv_map, pack_experts=expert_packer,
-            merge_concat=concat_merger)
+            merge_concat=concat_merger,
+            buffer_dtypes=declared_buffer_dtypes)
         resolver = _build_install_resolver(model, layer_qname)
         _fast_install(resolver, tensors, device, model=model)
         load_s = time.time() - load_t0
@@ -8518,6 +8532,10 @@ def _render_lever_provenance() -> dict:
     cache.
     """
     return {
+        # Older layer_*.pt payloads may already contain narrowed persistent
+        # buffers. Recompute them even when the source and render knobs match:
+        # replay bypasses the corrected reader and cannot recover lost bits.
+        "persistent_buffer_read_policy": "model_declared_v1",
         "PRISMAQUANT_DO_NO_HARM": os.environ.get(
             "PRISMAQUANT_DO_NO_HARM", "1"),
         "PRISMAQUANT_GPTQ_DAMP_SWEEP": os.environ.get(

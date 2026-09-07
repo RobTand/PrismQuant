@@ -3,6 +3,18 @@
 As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `review/pq325-buffer-precision`) for the compressed-tensors
+streaming export's persistent-buffer read policy (#311). The exporter passes
+the skeleton's declared buffer dtypes to the shared layer reader before
+passthrough emission. Its existing per-layer resume-cache fingerprint and
+shipcard render provenance now include `persistent_buffer_read_policy`.
+Caches without this policy stamp are invalidated through the existing manifest
+comparison, so replay cannot retain FP32 labels over values narrowed by an old
+reader. Parameter dtype and format policy are unchanged. CPU source-read,
+full streaming emission, serialized buffer-byte identity, and legacy-cache
+invalidation are covered by `tests/test_export_buffer_precision.py` and
+`tests/test_export_buffer_resume.py`; no served artifact gate is claimed.
+
 Re-stamped (2026-09-07, `codex/joint-fused-promotion-20260907`) for **explicit
 qualified joint-projection backends**. The joint anchor plan retains the native
 `torch` multiplication/sum reference by default. Its optional
