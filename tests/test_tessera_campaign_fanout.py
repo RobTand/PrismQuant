@@ -740,3 +740,18 @@ def test_units_with_no_admitted_rung_are_named_not_dropped(capsys):
     printed = capsys.readouterr().out
     assert "menu_sizes[b] = 0" in printed and "mode=readable" in printed
     assert report_empty_menus({"a": [object()]}, mode="research") == []
+
+
+def test_the_planner_and_the_campaign_agree_on_the_selection_schemas():
+    """``plan`` spells the schemas itself; this is what keeps that honest.
+
+    The planner must not import ``prismaquant.tessera_campaign`` -- that would
+    put torch on the critical path of a command that writes JSON -- so it
+    carries the two schema strings as literals. A mirror is only safe with a
+    test that fails when it drifts.
+    """
+    import dispatch_tessera_campaign as dispatch
+    from prismaquant import tessera_campaign
+
+    assert dispatch.UNITS_SCHEMA == tessera_campaign.UNITS_SCHEMA
+    assert dispatch.UNITS_SCHEMA_V2 == tessera_campaign.UNITS_SCHEMA_V2

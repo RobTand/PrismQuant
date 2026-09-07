@@ -385,9 +385,17 @@ def sample_stack_groups(groups, h_trace, *, stack_sample: int, seed: int,
     return sampled
 
 
-def cmd_plan(args) -> int:
-    from prismaquant.tessera_campaign import UNITS_SCHEMA, UNITS_SCHEMA_V2
+#: The two selection schemas, spelled here so that ``plan`` stays a CPU-side
+#: step: importing ``prismaquant.tessera_campaign`` for two strings would drag
+#: torch into a command whose whole job is to write JSON and a manifest.  They
+#: are pinned to the campaign's own constants by
+#: ``test_the_planner_and_the_campaign_agree_on_the_selection_schemas``, which
+#: runs where the package is importable.
+UNITS_SCHEMA = "prismaquant.tessera_campaign_units.v1"
+UNITS_SCHEMA_V2 = "prismaquant.tessera_campaign_units.v2"
 
+
+def cmd_plan(args) -> int:
     spec = load_spec(Path(args.spec))
     workspace = Path(args.workspace)
     census = json.loads((workspace / "census.json").read_text())
