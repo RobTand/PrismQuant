@@ -426,6 +426,10 @@ SOURCE_CHECKPOINT_METADATA_FILES = (
     "config.json",
     "model.safetensors.index.json",
 )
+# ... plus every `*.py` at the checkpoint root, which a `trust_remote_code`
+# checkpoint executes to build the skeleton (MiniMax-M2 ships
+# `configuration_minimax_m2.py` and `modeling_minimax_m2.py`; DeepSeek-V4 uses
+# the same pattern), discovered per call rather than named here.
 SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA = (
     "prismaquant.source_checkpoint.digest_cache.v1"
 )
@@ -497,7 +501,9 @@ def build_source_checkpoint_identity(
     payloads were quantized against -- the dtype map, ``tie_word_embeddings``,
     any ``quantization_config``, the layer counts -- and
     ``model.safetensors.index.json`` decides which shard each tensor is read
-    from.  Editing either changes what a replayed ``layer_NNN.pt`` means while
+    from.  Every ``*.py`` at the checkpoint root joins them, because a
+    ``trust_remote_code`` checkpoint executes those to build the skeleton.
+    Editing any of them changes what a replayed ``layer_NNN.pt`` means while
     every shard byte stays identical.  They are kilobytes, so they are hashed
     on every call rather than cached.
 
@@ -577,8 +583,15 @@ def build_source_checkpoint_identity(
 
     # The non-shard files the export reads.  Kilobytes each, so no digest
     # cache: hashing them costs less than deciding not to.
+    metadata_names = list(SOURCE_CHECKPOINT_METADATA_FILES)
+    if root.is_dir():
+        # `trust_remote_code` checkpoints build their skeleton from modules at
+        # the checkpoint root, so those are read bytes too.
+        metadata_names += sorted(
+            path.name for path in root.glob("*.py") if path.is_file()
+        )
     metadata: list[dict[str, object]] = []
-    for name in SOURCE_CHECKPOINT_METADATA_FILES:
+    for name in metadata_names:
         path = root / name
         if not path.is_file():
             continue

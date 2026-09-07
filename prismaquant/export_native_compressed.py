@@ -8507,8 +8507,9 @@ def _export_resume_fingerprint(
 
     * ``source_identity`` -- the sha256 of every safetensors shard the run
       consumes, and of the non-shard files it reads from the checkpoint root:
-      ``config.json`` (the skeleton the payloads were quantized against) and
-      ``model.safetensors.index.json`` (which shard each tensor comes from).
+      ``config.json`` (the skeleton the payloads were quantized against),
+      ``model.safetensors.index.json`` (which shard each tensor comes from)
+      and any ``*.py`` a ``trust_remote_code`` checkpoint is built through.
       See `build_source_checkpoint_identity`. Content, not path: a relocated
       checkpoint still resumes, a same-size value edit does not.
     * ``requested_dtype`` -- the parameter dtype the source read narrows to.
