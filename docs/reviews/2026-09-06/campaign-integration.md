@@ -143,4 +143,16 @@ completed population and are not called passes. The owner was directed to use
 affected-suite fanout and agreed that #387's planning-only refusal needs no
 additional GPU test. The exact action prefixes were `3ab6b12cd12d`,
 `bb8818696383`, `25babedd4bfc`, `8b95f239b372`, `563ac12816d9`,
-`9910bb5a4fde`. One retained cleanup claim is under owner-side diagnosis.
+`9910bb5a4fde`. The final withdrawn claim completed worker-owned cleanup; the next primary
+CUDA action was admitted on sparklina without operator intervention.
+
+The five CUDA-only checks subsequently ran in the known producer container on
+sparklina: **5 passed, no skips**, PyTorch 2.13.0+cu130, NVIDIA GB10, image
+`sha256:9f9b9f05b17531399ba66dc6415b054cf5d68c82270626d0e9150e75c808435f`.
+Action `5dc575aae27987dfe32ef98d179fadeafcaac995d0e0d61ac3a1775d0e3b3abb`
+reserved one CPU, one GPU and 16 GiB; terminal exit0 and actual CAS bytes were
+checked. Receipt `9d1f6448a3b8bfd8fa4e2693b12e22041ee5c09949bc13859e9bc469ee893313`;
+result `0c8f8b6e44aa23d7f6d42889c0d694278c06a9986f9cc2d9bd904cbdbe9e6f07`.
+An earlier container attempt failed before collection because only `python3`
+was installed; the checked-in runner now uses it. These are correctness checks,
+not a performance comparison across container images.
