@@ -7265,11 +7265,15 @@ Two properties make the numbers comparable with the rest of the menu:
 
   **The estimator.** Horvitz-Thompson is unbiased for the stack total under any
   design with known positive inclusion probabilities. The variance stamped is
-  **Hartley-Rao**, over the non-certainty stratum only — a unit with `π_e = 1`
-  is in every possible sample and contributes exactly zero sampling variance —
-  because the draw is randomized systematic PPS-without-replacement with a
-  take-all stratum (`π_i = min(1, c·h_i)`), for which the exact Sen-Yates-Grundy
-  form is unavailable: many joint inclusion probabilities are exactly zero. The
+  a **Hartley-Rao approximation**, over the non-certainty stratum only — a
+  unit with `π_e = 1` contributes exactly zero sampling variance. The draw is
+  randomized systematic PPS without replacement with a take-all stratum
+  (`π_i = min(1, c·h_i)`). Exact Sen-Yates-Grundy would require joint inclusion
+  probabilities averaged over the randomized order; a zero conditional on a
+  fixed order does not establish a zero under the actual design. This plug-in
+  approximation is not an exact variance estimator: for equal weights its
+  expected variance is `(N-m+1)/(N-m)` times the exact SRS variance, reaching
+  twice the exact value when the sample omits only one expert. The
   Hansen-Hurwitz with-replacement form is *not* used; simulated on the LFM
   layer-18 Fisher vector it overstates the standard error by 25-48% at E=32,
   because it ignores both the finite-population correction and the certainty

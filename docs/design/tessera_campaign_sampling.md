@@ -79,8 +79,9 @@ relative error of 8–11 % (p90 17–28 %); n = 16 gives 4–7 % (p90 10–16 %)
   represented; the **same subset at every rung** of every family, so the
   between-rung marginal carries only within-expert slope noise (sd 0.10 log₂)
   while the level carries the sampling error. Estimator: Horvitz–Thompson on
-  `h_e · mse_e`; its standard error is stamped as `dloss_stderr`, which the
-  allocator already consumes. Default `n_s = 16`; a `--stack-se` target picks
+  `h_e · mse_e`; its approximate standard error is stamped as `dloss_stderr`.
+  The current allocator does not consume this field on `output_mse` rows;
+  uncertainty-aware allocation remains proposed work. Default `n_s = 16`; a `--stack-se` target picks
   `n_s` per stack from the probe's `h_trace` dispersion.
 - **D3 Anchors per sampled Linear.** `E2M1_K2@896` once, directly (its wire is
   the shipping bytes when that rung is chosen). Each window family gets two

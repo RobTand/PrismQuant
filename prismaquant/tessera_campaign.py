@@ -759,17 +759,20 @@ def _horvitz_thompson_stack(
                                      * (y_e/pi_e - T_R/m)^2
 
     A unit with ``pi_e == 1`` is in every possible sample, so it contributes
-    exactly zero sampling variance and is excluded from the sum.  Hartley-Rao
-    is the estimator DERIVED for the design the campaign draws -- randomized
-    systematic PPS without replacement, ``pi_i = min(1, c*h_i)``, with the
-    take-all units moved to a certainty stratum -- for which the exact
-    Sen-Yates-Grundy form is unavailable because many joint inclusion
-    probabilities are exactly zero.  The Hansen-Hurwitz with-replacement form
+    exactly zero sampling variance and is excluded from the sum. This is a
+    plug-in Hartley-Rao approximation for randomized-order systematic PPS,
+    ``pi_i = min(1, c*h_i)``, after removing the take-all stratum. It is not
+    an exact design-unbiased variance estimator. Exact Sen-Yates-Grundy would
+    require joint inclusion probabilities averaged over the randomized order;
+    zero probabilities conditional on one fixed order do not establish zeros
+    under the randomized design.  The Hansen-Hurwitz with-replacement form
     is NOT used: it ignores both the finite-population correction and the
     certainty stratum, and overstates the standard error by 25-48% at E=32
-    (simulated on the LFM2.5 layer-18 Fisher vector).  Hartley-Rao stays
-    conservative for this design (+1% to +15% across the same simulations)
-    without paying that.
+    (simulated on the LFM2.5 layer-18 Fisher vector). The approximation was
+    conservative in those simulations (+1% to +15%); that is not a guarantee
+    for other populations. With equal weights, its expected variance is
+    (N-m+1)/(N-m) times the exact SRS variance, reaching twice the exact value
+    for m=N-1. The current allocator does not consume this uncertainty field.
     """
     certainty = [e for e in sample.sampled_experts
                  if float(sample.inclusion_prob[e]) == 1.0]
@@ -1938,9 +1941,9 @@ def draw_stack_sample(weights: "Mapping[str, float]", n: int, *,
     the spread of ``mse_e`` in the estimator's variance.  On LFM2.5 layer 18
     the per-expert ``h_trace`` spans 9.6e4 to 7.7e6 (CV ~1.0) while the
     cross-expert spread of ``mse`` at a fixed rung is CV 0.33-0.55, so this is
-    where the variance is.  A uniform draw carries the product's spread and is
-    measurably biased on this table (-6..-28 %), and the bias does not shrink
-    with ``n``; that is why there is no uniform fallback anywhere below.
+    where the variance is. A uniform draw with the correct Horvitz-Thompson
+    weights remains unbiased, but carries the product's spread. The planner
+    requires Fisher weights and provides no uniform fallback.
 
     **The take-all stratum.** With ``h`` this dispersed, ``n * h_i / sum(h)``
     exceeds one for the largest experts.  Clipping that to one would leave
