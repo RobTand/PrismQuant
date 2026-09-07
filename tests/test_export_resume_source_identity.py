@@ -454,3 +454,24 @@ def test_changed_index_json_is_a_different_source(tmp_path):
 
     assert before["shards"] == after["shards"], "the shard bytes did not move"
     assert before["content_sha256"] != after["content_sha256"]
+
+
+def test_changed_remote_code_module_is_a_different_source(tmp_path):
+    """`trust_remote_code` checkpoints build their skeleton from `*.py` at
+    the checkpoint root (MiniMax-M2, DeepSeek-V4). Editing one changes the
+    module the payloads were quantized through while config.json and every
+    shard stay identical."""
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    source = tmp_path / "source"
+    _write_source(source, weight=_WEIGHT_A, bias=_BIAS_A)
+    _write_config(source, auto_map={"AutoConfig": "configuration_toy.ToyConfig"})
+    module = source / "modeling_toy.py"
+    module.write_text("HIDDEN = 2\n")
+    before = build_source_checkpoint_identity(str(source))
+
+    module.write_text("HIDDEN = 4\n")
+    after = build_source_checkpoint_identity(str(source))
+    assert before["shards"] == after["shards"], "the shard bytes did not move"
+    assert before["content_sha256"] != after["content_sha256"]
+    assert "modeling_toy.py" in [row["name"] for row in after["metadata"]]
