@@ -145,4 +145,23 @@ attest that exact source. Current main contains unrelated producer changes and
 therefore intentionally cannot pass the old source reconstruction contract.
 Integration does not relax or update the approved original package hash.
 
-Fresh current-main integration validation is recorded below after it completes.
+PB `4277d05a379b6fb1ebe4bde6ccc1f0d6910af1ad3060bf190a41003fd2e7e8bf`
+validated integration head `fa49488416f0cce95dd19f1190f7f2bcac2897a0` on
+dl380g10 with the same portable four-CPU/eight-GiB priority -10 command and
+bounded native threads. All 188 tests passed, zero skips or missing collection;
+all five touched Python modules compiled. The actual current-main package was
+explicitly rejected with `unapproved producer package change`, as required.
+The three implementation modules, test module and artifact acceptance tool
+were independently checked byte-identical to the validated frozen checkout.
+The only package difference from that checkout is main's existing persistent
+buffer precision change in `export_native_compressed.py`.
+
+Terminal exit zero, completed/released resource scope, actual stdout/stderr,
+CAS payload and canonical receipt hashes were verified.
+`integration-verified-01.json` under the evidence root records source hashes,
+source rejection, snapshot, logs and cleanup. Payload:
+`a685af671c5703e6435b6243a89f3fd9f317c35f16bfa76186039f4541efaf8a`;
+receipt:
+`706525dd90ffe707bfb844535c0ef7e2de6ebc0950ef62fb616e0ef424fccd8e`.
+This integration ran no GPU work and did not touch the active frozen execution
+checkout or its original checkpoint artifacts. Tracked in #346.
