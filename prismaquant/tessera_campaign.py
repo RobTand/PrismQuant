@@ -2294,6 +2294,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                        state={"anchors": rows, "wire_records": wire_records[name]})
         dirty_checkpoint_units.clear()
 
+    # Adopted rows are journalled BEFORE the anchor loop, because the loop can
+    # end without reaching its own flush: a group whose gate is already closed
+    # has nothing pending in round one and breaks out.  A seeded run is exactly
+    # that case, so without this the units a seed adopted would price into
+    # ``cost.pkl`` and leave no journal shard for ``merge`` to carry.
+    if dirty_checkpoint_units:
+        flush_checkpoint()
+
     started = time.time()
     deadline = float(args.deadline_seconds)
     stopped_early = False

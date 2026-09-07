@@ -6942,7 +6942,11 @@ re-validates the wire against it. The adaptive state needs nothing further:
 `grid`, the leave-one-out error and the stop reason are all recomputed from the
 anchor set at the top of every round, so adopting a group's anchors resumes it
 where it stood. What a seeded row inherits and does not re-derive is the stored
-`dloss`, exactly as an ordinary resume does.
+`dloss`, exactly as an ordinary resume does. Adopted anchors are written to the
+row's own journal **before** the anchor loop, because a fully seeded group has
+nothing pending in round one and the loop ends without reaching the flush that
+follows an encode; without that write the rows would price into `cost.pkl` and
+leave `merge` a journal missing exactly the units the seed contributed.
 
 `tools/dispatch_tessera_campaign.py` is `census` / `plan` / `submit` / `merge`
 over `pbcampaign`. Rows are portable (no host pin), GPU-demanding, not
@@ -6955,8 +6959,12 @@ anchor set than one run would have. `merge` unions the rows' disjoint Hessian
 captures into the object a whole-scope run writes (same `counts`, same
 provenance), **recomputes** its digest, re-stamps every row's
 `capture_sha256`, rebuilds the population block over the scope, and writes one
-`cost.pkl` plus a journal under the union identity. It refuses a row the fleet
-did not report as executed, a mixed Hessian identity, a unit priced twice, a
+`cost.pkl` plus a journal under the union identity. The merged population block lands under the
+key the allocation reads (`tessera_expert_projection.POPULATION_KEY`), which is
+what keeps the reference row's own narrow block from surviving the merge.
+It refuses a row the fleet
+did not report as executed, a journal entry whose unit shard is absent, a
+mixed Hessian identity, a unit priced twice, a
 gap in the coverage, a capture whose seal disagrees with its own rows' stamps,
 and any static scale or producer projection the rows do not already share.
 

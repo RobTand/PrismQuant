@@ -222,17 +222,34 @@ def _pbcampaign(manifest: Path, *, wait_s: int, receipts: Path | None = None) ->
 
 
 def _parse_row_table(text: str) -> list[dict]:
-    """The ``key status transport job host elapsed rc receipt note`` table."""
+    """The ``key status transport job host elapsed rc receipt note`` table.
+
+    Read by the header's own column offsets rather than by splitting on
+    whitespace: ``pbwait`` left-justifies every cell to a common width, and a
+    cell can hold a space -- ``rc`` renders ``1 (action 137)`` when the
+    launcher's status and the action's differ, which is exactly the failing
+    row a whitespace split would drop.
+    """
     rows: list[dict] = []
-    header = None
+    header: list[tuple[str, int, int]] | None = None
     for line in text.splitlines():
-        fields = line.split()
-        if fields[:2] == ["key", "status"]:
-            header = fields
+        if header is None:
+            if line.split()[:2] != ["key", "status"]:
+                continue
+            names = line.split()
+            starts = []
+            cursor = 0
+            for name in names:
+                cursor = line.index(name, cursor)
+                starts.append(cursor)
+                cursor += len(name)
+            ends = starts[1:] + [1 << 20]
+            header = list(zip(names, starts, ends))
             continue
-        if header is None or len(fields) != len(header):
+        if not line.strip():
             continue
-        rows.append(dict(zip(header, fields)))
+        rows.append({name: line[start:end].strip()
+                     for name, start, end in header})
     return rows
 
 
@@ -346,6 +363,12 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     """
     from prismaquant.tessera_campaign import SCHEMA, campaign_population_block
     from prismaquant.tessera_campaign import ExpertPopulation
+    # The keys a merged payload must land under are the ones the campaign and
+    # the allocation share.  Spelling them here as literals is how a merge
+    # writes a block nothing reads: POPULATION_KEY is "population", not
+    # "tessera_population", and the allocation reads only the former.
+    from prismaquant.tessera_expert_projection import (
+        EXPERT_WIRES_KEY, POPULATION_KEY, PROJECTION_KEY)
 
     for row_id, payload in row_payloads.items():
         if payload.get("schema") != SCHEMA:
@@ -434,13 +457,13 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         anchor_groups.update(prov["anchor_groups"])
         anchor_counts.update(payload["anchor_counts"])
         menu_sizes.update(payload["menu_sizes"])
-        expert_wires.update(payload.get("tessera_expert_wires", {}))
+        expert_wires.update(payload.get(EXPERT_WIRES_KEY, {}))
         stopped_early = stopped_early or bool(prov["stopped_early"])
         wall_seconds += float(prov["wall_seconds"])
         rounds_run = max(rounds_run, int(prov["rounds_run"]))
         if prov.get("seed_checkpoint"):
             seeds.append({"row": row_id, **prov["seed_checkpoint"]})
-        projection = prov.get("tessera_expert_projection")
+        projection = prov.get(PROJECTION_KEY)
         if projection is not None:
             # Every row carries the SCOPE's projection block, because the
             # allocation rebinds the producer's answer over every stack the
@@ -490,7 +513,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         **{key: value for key, value in row_payloads[sorted(row_payloads)[0]].items()
            if key not in {"costs", "formats", "leave_one_anchor_out",
                           "non_interpolable", "menu_sizes", "anchor_counts",
-                          "provenance", "tessera_expert_wires"}},
+                          "provenance", EXPERT_WIRES_KEY}},
         "schema": SCHEMA,
         "costs": dict(sorted(costs.items())),
         "formats": sorted(formats),
@@ -502,7 +525,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         "provenance": provenance,
     }
     if expert_wires:
-        payload["tessera_expert_wires"] = dict(sorted(expert_wires.items()))
+        payload[EXPERT_WIRES_KEY] = dict(sorted(expert_wires.items()))
     population = ExpertPopulation(
         members=(),
         declared={stack: {name: tuple(shape) for name, shape in units.items()}
@@ -513,7 +536,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
             name: tuple(shape) for name, shape
             in scope["packed_outside_layer_stride"].items()},
     )
-    payload["provenance"]["tessera_population"] = campaign_population_block(
+    # Overwrites the reference row's block, which describes that row's slice.
+    payload["provenance"][POPULATION_KEY] = campaign_population_block(
         dense_targets=scope["dense_targets"], expert_targets=scope["expert_targets"],
         dense_all=scope["dense_all"], pinned=scope["pinned"],
         population=population, layer_stride=int(reference["layer_stride"]),
@@ -624,7 +648,10 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
             qname = entry["qname"]
             shard = parts / entry["file"]
             if not shard.is_file():
-                continue
+                raise MergeRefused(
+                    f"{row_id}: its journal names {qname} and the shard "
+                    f"{shard} is not there; the row's anchors would be "
+                    "dropped from the merged journal")
             if qname in states:
                 raise MergeRefused(f"unit {qname} has a journal shard in two rows")
             with shard.open("rb") as handle:
@@ -719,13 +746,23 @@ def _require_receipts(workspace: Path, expected: int) -> None:
     if len(rows) != expected:
         raise MergeRefused(
             f"{path} reports {len(rows)} rows and the plan has {expected}")
-    failed = [row for row in rows if row.get("rc") not in {"0", 0}]
+    # ``pbwait.verdict`` is the fleet's own reading of the table: 0 when every
+    # row's work is done, and a memoized ``cache_hit`` counts as done there.
+    # It is the gate, because a re-submitted row that was already priced
+    # reports no launcher status of its own and renders ``rc`` as ``-``.
+    if receipts.get("returncode") not in {0, "0"}:
+        raise MergeRefused(
+            f"{path} records pbcampaign exit {receipts.get('returncode')!r}; "
+            "not every row is done")
+    failed = [row for row in rows
+              if row.get("rc") not in {"0", 0, "-", ""}]
     if failed:
         raise MergeRefused(
             "the fleet reports a non-zero exit for "
             + ", ".join(f"{row.get('key')} (rc={row.get('rc')})" for row in failed))
-    hosts = sorted({row.get("host") for row in rows})
-    print(f"[dispatch] {len(rows)} rows executed on {', '.join(hosts)}")
+    where = sorted({f"{row.get('host') or '?'} ({row.get('status')})"
+                    for row in rows})
+    print(f"[dispatch] {len(rows)} rows: " + ", ".join(where))
 
 
 def cmd_merge(args) -> int:

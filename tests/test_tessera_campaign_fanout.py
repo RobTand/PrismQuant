@@ -245,7 +245,13 @@ def test_merge_reproduces_a_whole_scope_table():
     assert merged["provenance"]["hessian"]["capture_sha256"] == "merged-digest"
     # The merged table claims the whole scope, not a shard's selection.
     assert merged["provenance"]["unit_selection"]["selected"] is False
-    assert merged["provenance"]["tessera_population"]["priced"]["dense"] == ["a", "b"]
+    # Under the key the ALLOCATION reads.  The campaign and the allocation
+    # share one constant for it; a literal here would let the merge write a
+    # population block that nothing consumes while the reference row's own
+    # narrow block stayed in place under the real key.
+    from prismaquant.tessera_expert_projection import POPULATION_KEY
+    assert merged["provenance"][POPULATION_KEY]["priced"]["dense"] == ["a", "b"]
+    assert "tessera_population" not in merged["provenance"]
     assert merged["provenance"]["campaign_fanout"]["rows"] == {
         "row-0000": ["u:a"], "row-0001": ["u:b"]}
 
@@ -297,3 +303,72 @@ def test_a_row_may_not_carry_the_round_loop_s_own_deadline(tmp_path):
         "campaign_argv": ["--menu-mode", "research", "--deadline-seconds", "100"]}))
     with pytest.raises(RuntimeError, match="deadline"):
         dispatch.load_spec(spec)
+
+
+def test_merge_refuses_a_journal_that_names_a_shard_it_does_not_have(tmp_path):
+    """A row whose anchors would silently vanish from the merged journal.
+
+    ``merge_checkpoint`` reads one unit envelope per journal entry.  Skipping
+    an entry whose file is absent loses exactly the rows a seeded run adopts
+    and never re-encodes, and loses them without a word.
+    """
+    import dispatch_tessera_campaign as dispatch
+
+    row = tmp_path / "row-0000"
+    (row / "cost.anchors.json.parts").mkdir(parents=True)
+    (row / "cost.anchors.json").write_text(json.dumps({
+        "schema": "prismaquant.cost_stage_checkpoint.manifest.v1",
+        "stage": "Tessera campaign", "identity_sha256": "x",
+        "identity": {"units": {"a": {}}},
+        "units": [{"qname": "a", "file": "a.pkl"}],
+    }))
+    with pytest.raises(dispatch.MergeRefused, match="is not there"):
+        dispatch.merge_checkpoint({"row-0000": str(row)},
+                                  tmp_path / "cost.anchors.json")
+
+
+def test_row_table_keeps_a_row_whose_exit_status_holds_a_space():
+    """``rc`` renders ``1 (action 137)`` when launcher and action disagree.
+
+    That is the failing row, and a whitespace split drops it -- leaving a
+    receipts file that reports only the rows that worked.
+    """
+    import dispatch_tessera_campaign as dispatch
+
+    table = (
+        "key           status    transport  job    host    elapsed  rc               receipt  note\n"
+        "641c9bfbedd8  executed  pull       j-1    sparky  120.0s   0                cas/a    -\n"
+        "9bf8f58d174f  executed  pull       j-2    lina    12.0s    1 (action 137)   cas/b    killed\n"
+        "6fea9fb2131e  cache_hit pull       -      -       -        -                cas/c    -\n"
+    )
+    rows = dispatch._parse_row_table(table)
+    assert [row["key"] for row in rows] == [
+        "641c9bfbedd8", "9bf8f58d174f", "6fea9fb2131e"]
+    assert rows[1]["rc"] == "1 (action 137)"
+    assert rows[1]["host"] == "lina"
+    assert rows[2]["rc"] == "-"
+
+
+def test_receipts_accept_a_memoized_row_and_refuse_a_failed_campaign(tmp_path):
+    """A re-submitted row reports no launcher status of its own.
+
+    Re-running the manifest IS the resume, so the second submit's rows come
+    back memoized with ``rc`` unset.  Those are done.  What is not done is a
+    campaign whose own verdict was non-zero.
+    """
+    import dispatch_tessera_campaign as dispatch
+
+    (tmp_path / "receipts.json").write_text(json.dumps({
+        "returncode": 0,
+        "rows": [{"key": "a", "status": "cache_hit", "host": "-", "rc": "-"},
+                 {"key": "b", "status": "executed", "host": "sparky", "rc": "0"}],
+    }))
+    dispatch._require_receipts(tmp_path, 2)
+
+    (tmp_path / "receipts.json").write_text(json.dumps({
+        "returncode": 75,
+        "rows": [{"key": "a", "status": "waiting", "host": "-", "rc": "-"},
+                 {"key": "b", "status": "executed", "host": "sparky", "rc": "0"}],
+    }))
+    with pytest.raises(dispatch.MergeRefused, match="not every row is done"):
+        dispatch._require_receipts(tmp_path, 2)
