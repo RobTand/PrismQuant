@@ -3,6 +3,13 @@
 As of: 2026-09-07 · `codex/joint-fused-promotion-20260907`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/joint-resume-empty-lease`) for streamed joint
+AURA resume: a fully checkpointed reverse layer skips projection-lease
+construction while still executing every probe's input/shared-state cotangent
+traversal. Earlier pending layers retain the same Fisher probe, signed terms,
+squaring and arithmetic identity. The existing source-identity checks remain
+strict; this fix does not authorize adoption across producer source versions.
+
 Re-stamped (2026-09-07, `review/pq325-buffer-precision`) for the compressed-tensors
 streaming export's persistent-buffer read policy (#311). The exporter passes
 the skeleton's declared buffer dtypes to the shared layer reader before
