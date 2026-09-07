@@ -15,7 +15,10 @@ work. The opaque factory-issued transition replaces only the two top-level
 checkpoint source fields for the strict original manifest comparison; all
 non-source fields must still match, and signed rows retain their original
 measurement identity. New unit state and final output separately record the
-actual execution source and receipt. Later resumes reject unbound new units.
+actual execution source and receipt. A new PB snapshot binds its predecessor
+receipt and existing post-original unit hashes, preserving each unit's actual
+producer commit while requiring identical package/verifier bytes. Later resumes
+reject missing predecessor bindings and unbound new units.
 Original manifest, prepared cache and completed unit bytes are never rewritten.
 The complete-package source function remains truthful. This opt-in repair
 changes no arithmetic, calibration, format, allocator, cache or serving gate.

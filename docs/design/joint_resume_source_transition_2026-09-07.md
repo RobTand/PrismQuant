@@ -71,4 +71,65 @@ supplying independently SHA256-bound `--plan`, `--prepared`, `--inspection`,
 through PrismaBuild. Receipt creation and CPU qualification do not authorize
 GPU success claims; inspect the actual resumed action's result and output.
 
-Validation is recorded below after admitted checks complete.
+## Validation
+
+PB `3ea902107496222681ca0842364337247ede2223b48660824ef771329ae955ad`
+ran 188 CPU tests: all passed, zero skips or missing collection, with 56
+upstream Torch/Python deprecation warnings. The suite includes source-proof
+algorithm mutations, changed original inputs, forged capability rejection,
+changed non-source identity, exact producer resume costs, two interrupted
+resumes with different PB-style Git HEADs, immutable prior unit bytes,
+predecessor-chain tampering, backend/packed/microbatch/checkpoint regressions,
+and architecture/staleness gates.
+
+```text
+bash experiments/pq322_cpu_checks.sh \
+  tests/test_joint_aura_source_transition.py tests/test_tessera_joint_aura.py \
+  tests/test_joint_aura_streamed.py tests/test_joint_aura_microbatch.py \
+  tests/test_joint_aura_packed.py tests/test_joint_aura_projection.py \
+  tests/test_joint_projection_backend.py tests/test_streamed_cost_checkpoints.py \
+  tests/test_architecture_doc.py tests/test_docs_staleness.py \
+  -q -n 4 --dist worksteal -p no:cacheprovider
+```
+
+It was a portable priority -10 action with four CPUs/eight GiB, executed on
+dl380g10 with native threads bounded to one. Runtime: Python 3.14.4,
+Torch 2.11.0+cpu, Transformers 5.16.1, pytest 9.0.2; CUDA disabled.
+CAS payload `06ea47126056e09934170497bee50c986b49e271396e5980dea863c58966bdd2`;
+receipt `649898a0982dde227be025385f56e096e2fa9007a4b43af13ae9756c49cb7a44`.
+
+PB `1f442dc649c5b79b24f0e65a0704d8ded6541b6d3817e555fe4818a44de1afde`
+ran `experiments/verify_joint_source_transition.py` on the original first-model
+artifacts using the existing x86 CPU runtime (one CPU/four GiB; priority -10).
+It verified all 1,260 original envelope/payload hashes, the unchanged original
+manifest/preparation/cache and plan bindings, receipt admission, exact
+non-source identity comparison, and a rejected seed mutation. Its complete
+new package SHA256 is
+`f19fc208d0ed101d849351976224f86d471ba76b9d9fadcba8d61c4a86b306a8`;
+reconstructing only the approved source change gives the exact original
+`735a5712fc43153709c1f9e463fe1fff649cb50ac8c28c5c305ad6369c3043ba`.
+The verifier module SHA256 is
+`499ab81af0304405ddd76b49b6af28265c650fce8ba72c14be8aea13122a1aef`.
+This actual-package gate is explicit acceptance evidence; ordinary CI tests
+verify the algorithm on portable byte-tree fixtures so future unrelated source
+changes remain fail-closed without breaking normal CI.
+
+Both terminal exit codes were zero. Cleanup completed with released scopes and
+no OOM. Actual stdout/stderr, CAS payload bytes and canonical receipt hashes
+were independently checked. Evidence root:
+`/mnt/shared/tessera-measurements/joint-source-transition-20260907/`;
+`cpu-verified-01.json`, `artifact-verified-01.json`, and
+`artifact-gate-01/result.json` retain the checks. The artifact gate wrote only a
+new receipt/result under its evidence directory; frozen sources and checkpoint
+bytes were unchanged. No GPU cost, serving, throughput or quality claim is made.
+
+A first CPU submission `9bfffc7c0a2c` inherited PB's local-worker tag and was
+withdrawn from the ready queue with zero tokens held before coordinated NFS
+maintenance. It ran no tests and is superseded by the portable green action.
+
+
+PB `2b13aee3a14fc8eb651754b9ba88a7c36d2b23c93828d62a76a4330aa9ab99a0`
+compiled all five touched Python modules on dl380g10 (portable priority -10,
+one CPU/one GiB), exit zero and released scope. Its actual CAS output was
+`5 touched Python modules compile`. `compile-verified-01.json` records the
+terminal, snapshot, cleanup, payload and verified canonical receipt.
