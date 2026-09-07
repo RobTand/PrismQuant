@@ -462,6 +462,7 @@ STAGE_SETTINGS_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     # every depth, `as-allocated` does not. A skip-if-exists plan built under
     # the other mode is a different artifact.
     "tessera-plan": _key_pairs("MODEL_PATH", "COVER<-TESSERA_PLAN_COVER", "ASSIGNMENT_DIGEST",
+                               "PLAN_ASSIGNMENT_DIGEST",
                                *_TESSERA_SCOPE_SETTINGS),
 }
 
@@ -498,7 +499,9 @@ def stage_settings_projection(
     projection: dict[str, str] = {}
     unresolved: list[str] = []
     for manifest_key, source in keys:
-        if stage == "tessera-plan" and source in _TESSERA_SCOPE_SETTINGS and not settings.get(source):
+        if (stage == "tessera-plan"
+                and (source in _TESSERA_SCOPE_SETTINGS or source == "PLAN_ASSIGNMENT_DIGEST")
+                and not settings.get(source)):
             continue
         if source in settings:
             projection[manifest_key] = str(settings[source])

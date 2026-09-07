@@ -1370,6 +1370,55 @@ def require_priced_export_inputs(
     return report
 
 
+def _write_plan_assignment(assignment_path: str | Path, *, expected_sha256: str) -> dict:
+    """A producer-facing source-unit view of a verified packed allocation.
+
+    The allocator's decision keys and file stay intact. This derived input only
+    resolves the existing population member map; Tessera still owns conversion
+    from layer-config entries to wire plans. Called after scope/wire admission.
+    """
+    import hashlib
+    from .cost_stage_checkpoint import atomic_write_bytes
+    from .layer_config import canonicalize_assignment, layer_config_metadata, strip_weight
+    from .tessera_expert_projection import (
+        POPULATION_KEY, PROJECTION_KEY, ExpertProjectionError,
+        carried_units, expand_stack_decision_assignment,
+    )
+
+    source_path = Path(assignment_path)
+    raw = source_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise TesseraExportLaneError("allocation changed before export assignment projection")
+    original = json.loads(raw)
+    metadata = layer_config_metadata(original)
+    population = metadata.get(POPULATION_KEY)
+    if not isinstance(population, Mapping) or not population.get("stack_decisions"):
+        return {}
+    try:
+        _source, units, stack_of = carried_units(metadata.get(PROJECTION_KEY))
+        expanded, owners = expand_stack_decision_assignment(
+            canonicalize_assignment(original), population, units=units, stack_of=stack_of)
+    except ExpertProjectionError as exc:
+        raise TesseraExportLaneError(f"expert projection: {exc}") from exc
+    entries = {strip_weight(name): entry for name, entry in original.items()
+               if name != "__prismaquant__"}
+    projected = {name: entries[owners.get(name, name)] for name in sorted(expanded)}
+    projected["__prismaquant__"] = {
+        **metadata,
+        "tessera_export_assignment": {
+            "schema": "prismaquant.tessera_export_assignment.v1",
+            "source_layer_config": str(source_path),
+            "source_sha256": expected_sha256,
+            "member_owners": dict(sorted(owners.items())),
+        },
+    }
+    output = source_path.with_name(source_path.stem + ".tessera-source-units.json")
+    payload = (json.dumps(projected, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
+    atomic_write_bytes(output, payload)
+    return {"plan_assignment": str(output),
+            "plan_assignment_sha256": hashlib.sha256(payload).hexdigest()}
+
+
 # ---------------------------------------------------------------------------
 # The driver's entry point
 # ---------------------------------------------------------------------------
@@ -1450,6 +1499,8 @@ def preflight(model_path: str | Path, *, target=None,
                         == ROUTED_EXPERT_BYTES_PRICED_WIRES):
                     build["cached_expert_units"] = str(
                         write_cached_expert_units(projection))
+        if scope is not None:
+            build.update(_write_plan_assignment(assignment_path, expected_sha256=assignment_sha))
         if file_sha256(assignment_path) != assignment_sha:
             raise TesseraExportLaneError(
                 "allocation changed during scoped preflight; no build anchor was produced")

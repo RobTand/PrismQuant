@@ -1,7 +1,21 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `codex/campaign-review-20260906`. Stamps
+As of: 2026-09-06 · `fix/packed-plan-handoff`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
+input for packed decisions** (§4.10; #293). Scoped preflight already resolved
+packed allocations against per-expert wire receipts, but the producer's
+translator still received packed names absent from the source checkpoint.
+After successful scope admission, preflight now writes a separate source-unit
+assignment using the same explicit population member map. Its metadata retains
+the original allocation path/hash and member ownership; the build anchor binds
+both original and derived inputs. The pipeline passes only the derived view to
+Tessera's translator, verifies its digest before and after translation, and
+includes it in plan cache settings. The original packed allocation remains the
+allocation and serving-census identity. No format, wire recipe or cost changes.
+Gate: `tests/test_tessera_packed_plan_handoff.py` uses the pinned producer's real
+translator; `tests/test_tessera_plan_input_binding.py` executes the shell arm.
 
 Re-stamped (2026-09-06, `codex/campaign-review-20260906`) for **packed
 sampling across merge and export** (§4.10; RobTand/prismaquant#293, #294).

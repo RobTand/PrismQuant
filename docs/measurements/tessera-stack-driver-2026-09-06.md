@@ -51,3 +51,46 @@ journal's canonical identity digest. The two changed assertions were rerun:
 **2 passed, 4 deselected**, action
 `4287303842fa8418b0efe1fe4ae466e2173c9a32ae5cc0432d48038c9d70f068`,
 receipt `eb7160fb8a25d2b2dcc4f0852463308c0eee8e5bef77bead7caded0df2d230bc`.
+
+## Producer translator handoff
+
+A subsequent end-to-end review found a second name boundary: full-census
+scoped preflight passed, but the pipeline passed the original packed
+allocation to Tessera's translator. The pinned producer refused
+`experts.down_proj` because the source names per-expert `w1/w3/w2` tensors.
+The actual producer `build()` regression failed through PB action
+`aebcba1ccd587500bd22e708a2662c519a865ddf4034015adfb99eae09555512`.
+
+Preflight now derives a separate source-unit assignment from the already
+verified population mapping, preserving the original allocation and metadata.
+The build anchor records the derived file's path and digest; the shell hands
+that file to the producer translator and checks the digest before and after.
+Tessera still owns translation to its wire plan. The packed allocation remains
+the artifact's original allocation identity.
+
+A shell regression also established that merely passing a new cache-setting
+name does not bind it: `pipeline.STAGE_SETTINGS_KEYS` ignored the undeclared
+`PLAN_ASSIGNMENT_DIGEST` and reused an old plan. The fix declares that optional
+key in the existing settings projection. The regression now refuses that
+cached plan, as well as a derived file changed after preflight.
+
+Final relevant coverage: **92 tests passed without skips** across eight test
+files: real pinned producer handoff (1), shell plan binding (11), packed export
+scope (7), expert projection (20), stage settings (17), pipeline contracts
+(17), architecture (13), and documentation staleness (6). These were targeted
+PB fanout runs; successful suites were not repeated after unrelated test-only
+corrections. Result manifests are `/home/rob/tmp/pq-stack-plan-tests.json`,
+`pq-stack-plan-contract-tests.json`, and `pq-stack-plan-final-tests.json`.
+The producer handoff's receipt is
+`e10493d23a79c21ce4cc26432011ae280c91e39c2674a98bd8d8f4e1708b15e0`.
+Full shell syntax and Python compilation passed in action
+`95257284c29ed9acfeba6027ce8950cace52710ec69535354cd308fa3b1b1036`,
+receipt `01889714277e009664e2236a3c6f02fb9f4d0da9aa8918118c409d11686212fe`.
+
+The fanout used `pbtest.py --tag gb10`, CPU only, with one native thread per
+worker for final parallel checks. Its temporary interpreter wrapper supplied
+the same immutable `ba582d` producer archive described above; those helper
+bytes are retained by the PB checkout snapshots. The actual translator test
+uses fixture source shapes and verified fake wire receipts at the preflight
+boundary; it exercises naming, identity and plan content without encoding or
+serving an artifact. Missing unsampled wires and static scales remain refusals.
