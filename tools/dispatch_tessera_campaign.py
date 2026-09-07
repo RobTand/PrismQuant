@@ -155,6 +155,31 @@ def _row_memory_gb(spec: dict, members: list[str], census: dict) -> int:
     return int(math.ceil(total / gib)) + int(spec.get("headroom_gb", 24))
 
 
+def require_rows_fit(mem_gb: "list[int]", per_box: int, budget) -> int:
+    """Check that a box can hold ``per_box`` of these rows, and say so.
+
+    Concurrency is a property of the row's demand, not a flag: PrismaBuild
+    admits as many rows as a box's memory holds.  So this checks rather than
+    sets -- shrinking a row's declared demand to force co-residency would be
+    reserving less than the row holds.  Returns the widest demand.
+    """
+    if per_box < 1:
+        raise RuntimeError("--rows-per-box must be at least 1")
+    widest = max(mem_gb)
+    if budget is not None and widest * per_box > int(budget):
+        raise RuntimeError(
+            f"--rows-per-box {per_box} does not fit: the widest row demands "
+            f"{widest} GB and the spec declares a {int(budget)} GB box, so at "
+            f"most {int(budget) // widest} of these rows are co-resident. "
+            "Reduce --groups-per-row, or make the quantum hold less than the "
+            "whole checkpoint.")
+    print(f"[dispatch] widest row demands {widest} GB; "
+          f"--rows-per-box {per_box} needs {widest * per_box} GB per box"
+          + (f" (spec declares {int(budget)} GB)" if budget is not None else
+             " (the spec declares no box budget, so this is unchecked)"))
+    return widest
+
+
 def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int) -> dict:
     row = {
         "argv": [spec["python"], "-u", "-m", "prismaquant.tessera_campaign", *argv],
@@ -308,6 +333,13 @@ def cmd_plan(args) -> int:
         planned.append({"row_id": row_id, "groups": bundle, "members": sorted(members),
                         "dir": str(row_dir), "units": str(units_path)})
 
+    # The dominant term in a row's demand today is the whole checkpoint every
+    # row loads, which is what a quantum holding only its own units' weights
+    # would remove; until then that term is the concurrency ceiling.
+    per_box = int(args.rows_per_box)
+    require_rows_fit([int(row["demand"]["mem_gb"]) for row in rows],
+                     per_box, spec.get("box_memory_gb"))
+
     manifest = workspace / "manifest.json"
     manifest.write_text(json.dumps(rows, indent=2) + "\n")
     plan = {
@@ -316,6 +348,10 @@ def cmd_plan(args) -> int:
         "census": str(workspace / "census.json"),
         "manifest": str(manifest),
         "groups_per_row": int(args.groups_per_row),
+        "rows_per_box": per_box,
+        "row_memory_gb": {row_id: int(row["demand"]["mem_gb"])
+                          for row_id, row in zip(
+                              (entry["row_id"] for entry in planned), rows)},
         "seed_checkpoint": (None if not args.seed_checkpoint
                             else str(args.seed_checkpoint)),
         "rows": planned,
@@ -870,6 +906,14 @@ def main(argv=None) -> int:
     plan.add_argument("--spec", required=True)
     plan.add_argument("--workspace", required=True)
     plan.add_argument("--groups-per-row", type=int, default=1)
+    plan.add_argument("--rows-per-box", type=int, default=1,
+                      help="how many of these rows one box is meant to run at "
+                           "once. It does not change a row's demand -- PB "
+                           "places on the demand, and shrinking it to force "
+                           "co-residency would be reserving less than the row "
+                           "holds. It is checked against the spec's "
+                           "'box_memory_gb', when the spec declares one, and "
+                           "recorded in the plan.")
     plan.add_argument("--timeout-s", type=int, default=14400)
     plan.add_argument("--seed-checkpoint", default=None,
                       help="a campaign checkpoint whose measured anchors every "

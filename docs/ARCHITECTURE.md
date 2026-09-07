@@ -15,9 +15,12 @@ behind `fit_tokens`, the fused-unified activation maxima behind
 row gates. `tools/dispatch_tessera_campaign.py` is census/plan/submit/merge
 over `pbcampaign`, and the merge unions disjoint captures into the object a
 whole-scope run writes, recomputes its digest and refuses on any identity the
-rows do not already share. No cost model, format menu, serving lane, ship gate
-or byte change: a whole-scope invocation with no new flag behaves exactly as
-before. Gate: `tests/test_tessera_campaign_fanout.py`.
+rows do not already share. A row whose rung this run's menu does not admit is
+carried as `unservable` evidence rather than refused or priced, and
+`plan --rows-per-box N` checks that a box can hold N of these rows rather than
+shrinking a demand to make it so. No cost model, format menu, serving lane,
+ship gate or byte change: a whole-scope invocation with no new flag behaves
+exactly as before. Gate: `tests/test_tessera_campaign_fanout.py`.
 
 Re-stamped (2026-09-06, `main-campaign/pq284-readable-menu`) for **the
 contract-readable Tessera menu mode** (§4.10; RobTand/prismaquant#284). The
@@ -7021,6 +7024,34 @@ and any static scale or producer projection the rows do not already share.
 The `unservable` evidence is **unioned** across rows rather than copied from
 the reference row, and two rows that carry different evidence for one
 `(unit, rung)` are refused.
+
+**How many rows one box runs at once is a fit question, not a flag.**
+PrismaBuild admits on the row's declared demand, so the only way to put more
+rows on a box is to make a row hold less; declaring a smaller demand than the
+row holds would reserve less than it uses. `plan --rows-per-box N` therefore
+*checks* rather than sets: it refuses when the spec declares a
+`box_memory_gb` that `N` widest rows do not fit, prints the arithmetic
+otherwise, and records `rows_per_box` and each row's `row_memory_gb` in the
+plan. The dominant term in a row's demand today is `_model_bytes` -- every row
+loads the whole checkpoint, because the activations a unit is priced on come
+from a forward pass through the layers above it -- so that term, not the
+selection, is the concurrency ceiling. A quantum that held only its own units'
+weights would have to take its activations from something the census carried,
+or from the streaming loader; that is not this change.
+
+**Why the quantum is the fused anchor group.** The adaptive loop's round is per
+`(group, family)`: a round adds one anchor to each surface still failing its
+gate, and the decision reads all of that family's anchors at once. Splitting
+the quantum by rung would put that decision outside the process that owns the
+round. It is still reachable without a second dispatcher, and the mechanism is
+already here: a row seeded with the prior anchors and given a narrower menu
+computes exactly one more round, so a per-round or per-rung fan-out is
+`plan --seed-checkpoint` / `submit` / `merge` iterated, with the journal as the
+handoff. That is also the shape a batched encoder entry point would take -- one
+call encoding a stack's sampled experts at one rung (Tessera #385) makes
+`(stack, family, rung, expert subset)` a *pending list* a round can hand to the
+encoder in one call, not a new sharding unit: the anchor grid and the gate stay
+per group either way.
 
 Equality is defined modulo what a wall clock writes: `encode_seconds`,
 `wall_seconds`, `rounds_run`, `stopped_early`, `cache_dir`, `wire_dir` and the

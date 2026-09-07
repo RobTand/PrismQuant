@@ -472,3 +472,21 @@ def test_a_seed_links_only_the_wire_bytes_its_adopter_will_price(tmp_path):
     # row it will not price is the adopter's job, not the linker's.
     assert sorted(record["format_name"] for record in seen["a"]["anchors"]) == \
         ["OFF", "ON"]
+
+
+def test_rows_per_box_is_checked_against_the_box_and_never_shrinks_a_demand():
+    """N concurrent rows is a fit question, not a knob.
+
+    PrismaBuild admits on the row's declared demand, so the only way to make a
+    box hold more rows is to make a row hold less. Declaring a smaller demand
+    than the row holds would reserve less than it uses.
+    """
+    import dispatch_tessera_campaign as dispatch
+
+    assert dispatch.require_rows_fit([40, 36], 2, 80) == 40
+    # Unchecked rather than assumed when the spec declares no box.
+    assert dispatch.require_rows_fit([40], 4, None) == 40
+    with pytest.raises(RuntimeError, match="at most 2 of these rows"):
+        dispatch.require_rows_fit([40, 36], 3, 80)
+    with pytest.raises(RuntimeError, match="at least 1"):
+        dispatch.require_rows_fit([40], 0, 80)
