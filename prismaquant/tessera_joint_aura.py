@@ -77,7 +77,7 @@ class MeasuredAnchorInput:
         return dict(sizes)
 
 
-def load_measured_anchor_input(inputs):
+def load_measured_anchor_input(inputs, *, file_hash_workers=1):
     """Read a complete merged journal and select only its measured wire cells.
 
     This is a hash/receipt intake. Tensor/source/encoder verification occurs in
@@ -87,6 +87,8 @@ def load_measured_anchor_input(inputs):
     from .production_weight_cache import _cache_weight_filename
     from tools.dispatch_tessera_campaign import _require_receipts
 
+    _require(type(file_hash_workers) is int and file_hash_workers > 0,
+             "positive file_hash_workers required")
     paths = {key: _bound(inputs[key], key) for key in (
         "campaign_plan", "census", "campaign_receipts", "merged_cost", "merged_checkpoint")}
     census = json.loads(paths["census"].read_text())
@@ -196,12 +198,36 @@ def load_measured_anchor_input(inputs):
             wire = wire_dir / filename
             _require(not wire.is_symlink() and wire.resolve().parent == wire_dir.resolve(), f"{name}: escaping wire path")
             _same(wire.stat().st_size, record["blob_bytes"], f"{name}: wire size")
-            _same(_sha(wire), record["blob_sha256"], f"{name}: wire checksum")
             render = owners[name] / "cache" / _cache_weight_filename(name, fmt)
             _require(render.is_file(), f"{name}@{fmt}: original decoded PWC shard missing")
             cells[name, fmt] = {"anchor": anchor, "record": record, "wire": str(wire.resolve()),
-                               "render": str(render.resolve()), "render_file_sha256": _sha(render)}
+                               "render": str(render.resolve())}
         formats[name] = (*sorted(anchors), "BF16")
+    def verify_files(item):
+        pair, cell = item
+        wire, render = Path(cell["wire"]), Path(cell["render"])
+        # Metadata is only a race detector around the actual content hash.
+        # Every byte is still hashed; neither timestamps nor a previous run
+        # authorize reuse. Existing per-consumption render checks remain below.
+        def signature(path):
+            stat = path.stat()
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+        before = [signature(p) for p in (wire, render)]
+        _same(_sha(wire), cell["record"]["blob_sha256"], f"{pair}: wire checksum")
+        digest = _sha(render)
+        after = [signature(p) for p in (wire, render)]
+        _same(after, before, f"{pair}: input files changed while hashing")
+        return pair, digest
+
+    if file_hash_workers == 1:
+        verified_files = map(verify_files, cells.items())
+        for pair, digest in verified_files:
+            cells[pair]["render_file_sha256"] = digest
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=file_hash_workers, thread_name_prefix="anchor-file-hash") as workers:
+            for pair, digest in workers.map(verify_files, cells.items()):
+                cells[pair]["render_file_sha256"] = digest
     return MeasuredAnchorInput(dict(inputs), payload, manifest, census, plan, cells, formats)
 
 
@@ -221,7 +247,7 @@ def calibrated_maxima(data, profile):
 
 
 def verify_anchor_render(cell, source_weight, rendered_weight, *, calibration_source,
-                         projected_unit, static_scales):
+                         projected_unit, static_scales, bound_unit=None, reader=None):
     """Re-derive encoder inputs from actual source/H and compare decoded bytes."""
     import torch
     from tessera.unit_artifact import read_unit_artifact
@@ -233,18 +259,23 @@ def verify_anchor_render(cell, source_weight, rendered_weight, *, calibration_so
     _require(source_weight.dtype == rendered_weight.dtype == torch.bfloat16 and
              source_weight.ndim == 2 and rendered_weight.shape == source_weight.shape,
              f"{name}@{fmt}: source/render BF16 shape differs")
-    _require(bool(torch.isfinite(source_weight).all()) and bool(torch.isfinite(rendered_weight).all()),
-             f"{name}@{fmt}: source/render is nonfinite")
+    source_receipt = (None if bound_unit is None else bound_unit.source_receipt(source_weight))
+    _require((bound_unit is not None or bool(torch.isfinite(source_weight).all())) and
+             bool(torch.isfinite(rendered_weight).all()), f"{name}@{fmt}: source/render is nonfinite")
     expected = tc._checkpoint_anchor_identity(anchor,
         weights={name: source_weight}, menus={name: [SimpleNamespace(format_name=fmt)]},
         calibration_source=calibration_source, static_scales=static_scales,
-        projected_units={} if projected_unit is None else {name: projected_unit})
+        projected_units={} if projected_unit is None else {name: projected_unit},
+        **({} if bound_unit is None else {"bound_unit": bound_unit}))
     blob = Path(cell["wire"]).read_bytes()
-    tc._checkpoint_identity_api().verify_cached_unit(blob, cell["record"], expected)
-    decoded = read_unit_artifact(blob, device=str(rendered_weight.device)).to(torch.bfloat16)
+    verifier = tc._checkpoint_identity_api() if reader is None else reader
+    verifier.verify_cached_unit(blob, cell["record"], expected)
+    decode = read_unit_artifact if reader is None else reader.read_unit_artifact
+    decoded = decode(blob, device=str(rendered_weight.device)).to(torch.bfloat16)
     _require(torch.equal(decoded, rendered_weight), f"{name}@{fmt}: decoded wire differs from original PWC render")
     del decoded
-    return {"source_weight": _cb_cache_tensor_identity(source_weight),
+    return {"source_weight": (_cb_cache_tensor_identity(source_weight)
+                              if source_receipt is None else source_receipt),
             "rendered_weight": _cb_cache_tensor_identity(rendered_weight),
             "encoding_identity_sha256": canonical_json_sha256(expected, where="joint anchor encoding"),
             "wire_sha256": hashlib.sha256(blob).hexdigest(),
@@ -262,7 +293,7 @@ def _live_targets(runner, names):
     return {name: targets[name] for name in names}
 
 
-def prepare_cache(runner, data, *, capture, max_render_bytes):
+def prepare_cache(runner, data, *, capture, max_render_bytes, reader=None):
     """Qualify original per-layer inputs and return the existing PWC object.
 
     Only the original calibration/PWC/source prefetch mechanisms own tensors.
@@ -270,7 +301,7 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
     even though the merged renders have more than one original directory.
     """
     import torch
-    from . import tessera_calibration_cache as cc, tessera_hessian as th
+    from . import tessera_calibration_cache as cc, tessera_hessian as th, tessera_campaign as tc
     from .joint_aura import activation_identity, prefetch_joint_cache
     from .production_weight_cache import ProductionWeightCache
     from .routed_experts import PackedExpertProjection, refresh_packed_expert_projections
@@ -296,7 +327,8 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
     cache = ProductionWeightCache(
         weights={pair: cell["render"] for pair, cell in data.cells.items()},
         levers={"tessera_campaign": True}, activation_max_abs=maxima,
-        metadata={"schema": PREPARED_SCHEMA, "inputs": data.inputs})
+        metadata={"schema": PREPARED_SCHEMA, "inputs": data.inputs,
+                  "reader_identity": None if reader is None else reader.identity})
     cache.enable_lru(max_render_bytes)
     targets = _live_targets(runner, data.formats_by_qname)
     layers = defaultdict(list)
@@ -325,19 +357,24 @@ def prepare_cache(runner, data, *, capture, max_render_bytes):
             stats = prefetch_joint_cache(cache, names, renders, max_resident_bytes=max_render_bytes)
             for name in names:
                 source_weight = targets[name].weight.detach()
-                for fmt in renders[name]:
-                    cell = data.cells[name, fmt]
-                    _same(_sha(cell["render"]), cell["render_file_sha256"], f"{name}: original render file changed")
-                    rendered = cache.get(name, fmt).to(runner.device)
-                    record = verify_anchor_render(cell, source_weight, rendered,
-                        calibration_source=calibration_source,
-                        projected_unit=projected.get(name), static_scales=scales)
-                    activation = activation_identity(fr.get_format(fmt), cache.activation_max_abs, name)
-                    _same(activation["input_global_scale"], cell["anchor"].get("input_global_scale"),
-                          f"{name}@{fmt}: joint/campaign static scale")
-                    record["activation"] = activation
-                    verified[name, fmt] = record
-                    del rendered
+                anchors = [tc.CampaignAnchor(**data.cells[name, fmt]["anchor"]) for fmt in renders[name]]
+                with tc.bind_checkpoint_unit_identity(anchors, source_weight=source_weight,
+                        calibration_source=calibration_source, projected_unit=projected.get(name),
+                        static_scales=scales) as bound_unit:
+                    for fmt in renders[name]:
+                        cell = data.cells[name, fmt]
+                        _same(_sha(cell["render"]), cell["render_file_sha256"], f"{name}: original render file changed")
+                        rendered = cache.get(name, fmt).to(runner.device)
+                        record = verify_anchor_render(cell, source_weight, rendered,
+                            calibration_source=calibration_source,
+                            projected_unit=projected.get(name), static_scales=scales,
+                            bound_unit=bound_unit, reader=reader)
+                        activation = activation_identity(fr.get_format(fmt), cache.activation_max_abs, name)
+                        _same(activation["input_global_scale"], cell["anchor"].get("input_global_scale"),
+                              f"{name}@{fmt}: joint/campaign static scale")
+                        record["activation"] = activation
+                        verified[name, fmt] = record
+                        del rendered
             telemetry.append({"layer": layer, **stats})
             print(json.dumps({"qualified_layer": layer, "qualified_cells": len(verified),
                               "total_cells": len(data.cells), "prefetch": stats}), flush=True)
@@ -378,6 +415,8 @@ def _load_plan(path, digest):
     _same(config.get("schema"), SCHEMA, "joint anchor plan schema")
     _source_prefetch(config)
     execution = config["execution"]
+    _require(type(config.get("file_hash_workers", 1)) is int and config.get("file_hash_workers", 1) > 0,
+             "positive file_hash_workers required")
     for name, minimum in (("n_calib_samples", 1), ("calib_seqlen", 1),
                           ("probe_microbatch", 1), ("n_probes", 2)):
         _require(type(execution.get(name)) is int and execution[name] >= minimum,
@@ -386,7 +425,8 @@ def _load_plan(path, digest):
     _same(execution.get("token_scope"), "all", "full-draw joint token scope")
     _same(execution.get("temperature"), 1.0, "joint probe temperature")
     _same(execution.get("production_act_scales"), "0", "campaign optional activation clipping")
-    _same(config.get("profile_tool"), "cprofile", "full-duration in-process profiler")
+    _require(config.get("profile_tool") in {"cprofile", "py-spy"},
+             "explicit supported full-duration profiler required")
     for name in ("max_render_bytes", "max_gpu_bytes"):
         _require(type(config.get(name)) is int and config[name] > 0, f"positive {name} required")
     _require(type(config.get("min_free_gib")) in (int, float) and config["min_free_gib"] >= 0,
@@ -417,6 +457,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
     from .model_profiles import detect_profile
     from .production_weight_cache import ProductionWeightCache
     from .gpu_guard import require_cuda_hot_path
+    from .tessera_reader import load_declared_reader
 
     require_cuda_hot_path("tessera_joint_aura", "cuda")
     os.environ["PRISMAQUANT_PROD_ACT_SCALES"] = config["execution"]["production_act_scales"]
@@ -431,13 +472,35 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                   "started_epoch": time.time(), "torch": str(torch.__version__),
                   "cuda": torch.version.cuda, "affinity": sorted(os.sched_getaffinity(0))},
               "phases": [], "passed": False}
-    profiler = cProfile.Profile()
+    profile_tool = config.get("profile_tool", "cprofile")
+    profiler = cProfile.Profile() if profile_tool == "cprofile" else None
+    result["profile_tool"] = profile_tool
+    if profiler is None:
+        session_path = Path(os.environ.get("PRISMAQUANT_SAMPLER_SESSION", ""))
+        _require(session_path.is_file(), "sampling must run through the checked profiler launcher")
+        session_bytes = session_path.read_bytes()
+        session = json.loads(session_bytes)
+        _same(session.get("schema"), "prismaquant.profiled_command_start.v1", "sampler session schema")
+        _same(session.get("wrapper_pid"), os.getppid(), "actual sampler child parent")
+        _same(session.get("command", [])[1:4],
+              ["-m", "prismaquant.tessera_joint_aura", command], "observed joint command")
+        result["sampling_session"] = {"path": str(session_path),
+                                      "sha256": hashlib.sha256(session_bytes).hexdigest()}
     runner = None
     completion_path = completion = output = payload = None
     started, before_io = time.time(), _io_counters()
-    profiler.enable()
+    if profiler is not None:
+        profiler.enable()
     try:
-        data = load_measured_anchor_input(config["inputs"])
+        file_hash_workers = config.get("file_hash_workers", 1)
+        _require(type(file_hash_workers) is int and 0 < file_hash_workers <= len(os.sched_getaffinity(0)),
+                 "file_hash_workers exceeds PB-assigned CPU affinity")
+        data = load_measured_anchor_input(config["inputs"],
+            **({} if file_hash_workers == 1 else {"file_hash_workers": file_hash_workers}))
+        result["file_hash_workers"] = file_hash_workers
+        reader = load_declared_reader(config.get("reader"))
+        reader_identity = None if reader is None else reader.identity
+        result["reader_identity"] = reader_identity
         _same(config["model"], data.census["model"], "requested source model")
         _same(data.census["attention_implementation"], "eager", "qualified source attention")
         ids, calibration = load_calibration_input(config["calibration_input"]["path"],
@@ -468,7 +531,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             completion_path = root / "prepared.json"
             _require(not completion_path.exists(), "prepared completion already exists; use its bound record")
             cache = prepare_cache(runner, data, capture=config["canonical_capture"],
-                                  max_render_bytes=config["max_render_bytes"])
+                                  max_render_bytes=config["max_render_bytes"], reader=reader)
             cache.metadata.update(plan_sha256=plan_sha256, source_model_identity=source,
                                   source_execution=source_execution, implementation_sha256=implementation)
             cache.compact_for_pickle()
@@ -476,6 +539,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             atomic_write_bytes(cache_path, pickle.dumps(cache, protocol=pickle.HIGHEST_PROTOCOL))
             completion = {"schema": PREPARED_SCHEMA, "status": "complete", "plan_sha256": plan_sha256,
                 "implementation_sha256": implementation, "source_model_identity": source,
+                "reader_identity": reader_identity,
                 "source_execution": source_execution, "calibration_input": calibration,
                 "production_cache": {"path": str(cache_path), "sha256": _sha(cache_path)},
                 "formats_by_qname": data.formats_by_qname, "measured_cells": len(data.cells)}
@@ -486,13 +550,15 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             _same(completion.get("status"), "complete", "prepared completion")
             for key, value in (("plan_sha256", plan_sha256), ("implementation_sha256", implementation),
                                ("source_model_identity", source), ("source_execution", source_execution),
-                               ("calibration_input", calibration), ("measured_cells", len(data.cells))):
+                               ("calibration_input", calibration), ("measured_cells", len(data.cells)),
+                               ("reader_identity", reader_identity)):
                 _same(completion.get(key), value, f"prepared {key}")
             _same(completion["formats_by_qname"], {n: list(v) for n, v in data.formats_by_qname.items()},
                   "prepared exact candidate roster")
             cache = pickle.loads(_bound(completion["production_cache"], "qualified PWC").read_bytes())
             _require(isinstance(cache, ProductionWeightCache), "prepared cache is not ProductionWeightCache")
             _same(cache.metadata["inputs"], data.inputs, "prepared source bindings")
+            _same(cache.metadata.get("reader_identity"), reader_identity, "prepared reader identity")
             _same(set(cache.metadata["verified_cells"]), set(data.cells), "prepared verified cell coverage")
             _same(cache.weights, {pair: cell["render"] for pair, cell in data.cells.items()}, "prepared original render paths")
             for pair, cell in data.cells.items():
@@ -511,7 +577,8 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                 checkpoint_dir=Path(config["output_root"]) / "checkpoints", resume=resume,
                 model_identity=source, profile=runner.profile,
                 checkpoint_identity_extra={"tessera_joint_anchor_plan_sha256": plan_sha256,
-                    "prepared_anchor_sha256": prepared["sha256"], "calibration_input": calibration})
+                    "prepared_anchor_sha256": prepared["sha256"], "calibration_input": calibration,
+                    "reader_identity": reader_identity})
             _same(set(payload["costs"]), set(data.formats_by_qname), "complete joint output roster")
             for name, rows in payload["costs"].items():
                 _same(set(rows), set(data.formats_by_qname[name]), f"{name}: joint output candidates")
@@ -537,11 +604,12 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             result["cost"] = {"path": str(output), "sha256": _sha(output)}
         result["passed"] = True
     finally:
-        profiler.disable()
-        profiler.dump_stats(str(root / "profile.pstats"))
-        text = io.StringIO()
-        pstats.Stats(profiler, stream=text).sort_stats("cumulative").print_stats(100)
-        (root / "profile.txt").write_text(text.getvalue())
+        if profiler is not None:
+            profiler.disable()
+            profiler.dump_stats(str(root / "profile.pstats"))
+            text = io.StringIO()
+            pstats.Stats(profiler, stream=text).sort_stats("cumulative").print_stats(100)
+            (root / "profile.txt").write_text(text.getvalue())
         result["env"]["finished_epoch"] = time.time()
         result["phases"].append({"phase": command, "kind": "profile", "start_epoch": started,
                                  "end_epoch": result["env"]["finished_epoch"]})

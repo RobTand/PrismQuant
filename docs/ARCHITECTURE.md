@@ -1,7 +1,49 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `fix/native-workspace-receipt`. Stamps
+As of: 2026-09-07 · `codex/joint-sampling-profiler`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `codex/joint-sampling-profiler`) for **sampling joint
+preparation and cost execution**. The explicit plan profiler may be `py-spy`:
+the admitted container runs a pinned sampler as the command's ancestor, with
+50 Hz Python stack sampling across its subprocesses. The joint process binds
+its actual wrapper's start receipt; the wrapper separately records the observed
+command's exit status. Completion requires both successful child execution and
+nonempty sampled stacks, checked through `profile-result.json` alongside the
+PB terminal and CAS receipt. Sampling avoids deterministic callbacks on every
+grid/hash call. Explicit `cprofile` remains supported for retained plans.
+Both-host Netdata and per-process IO observations remain required when reporting
+performance; sampled stack fractions are not isolated throughput measurements.
+Gate: `tests/test_profile_command.py`, with real sampler cases run under PB.
+
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for an **explicitly
+versioned Tessera reader beside the frozen producer**. An optional plan `reader`
+record declares the external package path and exact source SHA256. The consumer
+loads under its own source-named namespace; imported files are checked against
+that sealed source tree, absolute primary-Tessera imports and serving modules
+are refused. Primary `tessera` still derives original source/H/settings/encoder
+identities. The separate reader verifies these actual expected identities and
+original wire grammar, then decodes bytes; it never substitutes its source seal
+into old producer receipts. Reader identity is bound into prepared PWC/completion
+records and dependent joint checkpoints. This is a producer/consumer boundary,
+not a serving-runtime import or a wire/default change.
+Gate: `tests/test_tessera_reader_namespace.py` plus original-wire old/new parity.
+
+Re-stamped (2026-09-07, `perf/joint-anchor-identity-reuse`) for **bounded
+source/H identity reuse during anchor preparation**. The shared campaign seam
+can bind one unit's closed anchor roster from actual source/H tensors through
+Tessera's unchanged producer API. Source finite checks, source/H hashes and the
+PWC source receipt are derived once for that lifetime; storage, version, device,
+shape, stride, dtype, calibration settings and projection guards refuse stale
+reuse. Each format still resolves Tessera's canonical recipe and retains its
+anchor/static-scale/H applicability checks, original wire grammar/hash checks
+and exact decoded-render comparison. The binding closes before source unload;
+it accepts no caller-supplied prehash and creates no tensor cache or dispatcher.
+Gate: `tests/test_tessera_bound_identity.py` plus original-wire qualification.
+Initial wire/render content verification may use explicit `file_hash_workers`,
+bounded by PB-assigned CPU affinity. Independent file pairs run in the same
+admitted process; their exact content hashes, before/after race detection and
+per-consumption render drift checks remain mandatory. Placement stays PB's.
 
 Re-stamped (2026-09-07, `fix/native-workspace-receipt`) for the native MoE
 workspace receipt binding described below (#328).

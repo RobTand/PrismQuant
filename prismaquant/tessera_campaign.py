@@ -1476,8 +1476,140 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     }
 
 
+def _bound_tensor_signature(tensor):
+    """Track one versioned tensor during a caller-owned immutable lifetime."""
+    try:
+        version = tensor._version
+    except RuntimeError as exc:
+        raise ValueError("bound checkpoint identity requires a version-tracked tensor") from exc
+    return (id(tensor), tensor.untyped_storage().data_ptr(), tensor.storage_offset(),
+            tuple(tensor.shape), tuple(tensor.stride()), tensor.device, tensor.dtype, version)
+
+
+class _BoundCheckpointUnitIdentity:
+    """Actual producer inputs shared only across one unit's closed format roster.
+
+    This owns identity records, never weights or a second tensor cache. Strong
+    references and storage/version guards delimit the caller's immutable source
+    and H lifetime; close before unloading, replacing or mutating either tensor.
+    The ordinary producer API supplies the source/H/settings identity once. Its
+    recipe remains Tessera's per-format wire_recipe, not a copied receipt field.
+    """
+
+    def __init__(self, anchors, *, source_weight, calibration_source,
+                 projected_unit, static_scales):
+        import copy
+        import torch
+        from types import SimpleNamespace
+        from .production_weight_cache import _cb_cache_tensor_identity
+
+        anchors = tuple(anchors)
+        names = {anchor.qname for anchor in anchors}
+        formats = {anchor.format_name for anchor in anchors}
+        if len(names) != 1 or not formats or len(formats) != len(anchors):
+            raise ValueError("bound checkpoint identity requires one unit's unique closed anchor roster")
+        self._closed = False
+        self._name = next(iter(names))
+        self._formats = frozenset(formats)
+        self._weight = source_weight
+        self._weight_signature = _bound_tensor_signature(source_weight)
+        if not bool(torch.isfinite(source_weight).all()):
+            raise ValueError("bound checkpoint identity source is nonfinite")
+        # A representative H-bearing anchor supplies the common calibration
+        # record; H-free members remove that record, as the ordinary API does.
+        representative = max(anchors, key=lambda anchor: bool(anchor.hessian_applied))
+        self._calibration = calibration_source if representative.hessian_applied else None
+        self._hessian = None if self._calibration is None else self._calibration.hessians[self._name]
+        self._hessian_signature = None if self._hessian is None else _bound_tensor_signature(self._hessian)
+        if self._hessian is not None and not bool(torch.isfinite(self._hessian).all()):
+            raise ValueError("bound checkpoint identity Hessian is nonfinite")
+        self._projection = projected_unit
+        self._projection_record = copy.deepcopy(projected_unit)
+        self._template = _checkpoint_anchor_identity(representative,
+            weights={self._name: source_weight},
+            menus={self._name: [SimpleNamespace(format_name=fmt) for fmt in formats]},
+            calibration_source=calibration_source, static_scales=static_scales,
+            projected_units={} if projected_unit is None else {self._name: projected_unit})
+        self._settings = self._calibration_settings()
+        self._source_receipt = _cb_cache_tensor_identity(source_weight)
+        self._guard()
+
+    def _calibration_settings(self):
+        if self._calibration is None:
+            return None
+        api = _checkpoint_identity_api()
+        settings = self._calibration.config_block()
+        settings.pop("note", None)
+        settings["hessian"] = {key: self._calibration.provenance[key]
+                               for key in api.HESSIAN_IDENTITY}
+        return settings
+
+    def _guard(self):
+        if self._closed:
+            raise ValueError("bound checkpoint identity is closed")
+        if _bound_tensor_signature(self._weight) != self._weight_signature:
+            raise ValueError("bound checkpoint source tensor changed")
+        if self._calibration is not None:
+            if (self._calibration.hessians.get(self._name) is not self._hessian or
+                    _bound_tensor_signature(self._hessian) != self._hessian_signature):
+                raise ValueError("bound checkpoint Hessian tensor changed")
+            if self._calibration_settings() != self._settings:
+                raise ValueError("bound checkpoint calibration settings changed")
+        if self._projection != self._projection_record:
+            raise ValueError("bound checkpoint producer projection changed")
+
+    def derive(self, *, source_weight, qname, format_name, grid, rung,
+               activation, projected_unit):
+        import copy
+        self._guard()
+        if (source_weight is not self._weight or qname != self._name or
+                format_name not in self._formats or projected_unit != self._projection_record or
+                (activation is not None and activation is not self._calibration)):
+            raise ValueError("inputs differ from bound checkpoint unit")
+        result = copy.deepcopy(self._template)
+        result["calibration"] = None if activation is None else result["calibration"]
+        if activation is not None and result["calibration"] is None:
+            raise ValueError("bound checkpoint unit has no H-bearing identity")
+        # wire_recipe is the unchanged owner used by encoding_input_identity.
+        # Its full settings, including body/plane/reach, are resolved anew.
+        recipe = _checkpoint_identity_api().wire_recipe(grid, rung)
+        result["recipe"] = {"grid": grid.name, "q256": rung, **recipe.to_config()}
+        return result
+
+    def source_receipt(self, source_weight):
+        import copy
+        self._guard()
+        if source_weight is not self._weight:
+            raise ValueError("source differs from bound checkpoint unit")
+        return copy.deepcopy(self._source_receipt)
+
+    def close(self):
+        self._closed = True
+        self._weight = self._hessian = self._calibration = None
+        self._template = self._source_receipt = self._projection = None
+
+    def __enter__(self):
+        self._guard()
+        return self
+
+    def __exit__(self, exc_type, _exc, _traceback):
+        try:
+            if exc_type is None:
+                self._guard()
+        finally:
+            self.close()
+
+
+def bind_checkpoint_unit_identity(anchors, *, source_weight, calibration_source,
+                                  projected_unit, static_scales):
+    """Bind actual inputs once; accepts no caller-supplied hash or receipt."""
+    return _BoundCheckpointUnitIdentity(anchors, source_weight=source_weight,
+        calibration_source=calibration_source, projected_unit=projected_unit,
+        static_scales=static_scales)
+
+
 def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
-                                static_scales, projected_units=None):
+                                static_scales, projected_units=None, bound_unit=None):
     """The resumed row's inputs, as this run's producer would stamp them.
 
     A unit in ``projected_units`` (``{qname: producer unit record}``) is a
@@ -1517,6 +1649,12 @@ def _checkpoint_anchor_identity(anchor, *, weights, menus, calibration_source,
     _require_resumable_anchor(anchor, static_scales)
     api = _checkpoint_identity_api()
     projected = (projected_units or {}).get(anchor.qname)
+    if bound_unit is not None:
+        if not isinstance(bound_unit, _BoundCheckpointUnitIdentity):
+            raise ValueError("expected an actual bound checkpoint unit identity")
+        return bound_unit.derive(source_weight=weights[anchor.qname], qname=anchor.qname,
+            format_name=anchor.format_name, grid=family.payload_grid(), rung=int(rung),
+            activation=activation, projected_unit=projected)
     if projected is not None:
         return api.unit_input_identity(
             weights[anchor.qname], dict(projected), family.payload_grid(), int(rung),

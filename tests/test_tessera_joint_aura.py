@@ -256,7 +256,8 @@ def test_plan_refuses_unqualified_probe_or_activation_policies(tmp_path, field, 
         _load_plan(path, sha(path))
 
 
-def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile_tool", ["cprofile", "py-spy"])
+def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypatch, profile_tool):
     import torch
     from types import SimpleNamespace
     from prismaquant import tessera_joint_aura as bridge, calibration_data, cost_streaming, gpu_guard
@@ -273,11 +274,21 @@ def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypat
     config = {"model": "fixture", "inputs": {}, "output_root": str(tmp_path),
         "calibration_input": {"path": "fixture", "sha256": "a" * 64},
         "execution": {"production_act_scales": "0", "n_calib_samples": 1, "calib_seqlen": 512}}
+    config["profile_tool"] = profile_tool
+    if profile_tool == "py-spy":
+        import os
+        session = tmp_path / "child-start.json"
+        session.write_text(json.dumps({"schema": "prismaquant.profiled_command_start.v1",
+            "wrapper_pid": os.getppid(),
+            "command": ["python", "-m", "prismaquant.tessera_joint_aura", "prepare"]}))
+        monkeypatch.setenv("PRISMAQUANT_SAMPLER_SESSION", str(session))
     with pytest.raises(ValueError, match="original full draw nsamples"):
         bridge.execute("prepare", config, plan_sha256="b" * 64)
     result = json.loads((tmp_path / "prepare/results.json").read_text())
     assert result["passed"] is False
-    assert (tmp_path / "prepare/profile.pstats").is_file()
+    assert (tmp_path / "prepare/profile.pstats").is_file() is (profile_tool == "cprofile")
+    if profile_tool == "py-spy":
+        assert result["sampling_session"]["sha256"] == sha(session)
 
 
 @pytest.mark.parametrize("command", ["prepare", "run"])
@@ -329,3 +340,47 @@ def test_source_prefetch_refuses_implicit_or_nonresident_settings(defect):
         config = {"source_prefetch": prefetch}
     with pytest.raises(ValueError, match="source_prefetch"):
         _source_prefetch(config)
+
+
+def test_parallel_intake_hashes_independent_files_without_changing_cells(tmp_path, monkeypatch):
+    import threading
+    from prismaquant import tessera_joint_aura as bridge
+    config, *_ = fixture(tmp_path)
+    expected = bridge.load_measured_anchor_input(config)
+    original = bridge._sha
+    barrier = threading.Barrier(2)
+    workers = set()
+    def observed(path):
+        if str(path).endswith('.tessera'):
+            workers.add(threading.get_ident())
+            barrier.wait(timeout=10)
+        return original(path)
+    monkeypatch.setattr(bridge, '_sha', observed)
+    actual = bridge.load_measured_anchor_input(config, file_hash_workers=2)
+    assert actual.cells == expected.cells
+    assert actual.formats_by_qname == expected.formats_by_qname
+    assert len(workers) == 2
+
+
+@pytest.mark.parametrize("defect", ["missing", "parent", "command", "schema"])
+def test_sampling_refuses_unobserved_execution(tmp_path, monkeypatch, defect):
+    import os
+    from prismaquant import tessera_joint_aura as bridge, gpu_guard
+    monkeypatch.setattr(gpu_guard, "require_cuda_hot_path", lambda *_args: None)
+    session = {"schema": "prismaquant.profiled_command_start.v1",
+        "wrapper_pid": os.getppid(),
+        "command": ["python", "-m", "prismaquant.tessera_joint_aura", "prepare"]}
+    if defect == "parent":
+        session["wrapper_pid"] = -1
+    elif defect == "command":
+        session["command"][-1] = "run"
+    elif defect == "schema":
+        session["schema"] = "unbound"
+    path = tmp_path / "child-start.json"
+    if defect != "missing":
+        path.write_text(json.dumps(session))
+    monkeypatch.setenv("PRISMAQUANT_SAMPLER_SESSION", str(path))
+    config = {"output_root": str(tmp_path), "profile_tool": "py-spy",
+              "execution": {"production_act_scales": "0"}}
+    with pytest.raises(ValueError, match="sampl|observed"):
+        bridge.execute("prepare", config, plan_sha256="b" * 64)
