@@ -24,13 +24,13 @@ def joined():
     activation = {"schema": "prismaquant.joint_aura.activation.v1", "quantizes_input": False,
                   "activation_max_abs": None, "input_global_scale": None, "clip_enabled": False}
     arithmetic = arithmetic_identity(torch.bfloat16)
-    probe = {"schema": "prismaquant.joint_aura.probes.v1", "source_model": _model_identity("panel-fixture"),
+    probe = {"schema": "prismaquant.joint_aura.probes.v2", "source_model": _model_identity("panel-fixture"),
              "calibration_sha256": "1" * 64, "calibration_shape": [1, 4], "calibration_dtype": "torch.int64",
              "producer_source_sha256": "2" * 64, "n_probes": 3, "seed_base": 7,
              "token_scope": "causal",
              "distribution": "rademacher", "normalization": "global_kl_fisher", "temperature": 1.0,
              "arithmetic": arithmetic}
-    joint = {"schema": "prismaquant.joint_aura.operator.v1", "qname": unit, "format": fmt,
+    joint = {"schema": "prismaquant.joint_aura.operator.v2", "qname": unit, "format": fmt,
              "source_weight": weight, "rendered_weight": weight, "activation": activation,
              "arithmetic": arithmetic, "probe_identity_sha256": identity_sha256(probe)}
     row = make_joint_aura_entry(operator_identity=joint, probe_identity=probe, signed_components=[

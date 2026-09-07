@@ -93,8 +93,14 @@ def source_execution_identity(model) -> dict:
     return {"schema": "prismaquant.joint_aura.source_execution.v1", "modules": modules}
 
 
-def arithmetic_identity(measurement_dtype) -> dict:
+def arithmetic_identity(measurement_dtype, projection_backend=None) -> dict:
+    from .joint_projection_backend import REFERENCE_IDENTITY, validate_projection_backend_identity
+
+    backend_identity = (dict(REFERENCE_IDENTITY) if projection_backend is None
+                        else projection_backend.identity)
+    validate_projection_backend_identity(backend_identity)
     return {
+        "projection_backend": backend_identity,
         "projection_dtype": "torch.float32", "delta_dtype": "torch.float32",
         "measurement_dtype": str(measurement_dtype),
         "matmul_precision": torch.get_float32_matmul_precision(),
@@ -129,8 +135,15 @@ class SignedJointProjectionLease:
     with the same activation receipt AND the same dynamic QDQ callable.
     """
 
-    def __init__(self, modules, specs_by_qname, delta_weights, *, activation_max_abs=None):
+    def __init__(self, modules, specs_by_qname, delta_weights, *, activation_max_abs=None,
+                 projection_backend=None):
+        from .joint_projection_backend import require_prewarmed_projection
+
         self.modules = dict(modules)
+        device = next((module.weight.device for module in self.modules.values()
+                       if isinstance(module, (nn.Linear, PackedExpertProjection))), torch.device("cpu"))
+        self.projection_backend = require_prewarmed_projection(projection_backend, device=device)
+        self._projection_product_sum = self.projection_backend.product_sum
         self.specs = specs_by_qname
         self.deltas = delta_weights
         self.activation_max_abs = dict(activation_max_abs or {})
@@ -155,6 +168,7 @@ class SignedJointProjectionLease:
                 packed_aliases.add(alias)
             elif not isinstance(module, nn.Linear):
                 raise TypeError(f"joint AURA target {name} is not Linear")
+            self.projection_backend.require_device(module.weight.device)
             expected = {fmt for qname, fmt in self.deltas if qname == name}
             if set(self.specs[name]) != expected:
                 raise ValueError(f"joint AURA render/spec coverage mismatch for {name}")
@@ -326,13 +340,13 @@ class SignedJointProjectionLease:
                         raise RuntimeError(f"joint AURA QDQ changed residency/dtype/shape for {name}")
                     dx = quantized.reshape_as(x2).float() - x2
                     d_operator = g2.T @ dx
-                    activation = (d_operator * source_weight.float()).sum()
+                    activation = self._projection_product_sum(d_operator, source_weight.float())
                     self.telemetry["qdq_calls"] += 1
                     self.telemetry["operator_gemms"] += 1
                 for fmt in formats:
                     delta = self.deltas[(name, fmt)].float()
-                    weight = (gw * delta).sum()
-                    mixed = ((d_operator * delta).sum() if d_operator is not None
+                    weight = self._projection_product_sum(gw, delta)
+                    mixed = (self._projection_product_sum(d_operator, delta) if d_operator is not None
                              else torch.zeros((), device=x.device))
                     components = torch.stack((weight, activation, mixed))
                     key = (name, fmt)
@@ -381,13 +395,13 @@ def validate_joint_aura_entry(entry: Mapping) -> bool:
     if any(key in entry for key in ("act_dloss", "act_dloss_applied", "aqua_activation_dloss", "activation_pricing_applied", "output_mse")):
         raise ValueError("joint AURA refuses a second activation/Fisher application")
     operator = entry.get("joint_operator_identity")
-    if not isinstance(operator, Mapping) or operator.get("schema") != "prismaquant.joint_aura.operator.v1":
-        raise ValueError("joint AURA lacks operator identity")
+    if not isinstance(operator, Mapping) or operator.get("schema") != "prismaquant.joint_aura.operator.v2":
+        raise ValueError("joint AURA requires v2 operator identity; legacy artifacts require fresh prepare and recompute")
     if identity_sha256(operator) != entry.get("joint_operator_identity_sha256"):
         raise ValueError("joint AURA operator identity digest mismatch")
     probe = entry.get("probe_identity")
     digest = entry.get("probe_identity_sha256")
-    if not isinstance(probe, Mapping) or probe.get("schema") != "prismaquant.joint_aura.probes.v1" or identity_sha256(probe) != digest or operator.get("probe_identity_sha256") != digest:
+    if not isinstance(probe, Mapping) or probe.get("schema") != "prismaquant.joint_aura.probes.v2" or identity_sha256(probe) != digest or operator.get("probe_identity_sha256") != digest:
         raise ValueError("joint AURA probe identity mismatch")
     from prismaquant.cost_streaming import validate_streamed_model_identity
     try:
@@ -420,6 +434,8 @@ def validate_joint_aura_entry(entry: Mapping) -> bool:
             if activation[field] is not None and not math.isfinite(float(activation[field])):
                 raise ValueError("nonfinite activation scale")
         arithmetic = operator["arithmetic"]
+        from .joint_projection_backend import validate_projection_backend_identity
+        validate_projection_backend_identity(arithmetic["projection_backend"])
         if arithmetic != probe["arithmetic"] or arithmetic["projection_dtype"] != "torch.float32" or arithmetic["delta_dtype"] != "torch.float32" or arithmetic["aggregation"] != "sum_signed_invocations_then_square":
             raise ValueError("invalid projection arithmetic")
     except (KeyError, TypeError, RuntimeError) as exc:

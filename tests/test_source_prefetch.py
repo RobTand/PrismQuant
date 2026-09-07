@@ -49,3 +49,23 @@ def test_source_prefetch_budget_fail_fast(tmp_path):
             progress=False,
         )
 
+
+
+@pytest.mark.parametrize("available", [None, 0, 4 * 1024**3, 16 * 1024**3])
+@pytest.mark.parametrize("mode", ["auto", "require"])
+def test_exhausted_or_unknown_auto_budget_never_starts_file_reads(tmp_path, monkeypatch, available, mode):
+    from prismaquant import source_prefetch
+
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    monkeypatch.setattr(source_prefetch, "_available_memory_bytes", lambda: available)
+    reads = []
+    monkeypatch.setattr(source_prefetch, "_read_file_to_page_cache",
+                        lambda path, **kwargs: reads.append(path) or path.stat().st_size)
+    if mode == "require":
+        with pytest.raises(RuntimeError, match="budget"):
+            prefetch_safetensors_checkpoint(tmp_path, mode=mode, progress=False)
+    else:
+        stats = prefetch_safetensors_checkpoint(tmp_path, mode=mode, progress=False)
+        assert stats["skipped"] and stats["max_resident_bytes"] == 0
+        assert stats["prefetched_bytes"] == 0
+    assert reads == []
