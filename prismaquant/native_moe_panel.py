@@ -624,3 +624,77 @@ def consume_moe_receipt(path, *, expected_sha256, expected_panel, memory_trace_p
             "full_model_resources": None, "runtime_table_admissible": False,
             "unknown": ["fixed_and_full_model_resources", "cross_operator_workspace_composition"]
                        + ([] if complete else ["native_operator_scratch"])}
+
+
+def routed_boundary_inputs(payload, *, calibration_receipt, capture_manifest, device):
+    """Transport an independently hashed PAC boundary into the native protocol.
+
+    Storage may be on CPU, but metadata describes the original CUDA invocation.
+    Only lossless int32/FP32 transport and the declared first-row decode subset
+    are introduced. Canonical capture provenance and every original tensor are
+    checked before forming either phase.
+    """
+    import copy
+    import torch
+    from .production_weight_cache import _cb_cache_tensor_identity as tensor_identity
+    metadata = payload.get("boundary_metadata") or {}
+    if (payload.get("source") != "routed_boundary_capture"
+            or metadata.get("schema") != "prismaquant.native_moe_raw_boundary.v1"
+            or capture_manifest.get("schema") != "prismaquant.tessera_calibration_cache.v2"
+            or capture_manifest.get("status") != "complete"):
+        raise ValueError("native MoE requires an original PAC boundary and canonical capture v2")
+    shape, unit = metadata["shape"], metadata["unit"]
+    validate_geometry(shape)
+    validate_routing(metadata["routing"])
+    _equal(metadata["profile_role_order"], list(ROLES), "captured profile role order")
+    identity = capture_manifest["identity"]
+    for key in ("model_load_contract", "attention_implementation", "capture_runtime"):
+        _equal(metadata[key], identity[key], f"boundary/capture {key}")
+    original = {}
+    for key in ("inputs", "top_k_index", "top_k_weights", "coordinates", "expert_bias"):
+        value = payload[key]
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"native MoE PAC lacks original {key} tensor")
+        _equal(tensor_identity(value), metadata["tensors"][key], f"original boundary {key}")
+        original[key] = value
+    x, ids, weights = (original[key] for key in ("inputs", "top_k_index", "top_k_weights"))
+    _validate_phase_tensors(x, ids, weights, shape, cuda=False)
+    coords = original["coordinates"]
+    if (coords.dtype != torch.int64 or list(coords.shape) != [x.shape[0], 2]
+            or x.shape[0] != calibration_receipt["shape"][1]
+            or not torch.equal(coords[:, 0], torch.zeros(x.shape[0], dtype=torch.int64, device=coords.device))
+            or not torch.equal(coords[:, 1], torch.arange(x.shape[0], dtype=torch.int64, device=coords.device))):
+        raise ValueError("native MoE PAC must retain the complete ordered first calibration sequence")
+    for key, value in (("input_dtype", x), ("topk_ids_dtype", ids), ("topk_weights_dtype", weights)):
+        _equal(str(value.dtype), metadata["routing"][key], f"original {key}")
+    bias = original["expert_bias"]
+    if bias.dtype != torch.float32 or list(bias.shape) != [shape["experts"]] or not bool(torch.isfinite(bias).all()):
+        raise ValueError("native MoE original router bias must remain finite FP32")
+    _equal(tensor_identity(bias), metadata["routing"]["source_protocol"]["selection_bias"], "original router bias")
+    routing = copy.deepcopy(metadata["routing"])
+    routing.update(topk_ids_dtype="torch.int32", topk_weights_dtype="torch.float32")
+    phases, values = {}, {}
+    for phase, count in (("prefill", x.shape[0]), ("decode", 1)):
+        raw_ids, raw_weights = ids[:count].to(device), weights[:count].to(device)
+        values[phase] = {"input": x[:count].to(device), "source_topk_ids": raw_ids,
+            "source_topk_weights": raw_weights, "topk_ids": raw_ids.to(torch.int32),
+            "topk_weights": raw_weights.to(torch.float32)}
+        transport = {key: {"source": tensor_identity(values[phase]["source_" + key]),
+            "supplied": tensor_identity(values[phase][key]),
+            "operation": "identity" if values[phase]["source_" + key].dtype == values[phase][key].dtype
+                         else "lossless_dtype_conversion"} for key in ("topk_ids", "topk_weights")}
+        validate_transport(values[phase], transport)
+        phases[phase] = {"m": count, "transport": transport,
+            **{key: tensor_identity(values[phase][key]) for key in ("input", "topk_ids", "topk_weights")}}
+    capture = {key: copy.deepcopy(metadata[key]) for key in ("unit", "shape", "calibration_sha256",
+        "calibration_shape", "calibration_dtype", "producer_source", "runtime_config", "capture_source_sha256",
+        "model_load_contract", "attention_implementation", "capture_runtime", "scope")}
+    capture.update(schema="prismaquant.routed_boundary_capture.v1", routing=routing, phases=phases)
+    _calibration_and_capture(calibration_receipt, capture, unit=unit, shape=shape, routing=routing)
+    source = capture["producer_source"]
+    for name, digest in {**source["files"], **source["auxiliary_sha256"], "config.json": source["config_sha256"]}.items():
+        # Auxiliary files outside the ordinary capture glob still remain sealed
+        # by the canonical census producer; files present in both must agree.
+        if name in identity["source_files"]:
+            _equal(digest, identity["source_files"][name], f"boundary/capture source {name}")
+    return capture, values, bias.to(device)

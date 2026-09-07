@@ -314,3 +314,57 @@ def test_quarantined_capture_cannot_qualify_native_panel(joined, change):
     inputs["routing_capture_sha256"] = identity_sha256(capture)
     with pytest.raises(ValueError):
         freeze_moe_panel(inputs, preflight, rows, cost_sha256="4" * 64)
+
+
+@pytest.fixture
+def raw_boundary(joined):
+    inputs, _, _ = joined
+    values, _ = phase_tensors()
+    tensors = {"inputs": values["input"], "top_k_index": values["source_topk_ids"],
+        "top_k_weights": values["source_topk_weights"], "coordinates": torch.tensor([[0, 0], [0, 1]]),
+        "expert_bias": torch.zeros(32)}
+    meta = {key: copy.deepcopy(value) for key, value in inputs["routing_capture"].items() if key != "phases"}
+    meta.update(schema="prismaquant.native_moe_raw_boundary.v1", profile_role_order=list(ROLES),
+                scope="first calibration sequence; decode uses its first row, not autoregressive generation")
+    meta["routing"].update(topk_ids_dtype="torch.int64", topk_weights_dtype="torch.bfloat16")
+    meta["tensors"] = {key: tensor_id(value) for key, value in tensors.items()}
+    manifest = {"schema": "prismaquant.tessera_calibration_cache.v2", "status": "complete", "identity": {
+        **{key: copy.deepcopy(meta[key]) for key in ("model_load_contract", "capture_runtime", "attention_implementation")},
+        "source_files": {**meta["producer_source"]["files"], **meta["producer_source"]["auxiliary_sha256"]}}}
+    return {"source": "routed_boundary_capture", "boundary_metadata": meta, **tensors}, inputs["calibration"], manifest
+
+
+def test_raw_boundary_transport_preserves_original_bf16_weights(raw_boundary):
+    from prismaquant.native_moe_panel import routed_boundary_inputs
+    raw, calibration, manifest = raw_boundary
+    capture, phases, bias = routed_boundary_inputs(raw, calibration_receipt=calibration,
+                                                  capture_manifest=manifest, device="cpu")
+    assert phases["decode"]["input"].shape == (1, 4)
+    assert torch.equal(phases["prefill"]["topk_weights"], raw["top_k_weights"].float())
+    assert float(phases["prefill"]["topk_weights"][0].sum()) != 1.0
+    assert capture["phases"]["prefill"]["transport"]["topk_weights"]["source"] == tensor_id(raw["top_k_weights"])
+    assert bias.dtype == torch.float32
+
+
+@pytest.mark.parametrize("change", ["historical", "coordinates", "weights", "dtype", "bias", "initialization", "source"])
+def test_raw_boundary_changes_cannot_enter_native_protocol(raw_boundary, change):
+    from prismaquant.native_moe_panel import routed_boundary_inputs
+    raw, calibration, manifest = raw_boundary
+    if change == "historical":
+        manifest["schema"] = "prismaquant.tessera_calibration_cache.v1"
+    elif change == "coordinates":
+        raw["coordinates"] = raw["coordinates"].flip(0)
+        raw["boundary_metadata"]["tensors"]["coordinates"] = tensor_id(raw["coordinates"])
+    elif change == "weights":
+        raw["top_k_weights"][0, 0] = .5
+    elif change == "dtype":
+        raw["boundary_metadata"]["routing"]["topk_weights_dtype"] = "torch.float32"
+    elif change == "bias":
+        raw["expert_bias"] = raw["expert_bias"].bfloat16()
+        raw["boundary_metadata"]["tensors"]["expert_bias"] = tensor_id(raw["expert_bias"])
+    elif change == "initialization":
+        manifest["identity"]["model_load_contract"]["status"] = "skipped"
+    else:
+        manifest["identity"]["source_files"]["fixture.safetensors"] = "0" * 64
+    with pytest.raises(ValueError):
+        routed_boundary_inputs(raw, calibration_receipt=calibration, capture_manifest=manifest, device="cpu")

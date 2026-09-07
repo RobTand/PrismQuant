@@ -227,3 +227,14 @@ them. A first-sequence M=1 prefix is only an operator shape check, not a served
 autoregressive measurement. Native resource evidence keeps runtime workspace
 separate from layer storage and incremental scratch. Operator observations
 still cannot supply a complete model-fixed or SLO/runtime table.
+
+The preparation/freeze/consume adapter is
+`experiments/pq309_native_moe_panel.py`. Its versioned input plan pins the shared
+capture-v2 manifest and census, original routed PAC file, exact token draw,
+original PWC pickle, all 96 wire/record file hashes, immutable runtime image,
+serving configuration bytes and probe policy. Preparation independently derives
+each producer encoding identity from source weights and the prefetched full
+Hessians before checking original wire decode against PWC. The original router
+weights remain unchanged, with int32 IDs and FP32 weights used only as verified
+lossless transport. The adapter requires the canonical capture-v2 implementation
+and real materialization outputs; historical captures cannot qualify it.

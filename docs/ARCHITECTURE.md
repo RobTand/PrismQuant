@@ -1,6 +1,6 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `integration/native-panel-267`. Stamps
+As of: 2026-09-07 · `integration/native-moe-panel`. Stamps
 follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-07, `integration/native-moe-panel`) for **whole routed native
@@ -14,6 +14,10 @@ scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace
 is recorded separately from layer residency and per-apply scratch, with
 full-model fixed resources and workspace composition still unknown. This is a
 research boundary; no format, pin, serving gate or production default changes.
+The research CLI `experiments/pq309_native_moe_panel.py` consumes the existing
+canonical capture-v2 PAC boundary and original PWC/wire artifacts; it re-derives
+encoder identities from the pinned full Hessians and retains lossless routing
+transport. It does not render a replacement cache.
 Gate: `tests/test_native_moe_panel.py`.
 
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
