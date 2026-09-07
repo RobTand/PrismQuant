@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 import pickle
 
-from .cost_stage_checkpoint import atomic_write_bytes
+from .cluster_campaign import _atomic_write_new_bytes as atomic_write_bytes
 from .tessera_joint_aura import PREPARED_SCHEMA, SCHEMA, _require, _same
 
 HANDOFF_SCHEMA = 'prismaquant.tessera_joint_allocation.v1'
@@ -146,7 +146,12 @@ def _read_bound(record, label):
 
 
 def handoff(*, joint_binding, plan_binding, output_path):
-    """Authenticate recorded inputs and publish a new table plus a receipt."""
+    """Authenticate inputs and publish a new table, then its success receipt.
+
+    Both publications refuse concurrent destinations atomically. If receipt
+    publication fails, the incomplete own table remains for diagnosis; no
+    success receipt is returned and no competing bytes are replaced.
+    """
     from .production_weight_cache import ProductionWeightCache
     from .tessera_joint_aura import load_measured_anchor_input
 

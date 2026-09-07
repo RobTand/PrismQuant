@@ -133,7 +133,8 @@ def test_handoff_carries_complete_original_projection_and_measured_wire_roster()
         bind_allocation_payload(joint, data, prepared, metadata, **kwargs)
 
 
-@pytest.mark.parametrize('mutation', [None, 'joint_bytes', 'cache_bytes', 'render_path', 'output_exists', 'receipt_exists'])
+@pytest.mark.parametrize('mutation', [None, 'joint_bytes', 'cache_bytes', 'render_path',
+    'output_exists', 'receipt_exists', 'output_race', 'receipt_race'])
 def test_file_handoff_authenticates_owned_bytes_and_preserves_original(tmp_path, monkeypatch, mutation):
     import hashlib
     import json
@@ -175,9 +176,27 @@ def test_file_handoff_authenticates_owned_bytes_and_preserves_original(tmp_path,
     elif mutation == 'cache_bytes': (tmp_path / 'production.pkl').write_bytes(b'changed')
     elif mutation == 'output_exists': output.write_bytes(b'existing')
     elif mutation == 'receipt_exists': receipt_path.write_bytes(b'existing')
+    elif mutation in ('output_race', 'receipt_race'):
+        from prismaquant import tessera_joint_allocation as handoff_module
+        publish = handoff_module.atomic_write_bytes
+        raced = output if mutation == 'output_race' else receipt_path
+        def concurrent_publish(path, raw):
+            if path == raced:
+                path.write_bytes(b'competing publication')
+            publish(path, raw)
+        monkeypatch.setattr(handoff_module, 'atomic_write_bytes', concurrent_publish)
     if mutation is not None:
         with pytest.raises(ValueError):
             handoff(joint_binding=joint_binding, plan_binding=plan_binding, output_path=output)
+        if mutation in ('output_race', 'receipt_race'):
+            assert raced.read_bytes() == b'competing publication'
+            if mutation == 'output_race':
+                assert not receipt_path.exists()
+            else:
+                # An incomplete own output is retained for diagnosis; no
+                # success receipt replaces the competitor or is returned.
+                assert output.exists()
+            return
         assert output.read_bytes() == b'existing' if mutation == 'output_exists' else not output.exists()
         return
     receipt = handoff(joint_binding=joint_binding, plan_binding=plan_binding, output_path=output)
