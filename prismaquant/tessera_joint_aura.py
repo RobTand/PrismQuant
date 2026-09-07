@@ -466,8 +466,15 @@ def _io_counters():
     return values
 
 
-def execute(command, config, *, plan_sha256, prepared=None, resume=False):
+def execute(command, config, *, plan_sha256, prepared=None, resume=False, source_transition=None):
     """Execute one admitted preparation or one dependent cost action."""
+    if source_transition is not None:
+        from .joint_aura_source_transition import load_transition
+        _require(command == "run" and resume, "source transition requires run --resume")
+        source_transition = load_transition(
+            source_transition, config=config, plan_sha256=plan_sha256,
+            prepared=prepared, checkpoint_dir=Path(config["output_root"]) / "checkpoints",
+        )
     import cProfile
     import io
     import os
@@ -553,7 +560,10 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
         result.update(source_model_identity=source, source_execution=source_execution,
                       units=len(data.formats_by_qname), measured_cells=len(data.cells),
                       layer_render_bytes=layer_bytes)
-        implementation = _aura_source_sha256()
+        implementation = (_aura_source_sha256() if source_transition is None
+                          else source_transition.measurement_source_sha256)
+        if source_transition is not None:
+            result["source_transition"] = source_transition.execution_provenance
         if command == "prepare":
             _require(prepared is None and not resume, "preparation does not consume a prepared cache or cost resume")
             completion_path = root / "prepared.json"
@@ -606,6 +616,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                 seed_base=execution["seed_base"], token_scope="all", temperature=1.0,
                 production_cache=cache, require_production_cache=True, joint_activation=True,
                 joint_projection_backend=projection_backend,
+                **({"source_transition": source_transition} if source_transition is not None else {}),
                 include_routed_experts=True, include_lm_head=False, dw_dtype="float32",
                 min_free_gib=config["min_free_gib"], formats_by_qname=data.formats_by_qname,
                 checkpoint_dir=Path(config["output_root"]) / "checkpoints", resume=resume,
@@ -662,13 +673,20 @@ def main(argv=None):
     parser.add_argument("--prepared", type=Path)
     parser.add_argument("--prepared-sha256")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--source-transition", type=Path)
+    parser.add_argument("--source-transition-sha256")
     args = parser.parse_args(argv)
+    if bool(args.source_transition) != bool(args.source_transition_sha256):
+        parser.error("--source-transition and --source-transition-sha256 are required together")
     if bool(args.prepared) != bool(args.prepared_sha256):
         parser.error("--prepared and --prepared-sha256 are required together")
     config = _load_plan(args.plan, args.plan_sha256)
     result = execute(args.command, config, plan_sha256=args.plan_sha256,
         prepared=None if args.prepared is None else {"path": str(args.prepared), "sha256": args.prepared_sha256},
-        resume=args.resume)
+        resume=args.resume,
+        **({"source_transition": {"path": str(args.source_transition),
+                                  "sha256": args.source_transition_sha256}}
+           if args.source_transition is not None else {}))
     print(json.dumps({key: result[key] for key in ("command", "passed", "units", "measured_cells")}))
     return 0
 
