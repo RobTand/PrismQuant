@@ -372,7 +372,78 @@ def _native_member_identity(member):
             "wire_record_sha256": identity_sha256(member["wire"]["record"])}
 
 
-def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
+def _source_execution(value, *, unit):
+    if (not isinstance(value, dict) or set(value) != {"schema", "modules"}
+            or value["schema"] != "prismaquant.joint_aura.source_execution.v1"
+            or not isinstance(value["modules"], dict) or not value["modules"]):
+        raise ValueError("native MoE requires explicit source execution identity")
+    for name, selectors in value["modules"].items():
+        if (not isinstance(name, str) or not isinstance(selectors, dict) or not selectors
+                or not set(selectors) <= {"attention", "experts"}):
+            raise ValueError("native MoE source execution selectors are malformed")
+    for name in ("", unit):
+        selectors = value["modules"].get(name, {})
+        if selectors.get("attention") != "eager" or not isinstance(selectors.get("experts"), str) or not selectors["experts"]:
+            raise ValueError("native MoE source execution lacks resolved root/target backends")
+    json.dumps(value, allow_nan=False)
+    return value
+
+
+def _qualified_source_execution(inputs, probe, path, expected_sha256):
+    """Verify a fresh source replay of a retained boundary, never rewrite it."""
+    import struct
+    raw = Path(path).read_bytes()
+    _equal(hashlib.sha256(raw).hexdigest(), _sha(expected_sha256, "source qualification"), "source qualification file")
+    result = json.loads(raw)
+    if (result.get("schema") != "prismaquant.packed_joint_screen.v1" or result.get("mode") != "source"
+            or result.get("passed") is not True):
+        raise ValueError("source execution qualification requires a successful independent source replay")
+    proof = result["retained_boundary_qualification"]
+    if proof.get("schema") != "prismaquant.packed_source_boundary_qualification.v1":
+        raise ValueError("source execution qualification schema unsupported")
+    _equal(proof["unit_qname"], inputs["unit"], "qualified source unit")
+    _equal(proof["artifact_sha256"], inputs["source_capture"]["routing_boundary_sha256"], "qualified original boundary file")
+    metadata, capture = proof["boundary_metadata"], inputs["routing_capture"]
+    for key in ("unit", "shape", "profile_role_order"):
+        _equal(metadata[key], inputs[key], f"qualified {key}")
+    for key in ("calibration_sha256", "calibration_shape", "calibration_dtype", "producer_source",
+                "runtime_config", "capture_source_sha256", "model_load_contract", "attention_implementation", "capture_runtime"):
+        _equal(metadata[key], capture[key], f"qualified original {key}")
+    for key in ("torch", "cuda", "transformers"):
+        _equal(proof["runtime"][key], capture["capture_runtime"][key], f"qualified actual runtime {key}")
+    _equal(proof["source_model_identity"], probe["source_model"], "qualified source model")
+    subset, parent, calibrated = proof["calibration_subset"], inputs["calibration"], _probe_calibration(inputs)
+    for key, expected in (("artifact_sha256", parent["artifact_sha256"]), ("full_shape", parent["shape"]),
+            ("row", 0), ("shape", [1, parent["shape"][1]]), ("dtype", parent["dtype"]),
+            ("subset_artifact_sha256", calibrated["artifact_sha256"]), ("sha256", calibrated["calibration_sha256"])):
+        _equal(subset[key], expected, f"qualified calibration {key}")
+    prefill = inputs["phases"]["prefill"]
+    count = prefill["m"]
+    expected_tensors = {"inputs": prefill["input"],
+        "top_k_index": prefill["transport"]["topk_ids"]["source"],
+        "top_k_weights": prefill["transport"]["topk_weights"]["source"],
+        "expert_bias": inputs["routing"]["source_protocol"]["selection_bias"],
+        "coordinates": {"shape": [count, 2], "dtype": "torch.int64",
+            "content_sha256": hashlib.sha256(b"".join(struct.pack("<qq", 0, row) for row in range(count))).hexdigest()}}
+    comparisons = proof["tensor_comparisons"]
+    _equal(sorted(comparisons), sorted(expected_tensors), "qualified boundary tensor roster")
+    for name, expected in expected_tensors.items():
+        compared = comparisons[name]
+        if compared["equal"] is not True:
+            raise ValueError(f"qualified boundary {name} is not bit-exact")
+        for key in ("shape", "dtype"):
+            _equal(compared[key], expected[key], f"qualified boundary {name} {key}")
+            _equal(metadata["tensors"][name][key], expected[key], f"qualified original {name} {key}")
+        for key in ("actual_sha256", "captured_sha256"):
+            _equal(compared[key], expected["content_sha256"], f"qualified boundary {name} {key}")
+        _equal(metadata["tensors"][name]["content_sha256"], expected["content_sha256"], f"qualified original {name} bytes")
+    execution = _source_execution(proof["source_execution_identity"], unit=inputs["unit"])
+    _equal(execution, proof["streamed_source_execution_identity"], "qualified reference/streamed source execution")
+    return execution
+
+
+def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256,
+                     source_execution_qualification_path=None, source_execution_qualification_sha256=None):
     """Bind all aligned member rows to one actual whole-stack native operator.
 
     RuntimeBinding is the existing cost/runtime join. No local or simultaneous
@@ -397,6 +468,18 @@ def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
         raise ValueError("native MoE runtime binding must cover exactly all 96 members")
     first = rows[members[0]["unit"]]
     probe, request = first["probe_identity"], inputs["probe_request"]
+    if (source_execution_qualification_path is None) != (source_execution_qualification_sha256 is None):
+        raise ValueError("source execution qualification requires paired file and digest")
+    captured_execution = inputs["routing_capture"].get("source_execution")
+    if source_execution_qualification_path is not None:
+        qualified = _qualified_source_execution(inputs, probe, source_execution_qualification_path,
+                                                source_execution_qualification_sha256)
+        if captured_execution is not None:
+            _equal(captured_execution, qualified, "captured/qualified source execution")
+        captured_execution = qualified
+    execution = _source_execution(captured_execution, unit=inputs["unit"])
+    _equal(execution, _source_execution(probe.get("source_execution"), unit=inputs["unit"]),
+           "capture/probe source execution")
     for key in ("n_probes", "seed_base", "token_scope", "temperature", "distribution", "normalization"):
         _equal(probe[key], request[key], f"predeclared probe {key}")
     _equal(probe["source_model"]["source"], request["source_model"], "probe source model")
@@ -407,7 +490,13 @@ def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
     _equal(source["files"], request["source_shards"], "capture/probe full source files")
     _equal(source["config_sha256"], request["source_config_sha256"], "captured source config bytes")
     _equal(source["auxiliary_sha256"], request["source_auxiliary_sha256"], "captured source auxiliary files")
-    _equal(source["tensors"], probe["source_model"]["checkpoint_weight_map"], "capture/probe original checkpoint tensor map")
+    # Streamed identity v1 seals logical -> original tensor names, separately
+    # from its full shard hashes. Compare that actual shared contract, including
+    # every original name; do not demand a nonexistent filename-map field.
+    _equal(sorted(source["tensors"]), sorted(set(probe["source_model"]["weight_map"].values())),
+           "capture/probe original checkpoint tensor names")
+    if "checkpoint_weight_map" in probe["source_model"]:
+        _equal(source["tensors"], probe["source_model"]["checkpoint_weight_map"], "capture/probe original checkpoint tensor map")
     _equal(canonical_streamed_model_semantic_config(inputs["routing_capture"]["runtime_config"], where="captured config"),
            canonical_streamed_model_semantic_config(probe["source_model"]["config"], where="probe config"),
            "capture/probe runtime config")
@@ -460,6 +549,8 @@ def freeze_moe_panel(inputs, preflight, cost_rows, *, cost_sha256):
         "routing": inputs["routing"], "routing_capture_sha256": inputs["routing_capture_sha256"],
         "source_sha256": probe["source_model"]["content_sha256"], "calibration_sha256": probe["calibration_sha256"],
         "probe_scope": inputs.get("probe_scope"),
+        "source_execution": execution,
+        "source_execution_qualification_sha256": source_execution_qualification_sha256,
         "cost_sha256": cost_sha256, "serving_config_sha256": inputs["serving_config_sha256"], "probe_identity_sha256": first["probe_identity_sha256"],
         "runtime_binding": binding.as_dict(), "execution": dict(EXECUTION), "runtime": preflight["runtime"],
         "native_tensors_sha256": preflight["native_tensors_sha256"], "scheme_sha256": preflight["scheme_sha256"],
@@ -539,6 +630,7 @@ def captured_moe_boundary(module, args, kwargs, coordinates, *, unit, source_mod
     validate_routing(routing)
     tensors = {"inputs": x, "top_k_index": ids, "top_k_weights": weights,
                "coordinates": positions.contiguous(), "expert_bias": bias}
+    from .joint_aura import source_execution_identity
     return {"tensors": tensors, "metadata": {
         "schema": "prismaquant.native_moe_raw_boundary.v1", "unit": unit, "shape": shape,
         "routing": routing, "profile_role_order": list(ROLES),
@@ -546,6 +638,7 @@ def captured_moe_boundary(module, args, kwargs, coordinates, *, unit, source_mod
         "calibration_sha256": calibration_receipt["calibration_sha256"],
         "calibration_shape": calibration_receipt["shape"], "calibration_dtype": calibration_receipt["dtype"],
         "producer_source": source, "runtime_config": source_model.config.to_dict(),
+        "source_execution": source_execution_identity(source_model),
         "model_load_contract": model_load_contract,
         "attention_implementation": source_model.config._attn_implementation,
         "capture_runtime": {"torch": str(torch.__version__), "cuda": torch.version.cuda,
@@ -699,6 +792,8 @@ def routed_boundary_inputs(payload, *, calibration_receipt, capture_manifest, de
         "calibration_shape", "calibration_dtype", "producer_source", "runtime_config", "capture_source_sha256",
         "model_load_contract", "attention_implementation", "capture_runtime", "scope")}
     capture.update(schema="prismaquant.routed_boundary_capture.v1", routing=routing, phases=phases)
+    if "source_execution" in metadata:
+        capture["source_execution"] = copy.deepcopy(metadata["source_execution"])
     _calibration_and_capture(calibration_receipt, capture, unit=unit, shape=shape, routing=routing)
     source = capture["producer_source"]
     for name, digest in {**source["files"], **source["auxiliary_sha256"], "config.json": source["config_sha256"]}.items():

@@ -145,3 +145,76 @@ incorrectly expected those entries already on CUDA. The fix uses the same
 explicit device transfer as the dense native helper, preserving the PWC's
 stored BF16 dtype and original wire bytes. No output panel was published by
 the failed preparation, and no re-encoding is required.
+
+## Actual preparation and source-qualified freeze
+
+The device-transfer correction passed actual source-reference preparation through
+PB `4aef85bed8318a002d461bede4aef940087fc859bc57489706b105fabac2deb7`
+(exit 0, Sparklina). All 96 original source/PWC/wire members joined; the
+1,415,632,912-byte tensor artifact was independently hashed as
+`b05148dcd80f25a3a80484c02f140f751086f65ab0357719e426968c33c1ca64`.
+The immutable input descriptor is
+`552b6143972d3906f60109f974399ee1934add662e7f78041378e7a0975605a4`.
+These artifacts are under
+`/mnt/shared/tessera-measurements/first-model-20260907/native-moe-panel-r1024/prepare-01/`.
+No performance improvement is claimed from this functional preparation.
+
+Review found that semantic config serialization omits Transformers' private
+attention/expert dispatch selectors. The old freeze accepted changed attention,
+changed expert execution, and missing capture/probe selector identities: all four
+regressions reproduced through PB `f205a17a15c2` (four expected failures).
+Two earlier test launches failed collection from missing host dependencies
+(`f36f28d5bc06`: PyTorch; `a6d5e00a1eaf`: compressed-tensors); the correct scoped
+CPU environment is `/home/rob/venvs/pq-cpu312/bin/python` on the x86 fleet.
+
+The fixed boundary compares the shared full module-local source execution
+identity. New captures retain it directly. For the existing immutable capture,
+a fresh independent source execution qualified all five original boundary
+tensors (input, top-k IDs, top-k weights, FP32 bias, and sample/token coordinates)
+bit-exactly with the original dtypes. Source04 also independently matched the
+full-vocabulary BF16 forward, eight gradients, and actual grouped-MM down inputs.
+Its 49-module source execution identity agrees with final cost02. The qualified
+first sequence retains its bounded integration scope; this does not constitute
+full-draw quality validation. The final panel seals the separate source04 file
+hash without rewriting the original capture or prepared tensors.
+
+The freeze also follows the actual shared streamed-model identity v1 contract:
+`weight_map` maps logical names to original checkpoint tensor names, and the
+shard list independently seals all checkpoint files. The full original name
+roster and shard hashes must agree with capture provenance. The prior adapter
+incorrectly required an additional `checkpoint_weight_map` field that the
+current shared producer does not emit; an explicitly supplied map is still
+checked.
+
+After correction, 112 targeted native, calibration, capture-quarantine and docs
+checks passed through PB
+`76140931d27652701970c315d76c5ab31d6b0dd8ff30239a4c8f00c864b5881e`,
+CPU-only on DL380g10, four pytest workers and one native thread each, no skips,
+exit 0. Receipt `068788b3385db023c3e9fa89f1eec9a231cb6d08f01a7da5991eabc5f443e735`;
+CAS result `e48ba03810aeb0d575ab2341d7ae647ae5c729f0901cdfe685ae4381a344efb4`
+(701 bytes) independently rehashed. An intermediate green attempt and freeze
+exposed set values passed to the existing JSON identity comparator; sorted
+rosters corrected both, with no output from the failed freeze.
+
+The actual CLI freeze completed through PB
+`de6b7316eeae80d61f33e330c52ae581ce1f75a696833d8e64107548ca5a7a01`,
+CPU-only on DL380g10, one worker/native thread, exit 0. Receipt
+`1f37d2699206e55d150b80bbc54923d2cfa0b61f4cc5d78c77c457aceabada09`;
+CAS result `febb6da29a0588df2f05f23fe20abe06ed17426af39bfde939821e44f02f69bc`
+(106 bytes) independently rehashed. The command was
+`python -m experiments.pq309_native_moe_panel freeze` with all four input-file
+hashes explicitly supplied, including `--source-execution-qualification` and
+its SHA-256. The PB request retains the full command.
+
+| Frozen input/output | Independently checked file SHA-256 |
+| --- | --- |
+| Final `cost-02/joint-cost.json` | `fcf48abdb0e0b1d8bc324c5c938b9b68ebb821f1c5b0591aefffb4b7c3c45462` |
+| Independent `source-04/results.json` | `f308e7f6fbf563884d9625721523f4247322e0bfa95876e04798438553ce8558` |
+| Native `prepare-03/preflight.json` | `794829fc60af194514571ff90512e4e0ebe07f1f64d3adc3c273805d3d809188` |
+| Final `native-moe-panel-r1024/panel-01.json` | `84b75f32ac47e8a77a0dfac3c3dc30a925150dcc3e3c2bf1c8878590276f1320` |
+
+The panel uses the unchanged original E32/H2048/I1792 stack, with native runtime
+identity `643a782b942c4436c354d4b1e4c34f2c79d734f6ae124c75d10ce96f7491f5b5`.
+Native operator measurement and resource profiling are the next separate gate;
+this frozen panel alone does not supply an allocator runtime table, full-model
+resource bound, or serving qualification.

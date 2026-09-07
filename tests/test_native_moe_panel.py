@@ -54,6 +54,9 @@ def joined():
               "auxiliary_sha256": {"config.json": "9" * 64},
               "tensors": {member["unit"] + ".weight": "fixture.safetensors" for member in members}}
     config = {"model_type": "lfm2_moe", "fixture": True}
+    source_execution = {"schema": "prismaquant.joint_aura.source_execution.v1", "modules": {
+        "": {"attention": "eager", "experts": "grouped_mm"},
+        unit: {"attention": "eager", "experts": "grouped_mm"}}}
     value = {"config": config, "weight_map": {name: name for name in source["tensors"]},
              "checkpoint_weight_map": source["tensors"],
              "shards": [{"path": "/fixture/fixture.safetensors", "size": 1, "sha256": "8" * 64}]}
@@ -64,7 +67,7 @@ def joined():
         "calibration_sha256": "1" * 64, "calibration_shape": [1, 2], "calibration_dtype": "torch.int64",
         "producer_source_sha256": "2" * 64, "n_probes": 3, "seed_base": 7, "token_scope": "causal",
         "distribution": "rademacher", "normalization": "global_kl_fisher", "temperature": 1.0,
-        "arithmetic": arithmetic}
+        "arithmetic": arithmetic, "source_execution": copy.deepcopy(source_execution)}
     rows = {}
     for member in members:
         joint = {"schema": "prismaquant.joint_aura.operator.v1", "qname": member["unit"], "format": FORMAT,
@@ -82,6 +85,7 @@ def joined():
     capture = {"schema": "prismaquant.routed_boundary_capture.v1", "unit": unit, "shape": shape,
         "routing": routing(), "calibration_sha256": "1" * 64, "calibration_shape": [1, 2],
         "calibration_dtype": "torch.int64", "producer_source": source, "runtime_config": config,
+        "source_execution": copy.deepcopy(source_execution),
         "capture_source_sha256": "c" * 64, "phases": phases,
         "model_load_contract": {"schema": "prismaquant.pretrained_initialization.v1", "scope": "checkpoint_missing_state",
                                 "status": "completed", "transformers_version": "fixture-transformers"},
@@ -123,6 +127,86 @@ def test_complete_runtime_binding_has_96_members_and_no_new_group_cost(joined):
     assert len(panel["runtime_binding"]["member_operator_identity_sha256"]) == 96
     assert "predicted_dloss" not in panel and "group_cost" not in panel
     assert panel["profile_role_order"] == ["w1", "w3", "w2"]
+
+
+@pytest.mark.parametrize("change", ["experts", "attention", "missing_capture", "missing_probe"])
+def test_freeze_rejects_changed_or_unrecorded_source_backend(joined, change):
+    inputs, preflight, rows = joined
+    if change == "missing_capture":
+        inputs["routing_capture"].pop("source_execution")
+    elif change == "missing_probe":
+        for row in rows.values():
+            row["probe_identity"].pop("source_execution", None)
+            row["probe_identity_sha256"] = identity_sha256(row["probe_identity"])
+            row["joint_operator_identity"]["probe_identity_sha256"] = row["probe_identity_sha256"]
+            row["joint_operator_identity_sha256"] = identity_sha256(row["joint_operator_identity"])
+    else:
+        inputs["routing_capture"]["source_execution"]["modules"][inputs["unit"]][change] = "eager" if change == "experts" else "sdpa"
+    digest = identity_sha256(inputs["routing_capture"])
+    inputs["routing_capture_sha256"] = digest
+    preflight["operator"]["routing_capture_sha256"] = digest
+    with pytest.raises(ValueError, match="source execution"):
+        freeze_moe_panel(inputs, preflight, rows, cost_sha256="4" * 64)
+
+
+@pytest.mark.parametrize("change", [None, "file", "artifact", "runtime", "source", "calibration",
+                                     "backend", "bytes", "dtype", "missing_tensor", "not_equal"])
+def test_retained_boundary_requires_independent_exact_source_qualification(joined, tmp_path, change):
+    inputs, preflight, rows = joined
+    capture = inputs["routing_capture"]
+    execution = capture.pop("source_execution")
+    inputs["routing_capture_sha256"] = identity_sha256(capture)
+    preflight["operator"]["routing_capture_sha256"] = inputs["routing_capture_sha256"]
+    inputs["source_capture"] = {"routing_boundary_sha256": "f" * 64}
+    inputs["calibration"]["artifact_sha256"] = "a" * 64
+    first = next(iter(rows.values()))["probe_identity"]
+    values, transport = phase_tensors()
+    tensors = {"inputs": values["input"], "top_k_index": values["source_topk_ids"],
+        "top_k_weights": values["source_topk_weights"], "expert_bias": torch.zeros(32),
+        "coordinates": torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)}
+    identities = {name: tensor_id(value) for name, value in tensors.items()}
+    proof = {"schema": "prismaquant.packed_source_boundary_qualification.v1", "unit_qname": inputs["unit"],
+        "artifact_sha256": "f" * 64, "boundary_metadata": {**copy.deepcopy(capture),
+            "profile_role_order": list(ROLES), "tensors": identities},
+        "source_execution_identity": execution, "streamed_source_execution_identity": copy.deepcopy(execution),
+        "source_model_identity": copy.deepcopy(first["source_model"]), "runtime": copy.deepcopy(capture["capture_runtime"]),
+        "calibration_subset": {"artifact_sha256": "a" * 64, "full_shape": [1, 2], "row": 0,
+            "shape": [1, 2], "dtype": "torch.int64", "subset_artifact_sha256": "a" * 64, "sha256": "1" * 64},
+        "tensor_comparisons": {name: {"equal": True, "shape": value["shape"], "dtype": value["dtype"],
+            "actual_sha256": value["content_sha256"], "captured_sha256": value["content_sha256"]}
+            for name, value in identities.items()}}
+    if change == "artifact":
+        proof["artifact_sha256"] = "0" * 64
+    elif change == "runtime":
+        proof["runtime"]["torch"] = "another-runtime"
+    elif change == "source":
+        proof["source_model_identity"]["source"] = "/other"
+    elif change == "calibration":
+        proof["calibration_subset"]["row"] = 1
+    elif change == "backend":
+        proof["source_execution_identity"]["modules"][inputs["unit"]]["experts"] = "eager"
+    elif change == "bytes":
+        proof["tensor_comparisons"]["inputs"]["actual_sha256"] = "0" * 64
+    elif change == "dtype":
+        proof["tensor_comparisons"]["top_k_weights"]["dtype"] = "torch.float32"
+    elif change == "missing_tensor":
+        proof["tensor_comparisons"].pop("expert_bias")
+    elif change == "not_equal":
+        proof["tensor_comparisons"]["inputs"]["equal"] = False
+    path = tmp_path / "source.json"
+    path.write_text(json.dumps({"schema": "prismaquant.packed_joint_screen.v1", "mode": "source",
+                               "passed": True, "retained_boundary_qualification": proof}))
+    digest = "0" * 64 if change == "file" else hashlib.sha256(path.read_bytes()).hexdigest()
+    kwargs = {"cost_sha256": "4" * 64, "source_execution_qualification_path": path,
+              "source_execution_qualification_sha256": digest}
+    if change is None:
+        panel = freeze_moe_panel(inputs, preflight, rows, **kwargs)
+        assert panel["source_execution"] == execution
+        assert panel["source_execution_qualification_sha256"] == digest
+        assert "source_execution" not in capture
+    else:
+        with pytest.raises(ValueError):
+            freeze_moe_panel(inputs, preflight, rows, **kwargs)
 
 
 @pytest.mark.parametrize("change", ["missing", "order", "format", "rows", "probe", "preclip", "wire", "source",

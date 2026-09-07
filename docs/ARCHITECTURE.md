@@ -7,7 +7,12 @@ Re-stamped (2026-09-07, `integration/native-moe-panel`) for **whole routed nativ
 operator evidence** (#309). `prismaquant.native_moe_panel` retains original
 routed inputs and all 96 ordered source/PWC/wire members of one 32-expert LFM
 stack. Canonical checkpoint initialization, actual eager attention, source
-files/config and exact calibration are required. The existing packed-expert
+files/config and exact calibration are required. Freezing also compares the
+actual attention/expert backend selectors for every source module with the
+joint probe. A retained capture without selectors needs an independently hashed
+source replay that reproduces all five original boundary tensors bit-exactly;
+the original capture remains unchanged and the qualification is sealed in the
+panel. The existing packed-expert
 reference applies the shared activation QDQ at both GEMM boundaries. Native
 measurements bind all aligned joint rows through `RuntimeBinding`; no new
 scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace

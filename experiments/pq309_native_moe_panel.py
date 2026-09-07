@@ -178,6 +178,9 @@ def main():
         operation.add_argument("--out", required=True, type=Path)
         if command == "consume":
             operation.add_argument("--memory-trace", type=Path)
+        else:
+            operation.add_argument("--source-execution-qualification", type=Path)
+            operation.add_argument("--source-execution-qualification-sha256")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare(args)
@@ -193,7 +196,9 @@ def main():
             with cost_path.open("rb") as stream:
                 costs = pickle.load(stream)
         rows = {member["unit"]: costs["costs"][member["unit"]][member["format"]] for member in inputs["members"]}
-        result = freeze_moe_panel(inputs, preflight, rows, cost_sha256=args.cost_sha256)
+        result = freeze_moe_panel(inputs, preflight, rows, cost_sha256=args.cost_sha256,
+            source_execution_qualification_path=args.source_execution_qualification,
+            source_execution_qualification_sha256=args.source_execution_qualification_sha256)
     else:
         from prismaquant.native_moe_panel import consume_moe_receipt
         panel = json.loads(checked(args.panel, args.panel_sha256).read_text())

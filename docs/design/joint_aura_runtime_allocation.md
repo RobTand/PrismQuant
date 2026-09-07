@@ -209,7 +209,15 @@ serving-unit coverage required above. A readable research rung or a local
 operator parity result does not change the runtime pin or serving gates.
 
 
-The whole routed native bridge (`native_moe_panel.py`, #309) binds one complete
+The whole routed native bridge (`native_moe_panel.py`, #309) compares actual
+module-local attention/expert selectors between capture and probe; semantic
+config dumps alone do not include these private Transformers selectors. New
+captures record the shared `source_execution_identity`. A legacy boundary
+requires a separate hash-bound fresh source qualification with identical source,
+runtime, calibration, inputs, route IDs/weights, bias and token coordinates.
+The panel seals that proof digest without rewriting the original capture.
+
+The bridge binds one complete
 32-expert LFM E4M3 K1 R1024 stack to all 96 ordered w1/w3/w2 members. It reuses
 `RuntimeBinding` over validated member rows on the same source and signed
 probes, without introducing a scalar group cost. Actual external top-k IDs and
