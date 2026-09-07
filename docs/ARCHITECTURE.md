@@ -3,6 +3,15 @@
 As of: 2026-09-07 · `codex/campaign-batched-anchors`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **declared buffer
+precision in shared checkpoint loading**. Resident materialization and streamed
+cold/prefetch/cache paths cast parameters to the requested compute dtype while
+retaining each model buffer's declared dtype. This preserves FP32 LFM expert
+bias arithmetic when BF16 router scores are corrected before top-k selection;
+representable bias values alone do not make a BF16 buffer equivalent. The
+existing layer cache carries these tensors without a parallel residency path.
+Gate: `tests/test_streaming_buffer_precision.py`.
+
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
 initialization**. The shared Transformers compatibility hook suppresses random
 initialization for from-config skeletons, but enables the genuine initializer

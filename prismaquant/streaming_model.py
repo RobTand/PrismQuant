@@ -432,6 +432,8 @@ class StreamingContext:
         self.install_resolvers = install_resolvers
         self.weight_shard = weight_shard
         self.weight_ckpt = weight_ckpt
+        self.buffer_dtypes = {name: value.dtype for name, value in
+                              model.named_buffers(remove_duplicate=False)}
         self.layer_cache = layer_cache
         self.prefetch_pool = prefetch_pool
         self.device = device
@@ -528,7 +530,8 @@ class StreamingContext:
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
             pack_experts=self.expert_packer,
-            merge_concat=self.concat_merger)
+            merge_concat=self.concat_merger,
+            buffer_dtypes=self.buffer_dtypes)
         # The cache may still decline to RETAIN the layer under its dynamic
         # budget (or evict it as `pinned_until_read` before the consumer
         # arrives). That is a retention decision, not a delivery decision:
@@ -726,7 +729,8 @@ class StreamingContext:
             prefix, self.weight_shard, self.weight_ckpt, self.dtype,
             self.device, fp8_scale_inv_map=self.fp8_scale_inv_map,
             pack_experts=self.expert_packer,
-            merge_concat=self.concat_merger)
+            merge_concat=self.concat_merger,
+            buffer_dtypes=self.buffer_dtypes)
         self.layer_cache.put(L, tensors)
         return tensors, "cold"
 
@@ -1280,7 +1284,7 @@ def _build_streaming_context(model_path: str, *,
     # Constructor-derived NON-PERSISTENT head buffers (e.g. gemma4_unified's
     # `embed_scale = sqrt(hidden)`) are absent from the checkpoint, so
     # `_materialize` never assigns them and they stay on `meta` — and
-    # PrismaQuant globally no-ops `_initialize_weights` (prismaquant/__init__),
+    # PrismaQuant suppresses skeleton `_initialize_weights` (prismaquant/__init__),
     # so the modeling's `_init_weights` that would set them never runs. The
     # first forward op (`embed_tokens(ids)` multiplies by `embed_scale`) then
     # faults "Tensor on device meta". Re-create such buffers on `device` from
@@ -1328,7 +1332,9 @@ def _build_streaming_context(model_path: str, *,
             tensors = _read_layer_to_device(
                 visual_prefix + ".",
                 weight_shard, weight_ckpt, dtype, device,
-                fp8_scale_inv_map=fp8_scale_inv_map)
+                fp8_scale_inv_map=fp8_scale_inv_map,
+                buffer_dtypes={name: value.dtype for name, value in
+                               model.named_buffers(remove_duplicate=False)})
             print(f"{log_prefix} materializing visual tower: "
                   f"{len(tensors)}/{len(vis_keys)} tensors -> {device}", flush=True)
             if _module_has_meta_tensors(visual_module):
@@ -1341,7 +1347,7 @@ def _build_streaming_context(model_path: str, *,
             # the module constructor. Keep them colocated with checkpoint
             # tensors before the multimodal streaming probe calls visual
             # helpers such as get_image_features.
-            visual_module.to(device=device, dtype=dtype)
+            visual_module.to(device=device)
             if visual_requires_grad:
                 # Enable grad on every Linear's weight + bias so backward
                 # hooks fire on the reverse sweep. Embeddings and norms
