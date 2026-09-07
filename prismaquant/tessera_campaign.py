@@ -2241,6 +2241,13 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         correct measurement of a rung the pinned reader cannot decode, and the
         honest thing to do with it is keep it out of the prices and in the
         record.
+
+        On the ``checkpoint`` path that branch is unreachable, and
+        deliberately so: ``menu_mode`` is bound in the journal identity (it is
+        one of the ``settings``, and only locations are popped), so a resume
+        under a different menu is refused by ``prepare_journal`` before a row
+        is read. Evidence arrives only through ``--seed-checkpoint``, which is
+        the path whose whole purpose is to cross that boundary.
         """
         if not isinstance(state, dict) \
                 or set(state) - {"unservable"} != {"anchors", "wire_records"} \
