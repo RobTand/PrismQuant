@@ -116,7 +116,7 @@ def test_exact_measured_roster_excludes_interpolation(tmp_path):
     data = load(config)
     assert data.formats_by_qname == {n: (fmt, "BF16") for n in names}
     assert set(data.cells) == {(n, fmt) for n in names}
-    assert data.maximum_layer_render_bytes == 128
+    assert data.total_render_bytes == 64
 
 
 @pytest.mark.parametrize("mutation", ["missing_unit", "missing_shard", "unfinished_fleet",
@@ -158,3 +158,120 @@ def test_incomplete_or_conflicting_anchor_evidence_refuses(tmp_path, mutation):
     target.write_bytes(pickle.dumps(payload)); config["merged_cost"] = bind(target)
     with pytest.raises((ValueError, RuntimeError, FileNotFoundError)):
         load(config)
+
+
+def test_fused_census_maxima_are_used_and_scale_mismatch_refuses(tmp_path):
+    from prismaquant.tessera_joint_aura import calibrated_maxima
+    from prismaquant.tessera_campaign import _static_input_scales
+    from types import SimpleNamespace
+
+    names = ["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"]
+    maxima = dict(zip(names, (1.0, 4.0)))
+    scales, policy = _static_input_scales(maxima)
+    data = SimpleNamespace(census={"max_abs": maxima}, payload={"provenance": {
+        "activation_static_scales": {"units": scales, "policy": policy}}})
+    unified, actual = calibrated_maxima(data, None)
+    assert unified[names[0]] == unified[names[1]] == 4.0
+    assert actual == scales
+    data.payload["provenance"]["activation_static_scales"]["units"] = {**scales, names[0]: 999.0}
+    with pytest.raises(ValueError, match="fused static scales"):
+        calibrated_maxima(data, None)
+
+
+def test_imported_absolute_pwc_paths_release_without_losing_donors(tmp_path):
+    import torch
+    from prismaquant.production_weight_cache import ProductionWeightCache
+    from prismaquant.joint_aura import prefetch_joint_cache
+
+    fmt = "TESSERA_E4M3_K1_R1024"
+    paths = {}
+    for index, name in enumerate(("a", "b")):
+        path = tmp_path / name / "render.pt"
+        path.parent.mkdir()
+        torch.save(torch.full((16, 16), index, dtype=torch.bfloat16), path)
+        paths[name, fmt] = str(path)
+    cache = ProductionWeightCache(weights=dict(paths), levers={})
+    cache.enable_lru(1 << 20)
+    report = prefetch_joint_cache(cache, ["a", "b"], {"a": [fmt], "b": [fmt]}, max_resident_bytes=1 << 20)
+    assert report["entries"] == 2 and report["loaded"] == 2
+    assert cache.compact_for_pickle() == 2
+    assert cache.weights == paths
+    assert torch.equal(cache.get("b", fmt), torch.ones((16, 16), dtype=torch.bfloat16))
+
+
+def test_wire_verification_rederives_source_before_accepting_render(tmp_path, monkeypatch):
+    import torch
+    from types import SimpleNamespace
+    from prismaquant import tessera_campaign as tc
+    from prismaquant.tessera_joint_aura import verify_anchor_render
+    from tessera import unit_artifact
+
+    source = torch.arange(256, dtype=torch.float32).reshape(16, 16).to(torch.bfloat16)
+    rendered = torch.ones_like(source)
+    expected_inputs = {"source": source.clone(), "calibration": object(), "projection": {"fixture": True}}
+    anchor = dict(qname="model.layers.0.q_proj", format_name="TESSERA_E4M3_K1_R1024",
+        family="TESSERA_E4M3_K1", body_rate_q256=1024, dloss=0.25, dloss_stderr=0.0,
+        memory_bytes=256, bits_per_param=8.0, activation_contract="fp8_e4m3",
+        activation_quantized=True, wire_bytes=4, seconds=0.1, hessian_applied=True,
+        input_global_scale=None)
+    wire = tmp_path / "fixture.wire"; wire.write_bytes(b"wire")
+    cell = {"anchor": anchor, "record": {"expected": "derived"}, "wire": str(wire),
+            "render_file_sha256": "a" * 64}
+    seen = []
+    def derive(value, *, weights, menus, calibration_source, static_scales, projected_units):
+        assert value.qname == anchor["qname"]
+        assert torch.equal(weights[value.qname], expected_inputs["source"])
+        assert calibration_source is expected_inputs["calibration"]
+        assert projected_units[value.qname] is expected_inputs["projection"]
+        assert menus[value.qname][0].format_name == anchor["format_name"]
+        return {"expected": "derived"}
+    def verify(blob, record, expected):
+        seen.append((blob, expected)); assert record == expected
+    monkeypatch.setattr(tc, "_checkpoint_anchor_identity", derive)
+    monkeypatch.setattr(tc, "_checkpoint_identity_api", lambda: SimpleNamespace(verify_cached_unit=verify))
+    monkeypatch.setattr(unit_artifact, "read_unit_artifact", lambda blob, device: rendered.clone())
+    kwargs = dict(calibration_source=expected_inputs["calibration"],
+                  projected_unit=expected_inputs["projection"], static_scales={})
+    result = verify_anchor_render(cell, source, rendered, **kwargs)
+    assert seen and result["wire_sha256"] == sha(wire)
+    with pytest.raises(ValueError, match="decoded wire differs"):
+        verify_anchor_render(cell, source, rendered + 1, **kwargs)
+
+
+@pytest.mark.parametrize("field,value", [("probe_microbatch", 0), ("n_probes", 1),
+    ("token_scope", "last"), ("production_act_scales", "1"), ("temperature", 2.0)])
+def test_plan_refuses_unqualified_probe_or_activation_policies(tmp_path, field, value):
+    from prismaquant.tessera_joint_aura import _load_plan, SCHEMA
+    config = {"schema": SCHEMA, "execution": {"n_calib_samples": 512,
+        "calib_seqlen": 512, "probe_microbatch": 1, "n_probes": 4,
+        "seed_base": 7000, "token_scope": "all", "temperature": 1.0,
+        "production_act_scales": "0"}, "profile_tool": "cprofile",
+        "max_render_bytes": 1024, "max_gpu_bytes": 2048, "min_free_gib": 0}
+    config["execution"][field] = value
+    path = tmp_path / "plan.json"; path.write_text(json.dumps(config))
+    with pytest.raises(ValueError):
+        _load_plan(path, sha(path))
+
+
+def test_original_full_draw_refuses_subset_before_model_load(tmp_path, monkeypatch):
+    import torch
+    from types import SimpleNamespace
+    from prismaquant import tessera_joint_aura as bridge, calibration_data, cost_streaming, gpu_guard
+    draw = dict(fit_ids_sha256="a" * 64, text_sha256="b" * 64, nsamples=512, seqlen=512, seed=0)
+    monkeypatch.setattr(gpu_guard, "require_cuda_hot_path", lambda *_args: None)
+    monkeypatch.setattr(bridge, "load_measured_anchor_input", lambda _inputs: SimpleNamespace(
+        census={"model": "fixture", "attention_implementation": "eager"},
+        payload={"provenance": {"hessian": {"calibration_identity": draw}}}))
+    monkeypatch.setattr(calibration_data, "load_calibration_input", lambda *_args, **_kwargs:
+        (torch.zeros((1, 512), dtype=torch.int64), {"provenance": {**draw, "nsamples": 1}}))
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("subset draw reached model construction")
+    monkeypatch.setattr(cost_streaming, "build_streamed_causal_lm", forbidden)
+    config = {"model": "fixture", "inputs": {}, "output_root": str(tmp_path),
+        "calibration_input": {"path": "fixture", "sha256": "a" * 64},
+        "execution": {"production_act_scales": "0", "n_calib_samples": 1, "calib_seqlen": 512}}
+    with pytest.raises(ValueError, match="original full draw nsamples"):
+        bridge.execute("prepare", config, plan_sha256="b" * 64)
+    result = json.loads((tmp_path / "prepare/results.json").read_text())
+    assert result["passed"] is False
+    assert (tmp_path / "prepare/profile.pstats").is_file()
