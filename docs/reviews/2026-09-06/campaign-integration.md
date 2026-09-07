@@ -114,3 +114,33 @@ Netdata installation and exporter service restart require administrator access
 not available to the background worker; adoption-dependent issues remain open.
 No worker-directory permissions were weakened and no failure was manufactured
 to force a service restart.
+
+The final packed-plan handoff at `feac4625` writes a separate source-expert
+assignment through the shared expansion helper, preserves the original
+allocation and its hash, and binds the derived digest in both preflight and
+the plan stage cache. It verifies the derived input before and after calling
+Tessera's unchanged translator. Final shell/producer/architecture/docs tests
+passed31; the correctly named pipeline contracts and stage-settings tests
+passed34 separately: **65 passed, no skips**. An initial manifest lookup used
+nonexistent singular/alternate filenames for those last two files; they were
+not counted until the explicit correct-path run completed. Compilation of all
+changed Python files and the pipeline shell syntax check exited0 through PB.
+Receipts are in `final-integration-results.json` and the session evidence
+`final-stage-contracts.json`; producer/driver details remain in
+`docs/measurements/tessera-stack-driver-2026-09-06.md`.
+
+Root subsequently merged PB#312 (`6a2f8671`) after its prose correction, and
+PB#313 (`67a44bb7`), the follow-up passive lock-census identity repair. The latter
+has 50 passing targeted tests and a separate real btrfs holder/waiter proof;
+its exact-device and kernel-device values differ while one holder/one waiter
+are correctly identified. No collector speedup is claimed.
+
+During final validation, root identified six offpath Tessera#387/#388 serial
+whole-suite actions that violated the required PB work granularity and blocked
+primary GPU checks. Supported PB withdrawal retained their source/attempt
+evidence and delegated cleanup to the owning workers. These GPU runs carry no
+completed population and are not called passes. The owner was directed to use
+affected-suite fanout and agreed that #387's planning-only refusal needs no
+additional GPU test. The exact action prefixes were `3ab6b12cd12d`,
+`bb8818696383`, `25babedd4bfc`, `8b95f239b372`, `563ac12816d9`,
+`9910bb5a4fde`. One retained cleanup claim is under owner-side diagnosis.

@@ -8,7 +8,7 @@ exec docker run --rm --gpus all --ipc=host \
   --workdir /workspace --entrypoint /bin/bash \
   --env PYTHONPATH=/workspace:/producer/src --env TESSERA_REPO=/producer \
   --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-  "$image_name" -c 'python -c "import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.cuda.get_device_name())" && python -m pytest -q -rs -p no:cacheprovider \
+  "$image_name" -c 'python3 -c "import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.cuda.get_device_name())" && python3 -m pytest -q -rs -p no:cacheprovider \
   tests/test_tessera_campaign.py::test_no_embedded_axis_on_the_wire \
   tests/test_tessera_campaign.py::test_the_priced_render_is_the_decoded_wire \
   tests/test_tessera_campaign.py::test_the_same_weight_rate_costs_differently_on_the_two_routes \
