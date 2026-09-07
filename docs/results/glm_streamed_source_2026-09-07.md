@@ -161,3 +161,42 @@ receipt `f7b35b3c7256c1f66997b7095d925da610f263624f6160fb2993d96a50cc9d67`.
 This repairs repository resolution; the proposed production draw remains
 unfrozen. The source/config byte binding and token IDs are immutable inputs
 for the bounded workspace measurement only.
+
+The bounded real-source prefix then ran canonical seed-0 B1 calibration
+through layers 0–3 and attempted DSA layer 4, with layer 5 prefetch and the
+same 104 GiB reservation, 102 GiB conservative guard, and 8 GiB minimum
+host MemAvailable. Both attempts refused after the first target batch;
+neither reached the full-H CPU transfer or established capture admission.
+Action `8adc26ee625b34b2abe6331a19f1f0ed34792a06de116b9dbb5ca9d7e984ba3c`
+used a harness missing the canonical per-layer `torch.cuda.empty_cache()`.
+Action `30662666e4f95498b78d91c3f7d85a422789785c76fd0573aa5ce4637b1bba4a`
+restored that call without changing the reader, draw, or memory guard. Both
+exited 1 on Lina with completed PB cleanup and no OOMs; neither has a success
+CAS receipt. Their shared input binding SHA256 is
+`0d52fb4d17cd81e037eb66572a03616df3f53bd1848787fa1a9ff350a1045593`,
+and source/config fingerprints remained unchanged at exit.
+
+In the faithful-cleanup repeat, releasing the allocator at the layer-3
+boundary reduced CUDA reserved bytes from 56,925,093,888 to 55,681,482,752;
+13,749,179,904 inactive split bytes remained. At the guard, CUDA allocated
+and reserved were 62,003,483,648 and 62,157,488,128 bytes; cgroup current
+was 48,481,972,224 bytes. Of its file charge, 43,735,138,304 bytes were
+ordinary file cache after excluding shmem. The conservative sum was
+110,639,460,352 bytes, while host MemAvailable was 57,051,316,224 bytes.
+These are separate accounting planes, not a deduplicated physical-memory
+measurement. Canonical allocator cleanup alone did not satisfy the bound;
+ordinary file-cache retention remains a material contributor. Global cache
+state and cgroup page ownership can differ between runs, so this is not a
+controlled speed or total-memory improvement claim.
+
+SHA256 inventories, terminals, and cleanup are in
+`review-02/source-prefix-first-refusal.json` and
+`review-02/source-prefix-canonical-cleanup-refusal.json`. Each includes the
+actual cold target-forward CPU/CUDA trace, main-thread Python stack samples,
+continuous cgroup/CUDA/global memory observations and both-host Netdata.
+The filenames say `forward-first-two-batches`, but only one target batch
+completed before refusal; the requested later batches 32–33 were not reached.
+The final focused integration with current main's shared-buffer precision fix
+also passed 46 CPU checks without skips under PB action
+`babb5f67986c755e3c58a0df6b918eeaa91de93786081da197e1806d95dd7490`;
+its verified receipt inventory is `review-02/current-main-integration.json`.
