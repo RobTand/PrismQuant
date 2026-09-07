@@ -100,11 +100,15 @@ def main():
         source_page_release_optin=os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1',
         host_kernel_release=os.uname().release,
         phases=[], telemetry_errors=[])
-    try:
-        result['nfs_module_build_id_note_hex'] = Path(
-            '/sys/module/nfs/notes/.note.gnu.build-id').read_bytes().hex()
-    except OSError:
-        result['nfs_module_build_id_note_hex'] = None
+    for field, module_path in (
+            ('nfsv4_module_build_id_note_hex', 'notes/.note.gnu.build-id'),
+            ('nfsv4_module_srcversion', 'srcversion'),
+            ('nfsv4_delegation_watermark', 'parameters/delegation_watermark')):
+        try:
+            raw = (Path('/sys/module/nfsv4') / module_path).read_bytes()
+            result[field] = raw.hex() if module_path.startswith('notes/') else raw.decode().strip()
+        except OSError:
+            result[field] = None
     if binding:
         result['input_binding_sha256'] = args.input_binding_sha256
         result['source_files_sha256'] = {item['path']:item['sha256'] for item in binding['source_files']}
