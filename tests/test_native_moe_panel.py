@@ -316,7 +316,7 @@ def receipt_fixture(joined, complete=True):
     receipt = {"schema": "tessera.native_moe_operator_receipt.v1", "status": "timing_admissible",
         "panel": panel, "panel_sha256": identity_sha256(panel), "operator": preflight["operator"],
         "runtime": preflight["runtime"], "runtime_sha256": preflight["runtime_sha256"],
-        "workspace": preflight["workspace"], "workspace_sha256": preflight["workspace_sha256"], "phases": phases,
+        "phases": phases,
         "resources": {"status": "complete_operator_bound" if complete else "incomplete", "resident_bytes": 100,
             "workspace_resident_bytes": 64, "workspace_sha256": preflight["workspace_sha256"],
             "trace_sha256": identity_sha256(trace), "phases": {
@@ -345,7 +345,7 @@ def test_whole_apply_evidence_preserves_workspace_and_full_model_unknown(joined,
     assert "cross_operator_workspace_composition" in observed["unknown"]
 
 
-@pytest.mark.parametrize("change", ["missing_member", "weights", "workspace", "workspace_bytes", "resource_trace",
+@pytest.mark.parametrize("change", ["missing_member", "weights", "workspace", "workspace_digest", "workspace_bytes", "resource_trace",
                                     "scalar_leaf_sum", "tolerance", "scratch", "route_shape", "config", "raw_identity"])
 def test_whole_receipt_cannot_replace_frozen_inputs_or_resources(joined, tmp_path, change):
     panel, receipt, trace = receipt_fixture(joined)
@@ -354,9 +354,12 @@ def test_whole_receipt_cannot_replace_frozen_inputs_or_resources(joined, tmp_pat
     elif change == "weights":
         receipt["phases"]["prefill"]["topk_weights"] = dict(receipt["phases"]["prefill"]["topk_weights"], content_sha256="0" * 64)
     elif change == "workspace":
-        receipt["workspace"] = copy.deepcopy(receipt["workspace"])
-        receipt["workspace"]["slots"][0]["shape"] = [32]
-        receipt["workspace_sha256"] = identity_sha256(receipt["workspace"])
+        receipt["panel"] = copy.deepcopy(receipt["panel"])
+        receipt["panel"]["workspace"]["slots"][0]["shape"] = [32]
+        receipt["panel"]["workspace_sha256"] = identity_sha256(receipt["panel"]["workspace"])
+        receipt["panel_sha256"] = identity_sha256(receipt["panel"])
+    elif change == "workspace_digest":
+        receipt["resources"]["workspace_sha256"] = "0" * 64
     elif change == "workspace_bytes":
         receipt["resources"]["workspace_resident_bytes"] = 0
     elif change == "resource_trace":

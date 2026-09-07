@@ -669,9 +669,12 @@ def consume_moe_receipt(path, *, expected_sha256, expected_panel, memory_trace_p
     _equal(receipt["panel_sha256"], identity_sha256(expected_panel), "receipt panel digest")
     _equal(receipt["runtime"], expected_panel["runtime"], "receipt runtime")
     _equal(receipt["runtime_sha256"], identity_sha256(expected_panel["runtime"]), "receipt runtime digest")
-    _equal(receipt["workspace"], expected_panel["workspace"], "receipt workspace")
-    _equal(receipt["workspace_sha256"], expected_panel["workspace_sha256"], "receipt workspace digest")
-    _workspace_identity(receipt["workspace"])
+    # The producer publishes workspace identity in its complete frozen panel,
+    # with the independently observed bytes/digest in resources below. There
+    # are no duplicate top-level workspace fields in the v1 receipt.
+    workspace = receipt["panel"]["workspace"]
+    _workspace_identity(workspace)
+    _equal(identity_sha256(workspace), expected_panel["workspace_sha256"], "receipt workspace digest")
     binding = RuntimeBinding.from_dict(expected_panel["runtime_binding"])
     members = _member_roster(expected_panel["unit"], expected_panel["members"], expected_panel["shape"])
     _equal(dict(binding.member_formats), {member["unit"]: member["format"] for member in members}, "runtime member coverage")
