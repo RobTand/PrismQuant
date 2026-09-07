@@ -186,8 +186,12 @@ def main():
         from prismaquant.native_moe_panel import freeze_moe_panel
         inputs = json.loads(checked(args.inputs, args.inputs_sha256).read_text())
         preflight = json.loads(checked(args.preflight, args.preflight_sha256).read_text())
-        with checked(args.cost, args.cost_sha256).open("rb") as stream:
-            costs = pickle.load(stream)
+        cost_path = checked(args.cost, args.cost_sha256)
+        if cost_path.suffix == ".json":
+            costs = json.loads(cost_path.read_text())
+        else:
+            with cost_path.open("rb") as stream:
+                costs = pickle.load(stream)
         rows = {member["unit"]: costs["costs"][member["unit"]][member["format"]] for member in inputs["members"]}
         result = freeze_moe_panel(inputs, preflight, rows, cost_sha256=args.cost_sha256)
     else:
