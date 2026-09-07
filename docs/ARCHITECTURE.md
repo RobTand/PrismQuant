@@ -3,6 +3,12 @@
 As of: 2026-09-07 · `fix/lfm-streamed-parity`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `codex/campaign-amax-residency-20260907`) for
+**resident calibration maxima**. Campaign collection keeps each unit's running
+maximum on the model device and reads it once after the full draw. The full-row
+scope and Python-max NaN behavior remain unchanged. Gate:
+`tests/test_campaign_amax_residency.py`. This changes no format or serving gate.
+
 Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **AURA attention
 backend parity**. AURA explicitly requests eager attention in both resident
 checkpoint and streamed skeleton construction. The shared streaming builder

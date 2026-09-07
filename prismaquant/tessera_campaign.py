@@ -1711,8 +1711,13 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             return
         if name in routed_seen:
             routed_seen[name] += int(flat.shape[0])
-        amax[name] = max(
-            amax[name], float(flat.abs().amax().float().item()))
+        batch_max = flat.abs().amax().float()
+        previous_max = amax[name]
+        if not isinstance(previous_max, torch.Tensor):
+            previous_max = torch.zeros((), dtype=torch.float32, device=batch_max.device)
+        # Python max(previous, NaN) preserves previous. fmax keeps that exact
+        # policy while avoiding a device-to-host scalar read on every batch.
+        amax[name] = torch.fmax(previous_max, batch_max)
         seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
@@ -1809,6 +1814,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
+    # All forwards are complete: materialize each unit's maximum only once.
+    amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
+            for name, value in amax.items()}
     # Do not retain both the original chunks and their concatenated outputs
     # for the whole scope. Full-model captures can hold GiB of scoring rows.
     rows = {}
