@@ -44,7 +44,7 @@ def io_counters():
             (line.split(':') for line in Path('/proc/self/io').read_text().splitlines())}
 
 
-def main():
+def main(*, variant_controller=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--target-seconds', type=float, default=35)
@@ -52,6 +52,8 @@ def main():
     parser.add_argument('--source-sha256')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
+    if variant_controller is not None:
+        variant_controller.persist_binary(args.output)
     torch.set_num_threads(1)
     torch.set_float32_matmul_precision('highest')
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -60,23 +62,36 @@ def main():
                'env': {'started_epoch': time.time(), 'host': socket.gethostname(),
                        'torch': str(torch.__version__), 'cuda': torch.version.cuda,
                        'device': torch.cuda.get_device_name(), 'affinity': sorted(os.sched_getaffinity(0))}}
+    if variant_controller is not None:
+        receipt.update(schema=variant_controller.schema, variant=variant_controller.identity)
 
     def save():
         (args.output / 'receipt.json').write_text(json.dumps(receipt, indent=2, allow_nan=False))
 
     save()
-    baseline_path = ROOT / 'qdq-residency/frozen-source/baseline_nvfp4_activation_contract.py'
-    baseline_text = baseline_path.read_text()
-    tree = ast.parse(baseline_text)
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                    and node.name == 'nvfp4_activation_qdq_served')
-    baseline_function = ast.get_source_segment(baseline_text, function)
-    namespace = dict(owner.__dict__)
-    exec(compile(baseline_function, str(baseline_path), 'exec'), namespace)
-    before = namespace['nvfp4_activation_qdq_served']
-    after = owner.nvfp4_activation_qdq_served
+    if variant_controller is None:
+        baseline_path = ROOT / 'qdq-residency/frozen-source/baseline_nvfp4_activation_contract.py'
+        baseline_text = baseline_path.read_text()
+        tree = ast.parse(baseline_text)
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == 'nvfp4_activation_qdq_served')
+        baseline_function = ast.get_source_segment(baseline_text, function)
+        namespace = dict(owner.__dict__)
+        exec(compile(baseline_function, str(baseline_path), 'exec'), namespace)
+        before = namespace['nvfp4_activation_qdq_served']
+        after = owner.nvfp4_activation_qdq_served
+        after_function = inspect.getsource(after)
+
+        def activate(function):
+            owner.nvfp4_activation_qdq_served = function
+    else:
+        baseline_path = variant_controller.baseline_path
+        baseline_function = variant_controller.before_source
+        after_function = variant_controller.after_source
+        before, after = variant_controller.before, variant_controller.after
+        activate = variant_controller.activate
     (args.output / 'before.py').write_text(baseline_function)
-    (args.output / 'after.py').write_text(inspect.getsource(after))
+    (args.output / 'after.py').write_text(after_function)
     prepared_path = ROOT / 'full-model-joint-aura/run-02/prepare/prepared.json'
     assert sha(prepared_path) == '69a56bff2d29beaf38759b309dee1ac94ca9e091e50f846590d8b51cb0ba5908'
     prepared = json.loads(prepared_path.read_text())
@@ -184,6 +199,8 @@ def main():
     lease = SignedJointProjectionLease({NAME: layer}, specs, deltas, activation_max_abs=cache.activation_max_abs)
 
     def cycle(check=False):
+        if variant_controller is not None:
+            variant_controller.checking = check
         results = []
         for values in probe_inputs:
             lease.begin_probe()
@@ -202,15 +219,17 @@ def main():
         return results
 
     with lease:
-        owner.nvfp4_activation_qdq_served = before
+        activate(before)
         expected = cycle(check=True)
-        owner.nvfp4_activation_qdq_served = after
+        activate(after)
         actual = cycle(check=True)
         assert actual == expected, 'baseline/output/backward/signed projection bits differ'
         receipt['qualification'] = {'exact_projection_and_forward_backward': True, 'probes': actual}
+        if variant_controller is not None:
+            receipt['qualification']['reductions'] = variant_controller.reduction_checks
         timings = []
         for function in (before, after):
-            owner.nvfp4_activation_qdq_served = function
+            activate(function)
             cycle()
             torch.cuda.synchronize()
             start = time.perf_counter()
@@ -223,7 +242,10 @@ def main():
         receipt['calibration'] = {'seconds_per_cycle': timings, 'cycles_per_arm': count}
         save()
         for index, (label, function) in enumerate((('before', before), ('after', after), ('after', after), ('before', before))):
-            owner.nvfp4_activation_qdq_served = function
+            activate(function)
+            receipt['active_phase'] = {'phase': f'{index}-{label}', 'cycles': count, 'started_epoch': time.time()}
+            save()
+            print(json.dumps({'starting': receipt['active_phase']}), flush=True)
             torch.cuda.synchronize()
             start, counters = time.time(), io_counters()
             for _ in range(count):
@@ -236,10 +258,11 @@ def main():
                      'cycles': count, 'projection_terms': count * 4 * len(formats),
                      'io_delta': {key: after_counters[key] - value for key, value in counters.items()}}
             receipt['phases'].append(phase)
+            receipt.pop('active_phase', None)
             save()
             print(json.dumps(phase), flush=True)
         for label, function in (('before', before), ('after', after)):
-            owner.nvfp4_activation_qdq_served = function
+            activate(function)
             torch.cuda.synchronize()
             start = time.time()
             with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
@@ -254,7 +277,7 @@ def main():
             (args.output / f'{label}-cuda.txt').write_text(events.table(sort_by='self_device_time_total', row_limit=100))
             receipt['phases'].append({'phase': label + '-profile', 'kind': 'profile', 'start_epoch': start, 'end_epoch': end})
             save()
-    owner.nvfp4_activation_qdq_served = after
+    activate(after)
     receipt.update(passed=True, telemetry=lease.telemetry, max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                    cuda_max_allocated=torch.cuda.max_memory_allocated(), cuda_max_reserved=torch.cuda.max_memory_reserved())
     receipt['env']['finished_epoch'] = time.time()
