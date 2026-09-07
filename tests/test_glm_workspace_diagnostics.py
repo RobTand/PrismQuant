@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from experiments.glm_layer_workspace import (
-    failed_collector_row_counts, finalize_workspace, watch_memory_samples,
+    audit_collector_rows, failed_collector_row_counts, finalize_workspace, watch_memory_samples,
 )
 
 
@@ -117,3 +117,23 @@ def test_shutdown_failure_still_finalizes_evidence_and_preserves_collection_erro
     assert result['status'] == 'failed'
     assert result['cleanup_failure'] == dict(type='RuntimeError', message='prefetch shutdown failed')
     assert finalized == [result]
+
+
+@pytest.mark.parametrize('guard_fails', [False, True])
+def test_returned_counts_survive_later_guard_or_zero_row_failure(guard_fails):
+    record = {}
+    counts = {'positive': 12, 'zero': 0}
+    checks = []
+
+    def check_guard(label):
+        checks.append(label)
+        if guard_fails:
+            raise RuntimeError('post-collection memory guard')
+
+    with pytest.raises(RuntimeError, match='memory guard' if guard_fails else 'no observed rows'):
+        audit_collector_rows(counts, list(counts), record, check_guard)
+    counts['positive'] = 50
+    assert checks == ['after_collection']
+    assert record['returned_target_row_observations']['rows'] == {'positive': 12, 'zero': 0}
+    assert record['returned_target_row_observations']['zero_row_qnames'] == ['zero']
+    assert record['returned_target_row_observations']['status'] == 'collector_returned'

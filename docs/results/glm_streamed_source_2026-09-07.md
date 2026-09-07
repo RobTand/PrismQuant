@@ -309,3 +309,28 @@ Verified source bundle, receipt and payload are in
 `review-02/workspace-bounded-netdata-cpu.json`; payload SHA256
 `ba7026971ec0ad03f8cef7204e323dcf1f96da4b1ab1c0ce2bf7dcc03de70c78`,
 receipt `e2d653724931382aa8d5b4cfaa515df09fba514336b287c527ace9cb7e905edf`.
+
+
+Prefix-04 completed all 512 target forwards but refused during Hessian return.
+PB action `b0c08ea9e25a9ef7ee3fedd0d77fad50220d2df2b5eec4a04f24dca734f385ba`
+exited 1 with complete cleanup and no OOM. The source binding remained
+unchanged. At the first guard crossing, ordinary cgroup file charge was only
+184,246,272 bytes; CPU output growth and retained CUDA reservations carried
+the crossing. The observer recorded 271 later samples: the highest sampled
+conservative cgroup-plus-CUDA-reserved sum was 116,654,800,896 bytes, with
+5,428,129,792 bytes host MemAvailable. Those observations are separate
+accounting planes, not a deduplicated physical allocation measurement. The
+actual result, both profiler windows, Python samples, both-host Netdata and
+terminal are inventoried in `review-02/chunk-source-page-workspace-refusal.json`.
+An interrupt request arrived after exit and cleanup; no interrupt was sent.
+
+The collector had returned before the foreground guard raised, so its exact
+row counters were not serialized. The observed roster remains unknown in this
+failed receipt, despite all 512 batches having run. A separate future-harness
+repair snapshots returned integer observations before the post-collection
+guard or zero-row check can refuse them. It labels these as workspace
+observations, not a census or admission. PB
+`d8c59d886369761f73542f61ffb1bc6033f996faadeef4eb68d6374b71d90846`
+passed 20 CPU checks without skips; exit 0 and cleanup complete. The exact
+source bundle, canonical receipt and payload are verified in
+`review-02/workspace-returned-row-cpu.json`.

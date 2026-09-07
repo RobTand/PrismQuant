@@ -48,28 +48,45 @@ def unique_storage_bytes(tensors):
     return sum(storages.values())
 
 
+def collector_row_counts(seen, targets, *, status, scope):
+    """Snapshot integer observations; absent/malformed data stays unknown."""
+    if (not isinstance(seen, dict) or set(seen) != set(targets)
+            or any(type(value) is not int or value < 0 for value in seen.values())):
+        return dict(status='unknown', scope=scope, expected_qnames=sorted(targets))
+    rows = {name: seen[name] for name in sorted(targets)}
+    return dict(status=status, scope=scope, rows=rows,
+                positive_row_qnames=[name for name, count in rows.items() if count],
+                zero_row_qnames=[name for name, count in rows.items() if not count])
+
+
+def audit_collector_rows(counts, targets, result, check_guard):
+    """Retain returned observations before guard or coverage can refuse them."""
+    record = collector_row_counts(counts, targets, status='collector_returned',
+                                  scope='workspace_observations_not_census_or_admission')
+    result['returned_target_row_observations'] = record
+    check_guard('after_collection')
+    if record['status'] == 'unknown':
+        raise RuntimeError('workspace collector returned malformed row observations')
+    if record['zero_row_qnames']:
+        raise RuntimeError('workspace collector targets have no observed rows: '
+                           + ', '.join(record['zero_row_qnames']))
+
+
 def failed_collector_row_counts(exc, collector, targets):
     """Copy only integer counters from this collector's retained failure frame.
 
     These are rows observed before failure, not captured Hessians, a census or
     successful coverage. Missing/malformed state remains explicitly unknown.
     """
-    unknown = dict(status='unknown', scope='partial_failed_collection_not_census',
-                   expected_qnames=sorted(targets))
     tb = exc.__traceback__
+    seen = None
     while tb is not None:
         if tb.tb_frame.f_code is collector.__code__:
             seen = tb.tb_frame.f_locals.get('seen')
-            if (not isinstance(seen, dict) or set(seen) != set(targets)
-                    or any(type(value) is not int or value < 0 for value in seen.values())):
-                return unknown
-            rows = {name: seen[name] for name in sorted(targets)}
-            return dict(status='observed_before_failure',
-                        scope='partial_failed_collection_not_census', rows=rows,
-                        positive_row_qnames=[name for name, count in rows.items() if count],
-                        zero_row_qnames=[name for name, count in rows.items() if not count])
+            break
         tb = tb.tb_next
-    return unknown
+    return collector_row_counts(seen, targets, status='observed_before_failure',
+                                scope='partial_failed_collection_not_census')
 
 
 def watch_memory_samples(stopped, observe, write_record, on_error, interval=0.1):
@@ -406,6 +423,7 @@ def main():
                         acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
                             args.max_act_rows,runner.device,want_hessian=True,profile=profile,
                             forward_batch=forward_batch)
+                        audit_collector_rows(counts, targets, result, check_guard)
                 except BaseException as exc:
                     result['partial_target_row_observations'] = failed_collector_row_counts(
                         exc, _collect_activations, targets)
@@ -415,8 +433,6 @@ def main():
                     result['profile_windows'] = traces_written
                     result['target_batches_completed'] = next_batch
             assert next_batch == args.nsamples
-            check_guard('after_collection')
-            assert set(counts) == set(targets) and min(counts.values()) > 0
             mark('collector_return_full_h_and_prefix_x_on_cpu',
                  hessian_bytes=sum(h.numel()*h.element_size() for h in hessians.values()),
                  prefix_bytes=sum(x.numel()*x.element_size() for x in acts.values()),
