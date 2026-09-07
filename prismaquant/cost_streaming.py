@@ -505,6 +505,20 @@ def build_source_checkpoint_identity(
             f"{root}; refusing to stamp an unidentified source"
         )
     ordered = sorted(shard_paths, key=str)
+    # Name each shard by its position INSIDE the checkpoint. A Hugging Face
+    # snapshot dir holds symlinks into `blobs/`, so the resolved path is named
+    # by an LFS hash; naming shards by that would make the SAME checkpoint
+    # reached through a snapshot and through a plain directory two different
+    # sources. Recover the in-checkpoint spelling from the directory listing.
+    name_by_resolved: dict[str, str] = {}
+    if root.is_dir():
+        for entry in root.rglob("*.safetensors"):
+            try:
+                name_by_resolved.setdefault(
+                    str(entry.resolve()), str(entry.relative_to(root))
+                )
+            except (OSError, ValueError):
+                continue
 
     reusable = (
         _read_source_checkpoint_digest_cache(Path(digest_cache_path))
@@ -526,13 +540,14 @@ def build_source_checkpoint_identity(
                     f"source checkpoint shard changed while hashing: {path}"
                 )
         entries.append({"fingerprint": fingerprint, "sha256": digest})
-        # Name the shard by its position INSIDE the checkpoint, never by the
-        # absolute path: relocating a checkpoint does not change its bytes,
-        # and a path-keyed identity would refuse every moved resume.
-        try:
-            name = str(path.relative_to(root.resolve()))
-        except ValueError:
-            name = path.name
+        # Relocating a checkpoint does not change its bytes, so the identity
+        # is never keyed on the absolute path.
+        name = name_by_resolved.get(str(path))
+        if name is None:
+            try:
+                name = str(path.relative_to(root.resolve()))
+            except ValueError:
+                name = path.name
         shards.append({
             "name": name,
             "size": int(fingerprint["size"]),

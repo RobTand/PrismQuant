@@ -297,3 +297,22 @@ def test_identity_cache_hit_returns_the_same_digest(tmp_path):
     first = build_source_checkpoint_identity(str(source), digest_cache_path=cache)
     second = build_source_checkpoint_identity(str(source), digest_cache_path=cache)
     assert first == second
+
+
+def test_a_symlink_snapshot_is_the_same_source_as_the_plain_directory(tmp_path):
+    """A Hugging Face snapshot dir holds symlinks into `blobs/`, whose
+    resolved names are LFS hashes. The same checkpoint reached either way is
+    one source, so a resume across the two spellings is not refused."""
+    import os
+
+    from prismaquant.cost_streaming import build_source_checkpoint_identity
+
+    plain = tmp_path / "plain"
+    _write_source(plain, weight=_WEIGHT_A, bias=_BIAS_A)
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    os.symlink(plain / "model.safetensors", snapshot / "model.safetensors")
+
+    assert (build_source_checkpoint_identity(str(plain))["content_sha256"]
+            == build_source_checkpoint_identity(str(snapshot))["content_sha256"])
