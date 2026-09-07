@@ -66,6 +66,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __package__:
+    from .tessera_campaign_container import validate_container
+else:
+    # Direct script execution puts only tools/ on sys.path. Planning also
+    # reads the shared calibration contract from the sibling package.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tessera_campaign_container import validate_container
+
 PBCAMPAIGN = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py")
 
 #: What ``plan`` writes beside the manifest, so ``merge`` reads the row layout
@@ -78,7 +86,7 @@ PLAN_SCHEMA = "prismaquant.tessera_campaign_plan.v1"
 SHARED_PROVENANCE = (
     "menu_mode", "tp_degree", "model", "nsamples", "seqlen", "max_act_rows",
     "layer_stride", "anchors_round_one", "max_rounds", "anchor_budget",
-    "loo_gate", "max_artifact_bpp", "cost_mode",
+    "loo_gate", "max_artifact_bpp", "cost_mode", "rate_band", "calibration_cache",
 )
 
 #: Hessian identity fields every row must already agree on.  ``capture_sha256``
@@ -110,7 +118,8 @@ def load_spec(path: Path) -> dict:
             raise RuntimeError(f"{path}: spec has no {field!r}")
     forbidden = {"--model", "--out", "--cache-dir", "--checkpoint", "--units",
                  "--calibration-census", "--census-out", "--seed-checkpoint",
-                 "--seed-wire-dir"}
+                 "--seed-wire-dir", "--capture-calibration-out",
+                 "--calibration-cache", "--calibration-cache-sha256"}
     named = forbidden.intersection(spec["campaign_argv"])
     if named:
         raise RuntimeError(
@@ -125,6 +134,8 @@ def load_spec(path: Path) -> dict:
         raise RuntimeError(
             f"{path}: campaign_argv sets --deadline-seconds; a fanned-out row "
             "takes its deadline from the fleet, not from inside the round loop")
+    if "container" in spec:
+        validate_container(spec)
     return spec
 
 
@@ -180,9 +191,16 @@ def require_rows_fit(mem_gb: "list[int]", per_box: int, budget) -> int:
     return widest
 
 
-def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int) -> dict:
+def _row(spec: dict, argv: list[str], *, mem_gb: int, timeout_s: int,
+         module: str = "prismaquant.tessera_campaign") -> dict:
+    command = [spec["python"], "-u", "-m", module, *argv]
+    if "container" in spec:
+        validate_container(spec)
+        command = ["python3", "-m", "tools.tessera_campaign_container", "--spec",
+                   json.dumps({"container": spec["container"], "env": spec["env"]},
+                              sort_keys=True), "--", *command]
     row = {
-        "argv": [spec["python"], "-u", "-m", "prismaquant.tessera_campaign", *argv],
+        "argv": command,
         "cwd": spec["cwd"],
         "demand": {"gpu": 1, "cpu": int(spec.get("cpus", 4)), "mem_gb": int(mem_gb)},
         "env": dict(spec["env"]),
@@ -223,6 +241,41 @@ def cmd_census(args) -> int:
         return _pbcampaign(manifest, wait_s=args.wait_s,
                            receipts=workspace / "census-receipts.json")
     return 0
+
+
+def cmd_capture(args) -> int:
+    """Submit one dependent full-scope capture through the existing PB adapter."""
+    spec = load_spec(Path(args.spec))
+    workspace = Path(args.workspace)
+    census_path = workspace / "census.json"
+    census = json.loads(census_path.read_text())
+    if census.get("model") != spec["model"]:
+        raise RuntimeError("capture census and spec name different models")
+    manifest = workspace / "capture-manifest.json"
+    row = _row(spec, ["--model", spec["model"],
+        "--out", str(workspace / "capture-unused.pkl"),
+        "--cache-dir", str(workspace / "capture-cache"),
+        "--calibration-census", str(census_path),
+        "--capture-calibration-out", str(workspace / "calibration-cache"),
+        *spec["campaign_argv"]],
+        mem_gb=_row_memory_gb(spec, sorted(census["counts"]), census),
+        timeout_s=int(args.timeout_s))
+    manifest.write_text(json.dumps([row], indent=2) + "\n")
+    if args.submit:
+        return _pbcampaign(manifest, wait_s=args.wait_s,
+                           receipts=workspace / "capture-receipts.json")
+    return 0
+
+
+def _calibration_cache_binding(path, census_path):
+    from prismaquant.tessera_calibration_cache import require_capture_contract, sha256
+    if not path:
+        return None
+    path = Path(path).resolve()
+    capture = require_capture_contract(path)
+    if capture["identity"].get("census_sha256") != sha256(census_path):
+        raise RuntimeError("planning requires a complete capture bound to this census")
+    return dict(path=str(path), sha256=sha256(path))
 
 
 def _pbcampaign(manifest: Path, *, wait_s: int, receipts: Path | None = None) -> int:
@@ -283,16 +336,10 @@ def _parse_row_table(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def load_probe_h_trace(path) -> dict:
-    """``{unit name: h_trace}`` from a probe, per expert, or a refusal.
+    """Read original packed probe rows, preserving the allocator's multiplier.
 
-    The planner draws proportional to importance, so it needs a per-EXPERT
-    importance and not a per-stack one. A probe whose routed rows are still
-    packed stacks cannot answer that question, and the honest response is to
-    say so and stop: uniform sampling of a stack whose ``h_trace`` spans two
-    orders of magnitude is measurably biased (-6..-28 % on campaign-01's own
-    table) and the bias does not shrink with the sample size, so falling back
-    to it would silently trade a refusal for a wrong number.  Expanding a
-    packed probe row into per-expert rows is PrismaQuant #290's job.
+    Sampling needs the full per-expert Fisher vector AND packed topology. An
+    expanded per-expert probe cannot establish that identity and is refused.
     """
     import pickle
 
@@ -300,88 +347,73 @@ def load_probe_h_trace(path) -> dict:
     stats = probe.get("stats") if isinstance(probe, dict) else None
     if not isinstance(stats, dict):
         raise RuntimeError(f"--probe {path}: no 'stats' map to read h_trace from")
-    out: dict[str, float] = {}
-    for name, row in stats.items():
-        if not isinstance(row, dict) or "h_trace" not in row:
-            continue
-        value = row["h_trace"]
-        if value is None:
-            continue
-        out[str(name)] = float(value)
-    if not out:
-        raise RuntimeError(f"--probe {path}: no row carries an h_trace")
-    return out
+    return {str(name): row for name, row in stats.items()
+            if isinstance(row, dict) and row.get("_packed_experts_module")}
 
 
-def unit_role(name: str) -> str:
-    """The projection a unit is, e.g. ``w1`` -- the last name segment."""
-    return name.rsplit(".", 1)[-1]
+def sample_stack_groups(groups, probe_rows, *, profile, stack_sample: int,
+                        seed: int, audit_rate: int) -> dict:
+    """Draw once per profile-defined packed parameter, across all its roles.
 
-
-def sample_stack_groups(groups, h_trace, *, stack_sample: int, seed: int,
-                        audit_rate: int) -> dict:
-    """``{group key: {sampled, audit, inclusion_probability, per_role}}``.
-
-    Only ``s:`` groups -- the packed routed stacks -- are sampled.  A dense
-    or fused group is the decision unit itself and is priced whole.
-
-    The draw is per (stack, ROLE), which is what the coordinator's measurement
-    is about: ``h_trace`` differs by role inside one stack (on LFM2.5 layer 18
-    the ``w2`` values are roughly twice the ``w1``/``w3`` ones), so one draw
-    over all three roles would be proportional to an average nobody allocates
-    on.  The three per-role draws share the group's rung grid, which is what
-    keeps the anchor placement a group property.
+    The same expert IDs and full-frame inclusion probabilities are persisted
+    for every projection and rung. The original probe remains the allocator
+    input; no per-expert expansion changes its topology or Fisher currency.
     """
-    from prismaquant.tessera_campaign import audit_subsample, draw_stack_sample
+    from prismaquant.tessera_campaign import (
+        audit_subsample, draw_stack_sample, stack_sample_from_probe,
+        _validate_stack_sample, selection_stack_samples)
 
-    sampled: dict[str, dict] = {}
+    sampled = {}
     for key, members in sorted(groups.items()):
         if not str(key).startswith("s:"):
             continue
-        by_role: dict[str, list[str]] = {}
-        for name in members:
-            by_role.setdefault(unit_role(name), []).append(name)
-        drawn: set[str] = set()
-        audit: set[str] = set()
-        pi: dict[str, float] = {}
-        per_role: dict[str, dict] = {}
-        for role, names in sorted(by_role.items()):
-            missing = [n for n in names if n not in h_trace]
-            if missing:
-                raise RuntimeError(
-                    f"anchor group {key} role {role}: the probe carries no "
-                    f"h_trace for {len(missing)} of {len(names)} experts "
-                    f"(e.g. {missing[0]}); a proportional draw is impossible "
-                    "and a uniform one is measurably biased. Expand the "
-                    "probe's packed rows per expert (PrismaQuant #290) or "
-                    "price the stack whole.")
-            draw = draw_stack_sample({n: h_trace[n] for n in names},
-                                     stack_sample, seed=seed,
-                                     stack=f"{key}|{role}")
-            role_audit = audit_subsample(draw["units"], rate=audit_rate,
-                                         seed=seed, stack=f"{key}|{role}")
-            drawn.update(draw["units"])
-            audit.update(role_audit)
-            pi.update({n: draw["inclusion_probability"][n]
-                       for n in draw["units"]})
-            # Everything a Horvitz-Thompson estimate and its Hartley-Rao
-            # standard error need, stamped where a reader can check the draw
-            # arithmetically instead of trusting a PRNG to be stable: the
-            # inclusion probabilities, the permutation and the systematic
-            # start re-derive the sample exactly. Computing that estimate is
-            # PrismaQuant #290's job, not this planner's.
-            per_role[role] = {
-                "method": draw["method"], "seed": draw["seed"],
-                "frame_size": draw["frame_size"],
-                "size_sha256": draw["size_sha256"],
-                "units": draw["units"], "certainty": draw["certainty"],
-                "random_draws": draw["random_draws"],
-                "permutation": draw["permutation"], "start": draw["start"],
-                "inclusion_probability": draw["inclusion_probability"],
-                "audit": role_audit}
-        sampled[key] = {"sampled": sorted(drawn), "audit": sorted(audit),
-                        "inclusion_probability": {n: pi[n] for n in sorted(pi)},
-                        "per_role": per_role}
+        records, drawn, audit, pi = {}, set(), set(), {}
+        for name, row in sorted(probe_rows.items()):
+            if "s:" + str(row.get("_packed_experts_module")) != key:
+                continue
+            frame = stack_sample_from_probe(
+                name, row, profile, sampled_experts=range(int(row["num_experts"])),
+                inclusion_prob={e: 1.0 for e in range(int(row["num_experts"]))},
+                seed=seed, design="census")
+            _validate_stack_sample(frame)
+            draw = draw_stack_sample(
+                {str(e): h for e, h in enumerate(frame.h_trace_per_expert)},
+                stack_sample, seed=seed, stack=name)
+            audit_ids = audit_subsample(draw["units"], rate=audit_rate,
+                                       seed=seed, stack=name)
+            experts = sorted(int(e) for e in draw["units"])
+            # Only fields read by the constructor: JSON-portable values copied
+            # exactly from the probe, rather than a second normalized weight.
+            probe_row = {
+                "_packed_experts_module": frame.packed_experts_module,
+                "_packed_param": frame.packed_param,
+                "num_experts": frame.num_experts,
+                "h_trace": frame.stack_h_trace,
+                "h_trace_per_expert": list(frame.h_trace_per_expert),
+            }
+            records[name] = {
+                "probe_row": probe_row, "sampled_experts": experts,
+                "inclusion_prob": dict(draw["inclusion_probability"]),
+                "seed": seed, "design": draw["method"], "draw": draw,
+                "audit_experts": sorted(int(e) for e in audit_ids),
+            }
+            for expert, names in frame.members.items():
+                for member in names:
+                    pi[member] = draw["inclusion_probability"][str(expert)]
+                    if expert in experts:
+                        drawn.add(member)
+                    if str(expert) in audit_ids:
+                        audit.add(member)
+        if not records:
+            raise RuntimeError(
+                f"anchor group {key}: original packed probe rows with "
+                "h_trace_per_expert are required; expanded probes cannot price stacks")
+        entry = {"key": key, "members": sorted(members),
+                 "sampled": sorted(drawn), "audit": sorted(audit),
+                 "inclusion_probability": dict(sorted(pi.items())),
+                 "stack_samples": records}
+        selection_stack_samples({"groups": [entry]}, profile)
+        sampled[key] = {k: v for k, v in entry.items() if k not in ("key", "members")}
     return sampled
 
 
@@ -403,6 +435,8 @@ def cmd_plan(args) -> int:
         raise RuntimeError(
             f"census was taken on {census.get('model')!r}, the spec names "
             f"{spec['model']!r}")
+    calibration_cache = _calibration_cache_binding(
+        getattr(args, "calibration_cache", None), workspace / "census.json")
     groups = census["anchor_groups"]
     if not groups:
         raise RuntimeError("census reports no anchor group to price")
@@ -412,10 +446,10 @@ def cmd_plan(args) -> int:
         if not args.probe:
             raise RuntimeError(
                 "--stack-sample needs --probe: the draw is proportional to "
-                "the probe's per-expert h_trace, and there is no unbiased "
-                "draw without it")
+                "the packed probe's per-expert h_trace")
+        from prismaquant.model_profiles import detect_profile
         stack_sample = sample_stack_groups(
-            groups, load_probe_h_trace(args.probe),
+            groups, load_probe_h_trace(args.probe), profile=detect_profile(spec["model"]),
             stack_sample=int(args.stack_sample), seed=int(args.stack_sample_seed),
             audit_rate=int(args.audit_rate))
         priced = sum(len(entry["sampled"]) for entry in stack_sample.values())
@@ -438,10 +472,7 @@ def cmd_plan(args) -> int:
         for key in bundle:
             entry = {"key": key, "members": sorted(groups[key])}
             if key in stack_sample:
-                entry["sampled"] = list(stack_sample[key]["sampled"])
-                entry["audit"] = list(stack_sample[key]["audit"])
-                entry["inclusion_probability"] = dict(
-                    stack_sample[key]["inclusion_probability"])
+                entry.update(stack_sample[key])
             entries.append(entry)
         selection = {
             # A file that samples says so in its schema; one that does not
@@ -465,6 +496,9 @@ def cmd_plan(args) -> int:
             "--calibration-census", str(workspace / "census.json"),
             *spec["campaign_argv"],
         ]
+        if calibration_cache:
+            argv += ["--calibration-cache", calibration_cache["path"],
+                     "--calibration-cache-sha256", calibration_cache["sha256"]]
         if args.seed_checkpoint:
             argv += ["--seed-checkpoint", str(args.seed_checkpoint)]
             if args.seed_wire_dir:
@@ -488,6 +522,7 @@ def cmd_plan(args) -> int:
         "schema": PLAN_SCHEMA,
         "model": spec["model"],
         "census": str(workspace / "census.json"),
+        "calibration_cache": calibration_cache,
         "manifest": str(manifest),
         "groups_per_row": int(args.groups_per_row),
         "rows_per_box": per_box,
@@ -551,7 +586,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
     coverage block rebuilt over the **scope** rather than over any one row's
     selection.
     """
-    from prismaquant.tessera_campaign import SCHEMA, campaign_population_block
+    from prismaquant.tessera_campaign import (
+        SCHEMA, campaign_population_block, canonical_refusals, selection_stack_samples)
     from prismaquant.tessera_campaign import ExpertPopulation
     # The keys a merged payload must land under are the ones the campaign and
     # the allocation share.  Spelling them here as literals is how a merge
@@ -599,19 +635,37 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
 
     # Coverage: every group in the scope priced exactly once.
     selected: dict[str, str] = {}
+    selection_entries = {}
     for row_id, prov in provenances.items():
         for entry in prov["unit_selection"]["groups"]:
             key = entry["key"]
             if key in selected:
                 raise MergeRefused(
                     f"anchor group {key!r} is priced by both {selected[key]} and {row_id}")
+            if key not in scope["anchor_groups"] or sorted(entry["members"]) != sorted(scope["anchor_groups"][key]):
+                raise MergeRefused(f"{row_id}: selection {key!r} differs from campaign scope")
             selected[key] = row_id
+            selection_entries[key] = entry
     missing = sorted(set(scope["anchor_groups"]) - set(selected))
     if missing:
         raise MergeRefused(
             f"the rows do not cover {len(missing)} anchor group(s) of the scope: "
             + ", ".join(missing[:8]))
 
+    sampled = any("stack_samples" in entry or entry.get("sampled")
+                  for entry in selection_entries.values())
+    merged_selection = {
+        "schema": "prismaquant.tessera_campaign_units.v2" if sampled else "prismaquant.tessera_campaign_units.v1",
+        "selected": False,
+        "groups": [selection_entries[key] if sampled else
+                   {"key": key, "members": list(scope["anchor_groups"][key])}
+                   for key in sorted(selection_entries)],
+    }
+    stack_samples, profile = {}, None
+    if sampled:
+        from prismaquant.model_profiles import detect_profile
+        profile = detect_profile(next(iter(provenances.values()))["model"])
+        stack_samples = selection_stack_samples(merged_selection, profile)
     costs: dict[str, dict] = {}
     loo: dict[str, dict] = {}
     surfaces: dict[str, dict] = {}
@@ -693,12 +747,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         "stopped_early": stopped_early,
         "wall_seconds": wall_seconds,
         "rounds_run": rounds_run,
-        "unit_selection": {
-            "schema": "prismaquant.tessera_campaign_units.v1",
-            "selected": False,
-            "groups": [{"key": key, "members": list(members)}
-                       for key, members in sorted(scope["anchor_groups"].items())],
-        },
+        "unit_selection": merged_selection,
         "activation_static_scales": dict(reference["activation_static_scales"]),
         "hessian": {**reference["hessian"], "capture_sha256": capture_sha256},
         "campaign_fanout": {
@@ -709,6 +758,20 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
             "seed_checkpoints": seeds,
         },
     })
+    if any("no_admitted_rung" in prov for prov in provenances.values()):
+        provenance["no_admitted_rung"] = sorted({name for prov in provenances.values()
+                                               for name in prov.get("no_admitted_rung", [])})
+    if any("unit_selection_sample" in prov for prov in provenances.values()):
+        audit, probabilities = set(), {}
+        for row_id, prov in provenances.items():
+            sample = prov.get("unit_selection_sample", {})
+            audit.update(sample.get("audit_units", []))
+            for name, probability in sample.get("inclusion_probability", {}).items():
+                if name in probabilities and probabilities[name] != probability:
+                    raise MergeRefused(f"{row_id}: different inclusion probability for {name}")
+                probabilities[name] = probability
+        provenance["unit_selection_sample"] = {
+            "audit_units": sorted(audit), "inclusion_probability": dict(sorted(probabilities.items()))}
     if serving_target is not None:
         provenance["tessera_serving_scope"] = {
             "target": serving_target, "by_unit": dict(sorted(serving_by_unit.items()))}
@@ -722,8 +785,7 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         "costs": dict(sorted(costs.items())),
         "formats": sorted(formats),
         "leave_one_anchor_out": dict(sorted(loo.items())),
-        "non_interpolable": sorted(
-            non_interpolable, key=lambda entry: (entry["qname"], entry["family"])),
+        "non_interpolable": canonical_refusals(non_interpolable),
         "menu_sizes": dict(sorted(menu_sizes.items())),
         "anchor_counts": dict(sorted(anchor_counts.items())),
         "provenance": provenance,
@@ -745,7 +807,8 @@ def merge_payloads(row_payloads: dict, *, census: dict, capture_sha256: str) -> 
         dense_targets=scope["dense_targets"], expert_targets=scope["expert_targets"],
         dense_all=scope["dense_all"], pinned=scope["pinned"],
         population=population, layer_stride=int(reference["layer_stride"]),
-        costs=payload["costs"], menus=menu_sizes)
+        costs=payload["costs"], menus=menu_sizes,
+        stack_samples=stack_samples, profile=profile)
     return payload
 
 
@@ -836,30 +899,46 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
     """
     from prismaquant.cost_stage_checkpoint import (
         atomic_write_bytes, canonical_json, canonical_json_sha256, unit_path,
-        MANIFEST_SCHEMA,
+        MANIFEST_SCHEMA, prepare_journal, write_unit,
     )
 
     identities = {}
-    states: dict[str, bytes] = {}
-    stage = None
+    states: dict[str, dict] = {}
+    stage = "Tessera campaign"
     for row_id in sorted(row_dirs):
         manifest_path = Path(row_dirs[row_id]) / "cost.anchors.json"
         manifest = json.loads(manifest_path.read_text())
         identities[row_id] = manifest["identity"]
-        stage = manifest["stage"] if stage is None else stage
         parts = manifest_path.with_name(manifest_path.name + ".parts")
+        listed: list[str] = []
         for entry in manifest["units"]:
             qname = entry["qname"]
+            listed.append(qname)
             shard = parts / entry["file"]
             if not shard.is_file():
                 raise MergeRefused(
                     f"{row_id}: its journal names {qname} and the shard "
                     f"{shard} is not there; the row's anchors would be "
                     "dropped from the merged journal")
+            if shard != unit_path(parts, qname):
+                raise MergeRefused(f"{row_id}: unit {qname} names a noncanonical shard")
+        expected = set(manifest["identity"]["units"])
+        if len(listed) != len(set(listed)) or set(listed) != expected:
+            raise MergeRefused(
+                f"{row_id}: manifest units differ from its checkpoint identity units")
+        # Reuse the journal's reader: it validates the manifest and every
+        # envelope before returning state. Rehashing unchecked payload bytes
+        # here would turn corrupt or foreign shards into a trusted journal.
+        try:
+            _, _, completed = prepare_journal(
+                parts, stage=stage, resume=True, identity=manifest["identity"],
+                qnames=sorted(expected), manifest_path=manifest_path)
+        except RuntimeError as exc:
+            raise MergeRefused(f"{row_id}: {exc}") from exc
+        for qname, state in completed.items():
             if qname in states:
                 raise MergeRefused(f"unit {qname} has a journal shard in two rows")
-            with shard.open("rb") as handle:
-                states[qname] = pickle.load(handle)["payload"]
+            states[qname] = state
 
     merged_identity = None
     for row_id, identity in sorted(identities.items()):
@@ -867,16 +946,24 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
             merged_identity = {key: value for key, value in identity.items()}
             merged_identity["units"] = dict(identity["units"])
             continue
-        for key, value in identity.items():
-            if key in {"units", "serving_scope", "expert_projection"}:
+        for key in sorted(set(merged_identity) | set(identity)):
+            if key in {"units", "serving_scope", "expert_projection", "stack_sampling_identity"}:
                 continue
-            if merged_identity.get(key) != value:
+            if (key not in merged_identity or key not in identity
+                    or merged_identity[key] != identity[key]):
                 raise MergeRefused(
                     f"{row_id}: checkpoint identity differs at {key!r}")
         for name, unit in identity["units"].items():
             if name in merged_identity["units"] and merged_identity["units"][name] != unit:
                 raise MergeRefused(f"{row_id}: two rows bind different inputs for {name}")
             merged_identity["units"][name] = unit
+        if "stack_sampling_identity" in merged_identity or "stack_sampling_identity" in identity:
+            combined = dict(merged_identity.get("stack_sampling_identity", {}))
+            for name, sample in identity.get("stack_sampling_identity", {}).items():
+                if name in combined and combined[name] != sample:
+                    raise MergeRefused(f"{row_id}: different stack_sampling_identity for {name}")
+                combined[name] = sample
+            merged_identity["stack_sampling_identity"] = dict(sorted(combined.items()))
         merged_identity["serving_scope"] = _merge_scope(
             merged_identity.get("serving_scope"), identity.get("serving_scope"), row_id)
         merged_identity["expert_projection"] = _merge_projection(
@@ -887,18 +974,9 @@ def merge_checkpoint(row_dirs: dict, out_manifest: Path) -> dict:
     canonical = canonical_json(merged_identity, where="merged campaign identity")
     identity_sha256 = canonical_json_sha256(canonical, where="merged campaign identity")
     parts = out_manifest.with_name(out_manifest.name + ".parts")
-    for qname, payload in sorted(states.items()):
-        import hashlib
-
-        envelope = {
-            "schema": "prismaquant.cost_stage_checkpoint.unit.v1",
-            "stage": stage, "qname": qname,
-            "identity_sha256": identity_sha256,
-            "payload_sha256": hashlib.sha256(payload).hexdigest(),
-            "payload": payload,
-        }
-        atomic_write_bytes(unit_path(parts, qname),
-                           pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL))
+    for qname, state in sorted(states.items()):
+        write_unit(parts, stage=stage, qname=qname,
+                   identity_sha256=identity_sha256, state=state)
     manifest = {
         "schema": MANIFEST_SCHEMA, "stage": stage,
         "identity_sha256": identity_sha256, "identity": canonical,
@@ -919,6 +997,9 @@ def _merge_scope(left, right, row_id):
         return left
     if left["target"] != right["target"]:
         raise MergeRefused(f"{row_id}: rows disagree on the serving target")
+    for name in left["by_unit"].keys() & right["by_unit"].keys():
+        if left["by_unit"][name] != right["by_unit"][name]:
+            raise MergeRefused(f"{row_id}: different serving context for {name}")
     return {"target": left["target"],
             "by_unit": dict(sorted({**left["by_unit"], **right["by_unit"]}.items()))}
 
@@ -930,6 +1011,9 @@ def _merge_projection(left, right, row_id):
         return left
     if left["source"] != right["source"]:
         raise MergeRefused(f"{row_id}: rows projected different source checkpoints")
+    for name in left["stacks"].keys() & right["stacks"].keys():
+        if left["stacks"][name] != right["stacks"][name]:
+            raise MergeRefused(f"{row_id}: different producer projection for stack {name}")
     stacks = {**left["stacks"], **right["stacks"]}
     return {"source": left["source"], "stacks": dict(sorted(stacks.items()))}
 
@@ -1056,9 +1140,19 @@ def main(argv=None) -> int:
     census.add_argument("--submit", action="store_true")
     census.set_defaults(func=cmd_census)
 
+    capture = sub.add_parser("capture", help="capture full-census X/H once before planning rows")
+    capture.add_argument("--spec", required=True)
+    capture.add_argument("--workspace", required=True)
+    capture.add_argument("--timeout-s", type=int, default=7200)
+    capture.add_argument("--wait-s", type=int, default=14400)
+    capture.add_argument("--submit", action="store_true")
+    capture.set_defaults(func=cmd_capture)
+
     plan = sub.add_parser("plan", help="lay the campaign out as pbcampaign rows")
     plan.add_argument("--spec", required=True)
     plan.add_argument("--workspace", required=True)
+    plan.add_argument("--calibration-cache", default=None,
+                      help="complete capture manifest to hash-bind into every row")
     plan.add_argument("--groups-per-row", type=int, default=1)
     plan.add_argument("--rows-per-box", type=int, default=1,
                       help="how many of these rows one box is meant to run at "

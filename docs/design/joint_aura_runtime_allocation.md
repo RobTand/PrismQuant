@@ -39,6 +39,28 @@ not uncertainty over new calibration data or evidence of generalization.
 The additive sum of local quadratic prices is still a model approximation;
 it does not establish the quality of every joint assignment.
 
+### Packed source projections
+
+`--include-routed-experts` with streamed joint AURA also accepts the existing
+profile-declared `PackedExpertProjection` views. A packed source is observed
+through its actual per-expert `F.linear` slices or `F.grouped_mm` packed
+transposes and cumulative expert row offsets. Its model, expert backend, routing
+and source arithmetic remain intact. Fused gate/up output gradients are split using those
+exact views. Source views refresh at each streaming install and unload, and a
+single hook on each packed leaf serves its logical members. An implementation
+that bypasses the declared Linear boundaries refuses instead of emitting an
+unobserved zero price. A genuinely unrouted member still receives aligned zero
+samples.
+
+The LFM packed block produces 96 source-Linear rows (32 experts times w1/w3/w2),
+with each member's actual rendered weight and activation policy. These require
+original decoded production-cache entries; the on-demand dense renderer is not
+an adapter for packed sources and refuses early. All repeated uses of the SAME
+logical Linear sum while signed before squaring. Different members remain
+separate unary prices under the existing additive objective. A whole-block
+runtime measurement binds the complete roster without inventing a group quality
+price; the explicitly requested diagnostics below remain available.
+
 ## Assignment diagnostics
 
 `joint_aura.assignment_probe_summary` and `paired_assignment_difference`
@@ -176,3 +198,81 @@ wrapper does not infer these experimental inputs or enable this mode.
 The [current-model screen](../measurements/pq237-joint-aura-screen-2026-09-05.md)
 verifies numerical decomposition but shows no selection-quality gain.
 Qualification remains open in #237.
+
+An existing draw can be passed unchanged with `--calibration-input` and its
+independently held `--calibration-input-sha256`. The safetensors artifact contains
+only `calibration_ids` (int64, samples × sequence length); its
+`calibration_provenance` metadata records the original draw, including
+`fit_ids_sha256`, `fit_tokens`, `nsamples`, and `seqlen`. The explicit CLI sample
+and sequence counts must match. This path bypasses dataset sampling and refuses
+`--dataset`. It checks the campaign's int32 token hash and separately records
+the int64 token hash used by joint AURA, with the original seed retained in
+provenance. A WT2 train 32 × 512 torch-randint draw and the retained diverse
+32 × 1024 Fisher draw are different calibrations even when both name seed zero.
+
+The research native bridge in `prismaquant.native_operator_panel` prepares
+reference inputs through the existing PWC, shared activation QDQ, and decoded
+producer wire. `experiments/pq267_native_panel.py` transports those immutable
+artifacts to Tessera's separate `bench_native_operator.py`; PQ imports no
+Tessera serving runtime. A preparation plan freezes the source checkpoint,
+calibration draw, probe seed/count, input row counts, and numerical tolerance
+before native output is observed. Actual joint cost rows must match those
+inputs before the independent panel is frozen. Native preparation facts never
+substitute for numerical references.
+
+Receipt intake verifies the exact panel/runtime/tensor/route bindings, both
+prefill and decode numerical results at the frozen tolerance, and repeated
+single-apply measurements. Native allocation bounds require the accompanying
+memory trace and matching collector identity. The bridge preserves unknown
+native scratch as unknown, and always leaves fixed/full-model resources
+unknown. It produces operator evidence, not a complete runtime table: complete
+table admission still needs independently measured fixed/KV work and the
+serving-unit coverage required above. A readable research rung or a local
+operator parity result does not change the runtime pin or serving gates.
+
+
+The whole routed native bridge (`native_moe_panel.py`, #309) compares actual
+module-local attention/expert selectors between capture and probe; semantic
+config dumps alone do not include these private Transformers selectors. New
+captures record the shared `source_execution_identity`. A legacy boundary
+requires a separate hash-bound fresh source qualification with identical source,
+runtime, calibration, inputs, route IDs/weights, bias and token coordinates.
+The panel seals that proof digest without rewriting the original capture.
+
+The bridge binds one complete
+32-expert LFM E4M3 K1 R1024 stack to all 96 ordered w1/w3/w2 members. It reuses
+`RuntimeBinding` over validated member rows on the same source and signed
+probes, without introducing a scalar group cost. Actual external top-k IDs and
+weights are retained before coercion; supported transport casts must round-trip
+losslessly. The reference calls the existing packed-expert operation and the
+shared QDQ at both input and intermediate boundaries. The scoped measurement
+protocol explicitly disables optional activation preclip and refuses clipped
+joint rows; the global default remains unchanged.
+
+The capture must carry the actual checkpoint initializer descriptor and eager
+backend, with source files/config and calibration bound to the member probes.
+LFM routing uses sigmoid, selection-only expert bias, normalization with its
+source epsilon and the captured final weights; the bridge never renormalizes
+them. A first-sequence M=1 prefix is only an operator shape check, not a served
+autoregressive measurement. Native resource evidence keeps runtime workspace
+separate from layer storage and incremental scratch. Operator observations
+still cannot supply a complete model-fixed or SLO/runtime table.
+
+The preparation/freeze/consume adapter is
+`experiments/pq309_native_moe_panel.py`. Its versioned input plan pins the shared
+capture-v2 manifest and census, original routed PAC file, exact token draw,
+original PWC pickle, all 96 wire/record file hashes, immutable runtime image,
+serving configuration bytes and probe policy. Preparation independently derives
+each producer encoding identity from source weights and the prefetched full
+Hessians before checking original wire decode against PWC. The original router
+weights remain unchanged, with int32 IDs and FP32 weights used only as verified
+lossless transport. The adapter requires the canonical capture-v2 implementation
+and real materialization outputs; historical captures cannot qualify it.
+
+A bounded native integration screen may use only sample zero for its joint
+probes. Preparation verifies the actual subset IDs against the full token draw
+and keeps the full capture/Hessian provenance intact. `probe_scope` binds the
+parent and subset calibration hashes and sample index in the frozen panel and
+observation; the subset hash is the joint currency. Full-draw probes omit the
+subset receipt and carry null `probe_scope`. A subset screen cannot be reported
+as full-draw quality evidence.

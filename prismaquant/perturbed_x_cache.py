@@ -177,6 +177,29 @@ def activation_cache_filename(name: str) -> str:
     return _FNAME_SUB.sub("__", name) + ".pt"
 
 
+def write_activation_cache_entry(cache_dir, name, inputs, *, source="perturbed_x",
+                                 durable=False, **metadata):
+    """Atomically store already-selected rows without changing their precision."""
+    import os
+    path = Path(cache_dir) / activation_cache_filename(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".pt.tmp")
+    with temporary.open("wb") as handle:
+        torch.save({**metadata, "inputs": inputs.contiguous(), "name": name,
+                    "source": source}, handle)
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    if durable:
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    return path
+
+
 def _tensor_hash_update(h: "hashlib._Hash", tensor: torch.Tensor) -> None:
     t = tensor.detach().to("cpu").contiguous()
     h.update(str(tuple(t.shape)).encode())
@@ -1397,10 +1420,7 @@ class PerturbedActivationCache:
             if rows is None or rows.size(0) == 0:
                 continue
             x = rows[:self.input_rows].to(torch.bfloat16).contiguous()
-            torch.save(
-                {"inputs": x, "name": name, "source": "perturbed_x"},
-                self.cache_dir / activation_cache_filename(name),
-            )
+            write_activation_cache_entry(self.cache_dir, name, x)
             written.append(name)
         return {
             "cache_dir": str(self.cache_dir),

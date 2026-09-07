@@ -1,0 +1,28 @@
+{
+  "capture": "/mnt/shared/tessera-measurements/pq300-batch-20260907/capture/capture.json",
+  "capture_sha256": "5977ad6df1b606e65e006418c6feaa4d4e9826f3c69001a6d407011e4aeeb2ad",
+  "decode_rows": 1,
+  "format": "TESSERA_BF16_K1_R1792",
+  "max_resident_bytes": 1073741824,
+  "numerics": {
+    "atol": 0.015625,
+    "rtol": 0.015625
+  },
+  "prefill_rows": 512,
+  "probe_request": {
+    "distribution": "rademacher",
+    "n_probes": 2,
+    "normalization": "global_kl_fisher",
+    "seed_base": 267000,
+    "source_model": "/mnt/shared/models/LFM2.5-8B-A1B-BF16",
+    "source_shards": {
+      "model.safetensors": "c9b9e3c4b3be50b576e6da8c02de1b4223614ffe131d812abf92bb84421f6217"
+    },
+    "temperature": 1.0,
+    "token_scope": "causal"
+  },
+  "runtime_image": "eugr/spark-vllm@sha256:0afec8d4f79f44685a1ddf758659d33aef3b0f3ec9068e5a7cd1108d30e5581c",
+  "schema": "prismaquant.native_dense_preparation.v1",
+  "unit": "model.layers.0.feed_forward.w1",
+  "units": "/mnt/shared/tessera-measurements/tessera385-2026-09-06/units/units.safetensors"
+}

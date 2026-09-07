@@ -793,7 +793,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
                  fp8_scale_inv_map: dict[str, tuple[str, str]] | None = None,
                  ) -> int:
     """Load all tensors whose model-side name starts with any prefix in
-    `prefixes` onto `device` as `dtype`. Uses the checkpoint-side key to
+    `prefixes` onto `device`, with parameters as `dtype` and buffers in their declared dtype. Uses the checkpoint-side key to
     read from safetensors but assigns to the model-side name.
 
     When `fp8_scale_inv_map` is provided, fp8-sourced weights get their
@@ -802,6 +802,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
     cast to bf16. See `_dequant_fp8_block_weight`.
 
     Returns count of tensors loaded."""
+    buffer_dtypes = {name: value.dtype for name, value in model.named_buffers(remove_duplicate=False)}
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
         if any(model_name.startswith(p) for p in prefixes):
@@ -823,7 +824,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
                 if (t.is_floating_point()
                         and not _is_fp8_scaled_tensor(
                             model_name, fp8_scale_inv_map)):
-                    t = t.to(dtype)
+                    t = t.to(buffer_dtypes.get(model_name, dtype))
                 out[model_name] = t
     if fp8_scale_inv_map:
         _apply_fp8_dequant_inplace(out, fp8_scale_inv_map, device)
@@ -1321,9 +1322,13 @@ def _read_layer_to_device(prefix: str,
                               | None = None,
                           pack_experts=None,
                           merge_concat=None,
+                          buffer_dtypes: dict[str, torch.dtype] | None = None,
                           ) -> dict[str, torch.Tensor]:
     """Read all tensors under `prefix` from safetensors and place them
     on `device`. Returns {model_name: device_tensor}.
+
+    `buffer_dtypes` preserves model-declared buffer precision independently
+    of the requested parameter dtype (for example FP32 router bias).
 
     When `fp8_scale_inv_map` is provided, native-FP8 block-scaled
     weights are kept compressed through the host-side read and moved to
@@ -1362,7 +1367,7 @@ def _read_layer_to_device(prefix: str,
                 if (t.is_floating_point()
                         and not _is_fp8_scaled_tensor(
                             model_name, fp8_scale_inv_map)):
-                    t = t.to(dtype)
+                    t = t.to((buffer_dtypes or {}).get(model_name, dtype))
                 if not used_direct:
                     t = t.to(device, non_blocking=True)
                 if not t.is_contiguous():

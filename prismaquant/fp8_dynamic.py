@@ -94,23 +94,20 @@ def fp8_dynamic_activation_qdq_vllm(
     act_f = activation.to(torch.float32)
     rows = act_f.reshape(-1, act_f.shape[-1])
     min_scale = 1.0 / (float(element_max) * 512.0)
+    # CUDA scalar division may multiply by a rounded reciprocal instead. That
+    # moves some scales by one FP32 ULP and can cross an FP8 midpoint. vLLM's
+    # native per-token kernel divides in FP32; keep the denominator on-device
+    # so TensorIterator retains the same operation rather than folding it.
+    denominator = torch.full((), float(element_max), dtype=torch.float32, device=rows.device)
     scale = (
-        rows.abs().amax(dim=-1, keepdim=True) / float(element_max)
+        rows.abs().amax(dim=-1, keepdim=True) / denominator
     ).clamp_min(min_scale)
 
-    if element_dtype != torch.float8_e4m3fn:
-        result = _fallback_fp8_qdq(
-            rows,
-            scale,
-            element_dtype=element_dtype,
-            element_max=element_max,
-        )
-    else:
-        args = FP8_DYNAMIC["input_activations"]
-        zero_point = torch.zeros_like(scale)
-        quant = quantize(rows, scale, zero_point, args, dtype=element_dtype)
-        dequant = quant.to(torch.float32) * scale
-        result = FP8DynamicResult(quant=quant, scale=scale, dequant=dequant)
+    # The native activation kernel directly divides, clamps and casts. Adding
+    # even a zero zero-point (the CT weight/export path) erases negative zero.
+    result = _fallback_fp8_qdq(
+        rows, scale, element_dtype=element_dtype, element_max=element_max,
+    )
 
     return FP8DynamicResult(
         quant=result.quant.reshape(activation.shape),

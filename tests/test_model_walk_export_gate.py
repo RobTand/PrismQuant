@@ -214,8 +214,9 @@ def test_save_load_roundtrip_preserves_the_result_payload(tmp_path):
 
 
 def test_load_walk_refuses_foreign_schema(tmp_path):
-    path = save_walk(_walked(), tmp_path / "walk.json",
-                     provenance=_walked().provenance)
+    result = _walked()
+    path = save_walk(result, tmp_path / "walk.json",
+                     provenance=result.provenance)
     payload = json.loads(path.read_text())
     payload["schema"] = "prismaquant.model_walk.v999"
     path.write_text(json.dumps(payload))

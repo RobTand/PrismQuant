@@ -9,7 +9,7 @@ accepts both physical representations used by PrismaQuant: a packed parameter
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 import torch
@@ -313,6 +313,63 @@ class PackedExpertProjection:
     projection_name: str
     weight: torch.Tensor
 
+    @property
+    def parameter(self) -> nn.Parameter:
+        """The current packed leaf; streaming may replace it between leases."""
+        value = getattr(self.module, self.param_name, None)
+        if not isinstance(value, nn.Parameter) or value.ndim != 3:
+            raise RuntimeError(f"packed projection {self.qname} has no live packed leaf")
+        return value
+
+    @property
+    def output_slice(self) -> slice:
+        """This projection's rows inside its expert's packed Linear output."""
+        parent = self.parameter
+        base = self.weight._base if self.weight._is_view() else self.weight
+        if (base is not parent or self.weight.ndim != 2
+                or self.weight.stride() != parent.stride()[1:]
+                or self.weight.shape[1] != parent.shape[2]
+                or parent.stride(1) <= 0
+                or not 0 <= self.expert_id < parent.shape[0]):
+            raise RuntimeError(f"packed projection {self.qname} is a stale or invalid source view")
+        offset = (self.weight.storage_offset() - parent.storage_offset()
+                  - self.expert_id * parent.stride(0))
+        rows, remainder = divmod(offset, parent.stride(1))
+        stop = rows + self.weight.shape[0]
+        if remainder or rows < 0 or stop > parent.shape[1]:
+            raise RuntimeError(f"packed projection {self.qname} has invalid source row geometry")
+        return slice(rows, stop)
+
+    def gradient_view(self, gradient: torch.Tensor) -> torch.Tensor:
+        if gradient.shape != self.parameter.shape:
+            raise RuntimeError(f"packed projection gradient shape differs for {self.qname}")
+        return gradient[self.expert_id, self.output_slice, :]
+
+
+def refresh_packed_expert_projections(members, profile) -> list[PackedExpertProjection]:
+    """Rebind existing logical views after a streamed install or unload.
+
+    The profile/export split is evaluated once per physical parameter. No
+    checkpoint tensor or rendered tensor is copied or retained separately.
+    """
+    from .export_native_compressed import _split_packed_expert_tensor
+
+    splits = {}
+    refreshed = []
+    for member in members:
+        key = (id(member.module), member.param_name)
+        if key not in splits:
+            splits[key] = dict(_split_packed_expert_tensor(
+                member.parameter, member.param_name, profile))
+        try:
+            weight = splits[key][member.projection_name][member.expert_id]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"packed projection topology changed for {member.qname}") from exc
+        if weight.shape != member.weight.shape:
+            raise RuntimeError(f"packed projection shape changed for {member.qname}")
+        refreshed.append(replace(member, weight=weight))
+    return refreshed
+
 
 def profile_declared_packed_expert_projections(
     model: nn.Module, profile=None,
@@ -373,6 +430,7 @@ __all__ = [
     "UnpackedExpertLinear",
     "PackedExpertProjection",
     "profile_declared_packed_expert_projections",
+    "refresh_packed_expert_projections",
     "profile_declared_routed_expert_targets",
     "profile_declared_unpacked_expert_linears",
     "resolve_routed_expert_profile",

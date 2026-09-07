@@ -609,8 +609,8 @@ def test_tail_veto_default_on_with_kl_max_is_documented():
 # and a doc/driver agreement test with no driver is theatre.
 
 
-def test_three_diagrams_present():
-    assert _doc().count("```mermaid") == 3
+def test_four_diagrams_present():
+    assert _doc().count("```mermaid") == 4
 
 
 def test_docs_index_leads_with_architecture():

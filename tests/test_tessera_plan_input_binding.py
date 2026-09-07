@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "example/runtime@sha256:" + "a" * 64
 
 
-def _run(tmp_path, *, changed=False, manifest="bound", mode="compiled"):
+def _run(tmp_path, *, changed=False, manifest="bound", mode="compiled",
+         derived=False, translate=False, corrupt_derived=False):
     work = tmp_path / "work with spaces"
     for sub in ("artifacts", "logs", "exported"):
         (work / sub).mkdir(parents=True)
@@ -41,7 +42,15 @@ def _run(tmp_path, *, changed=False, manifest="bound", mode="compiled"):
         Path(str(plan) + ".settings.json").write_text(json.dumps({
             "schema": pipeline.STAGE_MANIFEST_SCHEMA, "stages": {"other": {}},
         }))
-    plan.write_text("old translated plan")
+    if not translate:
+        plan.write_text("old translated plan")
+    derived_path = work / "artifacts/derived layer.json"
+    derived_digest = ""
+    if derived:
+        derived_path.write_bytes(assignment.read_bytes())
+        derived_digest = hashlib.sha256(derived_path.read_bytes()).hexdigest()
+        if corrupt_derived:
+            derived_path.write_text("changed after preflight")
     (work / "exported/shipcard.json").write_text("{}")
     if changed:
         assignment.write_text('{"layer": "TESSERA_E4M3_K1_R1024"}')
@@ -66,12 +75,14 @@ python3() {
     # models a preflight that did not do its job.
     local previous=""
     for argument in "$@"; do
-      if [[ "$previous" == "--write-build-json" ]]; then printf '{}\n' > "$argument"; fi
+      if [[ "$previous" == "--write-build-json" ]]; then
+        "$PYTEST_PYTHON" -c 'import json, os, sys; d = {}; p = os.environ.get("TEST_PLAN_ASSIGNMENT"); d.update(plan_assignment=p, plan_assignment_sha256=os.environ["TEST_PLAN_DIGEST"]) if p else None; open(sys.argv[1], "w").write(json.dumps(d))' "$argument"
+      fi
       previous="$argument"
     done
     return 0
   elif [[ "$1" == */plan_from_layer_config.py ]]; then
-    echo "TEST_TRANSLATOR_REACHED" >&2
+    echo "TEST_TRANSLATOR_REACHED:$2" >&2
     return 81
   elif [[ "$1" == */export_tessera_serving.py ]]; then
     echo "TEST_EXPORT_REACHED"
@@ -89,7 +100,9 @@ python3() {
                TESSERA_SERVE_MODE="resident", TESSERA_REPO=str(tmp_path / "producer tree"),
                TARGET_PROFILE_RESOLVED="vllm_tessera", EXPORT_DEVICE="cuda",
                PIPELINE_SCRIPT_DIR=str(ROOT / "prismaquant"),
-               STAGE_SETTINGS_PATH=str(stage_path), PYTEST_PYTHON=sys.executable)
+               STAGE_SETTINGS_PATH=str(stage_path), PYTEST_PYTHON=sys.executable,
+               TEST_PLAN_ASSIGNMENT=str(derived_path) if derived else "",
+               TEST_PLAN_DIGEST=derived_digest)
     return subprocess.run(["bash", "-c", preamble + helper + block], env=env,
                           cwd=ROOT, capture_output=True, text=True, timeout=30)
 
@@ -145,3 +158,25 @@ def test_printed_census_recipe_keeps_raw_scope_and_bound_allocation(tmp_path, mo
     assert tokens[tokens.index("--layer-config") + 1] == str(tmp_path / "work with spaces/artifacts/layer_config.json")
     assert tokens[tokens.index("--model-dir") + 1] == str(tmp_path / "work with spaces/exported")
     assert "--priced-route" not in tokens
+
+
+def test_actual_driver_translates_the_preflight_source_assignment(tmp_path):
+    result = _run(tmp_path, derived=True, translate=True, manifest="missing")
+    assert result.returncode == 81, result.stdout + result.stderr
+    assert "TEST_TRANSLATOR_REACHED:" + str(tmp_path / "work with spaces/artifacts/derived layer.json") in result.stdout
+    assert "TEST_EXPORT_REACHED" not in result.stdout
+
+
+def test_actual_driver_refuses_a_changed_derived_plan_assignment(tmp_path):
+    result = _run(tmp_path, derived=True, translate=True, manifest="missing", corrupt_derived=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "derived Tessera plan assignment changed" in result.stderr
+    assert "TEST_TRANSLATOR_REACHED" not in result.stderr
+    assert "TEST_EXPORT_REACHED" not in result.stdout
+
+
+def test_actual_driver_refuses_a_cached_plan_unbound_to_derived_assignment(tmp_path):
+    result = _run(tmp_path, derived=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "PLAN_ASSIGNMENT_DIGEST" in result.stdout + result.stderr
+    assert "TEST_EXPORT_REACHED" not in result.stdout
