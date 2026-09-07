@@ -1,7 +1,44 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `feat/packed-joint-aura`. Stamps
+As of: 2026-09-07 · `integration/native-moe-panel`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `integration/native-moe-panel`) for **whole routed native
+operator evidence** (#309). `prismaquant.native_moe_panel` retains original
+routed inputs and all 96 ordered source/PWC/wire members of one 32-expert LFM
+stack. Canonical checkpoint initialization, actual eager attention, source
+files/config and exact calibration are required. Freezing also compares the
+actual attention/expert backend selectors for every source module with the
+joint probe. A retained capture without selectors needs an independently hashed
+source replay that reproduces all five original boundary tensors bit-exactly;
+the original capture remains unchanged and the qualification is sealed in the
+panel. The existing packed-expert
+reference applies the shared activation QDQ at both GEMM boundaries. Native
+measurements bind all aligned joint rows through `RuntimeBinding`; no new
+scalar group cost or sum of leaf timings is produced. Persistent vLLM workspace
+is recorded separately from layer residency and per-apply scratch, with
+full-model fixed resources and workspace composition still unknown. This is a
+research boundary; no format, pin, serving gate or production default changes.
+The research CLI `experiments/pq309_native_moe_panel.py` consumes the existing
+canonical capture-v2 PAC boundary and original PWC/wire artifacts; it re-derives
+encoder identities from the pinned full Hessians and retains lossless routing
+transport. An optional first-sequence integration screen verifies actual subset
+IDs against the full draw and preserves both identities in `probe_scope`; it
+never relabels subset joint rows as full-draw quality. It does not render a
+replacement cache.
+Gate: `tests/test_native_moe_panel.py`.
+
+Re-stamped (2026-09-07, `fix/lfm-streamed-parity`) for **checkpoint missing-state
+initialization**. The shared Transformers compatibility hook suppresses random
+initialization for from-config skeletons, but enables the genuine initializer
+inside ordinary checkpoint missing-state finalization. A context-local scope
+prevents exceptions or concurrent skeleton construction from leaking that
+permission. This restores nonpersistent buffers (including LFM rotary frequency
+buffers) rematerialized by Transformers with uninitialized storage. Successfully
+finalized models expose `prismaquant.pretrained_initialization.v1` through
+`pretrained_initialization_contract`; from-config models and malformed descriptors
+refuse. This descriptor records the checkpoint load phase, not later model
+mutations. Gate: `tests/test_pretrained_buffer_initialization.py`.
 
 Re-stamped (2026-09-07, `feat/packed-joint-aura`) for **joint costs for
 profile-declared packed source Linears** (#313). Opt-in streamed joint AURA

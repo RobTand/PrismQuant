@@ -223,30 +223,12 @@ def consume_native_receipt(path, *, expected_sha256, expected_panel, memory_trac
                 or route.get("shape") != f"M{expected['m']}:N{expected_panel['shape'][0]}:K{expected_panel['shape'][1]}"):
             raise ValueError(f"{phase}: native route state/shape differs")
         for kind in ("numerics", "qdq_numerics"):
-            error = observed[kind]
-            if error.get("status") != "passed" or error.get("finite") is not True:
-                raise ValueError(f"{phase}: refused native numerical comparison")
-            _equal({key: error[key] for key in ("atol", "rtol")}, expected_panel["numerics"], f"{phase} tolerance")
-            if _number(error["max_normalized_error"], "normalized numerical error") > 1:
-                raise ValueError(f"{phase}: numerical error exceeds frozen tolerance")
-        timing = observed["measurement"]
-        if timing.get("sample_unit") != "single_apply":
-            raise ValueError("native timing is not repeated individual operator invocations")
-        measurement = OperatorMeasurement.from_dict({key: timing[key] for key in
-            ("method", "samples_ms", "warmup_iterations")} | {
-                "receipt_path": str(path), "receipt_sha256": expected_sha256})
+            validate_native_numerics(observed[kind], expected_panel["numerics"], phase=phase, kind=kind)
+        measurement = native_operator_measurement(observed["measurement"], path=path, expected_sha256=expected_sha256)
         bound = resources["phases"][phase].get("bound")
         scratch = None
         if complete:
-            if (bound.get("status") != "complete_operator_bound"
-                    or bound.get("full_model_fixed_resources_complete") is not False
-                    or bound.get("composition") != "sum_of_independent_peaks_including_output"):
-                raise ValueError(f"{phase}: native resource scope/bound mismatch")
-            native = _bytes(bound["external_native_peak_bytes"], "external native peak")
-            torch_peak = _bytes(bound["torch_peak_increment_bytes"], "torch peak")
-            scratch = _bytes(bound["peak_scratch_bytes"], "scratch")
-            if scratch != native + torch_peak:
-                raise ValueError(f"{phase}: resource peaks do not compose to the declared bound")
+            scratch = native_operator_scratch(bound, phase=phase)
         observations[phase] = {"measurement": measurement.as_dict(), "median_ms": measurement.median_ms,
                                "peak_scratch_bytes": scratch, "resource_bound": bound,
                                "input_bytes": expected["input"]["logical_bytes"],
@@ -259,3 +241,35 @@ def consume_native_receipt(path, *, expected_sha256, expected_panel, memory_trac
             "resident_bytes": _bytes(resources["resident_bytes"], "resident"),
             "full_model_resources": None, "runtime_table_admissible": False,
             "unknown": ["fixed_and_full_model_resources"] + ([] if complete else ["native_operator_scratch"])}
+
+
+def validate_native_numerics(error, numerics, *, phase, kind):
+    """The shared frozen numerical gate for dense and whole routed operators."""
+    if error.get("status") != "passed" or error.get("finite") is not True:
+        raise ValueError(f"{phase}: refused native {kind} comparison")
+    _equal({key: error[key] for key in ("atol", "rtol")}, numerics, f"{phase} tolerance")
+    if _number(error["max_normalized_error"], "normalized numerical error") > 1:
+        raise ValueError(f"{phase}: numerical error exceeds frozen tolerance")
+
+
+def native_operator_measurement(timing, *, path, expected_sha256):
+    """Keep exact repeated whole-apply observations through the existing type."""
+    if timing.get("sample_unit") != "single_apply":
+        raise ValueError("native timing is not repeated individual operator invocations")
+    return OperatorMeasurement.from_dict({key: timing[key] for key in
+        ("method", "samples_ms", "warmup_iterations")} | {
+            "receipt_path": str(path), "receipt_sha256": expected_sha256})
+
+
+def native_operator_scratch(bound, *, phase):
+    """Read the producer's conservative two-domain bound; retain its scope."""
+    if (not isinstance(bound, dict) or bound.get("status") != "complete_operator_bound"
+            or bound.get("full_model_fixed_resources_complete") is not False
+            or bound.get("composition") != "sum_of_independent_peaks_including_output"):
+        raise ValueError(f"{phase}: native resource scope/bound mismatch")
+    native = _bytes(bound["external_native_peak_bytes"], "external native peak")
+    torch_peak = _bytes(bound["torch_peak_increment_bytes"], "torch peak")
+    scratch = _bytes(bound["peak_scratch_bytes"], "scratch")
+    if scratch != native + torch_peak:
+        raise ValueError(f"{phase}: resource peaks do not compose to the declared bound")
+    return scratch
