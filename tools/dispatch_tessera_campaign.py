@@ -69,6 +69,9 @@ from pathlib import Path
 if __package__:
     from .tessera_campaign_container import validate_container
 else:
+    # Direct script execution puts only tools/ on sys.path. Planning also
+    # reads the shared calibration contract from the sibling package.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from tessera_campaign_container import validate_container
 
 PBCAMPAIGN = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbcampaign.py")
