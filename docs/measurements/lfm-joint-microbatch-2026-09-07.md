@@ -176,3 +176,57 @@ An off-task PrismaBuild capability gap was filed as
 value parsing cannot express a GPU-memory cap separately from aggregate memory.
 The full and operator-screen actions were submitted as independent ordinary PB
 quanta with explicit caps. PrismaBuild retained placement and admission ownership.
+
+
+## Full canonical calibration completed
+
+The pending full draw subsequently completed under the qualified activation
+policy. PB action
+`38ec1f47fee64d8f33c38f3644d2ea432355fc76130809f2ffc27487740ff19b`
+finished on Sparky with exit 0, empty stderr, complete resource cleanup and no
+OOM events. Its independently rehashed CAS payload is
+`9474451605ce6ab7a6e672ebcc9f90e446494552c5cf3f72f897bfadbff59e0f`;
+the receipt digest is
+`d3b11de544a27c80dd49bc6705e3d0a2e485a948b16b02afc60d3cec658cbd9c`.
+
+`full512-batch1/joint-cost.json`, SHA256
+`5e94df0523a161e40931b4610c14b8b6667abd05057d4df58c1e3392091d20d8`,
+prices the same 96 layer-2 w1/w3/w2 members and original PWC bytes using all
+512 canonical sequences, with four probes and 512 complete-sequence partitions.
+There are 192 candidate rows. Every signed vector is finite, has seeds
+7000–7003, and reproduces its stored unary prediction by half the mean square;
+all BF16 candidate costs are zero. The 96 quantized unary predictions sum to
+0.0037147759697539395. This sum is a sum of per-Linear predictions, not measured
+KL or a coherent whole-block quadratic. This full-draw artifact is distinct
+from the row-0 operator-panel screen above.
+
+Its global-row noise identity binds `[512,512]`, vocabulary 128000 and global
+token count 262144. The arithmetic identity binds batch size 1 and 512
+partitions. The producer digest remains
+`41f67d31422d3b41605cd5587a5d3432e2b38e1f4a0868c5694e6891cece679f`.
+The full canonical safetensors artifact itself is supplied as the subset input,
+so its original metadata/path and SHA remain unchanged. The checkpoint manifest
+and all 96 completed unit shards are retained and hashed alongside the cost.
+This run establishes completed checkpoint production; it did not repeat the
+full job to demonstrate resume, whose refusal/recovery behavior is covered by
+the targeted regression suite.
+
+The full run captured 26,843,545,600 bytes of CPU decoder boundaries. It made
+2048 tail calls, all with logits shape `[1,512,128000]`. Peak PyTorch GPU
+allocation was **20,751,726,080 bytes** and peak reserved GPU memory was
+23,603,445,760 bytes. PB reported a separate cgroup memory peak of
+38,643,929,088 bytes under the 80 GiB aggregate reservation and 32 GiB GPU cap.
+These counters describe different memory views and are not added together or
+presented as the system's total physical-memory peak. Host boundaries and probe
+cotangents grow with the full draw; the existing resident GPU source cache is
+already included in PyTorch's allocation count.
+
+The PB wrapper elapsed 963.23 seconds; the harness marked this as a correctness
+phase without an in-process profile. Both hosts' raw Netdata series are retained.
+This is completion and allocation evidence, not a speedup or bottleneck claim;
+the earlier paired three-row controls carry the in-process memory profiles.
+The final manifest now hashes **226 artifacts totaling 1,002,043,668 bytes**,
+including full results, checkpoint shards, both-host telemetry, exact action
+requests, terminal logs and verified CAS receipts. No full-calibration task
+remains pending for this 96-member qualification, and no default or serving
+gate changes as a consequence of it.
