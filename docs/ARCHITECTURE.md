@@ -15,6 +15,23 @@ sampled rungs that name a format rather than a family. No prices, formats,
 defaults or serving gates change. Gate:
 `tests/test_tessera_campaign_merge_integrity.py`.
 
+Re-stamped (2026-09-06, `fix/stack-campaign-integration`) for **the packed
+probe-to-campaign selection boundary** (§4.10; RobTand/prismaquant#293).
+The planner accepts the original packed probe, draws once per profile-defined
+packed parameter, and persists the exact Fisher vector and stack multiplier,
+full-frame inclusion probabilities, draw receipt, and audit experts in each
+selection. Gate/up projections of one parameter share expert IDs at every
+rung. Campaign intake reconstructs `StackExpertSample`, replays the draw,
+checks whole-census and sampled projection membership, and passes those
+records to `campaign_cost_payload`. The checkpoint binds the probe/draw
+values and audit subset in `stack_sampling_identity`; equal measured-unit
+names alone cannot establish equal stack prices. Allocation reads the original
+packed probe. Missing export wires or static scales remain refusals. CPU
+regressions use attributable LFM probe data to exercise the planner and
+supported Tessera shapes to exercise scoped `allocator.main()`; they make
+no served-quality or performance claim. Gate:
+`tests/test_tessera_stack_driver_integration.py`.
+
 Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **what a
 campaign quantum measures: the expert sample, the rate band, and the refusal
 of an empty menu** (§4.10; RobTand/prismaquant#282, #291). Three changes, each
@@ -7224,6 +7241,18 @@ Two properties make the numbers comparable with the rest of the menu:
   from the probe row and the profile's `packed_expert_projection_names`, never
   from a hardcoded projection split -- and emits **one row per (family, rung)
   keyed at the packed parameter's own qname**.
+
+  `dispatch_tessera_campaign.py plan --stack-sample N --probe probe.pkl`
+  consumes the original packed probe. Each v2 selection group carries
+  `stack_samples`, keyed by packed qname, containing the probe's exact
+  `h_trace` and `h_trace_per_expert`, expert count and module/parameter names,
+  full-frame inclusion probabilities, seed, draw receipt and audit IDs.
+  `selection_stack_samples` rebuilds the profile-derived projections and
+  refuses inconsistent frame, sampled, probability or audit membership.
+  The CLI passes the reconstructed records into the payload builder, so its
+  output and population use packed decision keys. The same records are bound
+  by value in the checkpoint's `stack_sampling_identity` and retained in
+  selection provenance for fanout merging.
 
   That key is the fix. It is a row the probe already has, carrying
   `_packed_experts_module` and `num_experts`, so

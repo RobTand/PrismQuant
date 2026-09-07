@@ -100,6 +100,7 @@ __all__ = [
     "draw_stack_sample",
     "load_calibration_census",
     "load_unit_selection",
+    "selection_stack_samples",
     "main",
     "next_anchor_rate",
     "report_empty_menus",
@@ -1322,7 +1323,7 @@ def _checkpoint_identity_api():
 def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
                                   calibration_identity, serving_scope,
                                   static_scales, static_scale_policy,
-                                  expert_projection=None):
+                                  expert_projection=None, stack_sampling_identity=None):
     """Bind the priced population, including score inputs when H is off.
 
     The static A-side contract is a scoring input like the score rows: the
@@ -1344,7 +1345,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
     # ``units``, ``calibration_census`` and ``census_out`` are locations too,
     # and each one's load-bearing content is already bound by value somewhere
     # in this identity: the selection by the ``units`` map below (which holds
-    # exactly the selected units), the census by ``calibration.fit_tokens`` /
+    # exactly the selected units) and ``stack_sampling_identity`` (the probe,
+    # inclusion probabilities and audit draw), the census by ``calibration.fit_tokens`` /
     # ``fit_tokens_min``, and ``census_out`` by nothing, because a census run
     # writes no checkpoint. Binding the paths instead would make two shards
     # given the same selection under different filenames two identities, and
@@ -1358,6 +1360,8 @@ def _campaign_checkpoint_identity(*, weights, acts, hessians, menus, args,
                  "seed_checkpoint", "seed_wire_dir"):
         settings.pop(name, None)
     return {
+        **({"stack_sampling_identity": stack_sampling_identity}
+           if stack_sampling_identity else {}),
         "campaign_schema": SCHEMA,
         "currency": CURRENCY,
         "settings": settings,
@@ -2137,7 +2141,7 @@ def load_unit_selection(path) -> dict:
                 f"--units {path}: a group entry is not {{key, members[]}}")
         if schema == UNITS_SCHEMA and any(
                 field in entry for field in ("sampled", "audit",
-                                             "inclusion_probability")):
+                                             "inclusion_probability", "stack_samples")):
             raise RuntimeError(
                 f"--units {path}: group {entry['key']!r} carries a sample, "
                 f"which is a {UNITS_SCHEMA_V2} field; a file that samples "
@@ -2167,6 +2171,71 @@ def load_unit_selection(path) -> dict:
                 f"--units {path}: group {entry['key']!r} audits without "
                 "sampling")
     return selection
+
+
+def selection_stack_samples(selection: Mapping, profile) -> dict[str, StackExpertSample]:
+    """Rehydrate packed probe/draw records and bind them to the whole group.
+
+    A selection may narrow measured experts; it may not invent projections,
+    lose an expert from the frame, or give two roles different expert draws.
+    Legacy unsampled selections retain their existing per-unit behavior.
+    """
+    result = {}
+    for entry in selection["groups"]:
+        records = entry.get("stack_samples")
+        if records is None:
+            if entry.get("sampled") and str(entry["key"]).startswith("s:"):
+                raise StackSampleError(
+                    f"{entry['key']}: sampled stack requires original packed probe/draw records")
+            continue
+        if not isinstance(records, Mapping) or not records:
+            raise StackSampleError(f"{entry['key']}: stack_samples must name packed parameters")
+        frame_members, sampled_members, frame_pi, audit_members = set(), set(), {}, set()
+        for name, record in sorted(records.items()):
+            if name in result:
+                raise StackSampleError(f"{name}: duplicate packed sampling record")
+            sample = stack_sample_from_probe(
+                name, record["probe_row"], profile,
+                sampled_experts=record["sampled_experts"],
+                inclusion_prob=record["inclusion_prob"], seed=record["seed"],
+                design=record["design"])
+            _validate_stack_sample(sample)
+            replay = draw_stack_sample(
+                {str(e): h for e, h in enumerate(sample.h_trace_per_expert)},
+                len(sample.sampled_experts), seed=sample.seed, stack=name)
+            if (record.get("draw") != replay or sample.design != replay["method"]
+                    or list(sample.sampled_experts) != sorted(int(e) for e in replay["units"])
+                    or dict(sample.inclusion_prob) != {
+                        int(e): p for e, p in replay["inclusion_probability"].items()}):
+                raise StackSampleError(f"{name}: packed draw receipt does not replay from probe and seed")
+            if set(sample.inclusion_prob) != set(range(sample.num_experts)):
+                raise StackSampleError(f"{name}: selection needs full-frame inclusion probabilities")
+            if entry["key"] != "s:" + sample.packed_experts_module:
+                raise StackSampleError(f"{name}: packed module disagrees with anchor group")
+            frame = stack_sample_from_probe(
+                name, record["probe_row"], profile,
+                sampled_experts=range(sample.num_experts),
+                inclusion_prob={e: 1.0 for e in range(sample.num_experts)},
+                seed=sample.seed, design="census")
+            for e, members in frame.members.items():
+                for member in members:
+                    if member in frame_members:
+                        raise StackSampleError(f"{member}: two packed parameters claim one projection")
+                    frame_members.add(member)
+                    frame_pi[member] = sample.inclusion_prob[e]
+                    if e in record.get("audit_experts", []):
+                        audit_members.add(member)
+            sampled_members.update(m for members in sample.members.values() for m in members)
+            result[name] = sample
+        if frame_members != set(entry["members"]):
+            raise StackSampleError(f"{entry['key']}: packed probe projections disagree with census members")
+        if sampled_members != set(entry.get("sampled", entry["members"])):
+            raise StackSampleError(f"{entry['key']}: packed draw disagrees with sampled members")
+        if audit_members != set(entry.get("audit", [])):
+            raise StackSampleError(f"{entry['key']}: packed audit disagrees with audit members")
+        if frame_pi != entry.get("inclusion_probability"):
+            raise StackSampleError(f"{entry['key']}: packed draw disagrees with full-frame probabilities")
+    return result
 
 
 def selection_priced_units(selection: Mapping) -> tuple[set, set, dict]:
@@ -3056,11 +3125,16 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         raise RuntimeError("--census-out writes a census; it does not read one")
 
     selection = None
+    stack_samples = {}
     selected_groups: list[str] = sorted(scope_groups)
     audit_units: set = set()
     inclusion_probability: dict = {}
     if args.units:
         selection = load_unit_selection(args.units)
+        if (selection.get("model", args.model) != args.model
+                or selection.get("layer_stride", args.layer_stride) != args.layer_stride):
+            raise StackSampleError("--units model/layer_stride disagrees with this campaign")
+        stack_samples = selection_stack_samples(selection, profile)
         selected_groups = select_anchor_groups(
             selection, scope_groups, where=f"--units {args.units}")
         priced, audit_units, inclusion_probability = selection_priced_units(
@@ -3274,6 +3348,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                        if serving_target is not None else None),
         static_scales=static_scales, static_scale_policy=static_scale_policy,
         expert_projection=expert_projection,
+        stack_sampling_identity={name: record
+            for entry in (selection or {}).get("groups", [])
+            for name, record in entry.get("stack_samples", {}).items()},
     )
     journal, identity_sha256, resumed = prepare_journal(
         checkpoint.with_name(checkpoint.name + ".parts"), manifest_path=checkpoint,
@@ -3679,7 +3756,7 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # which experts stand for their stack and under what inclusion
             # probability. This travels with the prices because an estimate
             # built from them is only unbiased if the reader knows the pi it
-            # was drawn under; #290 turns these into the stack's row.
+            # was drawn under; the packed draw records build the stack rows.
             "rate_band": (None if rate_band is None
                           else [int(rate_band[0]), int(rate_band[1])]),
             "unit_selection_sample": {
@@ -3711,14 +3788,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             # Rows this run did not encode itself, and where they came from.
             # None when every row was measured here.
             "seed_checkpoint": seed_provenance,
-            "unit_selection": {
+            "unit_selection": ({**selection, "selected": True} if selection else {
                 "schema": UNITS_SCHEMA,
                 "selected": True if args.units else False,
                 "groups": [
                     {"key": key, "members": list(scope_groups[key])}
                     for key in sorted(selected_groups)
                 ],
-            },
+            }),
             # The scope every shard shares: the enumeration the population
             # block is built from, the full grouping, and the census the
             # Hessian identity's token counts came from.
@@ -3849,13 +3926,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     }
     payload = campaign_cost_payload(
         measured, menus, loo=loo, provenance=provenance,
-        wire_backed=frozenset(projected_units))
+        wire_backed=frozenset(projected_units), stack_samples=stack_samples)
     # Empty menus, failed anchors and interrupted work do not establish a
     # price. Publish coverage only after the cost rows have been constructed.
     payload["provenance"][POPULATION_KEY] = _population_block(
         dense_targets=dense_targets, expert_targets=expert_targets,
         dense_all=all_dense, pinned=pinned, population=population,
-        layer_stride=int(args.layer_stride), costs=payload["costs"], menus=menus)
+        layer_stride=int(args.layer_stride), costs=payload["costs"], menus=menus,
+        stack_samples=stack_samples, profile=profile)
     if projected_units:
         # The producer's receipts for every priced expert wire, keyed by unit
         # then rung; the allocator carries the selected rung's receipt into

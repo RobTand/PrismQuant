@@ -283,16 +283,10 @@ def _parse_row_table(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def load_probe_h_trace(path) -> dict:
-    """``{unit name: h_trace}`` from a probe, per expert, or a refusal.
+    """Read original packed probe rows, preserving the allocator's multiplier.
 
-    The planner draws proportional to importance, so it needs a per-EXPERT
-    importance and not a per-stack one. A probe whose routed rows are still
-    packed stacks cannot answer that question, and the honest response is to
-    say so and stop: uniform sampling of a stack whose ``h_trace`` spans two
-    orders of magnitude is measurably biased (-6..-28 % on campaign-01's own
-    table) and the bias does not shrink with the sample size, so falling back
-    to it would silently trade a refusal for a wrong number.  Expanding a
-    packed probe row into per-expert rows is PrismaQuant #290's job.
+    Sampling needs the full per-expert Fisher vector AND packed topology. An
+    expanded per-expert probe cannot establish that identity and is refused.
     """
     import pickle
 
@@ -300,88 +294,73 @@ def load_probe_h_trace(path) -> dict:
     stats = probe.get("stats") if isinstance(probe, dict) else None
     if not isinstance(stats, dict):
         raise RuntimeError(f"--probe {path}: no 'stats' map to read h_trace from")
-    out: dict[str, float] = {}
-    for name, row in stats.items():
-        if not isinstance(row, dict) or "h_trace" not in row:
-            continue
-        value = row["h_trace"]
-        if value is None:
-            continue
-        out[str(name)] = float(value)
-    if not out:
-        raise RuntimeError(f"--probe {path}: no row carries an h_trace")
-    return out
+    return {str(name): row for name, row in stats.items()
+            if isinstance(row, dict) and row.get("_packed_experts_module")}
 
 
-def unit_role(name: str) -> str:
-    """The projection a unit is, e.g. ``w1`` -- the last name segment."""
-    return name.rsplit(".", 1)[-1]
+def sample_stack_groups(groups, probe_rows, *, profile, stack_sample: int,
+                        seed: int, audit_rate: int) -> dict:
+    """Draw once per profile-defined packed parameter, across all its roles.
 
-
-def sample_stack_groups(groups, h_trace, *, stack_sample: int, seed: int,
-                        audit_rate: int) -> dict:
-    """``{group key: {sampled, audit, inclusion_probability, per_role}}``.
-
-    Only ``s:`` groups -- the packed routed stacks -- are sampled.  A dense
-    or fused group is the decision unit itself and is priced whole.
-
-    The draw is per (stack, ROLE), which is what the coordinator's measurement
-    is about: ``h_trace`` differs by role inside one stack (on LFM2.5 layer 18
-    the ``w2`` values are roughly twice the ``w1``/``w3`` ones), so one draw
-    over all three roles would be proportional to an average nobody allocates
-    on.  The three per-role draws share the group's rung grid, which is what
-    keeps the anchor placement a group property.
+    The same expert IDs and full-frame inclusion probabilities are persisted
+    for every projection and rung. The original probe remains the allocator
+    input; no per-expert expansion changes its topology or Fisher currency.
     """
-    from prismaquant.tessera_campaign import audit_subsample, draw_stack_sample
+    from prismaquant.tessera_campaign import (
+        audit_subsample, draw_stack_sample, stack_sample_from_probe,
+        _validate_stack_sample, selection_stack_samples)
 
-    sampled: dict[str, dict] = {}
+    sampled = {}
     for key, members in sorted(groups.items()):
         if not str(key).startswith("s:"):
             continue
-        by_role: dict[str, list[str]] = {}
-        for name in members:
-            by_role.setdefault(unit_role(name), []).append(name)
-        drawn: set[str] = set()
-        audit: set[str] = set()
-        pi: dict[str, float] = {}
-        per_role: dict[str, dict] = {}
-        for role, names in sorted(by_role.items()):
-            missing = [n for n in names if n not in h_trace]
-            if missing:
-                raise RuntimeError(
-                    f"anchor group {key} role {role}: the probe carries no "
-                    f"h_trace for {len(missing)} of {len(names)} experts "
-                    f"(e.g. {missing[0]}); a proportional draw is impossible "
-                    "and a uniform one is measurably biased. Expand the "
-                    "probe's packed rows per expert (PrismaQuant #290) or "
-                    "price the stack whole.")
-            draw = draw_stack_sample({n: h_trace[n] for n in names},
-                                     stack_sample, seed=seed,
-                                     stack=f"{key}|{role}")
-            role_audit = audit_subsample(draw["units"], rate=audit_rate,
-                                         seed=seed, stack=f"{key}|{role}")
-            drawn.update(draw["units"])
-            audit.update(role_audit)
-            pi.update({n: draw["inclusion_probability"][n]
-                       for n in draw["units"]})
-            # Everything a Horvitz-Thompson estimate and its Hartley-Rao
-            # standard error need, stamped where a reader can check the draw
-            # arithmetically instead of trusting a PRNG to be stable: the
-            # inclusion probabilities, the permutation and the systematic
-            # start re-derive the sample exactly. Computing that estimate is
-            # PrismaQuant #290's job, not this planner's.
-            per_role[role] = {
-                "method": draw["method"], "seed": draw["seed"],
-                "frame_size": draw["frame_size"],
-                "size_sha256": draw["size_sha256"],
-                "units": draw["units"], "certainty": draw["certainty"],
-                "random_draws": draw["random_draws"],
-                "permutation": draw["permutation"], "start": draw["start"],
-                "inclusion_probability": draw["inclusion_probability"],
-                "audit": role_audit}
-        sampled[key] = {"sampled": sorted(drawn), "audit": sorted(audit),
-                        "inclusion_probability": {n: pi[n] for n in sorted(pi)},
-                        "per_role": per_role}
+        records, drawn, audit, pi = {}, set(), set(), {}
+        for name, row in sorted(probe_rows.items()):
+            if "s:" + str(row.get("_packed_experts_module")) != key:
+                continue
+            frame = stack_sample_from_probe(
+                name, row, profile, sampled_experts=range(int(row["num_experts"])),
+                inclusion_prob={e: 1.0 for e in range(int(row["num_experts"]))},
+                seed=seed, design="census")
+            _validate_stack_sample(frame)
+            draw = draw_stack_sample(
+                {str(e): h for e, h in enumerate(frame.h_trace_per_expert)},
+                stack_sample, seed=seed, stack=name)
+            audit_ids = audit_subsample(draw["units"], rate=audit_rate,
+                                       seed=seed, stack=name)
+            experts = sorted(int(e) for e in draw["units"])
+            # Only fields read by the constructor: JSON-portable values copied
+            # exactly from the probe, rather than a second normalized weight.
+            probe_row = {
+                "_packed_experts_module": frame.packed_experts_module,
+                "_packed_param": frame.packed_param,
+                "num_experts": frame.num_experts,
+                "h_trace": frame.stack_h_trace,
+                "h_trace_per_expert": list(frame.h_trace_per_expert),
+            }
+            records[name] = {
+                "probe_row": probe_row, "sampled_experts": experts,
+                "inclusion_prob": dict(draw["inclusion_probability"]),
+                "seed": seed, "design": draw["method"], "draw": draw,
+                "audit_experts": sorted(int(e) for e in audit_ids),
+            }
+            for expert, names in frame.members.items():
+                for member in names:
+                    pi[member] = draw["inclusion_probability"][str(expert)]
+                    if expert in experts:
+                        drawn.add(member)
+                    if str(expert) in audit_ids:
+                        audit.add(member)
+        if not records:
+            raise RuntimeError(
+                f"anchor group {key}: original packed probe rows with "
+                "h_trace_per_expert are required; expanded probes cannot price stacks")
+        entry = {"key": key, "members": sorted(members),
+                 "sampled": sorted(drawn), "audit": sorted(audit),
+                 "inclusion_probability": dict(sorted(pi.items())),
+                 "stack_samples": records}
+        selection_stack_samples({"groups": [entry]}, profile)
+        sampled[key] = {k: v for k, v in entry.items() if k not in ("key", "members")}
     return sampled
 
 
@@ -412,10 +391,10 @@ def cmd_plan(args) -> int:
         if not args.probe:
             raise RuntimeError(
                 "--stack-sample needs --probe: the draw is proportional to "
-                "the probe's per-expert h_trace, and there is no unbiased "
-                "draw without it")
+                "the packed probe's per-expert h_trace")
+        from prismaquant.model_profiles import detect_profile
         stack_sample = sample_stack_groups(
-            groups, load_probe_h_trace(args.probe),
+            groups, load_probe_h_trace(args.probe), profile=detect_profile(spec["model"]),
             stack_sample=int(args.stack_sample), seed=int(args.stack_sample_seed),
             audit_rate=int(args.audit_rate))
         priced = sum(len(entry["sampled"]) for entry in stack_sample.values())
@@ -438,10 +417,7 @@ def cmd_plan(args) -> int:
         for key in bundle:
             entry = {"key": key, "members": sorted(groups[key])}
             if key in stack_sample:
-                entry["sampled"] = list(stack_sample[key]["sampled"])
-                entry["audit"] = list(stack_sample[key]["audit"])
-                entry["inclusion_probability"] = dict(
-                    stack_sample[key]["inclusion_probability"])
+                entry.update(stack_sample[key])
             entries.append(entry)
         selection = {
             # A file that samples says so in its schema; one that does not
