@@ -1,7 +1,23 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-06 · `claude/pq280-projection-family-ladder`. Stamps
+As of: 2026-09-06 · `main-campaign/pq282-campaign-fanout`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-06, `main-campaign/pq282-campaign-fanout`) for **the
+anchor campaign's execution contract** (§4.10; RobTand/prismaquant#282). The
+campaign was one exclusive GPU action and the second GB10 sat idle beside it.
+`--units` selects fused anchor groups to measure and narrows the checkpoint
+identity with the selection; `--census-out` / `--calibration-census` carry the
+three scope-wide answers no shard may re-derive (the calibration row counts
+behind `fit_tokens`, the fused-unified activation maxima behind
+`input_global_scale`, and the producer's whole-scope expert projection);
+`--seed-checkpoint` offers an in-flight campaign's anchors to this run's own
+row gates. `tools/dispatch_tessera_campaign.py` is census/plan/submit/merge
+over `pbcampaign`, and the merge unions disjoint captures into the object a
+whole-scope run writes, recomputes its digest and refuses on any identity the
+rows do not already share. No cost model, format menu, serving lane, ship gate
+or byte change: a whole-scope invocation with no new flag behaves exactly as
+before. Gate: `tests/test_tessera_campaign_fanout.py`.
 
 Re-stamped (2026-09-06, `claude/pq280-projection-family-ladder`) for **the
 nominal rung the campaign plans a packed-expert stack on** (§4.10;
@@ -6879,6 +6895,75 @@ recomputing or relabelling the old result. Output/cache paths and the wall-clock
 interruption limit are not numerical inputs; moving them is allowed only if
 the same manifest, unit journal and verified priced wire remain available.
 The producer API is required; an older producer without it refuses.
+
+**The campaign fans out per anchor group** (`--units`, `--census-out`,
+`--calibration-census`, `--seed-checkpoint`; `tools/dispatch_tessera_campaign.py`;
+RobTand/prismaquant#282). It was one exclusive GPU action -- `--layer-stride`
+was the only scope control and the adaptive rounds turned inside one process --
+so the second GB10 sat idle beside it. `--units` takes a
+`prismaquant.tessera_campaign_units.v1` selection of **fused anchor groups**,
+checked member for member against the grouping the run itself resolves, and the
+checkpoint identity narrows to exactly the selected units, so disjoint
+selections never contend for one journal. The group is the quantum because
+anchor placement already is: one shared rung grid per group, split by the
+group's worst member.
+
+Three answers are scope-wide and no shard may re-derive them, so a **census**
+row computes them once. `--census-out` runs the prologue over the whole scope
+and writes `prismaquant.tessera_campaign_census.v1`: the per-unit calibration
+row counts, the per-unit activation maxima, the anchor grouping, the unit
+shapes, the draw's own `text_sha256`/`fit_ids_sha256`, and the producer's
+expert projection of every declared stack. `--calibration-census` reads it
+back, refuses a census of another draw or scope, checks every unit the run
+hooked against it, and only then stamps the scope's values.
+
+* **`fit_tokens` is a maximum over the scope**, and Tessera seals it into every
+  H-aware wire receipt (`cached_unit.encoding_input_identity`), so a shard
+  stamping its own selection's maximum would write receipts the exporter
+  rejects against the merged capture. The census makes it the monolith's value
+  without any shard asserting a count it did not see.
+* **The static `input_global_scale` unifies over fused siblings** by
+  `unify_fused_sibling_max_abs`, whose partition has fallbacks the anchor
+  grouping does not, so a selection whole by the anchor partition can be
+  partial by the scale partition -- and a partial fused group calibrates an A
+  side no module executes. Taking the scope's maxima removes the dependence.
+* **The producer's expert projection is rebound at allocation** against every
+  stack the carried block names (`carried_units`), so a block trimmed to one
+  shard's stacks is refused there; and the request hashes the whole checkpoint,
+  which must not land on every row.
+
+`--seed-checkpoint` offers another campaign's stored anchors to this run's own
+row gates rather than resuming its journal: a journal binds the run identity
+and `prismaquant_source_sha256` moves with any change to the package, while the
+row gates are content checks and strictly stronger -- the producer input
+identity is recomputed from this run's weight, menu, Hessian applicability and
+static scale, and Tessera's `verify_cached_unit` re-reads the blob and
+re-validates the wire against it. The adaptive state needs nothing further:
+`grid`, the leave-one-out error and the stop reason are all recomputed from the
+anchor set at the top of every round, so adopting a group's anchors resumes it
+where it stood. What a seeded row inherits and does not re-derive is the stored
+`dloss`, exactly as an ordinary resume does.
+
+`tools/dispatch_tessera_campaign.py` is `census` / `plan` / `submit` / `merge`
+over `pbcampaign`. Rows are portable (no host pin), GPU-demanding, not
+exclusive, `retry_safe`, and carry a memory demand computed from the
+checkpoint's size and the selection's shapes. Re-running the manifest **is**
+the resume -- a finished row is a CAS hit and a running row is re-attached --
+so nothing here decides what to skip, and a row may not carry
+`--deadline-seconds`, which stops a run mid-round and would price a different
+anchor set than one run would have. `merge` unions the rows' disjoint Hessian
+captures into the object a whole-scope run writes (same `counts`, same
+provenance), **recomputes** its digest, re-stamps every row's
+`capture_sha256`, rebuilds the population block over the scope, and writes one
+`cost.pkl` plus a journal under the union identity. It refuses a row the fleet
+did not report as executed, a mixed Hessian identity, a unit priced twice, a
+gap in the coverage, a capture whose seal disagrees with its own rows' stamps,
+and any static scale or producer projection the rows do not already share.
+
+Equality is defined modulo what a wall clock writes: `encode_seconds`,
+`wall_seconds`, `rounds_run`, `stopped_early`, `cache_dir`, `wire_dir` and the
+fan-out provenance differ by construction; the priced rows, anchors,
+leave-one-out values and Hessian identity do not.
 
 > **Premise correction.** This work was briefed on the belief that Tessera's
 > "embedded rate axis" would let one deep encode per unit yield exact decodes of

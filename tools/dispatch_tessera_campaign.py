@@ -195,14 +195,45 @@ def cmd_census(args) -> int:
     manifest.write_text(json.dumps([row], indent=2) + "\n")
     print(f"[dispatch] census manifest {manifest}")
     if args.submit:
-        return _pbcampaign(manifest, wait_s=args.wait_s)
+        return _pbcampaign(manifest, wait_s=args.wait_s,
+                           receipts=workspace / "census-receipts.json")
     return 0
 
 
-def _pbcampaign(manifest: Path, *, wait_s: int) -> int:
+def _pbcampaign(manifest: Path, *, wait_s: int, receipts: Path | None = None) -> int:
+    """Run the campaign and keep the fleet's own row table.
+
+    The table is what says a row *ran*, as opposed to having been accepted:
+    every row reports a key, the host it executed on and its exit status, and
+    ``merge`` refuses without it.  A submission acknowledgement is not a result.
+    """
     command = [sys.executable, str(PBCAMPAIGN), "--wait-s", str(wait_s), str(manifest)]
     print("[dispatch] " + " ".join(command), flush=True)
-    return subprocess.run(command, check=False).returncode
+    completed = subprocess.run(command, check=False, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(completed.stdout, flush=True)
+    if receipts is not None:
+        rows = _parse_row_table(completed.stdout)
+        receipts.write_text(json.dumps(
+            {"manifest": str(manifest), "returncode": completed.returncode,
+             "rows": rows}, indent=2) + "\n")
+        print(f"[dispatch] {len(rows)} row receipts -> {receipts}")
+    return completed.returncode
+
+
+def _parse_row_table(text: str) -> list[dict]:
+    """The ``key status transport job host elapsed rc receipt note`` table."""
+    rows: list[dict] = []
+    header = None
+    for line in text.splitlines():
+        fields = line.split()
+        if fields[:2] == ["key", "status"]:
+            header = fields
+            continue
+        if header is None or len(fields) != len(header):
+            continue
+        rows.append(dict(zip(header, fields)))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +313,8 @@ def cmd_submit(args) -> int:
     workspace = Path(args.workspace)
     # Re-running the manifest IS the resume: a finished row is a cache hit and
     # a running row is re-attached, both by pbcampaign itself.
-    return _pbcampaign(workspace / "manifest.json", wait_s=args.wait_s)
+    return _pbcampaign(workspace / "manifest.json", wait_s=args.wait_s,
+                       receipts=workspace / "receipts.json")
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +703,31 @@ def _merge_projection(left, right, row_id):
     return {"source": left["source"], "stacks": dict(sorted(stacks.items()))}
 
 
+def _require_receipts(workspace: Path, expected: int) -> None:
+    """Refuse to merge a row the fleet did not report as executed.
+
+    A ``cost.pkl`` on disk says a process wrote a file; the fleet's row table
+    says which action it was, where it ran and what it exited with.  Both, or
+    neither.
+    """
+    path = workspace / "receipts.json"
+    if not path.is_file():
+        raise MergeRefused(
+            f"no fleet receipts at {path}; submit the manifest before merging")
+    receipts = json.loads(path.read_text())
+    rows = receipts.get("rows") or []
+    if len(rows) != expected:
+        raise MergeRefused(
+            f"{path} reports {len(rows)} rows and the plan has {expected}")
+    failed = [row for row in rows if row.get("rc") not in {"0", 0}]
+    if failed:
+        raise MergeRefused(
+            "the fleet reports a non-zero exit for "
+            + ", ".join(f"{row.get('key')} (rc={row.get('rc')})" for row in failed))
+    hosts = sorted({row.get("host") for row in rows})
+    print(f"[dispatch] {len(rows)} rows executed on {', '.join(hosts)}")
+
+
 def cmd_merge(args) -> int:
     workspace = Path(args.workspace)
     plan = json.loads((workspace / "plan.json").read_text())
@@ -681,6 +738,7 @@ def cmd_merge(args) -> int:
     if missing:
         raise MergeRefused(
             f"{len(missing)} planned row(s) wrote no cost.pkl: " + ", ".join(missing[:8]))
+    _require_receipts(workspace, len(row_dirs))
     payloads = {}
     for row_id, path in row_dirs.items():
         with open(Path(path) / "cost.pkl", "rb") as handle:
