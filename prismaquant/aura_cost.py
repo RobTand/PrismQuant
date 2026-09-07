@@ -1874,6 +1874,7 @@ def compute_aura_cost_streamed(
     diagnostic_weight_mse_pairs: Sequence[tuple[str, str]] | None = None,
     joint_activation: bool = False,
     joint_projection_backend=None,
+    source_transition=None,
     profile=None,
 ) -> dict:
     """Layer-streamed KL-adjoint with identity-bound per-Linear shards.
@@ -1891,6 +1892,12 @@ def compute_aura_cost_streamed(
     because floating-point kernels may round differently with batch shape.
     The resident :func:`compute_aura_cost` path is deliberately unchanged.
     """
+    if source_transition is not None:
+        from prismaquant.joint_aura_source_transition import require_verified_transition
+        source_transition = require_verified_transition(
+            source_transition, checkpoint_dir=checkpoint_dir,
+            resume=resume, joint_activation=joint_activation,
+        )
     if type(probe_microbatch) is not int or probe_microbatch < 0:
         raise ValueError("probe_microbatch must be a nonnegative integer")
     if calib_ids.ndim != 2 or min(calib_ids.shape) < 1:
@@ -2124,7 +2131,8 @@ def compute_aura_cost_streamed(
             "n_probes": n_probes, "seed_base": seed_base,
             "token_scope": token_scope, "temperature": temperature,
             "distribution": "rademacher", "normalization": "global_kl_fisher",
-            "producer_source_sha256": _aura_source_sha256(),
+            "producer_source_sha256": (_aura_source_sha256() if source_transition is None
+                                       else source_transition.measurement_source_sha256),
             "source_execution": source_execution_identity(runner.model),
             "arithmetic": arithmetic_identity(runner.dtype, joint_projection_backend),
         }
@@ -2377,6 +2385,8 @@ def compute_aura_cost_streamed(
             git_commit=checkpoint_git_commit,
             extra_identity=extra,
         )
+        if source_transition is not None:
+            identity = source_transition.measurement_identity(identity)
         checkpoint_root, checkpoint_identity_sha256, completed_states = (
             _prepare_aura_checkpoints(
                 checkpoint_dir,
@@ -2457,6 +2467,8 @@ def compute_aura_cost_streamed(
             col_energy=col_energy,
             weight_mse_diagnostic=weight_mse_diagnostic,
         )
+        if source_transition is not None:
+            payload["provenance"]["source_transition"] = source_transition.final_provenance()
         if execution_partition is not None:
             payload["provenance"]["streamed_microbatch"] = execution_partition
         if joint_activation:
@@ -2926,7 +2938,9 @@ def compute_aura_cost_streamed(
 
             hook_handles = []
             joint_lease = None
-            if joint_activation:
+            # Completed layers still propagate cotangents to pending earlier
+            # layers, but have no target device or projections to lease.
+            if joint_activation and pending:
                 cache_owner = production_cache if production_cache is not None else getattr(anchor_renderer, "cache", None)
                 joint_lease = SignedJointProjectionLease(
                     {name: linears[name] for name in pending},
@@ -3072,7 +3086,9 @@ def compute_aura_cost_streamed(
                             col_energy=col_energy,
                             weight_mse_diagnostic=weight_mse_diagnostic,
                             source_weight_identity=source_weight_identity,
-                        ), **({"joint_aura_rows": joint_rows[name]} if joint_activation else {})},
+                        ), **({"joint_aura_rows": joint_rows[name]} if joint_activation else {}),
+                        **({"execution_provenance": source_transition.execution_provenance}
+                           if source_transition is not None else {})},
                     )
             # Closed-loop observability: a reverse layer is minutes of silent
             # render+adjoint work at streamed scale, so each one reports its

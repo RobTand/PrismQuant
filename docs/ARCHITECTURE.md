@@ -29,6 +29,35 @@ admission bounds are unchanged. CPU byte/range and mocked CUDA lifecycle
 regressions are in `tests/test_streaming_source_pages.py`; successful GLM
 workspace admission and performance remain unqualified.
 
+Re-stamped (2026-09-07, `fix/joint-source-transition-integration`) for the explicit
+`empty_joint_lease_v1` transition. Its sole approved source closure is the
+interrupted first-model joint run's exact producer package. A CPU preflight
+reverses only the reviewed empty-lease fix and exact transition API glue,
+then requires the complete reconstructed package hash. An independently bound,
+create-once receipt records the actual new Git/package/verifier hashes, original
+plan/preparation/cache/manifest identities and every preserved unit's envelope
+and payload hashes. Source or input drift fails before model/calibration CUDA
+work. The opaque factory-issued transition replaces only the two top-level
+checkpoint source fields for the strict original manifest comparison; all
+non-source fields must still match, and signed rows retain their original
+measurement identity. New unit state and final output separately record the
+actual execution source and receipt. A new PB snapshot binds its predecessor
+receipt and existing post-original unit hashes, preserving each unit's actual
+producer commit while requiring identical package/verifier bytes. Later resumes
+reject missing predecessor bindings and unbound new units.
+Original manifest, prepared cache and completed unit bytes are never rewritten.
+The complete-package source function remains truthful. This opt-in repair
+changes no arithmetic, calibration, format, allocator, cache or serving gate.
+Contract and negative attempt evidence:
+`docs/design/joint_resume_source_transition_2026-09-07.md`.
+
+Re-stamped (2026-09-07, `fix/joint-resume-empty-lease`) for streamed joint
+AURA resume: a fully checkpointed reverse layer skips projection-lease
+construction while still executing every probe's input/shared-state cotangent
+traversal. Earlier pending layers retain the same Fisher probe, signed terms,
+squaring and arithmetic identity. The existing source-identity checks remain
+strict; this fix does not authorize adoption across producer source versions.
+
 Re-stamped (2026-09-07, `review/pq325-buffer-precision`) for the compressed-tensors
 streaming export's persistent-buffer read policy (#311). The exporter passes
 the skeleton's declared buffer dtypes to the shared layer reader before
