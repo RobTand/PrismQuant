@@ -1,7 +1,26 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/capture-delivery-20260907`. Stamps
+As of: 2026-09-07 · `integration/native-panel-267`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `integration/native-panel-267`) for **exact calibration
+draw intake** (#267, #237). The shared AURA CLI accepts an independently hashed
+safetensors token draw through `--calibration-input` plus
+`--calibration-input-sha256`, preserving its IDs instead of invoking a sampler.
+The shared calibration loader checks sample/sequence geometry, int64 token
+storage, the campaign's int32 draw digest and its provenance. Joint AURA keeps
+its existing int64 tensor digest; both identities are recorded explicitly.
+Dataset sampling remains the default. Gate: `tests/test_native_panel_calibration.py`.
+
+The same research integration adds a native operator panel/receipt boundary
+(`#267`, `#237`) in `prismaquant.native_operator_panel`. Frozen PWC renders,
+source wire and shared activation QDQ provide the independent references;
+actual joint rows bind the same calibration and predeclared probes. Tessera's
+separate producer owns native preparation/execution. PQ consumes exact
+panel/runtime/route/tensor and resource-trace identities while retaining
+unknown fixed/full-model resources. Operator observations alone cannot become
+a measured-runtime table, and no pin, format default or serving gate changes.
+Gate: `tests/test_native_operator_panel.py`.
 
 Re-stamped (2026-09-07, `codex/campaign-capture-reuse-20260907`) for
 **reusable campaign calibration** (§4.10; #305). With an existing full census,

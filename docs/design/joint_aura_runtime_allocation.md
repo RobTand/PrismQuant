@@ -176,3 +176,34 @@ wrapper does not infer these experimental inputs or enable this mode.
 The [current-model screen](../measurements/pq237-joint-aura-screen-2026-09-05.md)
 verifies numerical decomposition but shows no selection-quality gain.
 Qualification remains open in #237.
+
+An existing draw can be passed unchanged with `--calibration-input` and its
+independently held `--calibration-input-sha256`. The safetensors artifact contains
+only `calibration_ids` (int64, samples × sequence length); its
+`calibration_provenance` metadata records the original draw, including
+`fit_ids_sha256`, `fit_tokens`, `nsamples`, and `seqlen`. The explicit CLI sample
+and sequence counts must match. This path bypasses dataset sampling and refuses
+`--dataset`. It checks the campaign's int32 token hash and separately records
+the int64 token hash used by joint AURA, with the original seed retained in
+provenance. A WT2 train 32 × 512 torch-randint draw and the retained diverse
+32 × 1024 Fisher draw are different calibrations even when both name seed zero.
+
+The research native bridge in `prismaquant.native_operator_panel` prepares
+reference inputs through the existing PWC, shared activation QDQ, and decoded
+producer wire. `experiments/pq267_native_panel.py` transports those immutable
+artifacts to Tessera's separate `bench_native_operator.py`; PQ imports no
+Tessera serving runtime. A preparation plan freezes the source checkpoint,
+calibration draw, probe seed/count, input row counts, and numerical tolerance
+before native output is observed. Actual joint cost rows must match those
+inputs before the independent panel is frozen. Native preparation facts never
+substitute for numerical references.
+
+Receipt intake verifies the exact panel/runtime/tensor/route bindings, both
+prefill and decode numerical results at the frozen tolerance, and repeated
+single-apply measurements. Native allocation bounds require the accompanying
+memory trace and matching collector identity. The bridge preserves unknown
+native scratch as unknown, and always leaves fixed/full-model resources
+unknown. It produces operator evidence, not a complete runtime table: complete
+table admission still needs independently measured fixed/KV work and the
+serving-unit coverage required above. A readable research rung or a local
+operator parity result does not change the runtime pin or serving gates.
