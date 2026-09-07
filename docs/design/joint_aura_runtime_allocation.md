@@ -229,3 +229,50 @@ unknown. It produces operator evidence, not a complete runtime table: complete
 table admission still needs independently measured fixed/KV work and the
 serving-unit coverage required above. A readable research rung or a local
 operator parity result does not change the runtime pin or serving gates.
+
+
+The whole routed native bridge (`native_moe_panel.py`, #309) compares actual
+module-local attention/expert selectors between capture and probe; semantic
+config dumps alone do not include these private Transformers selectors. New
+captures record the shared `source_execution_identity`. A legacy boundary
+requires a separate hash-bound fresh source qualification with identical source,
+runtime, calibration, inputs, route IDs/weights, bias and token coordinates.
+The panel seals that proof digest without rewriting the original capture.
+
+The bridge binds one complete
+32-expert LFM E4M3 K1 R1024 stack to all 96 ordered w1/w3/w2 members. It reuses
+`RuntimeBinding` over validated member rows on the same source and signed
+probes, without introducing a scalar group cost. Actual external top-k IDs and
+weights are retained before coercion; supported transport casts must round-trip
+losslessly. The reference calls the existing packed-expert operation and the
+shared QDQ at both input and intermediate boundaries. The scoped measurement
+protocol explicitly disables optional activation preclip and refuses clipped
+joint rows; the global default remains unchanged.
+
+The capture must carry the actual checkpoint initializer descriptor and eager
+backend, with source files/config and calibration bound to the member probes.
+LFM routing uses sigmoid, selection-only expert bias, normalization with its
+source epsilon and the captured final weights; the bridge never renormalizes
+them. A first-sequence M=1 prefix is only an operator shape check, not a served
+autoregressive measurement. Native resource evidence keeps runtime workspace
+separate from layer storage and incremental scratch. Operator observations
+still cannot supply a complete model-fixed or SLO/runtime table.
+
+The preparation/freeze/consume adapter is
+`experiments/pq309_native_moe_panel.py`. Its versioned input plan pins the shared
+capture-v2 manifest and census, original routed PAC file, exact token draw,
+original PWC pickle, all 96 wire/record file hashes, immutable runtime image,
+serving configuration bytes and probe policy. Preparation independently derives
+each producer encoding identity from source weights and the prefetched full
+Hessians before checking original wire decode against PWC. The original router
+weights remain unchanged, with int32 IDs and FP32 weights used only as verified
+lossless transport. The adapter requires the canonical capture-v2 implementation
+and real materialization outputs; historical captures cannot qualify it.
+
+A bounded native integration screen may use only sample zero for its joint
+probes. Preparation verifies the actual subset IDs against the full token draw
+and keeps the full capture/Hessian provenance intact. `probe_scope` binds the
+parent and subset calibration hashes and sample index in the frozen panel and
+observation; the subset hash is the joint currency. Full-draw probes omit the
+subset receipt and carry null `probe_scope`. A subset screen cannot be reported
+as full-draw quality evidence.
