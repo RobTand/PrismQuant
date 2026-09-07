@@ -190,7 +190,7 @@ def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, s
     _sha(serving_config_sha256, "serving configuration")
     if not isinstance(cache, ProductionWeightCache):
         raise TypeError("native MoE requires the actual ProductionWeightCache")
-    if (profile.name() != "lfm2_moe" or type(experts_module).__name__ not in profile.packed_expert_module_class_names()
+    if (profile.name != "lfm2_moe" or type(experts_module).__name__ not in profile.packed_expert_module_class_names()
             or getattr(experts_module, "num_experts", None) != shape["experts"]):
         raise ValueError("native MoE reference requires the source profile's actual packed LFM experts module")
     names = [member["unit"] for member in members]
@@ -278,7 +278,7 @@ def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, s
             "reference": {"operation": "prismaquant.measure_quant_cost._packed_experts_forward_with_weights",
                           "module_class": f"{type(experts_module).__module__}.{type(experts_module).__qualname__}",
                           "module_source_sha256": hashlib.sha256(reference_file.read_bytes()).hexdigest(),
-                          "profile": profile.name(), "temporary_pack_bytes": packed_bytes,
+                          "profile": profile.name, "temporary_pack_bytes": packed_bytes,
                           "activation_preclip": False},
             "prefetch": prefetch, "phases": phases}, tensors
 
@@ -490,7 +490,7 @@ def captured_moe_boundary(module, args, kwargs, coordinates, *, unit, source_mod
     if getattr(source_model.config, "_attn_implementation", None) != "eager":
         raise ValueError("native MoE capture requires the actual eager source attention backend")
     profile = profile_from_model(source_model)
-    if (profile.name() != "lfm2_moe" or type(module).__name__ not in profile.packed_expert_module_class_names()
+    if (profile.name != "lfm2_moe" or type(module).__name__ not in profile.packed_expert_module_class_names()
             or source_model.get_submodule(unit) is not module):
         raise ValueError("native MoE capture target is not the source model's declared LFM experts")
     # Use the class's declared signature: a hook wrapper may expose *args, but
