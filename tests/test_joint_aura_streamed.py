@@ -143,6 +143,94 @@ def test_joint_interrupted_resume_preserves_signed_samples(tmp_path, monkeypatch
     assert actual["costs"] == expected["costs"]
 
 
+@pytest.mark.parametrize("probe_microbatch", [0, 1])
+def test_joint_resume_checkpointed_layer_keeps_cotangents_without_empty_lease(
+    tmp_path, monkeypatch, probe_microbatch,
+):
+    from prismaquant import joint_aura, joint_projection_backend as backend
+
+    monkeypatch.setattr(aura, "_checkpoint_git_commit", lambda: "1" * 40)
+    real_lease = joint_aura.SignedJointProjectionLease
+    # CPU numerical fixture for a CUDA-bound backend: populated leases have
+    # a logical CUDA target; an empty lease has the constructor's CPU fallback.
+    # Run the real fused device gate, then the existing Torch projection oracle.
+    # No native extension is loaded and no CUDA tensor is allocated.
+    fused = backend._FusedProjection(
+        None, torch.device("cuda:0"), {"qualified_shapes": [[16, 16]]},
+        seal=backend._PREWARM_SEAL,
+    )
+    leases = []
+
+    def device_enforcing_lease(modules, *args, **kwargs):
+        target = torch.device("cuda:0") if modules else torch.device("cpu")
+        fused.require_device(target)
+        leases.append(tuple(modules))
+        return real_lease(modules, *args, **kwargs)
+
+    monkeypatch.setattr(joint_aura, "SignedJointProjectionLease", device_enforcing_lease)
+
+    def run(*, checkpoint_dir=None, resume=False):
+        _, context, runner, cache = _fixture()
+        backward = []
+        isolated_layer = runner.isolated_layer
+
+        def observed(batch, layer, hidden, *, pass_state):
+            hidden.register_hook(
+                lambda grad: backward.append((layer, grad.detach().clone()))
+            )
+            return isolated_layer(batch, layer, hidden, pass_state=pass_state)
+
+        runner.isolated_layer = observed
+        payload = _run(
+            runner, cache, checkpoint_dir=checkpoint_dir, resume=resume,
+            probe_microbatch=probe_microbatch, collect_col_energy=True,
+        )
+        assert context.active == set()
+        return payload, backward
+
+    expected, expected_backward = run()
+    writer = aura._write_aura_unit_checkpoint
+    written = []
+
+    def interrupt_after_complete_layer(*args, **kwargs):
+        writer(*args, **kwargs)
+        written.append(kwargs["qname"])
+        raise RuntimeError("fixture interruption after complete reverse layer")
+
+    monkeypatch.setattr(aura, "_write_aura_unit_checkpoint", interrupt_after_complete_layer)
+    with pytest.raises(RuntimeError, match="fixture interruption after complete reverse layer"):
+        run(checkpoint_dir=tmp_path)
+    assert written == ["model.layers.1.proj"]
+    preserved = {path: path.read_bytes() for path in (tmp_path / "units").glob("*.pkl")}
+    assert len(preserved) == 1
+
+    def record_write(*args, **kwargs):
+        written.append(kwargs["qname"])
+        return writer(*args, **kwargs)
+
+    monkeypatch.setattr(aura, "_write_aura_unit_checkpoint", record_write)
+    written.clear()
+    leases.clear()
+    actual, actual_backward = run(checkpoint_dir=tmp_path, resume=True)
+    assert leases == [("model.layers.0.proj",)]
+    assert written == ["model.layers.0.proj"]  # one reused unit, one newly measured
+    assert all(path.read_bytes() == raw for path, raw in preserved.items())
+    assert len(list((tmp_path / "units").glob("*.pkl"))) == 2
+    assert actual["costs"] == expected["costs"]  # includes signed components/arithmetic
+    assert actual["provenance"]["probe_identity"] == expected["provenance"]["probe_identity"]
+    assert [layer for layer, _ in actual_backward] == [1, 1, 1, 0, 0, 0]
+    for (layer, gradient), (expected_layer, expected_gradient) in zip(
+        actual_backward, expected_backward, strict=True,
+    ):
+        assert layer == expected_layer
+        torch.testing.assert_close(gradient, expected_gradient, rtol=0, atol=0)
+    for name, stats in expected["stats"].items():
+        assert actual["stats"][name]["h_trace"] == stats["h_trace"]
+        torch.testing.assert_close(
+            actual["stats"][name]["fisher_col"], stats["fisher_col"], rtol=0, atol=0,
+        )
+
+
 def test_joint_checkpoint_refuses_probe_alignment_even_valid_envelope(tmp_path, monkeypatch):
     monkeypatch.setattr(aura, "_checkpoint_git_commit", lambda: "1" * 40)
     _, _, runner, cache = _fixture()

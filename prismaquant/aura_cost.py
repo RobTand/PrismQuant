@@ -2926,7 +2926,9 @@ def compute_aura_cost_streamed(
 
             hook_handles = []
             joint_lease = None
-            if joint_activation:
+            # Completed layers still propagate cotangents to pending earlier
+            # layers, but have no target device or projections to lease.
+            if joint_activation and pending:
                 cache_owner = production_cache if production_cache is not None else getattr(anchor_renderer, "cache", None)
                 joint_lease = SignedJointProjectionLease(
                     {name: linears[name] for name in pending},
