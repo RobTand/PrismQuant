@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--layer', type=int, default=4)
+    parser.add_argument('--source-files', type=Path)
+    parser.add_argument('--source-files-sha256')
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     from prismaquant.model_profiles import detect_profile
@@ -45,11 +47,21 @@ def main():
         assert fingerprint(path) == before, f'source changed while hashing {path}'
         return dict(**before, sha256=sha)
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        bindings = list(pool.map(bind, files))
+    if args.source_files:
+        raw = args.source_files.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == args.source_files_sha256
+        bindings = json.loads(raw)
+        assert [item['path'] for item in bindings] == [str(path.resolve()) for path in files]
+        for item in bindings:
+            assert fingerprint(Path(item['path'])) == {k:v for k,v in item.items() if k != 'sha256'}
+    else:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            bindings = list(pool.map(bind, files))
     (args.out/'source-files.json').write_text(json.dumps(bindings, indent=2)+'\n')
     tokens, corpus = _calibration_tokens(str(args.model), 512, 512, 0)
     assert len(tokens) == 512 and all(tuple(t.shape) == (1, 512) for t in tokens)
+    for item in bindings:
+        assert fingerprint(Path(item['path'])) == {k:v for k,v in item.items() if k != 'sha256'}
     token_bytes = json.dumps([t.tolist() for t in tokens], separators=(',', ':')).encode()
     (args.out/'tokens.json').write_bytes(token_bytes)
     payload = dict(schema='prismaquant.glm_workspace_inputs.v1',
