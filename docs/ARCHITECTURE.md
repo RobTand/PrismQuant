@@ -3,6 +3,18 @@
 As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
 follow, newest first, each recording its own branch and date.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the shared source
+reader's opt-in `PRISMAQUANT_RELEASE_SOURCE_PAGES=1`. CUDA gathers can advise
+complete consumed regular-file tensor payload pages after their copies finish,
+all reader contexts close, and host staging views are released. Header,
+unread-tensor and partial edge pages are excluded; CPU-backed outputs retain
+their mappings. Source identity is checked before advice. This is kernel
+advice through the existing reader, with no additional cache or page ledger;
+the reader default, resident source-cache/prefetch ownership and hard workspace
+admission bounds are unchanged. CPU byte/range and mocked CUDA lifecycle
+regressions are in `tests/test_streaming_source_pages.py`; successful GLM
+workspace admission and performance remain unqualified.
+
 Re-stamped (2026-09-07, `review/pq325-buffer-precision`) for the compressed-tensors
 streaming export's persistent-buffer read policy (#311). The exporter passes
 the skeleton's declared buffer dtypes to the shared layer reader before

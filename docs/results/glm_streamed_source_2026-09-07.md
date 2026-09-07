@@ -200,3 +200,22 @@ The final focused integration with current main's shared-buffer precision fix
 also passed 46 CPU checks without skips under PB action
 `babb5f67986c755e3c58a0df6b918eeaa91de93786081da197e1806d95dd7490`;
 its verified receipt inventory is `review-02/current-main-integration.json`.
+
+The authorized opt-in source-page repair adds no cache or page ledger.
+The shared reader retains CPU staging until per-chunk CUDA completion events
+finish, drains all read futures on failure, and then advises only complete
+pages wholly inside consumed tensor payloads. CPU-backed outputs, partial
+edge/header/unread pages and non-regular files are excluded; source identity
+must still match. Reader defaults and the workspace guard remain unchanged.
+Its pre-fix PB regression `0d3175ddd7196e84008514ead709a635e498bfaff36d3c59fb744f3e664a8d7d`
+failed seven checks and passed four. The final stream-scoped event and failure
+lifetime implementation passed 66 CPU checks, including 20 source-page tests,
+with no skips on dl380g10 (8 xdist workers, one native thread each).
+PB action `f28bf31ca020e82a88112ef124ece5ed1796b9f048cb02acea2e6607e6e7f777`
+exited 0 with completed cleanup; verified payload SHA256
+`d2b79a9c6516ac04e10f7e9decef7389d8f88e7375b897e0ed27a449b73a1e71`,
+receipt `0997c8fb3315ccc87181aed6a7aa15c26add40522ac963f8830f839a9f994fae`.
+The immutable packet is `review-02/source-page-release-cpu.json`. Byte/range
+checks use real CPU tensors and filesystem advice; CUDA copy/event ordering
+and failure lifetimes are explicitly mocked in this CPU run. A real GPU
+workspace repetition is still required; no throughput improvement is claimed.

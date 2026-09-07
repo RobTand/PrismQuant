@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import threading
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 from pathlib import Path
 
 import torch
@@ -1368,6 +1369,44 @@ def _split_pairs(pairs: list[tuple[str, str]],
     return [pairs[i:i + size] for i in range(0, len(pairs), size)]
 
 
+def _advise_consumed_safetensors_pages(shard: str, keys: list[str],
+                                     expected_stat=None) -> None:
+    """Release complete consumed payload pages; caller owns copy/map lifetime.
+
+    This is best-effort kernel advice, not a cache or an admission allowance.
+    Never include the header, unread tensors, or shared partial edge pages.
+    """
+    if not hasattr(os, 'posix_fadvise') or not hasattr(os, 'POSIX_FADV_DONTNEED'):
+        return
+    fd = os.open(shard, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        source_stat = os.fstat(fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            return
+        if expected_stat is not None:
+            fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            if any(getattr(source_stat, k) != getattr(expected_stat, k) for k in fields):
+                raise RuntimeError('source changed before consumed-page release')
+        raw_size = os.pread(fd, 8, 0)
+        header_size = int.from_bytes(raw_size, 'little')
+        if len(raw_size) != 8 or not 0 < header_size <= min(100_000_000, source_stat.st_size - 8):
+            raise ValueError('invalid safetensors header for consumed-page release')
+        header = json.loads(os.pread(fd, header_size, 8))
+        base = 8 + header_size
+        page = os.sysconf('SC_PAGE_SIZE')
+        for key in sorted(set(keys)):
+            begin, end = header[key]['data_offsets']
+            if (type(begin) is not int or type(end) is not int
+                    or not 0 <= begin <= end <= source_stat.st_size - base):
+                raise ValueError('invalid tensor span for consumed-page release')
+            first = ((base + begin + page - 1) // page) * page
+            last = ((base + end) // page) * page
+            if first < last:
+                os.posix_fadvise(fd, first, last - first, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+
+
 def _read_layer_to_device(prefix: str,
                           model_to_shard: dict[str, str],
                           model_to_ckpt: dict[str, str],
@@ -1395,6 +1434,10 @@ def _read_layer_to_device(prefix: str,
     the layer has enough tensors to be worth it (see
     ``layer_read_threads``); the result is assembled in deterministic
     shard/key order either way.
+
+    ``PRISMAQUANT_RELEASE_SOURCE_PAGES=1`` opts CUDA reads into advising
+    consumed source payload pages after copy completion and mapping release.
+    CPU-backed outputs retain their mappings and never request page release.
     """
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
@@ -1403,6 +1446,14 @@ def _read_layer_to_device(prefix: str,
     out: dict[str, torch.Tensor] = {}
     open_kwargs = _safe_open_kwargs(device)
     direct = "device" in open_kwargs
+    release_pages = (os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1'
+                     and device.type == 'cuda')
+    source_stats = {shard: os.stat(shard) for shard in by_shard} if release_pages else {}
+    # Keep mmap-backed and converted CPU staging alive through asynchronous
+    # copies. This list exists only during this gather and owns no cache.
+    host_staging = []
+    copy_events = []
+    completion_errors = []
 
     def _read_chunk(shard: str,
                     pairs: list[tuple[str, str]]) -> dict[str, torch.Tensor]:
@@ -1415,42 +1466,78 @@ def _read_layer_to_device(prefix: str,
         except (TypeError, RuntimeError):
             f_ctx = safe_open(shard, framework="pt")
             used_direct = False
-        with f_ctx as f:
-            for model_name, ckpt_name in pairs:
-                t = f.get_tensor(ckpt_name)
-                _require_fp8_scale(model_name, t, fp8_scale_inv_map)
-                if (t.is_floating_point()
-                        and not _is_fp8_scaled_tensor(
-                            model_name, fp8_scale_inv_map)):
-                    t = t.to((buffer_dtypes or {}).get(model_name, dtype))
-                if not used_direct:
-                    t = t.to(device, non_blocking=True)
-                if not t.is_contiguous():
-                    t = t.contiguous()
-                local[model_name] = t
+        cuda_copied = False
+        try:
+            with f_ctx as f:
+                for model_name, ckpt_name in pairs:
+                    t = f.get_tensor(ckpt_name)
+                    cuda_copied |= t.device.type == 'cuda'
+                    if release_pages and t.device.type == 'cpu':
+                        host_staging.append(t)
+                    _require_fp8_scale(model_name, t, fp8_scale_inv_map)
+                    if (t.is_floating_point()
+                            and not _is_fp8_scaled_tensor(
+                                model_name, fp8_scale_inv_map)):
+                        t = t.to((buffer_dtypes or {}).get(model_name, dtype))
+                    if not used_direct:
+                        if release_pages and t.device.type == 'cpu':
+                            host_staging.append(t)
+                        t = t.to(device, non_blocking=True)
+                        cuda_copied |= t.device.type == 'cuda'
+                    if not t.is_contiguous():
+                        t = t.contiguous()
+                    local[model_name] = t
+        finally:
+            if release_pages and cuda_copied:
+                # Fence this chunk's stream through its final transfer, even
+                # when a later source read fails. Do not fence the device or
+                # wait for unrelated work queued after this event.
+                try:
+                    event = torch.cuda.Event()
+                    event.record(torch.cuda.current_stream(device))
+                    copy_events.append(event)
+                except Exception as error:
+                    completion_errors.append(error)
+                    raise
         return local
 
     total_tensors = sum(len(pairs) for pairs in by_shard.values())
     threads = layer_read_threads()
-    if threads > 1 and total_tensors >= _LAYER_READ_MIN_TENSORS:
-        pool = _layer_read_pool(threads)
-        jobs = []  # (shard, pairs) in deterministic order
-        for shard, pairs in by_shard.items():
-            for chunk in _split_pairs(pairs, threads):
-                jobs.append((shard, chunk))
-        futures = [pool.submit(_read_chunk, shard, chunk)
-                   for shard, chunk in jobs]
-        # `.result()` re-raises any worker exception: a partially gathered
-        # layer must never be installed as if it were complete.
-        for fut in futures:
-            out.update(fut.result())
-        # Future results own the original source tensors too. Drop that
-        # ownership before packing so consumed source members can be released.
-        futures.clear()
-        del fut
-    else:
-        for shard, pairs in by_shard.items():
-            out.update(_read_chunk(shard, pairs))
+    try:
+        if threads > 1 and total_tensors >= _LAYER_READ_MIN_TENSORS:
+            pool = _layer_read_pool(threads)
+            jobs = []  # (shard, pairs) in deterministic order
+            for shard, pairs in by_shard.items():
+                for chunk in _split_pairs(pairs, threads):
+                    jobs.append((shard, chunk))
+            futures = [pool.submit(_read_chunk, shard, chunk)
+                       for shard, chunk in jobs]
+            if release_pages:
+                # Drain every launched reader before propagating an error;
+                # its CPU staging and events must outlive pending copies.
+                wait_futures(futures)
+            # `.result()` re-raises any worker exception: a partially gathered
+            # layer must never be installed as if it were complete.
+            for fut in futures:
+                out.update(fut.result())
+            # Future results own the original source tensors too. Drop that
+            # ownership before packing so consumed source members can be released.
+            futures.clear()
+            del fut
+        else:
+            for shard, pairs in by_shard.items():
+                out.update(_read_chunk(shard, pairs))
+    finally:
+        for event in copy_events:
+            try:
+                event.synchronize()
+            except Exception as error:
+                completion_errors.append(error)
+        if completion_errors:
+            # Do not discard staging when completion could not be proven.
+            # The propagated traceback retains these local views/events.
+            raise completion_errors[0]
+        host_staging.clear()
     if len(out) != total_tensors:
         missing = total_tensors - len(out)
         raise RuntimeError(
@@ -1458,6 +1545,12 @@ def _read_layer_to_device(prefix: str,
             f"{len(out)} of {total_tensors} tensors ({missing} missing); "
             "refusing to install a partial layer"
         )
+    if release_pages and out and all(t.device.type == 'cuda' for t in out.values()):
+        # All contexts and host views are released, and the chunk events
+        # completed. Advise only those keys this successful call read.
+        for shard, pairs in by_shard.items():
+            _advise_consumed_safetensors_pages(
+                shard, [key for _, key in pairs], source_stats[shard])
     if fp8_scale_inv_map:
         _apply_fp8_dequant_inplace(out, fp8_scale_inv_map, device)
     if pack_experts is not None:
