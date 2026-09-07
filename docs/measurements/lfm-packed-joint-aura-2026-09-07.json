@@ -1,0 +1,458 @@
+{
+  "schema": "prismaquant.packed_joint_screen.evidence.v1",
+  "scope": "canonical_row0_operator_screen",
+  "final_cost": "cost-02/joint-cost.json",
+  "source_proof": "source-03/results.json",
+  "superseded": {
+    "source-01": "fail-closed grouped source before observer support",
+    "source-02": "explicit eager diagnostic; not the canonical source backend",
+    "cost-01": "numeric pass before source-backend identity sealing"
+  },
+  "artifacts": [
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-01/joint-cost.json",
+      "bytes": 53753019,
+      "sha256": "9e9072b0eaa3e4f1b9b53bea295dd9ac366b11054f4b78f802ff121199e378a5"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-01/model_identity.json",
+      "bytes": 252894,
+      "sha256": "7df54e965502049485b352d2201a2a5eb319c71ffce456bf8952c4e626b57ee6"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-01/netdata-both-hosts.json",
+      "bytes": 54230,
+      "sha256": "dadae36ea933ee12f01b132a1ea013800fb8712a670fc3797213c63aa7aa244d"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-01/results.json",
+      "bytes": 259199,
+      "sha256": "9962ad1f847e516b9560c448425a5abf19b221f88662c79af1ac9e40e0044171"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-01/streamed_packed_joint.pstats",
+      "bytes": 414467,
+      "sha256": "a1ac6246214a65209e3d7560827d772195c1779130f032293f871c4ea0227928"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-02/joint-cost.json",
+      "bytes": 55126885,
+      "sha256": "fcf48abdb0e0b1d8bc324c5c938b9b68ebb821f1c5b0591aefffb4b7c3c45462"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-02/model_identity.json",
+      "bytes": 252894,
+      "sha256": "7df54e965502049485b352d2201a2a5eb319c71ffce456bf8952c4e626b57ee6"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-02/netdata-both-hosts.json",
+      "bytes": 50064,
+      "sha256": "964bb56ec55dc9a6056b73ee2b17372a3006f4866b2e355d822808eeb3442997"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-02/results.json",
+      "bytes": 259197,
+      "sha256": "d4732454841403fe79554a5fe1b6166fda1795ae410378bbe43b216c541a2e95"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/cost-02/streamed_packed_joint.pstats",
+      "bytes": 420546,
+      "sha256": "e96a8d131dc52acd9a60b1cf4eb9c8e00c05cfb473f0d6f86a756783f036c742"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/harness/lfm_packed_joint_screen.py",
+      "bytes": 14531,
+      "sha256": "60e8c15ef49085e8c9730bc877a64e35a44b7849fcd249dc741b1ad8bf43e87d"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/harness/lfm_packed_joint_screen.sh",
+      "bytes": 897,
+      "sha256": "6d1ceeab69427b0c674dfe7e525e5d9178ae5f63014052e977d79740172c8530"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/harness/lfm_stream_cpu_pytest.sh",
+      "bytes": 894,
+      "sha256": "a74a309609d296f8e8bb12f45e3434b0036f4e29dc115e996d4d488a0186aefb"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/operator-subset/calibration_tokens.safetensors",
+      "bytes": 4928,
+      "sha256": "ba4482b67fa9256ce48579182504a94cfc5d29f8d0057337b22ca303373c7cc7"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/1b8d78e28352.stderr.log",
+      "bytes": 788,
+      "sha256": "4bcc954ff4293459740438ab5d34f9d2f8aa3afb18a706d32862d1d51d4ef578"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/1b8d78e28352.stdout.log",
+      "bytes": 8191,
+      "sha256": "7a9afc06bbfaa902ff4b45b1330a29630389c86c991bc621a2a57299e773c263"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/1b8d78e28352.terminal.json",
+      "bytes": 1512,
+      "sha256": "5a9ece02b7abeed24c1a2e35b5cc4170d5fe7d3d02abe72bc28dab357b94b6a8"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/3398c8e2b688.cas.json",
+      "bytes": 2625,
+      "sha256": "72f78a86d723003a8cc39df6793d1393b3a5c8d73d9fa6ed41bfad257879b416"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/3398c8e2b688.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/3398c8e2b688.stdout.log",
+      "bytes": 3811,
+      "sha256": "22dfc60ef4812c58c1e29d8243cb7b3556b8e1aaecef55372b66ddfb0deb95dd"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/3398c8e2b688.terminal.json",
+      "bytes": 2306,
+      "sha256": "4dfa1bf1060cf948fd8edfe58755c9d22d49ec78a47cd61ae73838aba6f78519"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/39c37cd27620.stderr.log",
+      "bytes": 788,
+      "sha256": "4bcc954ff4293459740438ab5d34f9d2f8aa3afb18a706d32862d1d51d4ef578"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/39c37cd27620.stdout.log",
+      "bytes": 6622,
+      "sha256": "a31ddef3d958ff3e0f3e305aecdef62fb385c1a3d604dc1bb0c58e3227a7c68c"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/39c37cd27620.terminal.json",
+      "bytes": 2124,
+      "sha256": "cbfb9620ba6afc59e6c45ba5cd191615296d7bff5efb72ab6becfc65a7e5a750"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4dfe87cc2196.cas.json",
+      "bytes": 2625,
+      "sha256": "c60769da7577b11189b41f7b28d8e8fe1b2c3486db51e8c861ea15a0334b327e"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4dfe87cc2196.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4dfe87cc2196.stdout.log",
+      "bytes": 3811,
+      "sha256": "e35166711fa7a4534c02f122af0d812bfca216ff1a69a6b0930cd0cc598e7ddb"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4dfe87cc2196.terminal.json",
+      "bytes": 2308,
+      "sha256": "7e7207a179d29714814cb14e0b147f0dbb20199f51d9c8322ef354b380c53475"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4f66c9b25ccb.stderr.log",
+      "bytes": 788,
+      "sha256": "e7a99d88c97eaca6f70d8c37214c8f1c0c44f21ef0983ef41356eb13203c7c4c"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4f66c9b25ccb.stdout.log",
+      "bytes": 173,
+      "sha256": "48c3d3ace182f667e94473127c2901ededd9876c09c252c9dffda3cfcc07d664"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/4f66c9b25ccb.terminal.json",
+      "bytes": 1506,
+      "sha256": "cc941eae929e388afed035f6a3a04c89426f5b71b651513b0980c2bb6f89f15b"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/567ebd4a94a9.stderr.log",
+      "bytes": 788,
+      "sha256": "4bcc954ff4293459740438ab5d34f9d2f8aa3afb18a706d32862d1d51d4ef578"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/567ebd4a94a9.stdout.log",
+      "bytes": 14442,
+      "sha256": "552f51e9a87781ea5d0537f319a919cd667991a21c5dedc964e462973fa5b6d9"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/567ebd4a94a9.terminal.json",
+      "bytes": 1511,
+      "sha256": "122f37e0536570166eb74697bc7cbdcb59026c20069858c557f6937719f80779"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/584254592eb3.cas.json",
+      "bytes": 2625,
+      "sha256": "bdb45b73405572f3ef02f04058a0ae50f11f332cdb9fb7c82d0609adcf28d2cc"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/584254592eb3.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/584254592eb3.stdout.log",
+      "bytes": 3596,
+      "sha256": "9649a19328b36bd66d02ae67e10cb24ba0ba9b3bc60f29e6cb3dc0f704626d36"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/584254592eb3.terminal.json",
+      "bytes": 1699,
+      "sha256": "3eb22ea2e5c4cfdb4a065d7690977a23ff63b0e8c4fc59ef6274d50c8cdaf268"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6139a113829a.cas.json",
+      "bytes": 2624,
+      "sha256": "25baf656483607daba6b516914666290d0ab5c9caa421cd7720725642be8bb14"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6139a113829a.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6139a113829a.stdout.log",
+      "bytes": 3107,
+      "sha256": "045320a5ef444f8521b1f877f4cff031509df7fe175fda9e1274773b70ae3e45"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6139a113829a.terminal.json",
+      "bytes": 1697,
+      "sha256": "955c9e42f48abd1dd8d2a3fa53d92ec69969cd144337be7b3e75a8ae99ac47c6"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6c48859f61f9.cas.json",
+      "bytes": 2624,
+      "sha256": "c89f2d60695f962f34d8774d433bc2f92944ee717f26ea6b3e90d3522952645a"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6c48859f61f9.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6c48859f61f9.stdout.log",
+      "bytes": 3108,
+      "sha256": "13ff289a2d01f8d1b344c00fcf344aa5951e3005d28629a860dfc0d249365f72"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/6c48859f61f9.terminal.json",
+      "bytes": 1699,
+      "sha256": "1029f891ef20d199ede1402ccda95a4d58054831d195e303f8eb6d077655f1fa"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/8f08b0728520.stderr.log",
+      "bytes": 788,
+      "sha256": "4bcc954ff4293459740438ab5d34f9d2f8aa3afb18a706d32862d1d51d4ef578"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/8f08b0728520.stdout.log",
+      "bytes": 5097,
+      "sha256": "d2074c97f0cbf99fd0fb750ef1b352594c23e2b17663a14151a05d198251fa75"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/8f08b0728520.terminal.json",
+      "bytes": 1518,
+      "sha256": "1bcf33e0dc33d666fc11bfba0734283c933d4e6dc2ffc3e042c8fe936480cf64"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/910381a7f145.cas.json",
+      "bytes": 2624,
+      "sha256": "30d51c63e13b47db2f031010be962217dea23e8aa49f0abbd1151f17b74c0a75"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/910381a7f145.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/910381a7f145.stdout.log",
+      "bytes": 3107,
+      "sha256": "2e60846228874f1e07a1d10b0f22712ec31c3d1e75aec1756cd630f4179ce15a"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/910381a7f145.terminal.json",
+      "bytes": 1696,
+      "sha256": "9b69479355031be00e9bee20f021dfa0d11104f956f66b46f997ff1f705ec142"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/92d4c7353b5a.cas.json",
+      "bytes": 2631,
+      "sha256": "a29c33b64579cd2519e66826cde037e25f67615e71403ffe72128cdad4a1fd91"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/92d4c7353b5a.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/92d4c7353b5a.stdout.log",
+      "bytes": 3601,
+      "sha256": "b9e7e5ee0f8141b1350687687360bc6ea4c6d3b19939c89707767dd3661b18aa"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/92d4c7353b5a.terminal.json",
+      "bytes": 1706,
+      "sha256": "f12406d8a429b08907d28bc52922304748a165e0d14cb0902374d2558866a42e"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/9c91cb5cf200.cas.json",
+      "bytes": 2625,
+      "sha256": "48cc54db48a819a396fac80fd45ea43c56898ebce0d1819d4ad157ecb33ad925"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/9c91cb5cf200.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/9c91cb5cf200.stdout.log",
+      "bytes": 5150,
+      "sha256": "42516698c1e4b173d92905bb4f02789e24b1ebcc5b4a58623437e2df8a3ed2d0"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/9c91cb5cf200.terminal.json",
+      "bytes": 2304,
+      "sha256": "b4ab48b3864b6d43044e67c31c400433f7355ca884d8f0466985c1b280da267e"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/a9a456a0c731.cas.json",
+      "bytes": 2625,
+      "sha256": "ff46abb05ec2339c8c71af55b7ab1a74e67290b866d92bbf6cb111e30f5b63a4"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/a9a456a0c731.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/a9a456a0c731.stdout.log",
+      "bytes": 3596,
+      "sha256": "33ba3727e4abd47c9b9c880a15a8f668a47191a3d7081389cd1b7be0047f2cdd"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/a9a456a0c731.terminal.json",
+      "bytes": 1700,
+      "sha256": "aa125dc28cb9718dab96dfcf44b186616e02a1b6e15b55abc42a6ca23319ce2d"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/d74f632a40ce.stderr.log",
+      "bytes": 788,
+      "sha256": "e7a99d88c97eaca6f70d8c37214c8f1c0c44f21ef0983ef41356eb13203c7c4c"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/d74f632a40ce.stdout.log",
+      "bytes": 173,
+      "sha256": "48c3d3ace182f667e94473127c2901ededd9876c09c252c9dffda3cfcc07d664"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/d74f632a40ce.terminal.json",
+      "bytes": 1505,
+      "sha256": "fd59d015753fe99c9a30e9ccd0b87729d29516b6a3b904876f24c0bd50f33e6f"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/f45f37939d43.cas.json",
+      "bytes": 2631,
+      "sha256": "098d07163499f84fd6ae2bb63c95dec732631b103de5fdc15085533950a72359"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/f45f37939d43.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/f45f37939d43.stdout.log",
+      "bytes": 5007,
+      "sha256": "3e73023fd3cfe4d29576e2053e297a0366b92a9ef948790c8a8dfc7d0d28fb1e"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/receipts/f45f37939d43.terminal.json",
+      "bytes": 2313,
+      "sha256": "745e404566b24689b5fd709b95d1cb34c5b441dd797407c953924957ce76f131"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-01/model_identity.json",
+      "bytes": 252894,
+      "sha256": "fa7a85734252375df0d01fe5003efc065688348c3c535535305bc9f64d47d339"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-01/resident_reference_forward_backward.pstats",
+      "bytes": 197198,
+      "sha256": "95ff401d3a1c1bbee116862bcccc33c61aa4871777341335b9f74d447546ab31"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-01/results.json",
+      "bytes": 258979,
+      "sha256": "1d5d2d1758f60fb11eb673001bc3ea3c8469573740097008a42929cc93c90fd4"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-01/streamed_packed_joint.pstats",
+      "bytes": 127318,
+      "sha256": "2f8da9af233766bb43eddd305b637bb38decf581c98d51de43377ce921db1739"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/calibration_subset.safetensors",
+      "bytes": 4184,
+      "sha256": "3bfed5390950e170914c54116d8e0d8f7a122c22f23b6225e5b4f4147c767d90"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/joint-cost.json",
+      "bytes": 27115224,
+      "sha256": "c27639e7dc9d92c8d8ec14ba1d16a78168b0ce5159d47bd7a7a8a77b16619e5d"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/model_identity.json",
+      "bytes": 252894,
+      "sha256": "fa7a85734252375df0d01fe5003efc065688348c3c535535305bc9f64d47d339"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/resident_reference_forward_backward.pstats",
+      "bytes": 195879,
+      "sha256": "2dff499d7dc408f0369348fdcdb2812d72c7b2ee75cd8bba826fa041ac7de529"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/results.json",
+      "bytes": 262307,
+      "sha256": "94386032024ced25bcd416ef39e2b5f6d30fb02251df595a0fdf165046e57ae4"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-02/streamed_packed_joint.pstats",
+      "bytes": 152195,
+      "sha256": "9f1713b341a1478aaad4704cf63ec6f55e4943c58c8b5e74a0d93e6cff437961"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/calibration_subset.safetensors",
+      "bytes": 4184,
+      "sha256": "3bfed5390950e170914c54116d8e0d8f7a122c22f23b6225e5b4f4147c767d90"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/joint-cost.json",
+      "bytes": 27115235,
+      "sha256": "ff640ffb7a0cf3ddf022331fd18b7f6273bb7846acc547944529e7e5e9410094"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/model_identity.json",
+      "bytes": 252894,
+      "sha256": "7df54e965502049485b352d2201a2a5eb319c71ffce456bf8952c4e626b57ee6"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/netdata-both-hosts.json",
+      "bytes": 62803,
+      "sha256": "a5e7e8100df2280dca5e17fe01df6023c06014f45224b4ddc92fa3323a6ebd71"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/resident_reference_forward_backward.pstats",
+      "bytes": 202374,
+      "sha256": "377bacdc1d941f9dc75074a1ded21dd3b76d82002568d50775518242b9b5efcd"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/results.json",
+      "bytes": 262759,
+      "sha256": "f9f586b721bbdcfa1c261d8566507ba95d8b66138f43ef91124f40c89a13db9a"
+    },
+    {
+      "path": "/mnt/shared/tessera-measurements/pq313-packed-joint-20260907/source-03/streamed_packed_joint.pstats",
+      "bytes": 153670,
+      "sha256": "0f7cb43b230ebfe7e9a4b11f3a6c770a85d28a9f7f53a32f90ead200aef462a6"
+    }
+  ]
+}
