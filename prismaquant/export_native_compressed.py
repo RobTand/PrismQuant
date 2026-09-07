@@ -8506,8 +8506,11 @@ def _export_resume_fingerprint(
     Three bindings, all of which a replayed payload silently bakes in:
 
     * ``source_identity`` -- the sha256 of every safetensors shard the run
-      consumes (`build_source_checkpoint_identity`). Content, not path: a
-      relocated checkpoint still resumes, a same-size value edit does not.
+      consumes, and of the non-shard files it reads from the checkpoint root:
+      ``config.json`` (the skeleton the payloads were quantized against) and
+      ``model.safetensors.index.json`` (which shard each tensor comes from).
+      See `build_source_checkpoint_identity`. Content, not path: a relocated
+      checkpoint still resumes, a same-size value edit does not.
     * ``requested_dtype`` -- the parameter dtype the source read narrows to.
     * ``declared_buffer_dtypes`` -- the skeleton's persistent-buffer dtype
       map, which is what the reader restores buffers to (#311/PR #325). The

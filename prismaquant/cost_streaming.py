@@ -417,6 +417,15 @@ def _local_checkpoint_shards(
 SOURCE_CHECKPOINT_IDENTITY_SCHEMA = (
     "prismaquant.source_checkpoint.identity.v1"
 )
+# The non-shard files the standalone export reads from the checkpoint root:
+# `config.json` through `stage_text_only`/`AutoConfig` (streaming_model.py:102
+# and the exporter's skeleton build) and the index through
+# `_local_checkpoint_shards` and export_native_compressed.py:6092.  A file that
+# is absent contributes no row, so one appearing later is a different source.
+SOURCE_CHECKPOINT_METADATA_FILES = (
+    "config.json",
+    "model.safetensors.index.json",
+)
 SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA = (
     "prismaquant.source_checkpoint.digest_cache.v1"
 )
@@ -480,6 +489,17 @@ def build_source_checkpoint_identity(
     (PrismaQuant #340). It binds file CONTENT, so a same-size, same-header
     value edit is a different source, and the same bytes under a different
     directory are the same source.
+
+    The weight bytes are not the whole source.
+    :data:`SOURCE_CHECKPOINT_METADATA_FILES` names the non-shard files the
+    export reads from the checkpoint root, and their sha256 is folded into
+    the same ``content_sha256``: ``config.json`` decides the skeleton the
+    payloads were quantized against -- the dtype map, ``tie_word_embeddings``,
+    any ``quantization_config``, the layer counts -- and
+    ``model.safetensors.index.json`` decides which shard each tensor is read
+    from.  Editing either changes what a replayed ``layer_NNN.pt`` means while
+    every shard byte stays identical.  They are kilobytes, so they are hashed
+    on every call rather than cached.
 
     ``digest_cache_path`` makes the read happen once per (file, machine): a
     shard whose complete stat fingerprint still matches reuses its recorded
@@ -555,13 +575,35 @@ def build_source_checkpoint_identity(
         })
     shards.sort(key=lambda row: (str(row["name"]), str(row["sha256"])))
 
+    # The non-shard files the export reads.  Kilobytes each, so no digest
+    # cache: hashing them costs less than deciding not to.
+    metadata: list[dict[str, object]] = []
+    for name in SOURCE_CHECKPOINT_METADATA_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        fingerprint = _streamed_identity_stat_fingerprint(path)
+        digest = _file_sha256(path)
+        if _streamed_identity_stat_fingerprint(path) != fingerprint:
+            raise RuntimeError(
+                f"source checkpoint metadata changed while hashing: {path}"
+            )
+        metadata.append({
+            "name": name,
+            "size": int(fingerprint["size"]),
+            "sha256": digest,
+        })
+    metadata.sort(key=lambda row: str(row["name"]))
+
     identity = {
         "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
         "shards": shards,
+        "metadata": metadata,
         "content_sha256": canonical_json_sha256(
             {
                 "schema": SOURCE_CHECKPOINT_IDENTITY_SCHEMA,
                 "shards": shards,
+                "metadata": metadata,
             },
             where="source checkpoint content identity",
         ),

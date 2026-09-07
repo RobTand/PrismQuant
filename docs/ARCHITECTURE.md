@@ -6,13 +6,19 @@ follow, newest first, each recording its own branch and date.
 Re-stamped (2026-09-07, `triage/340-export-resume-source-identity`) for the
 standalone compressed-tensors export resume cache's **source identity** (#340).
 `--export-cache-dir` replays `layer_NNN.pt` payloads whenever the manifest
-matches. The manifest bound the render levers and the assignment hash and named
-no source, so the same cache dir reused against a different checkpoint replayed
-the first checkpoint's quantized bytes. `_export_resume_fingerprint()` now adds
-three fields the payloads silently bake in: `source_identity` (the sha256 of
-every safetensors shard the run consumes, via the shared
-`cost_streaming.build_source_checkpoint_identity()`), `requested_dtype`, and
-`declared_buffer_dtypes`. `_admit_export_resume_cache()` decides admission
+matches. The manifest bound the render levers and named no source, so the same
+cache dir reused against a different checkpoint replayed the first checkpoint's
+quantized bytes; the `assignment_hash` beside them compared nothing either,
+because `hashlib` was in scope nowhere inside `materialize_tensors_streaming`
+and the swallowed `NameError` stamped a null on every manifest ever written.
+`_export_resume_fingerprint()` now adds three fields the payloads silently bake
+in: `source_identity` (the sha256 of every safetensors shard the run consumes
+AND of the non-shard files it reads from the checkpoint root — `config.json`,
+which decides the skeleton the payloads were quantized against, and
+`model.safetensors.index.json`, which decides where each tensor is read from —
+via the shared `cost_streaming.build_source_checkpoint_identity()`),
+`requested_dtype`, and `declared_buffer_dtypes`, and it computes the recipe
+hash with no swallow. `_admit_export_resume_cache()` decides admission
 before any payload is read and fails closed: a manifest missing any of those
 keys — every pre-fix cache — is refused, not treated as a weaker match, and no
 field may degrade to `None`. Identity is CONTENT, not path: a relocated
