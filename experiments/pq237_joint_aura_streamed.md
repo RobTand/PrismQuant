@@ -201,6 +201,18 @@ now names untracked closure entries and in-tree bytecode caches in their own
 fields rather than inside the opaque `status` text, and the reader refuses any
 importable entry under a root that the manifest does not list.
 
+Three later refusals extend that to the paths by which the interpreter can
+still reach unhashed bytes. The reader loads its own closure policy from the
+exact bytes it has just checked against the manifest, rather than by an import
+a shadowing package could answer. `__pycache__` is walked like any other
+directory, since redirecting cache lookups does not stop `__pycache__/x.py`
+from importing; only the tagged cache files inside it stay unsealed. And a
+symlink whose name or target can supply a module is admitted only when the code
+behind it is itself sealed, so a declared link to code outside the root is
+refused. A link to *data*, including the three `calibration/*.jsonl` links
+above, is unaffected: it names nothing the import system can load, and the
+manifest still pins its target string.
+
 ```bash
 python3 - <<'PY'
 from pathlib import Path
