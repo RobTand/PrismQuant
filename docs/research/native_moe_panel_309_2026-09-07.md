@@ -134,3 +134,14 @@ DL380g10, CPU-only, four workers, native threads one, no skips, exit 0.
 Receipt `942023b516dd292f22403f929f22c4135c9593a64ee953858b94bcb52631a91e`;
 CAS result independently rehashed. This does not qualify the pending real
 subset joint/native run.
+
+
+The first actual whole-reference preparation (PB
+`9c50a7c9e47bb665abe0ff7a3f862342875901d44093f9fc947e09bae63cf73f`)
+verified canonical boundary/subset/source inputs and prefetched all 96 full
+Hessians, then stopped at the first rendered member's residency check. Existing
+PWC prefetch intentionally loads disk shards onto CPU; the MoE helper had
+incorrectly expected those entries already on CUDA. The fix uses the same
+explicit device transfer as the dense native helper, preserving the PWC's
+stored BF16 dtype and original wire bytes. No output panel was published by
+the failed preparation, and no re-encoding is required.

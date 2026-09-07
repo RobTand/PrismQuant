@@ -229,7 +229,9 @@ def prepare_moe_inputs(cache, source_weights, phase_tensors, *, unit, members, s
     tensors, actual_members, rendered = {}, [], {}
     for member in members:
         name = member["unit"]
-        source, render = source_weights[name], cache.get(name, FORMAT)
+        # PWC prefetch materializes disk shards on CPU. Use the same explicit
+        # device transfer as the dense native reference; preserve stored dtype.
+        source, render = source_weights[name], cache.get(name, FORMAT).to(device=device)
         if (source.device != device or render.device != device or source.dtype != torch.bfloat16
                 or render.dtype != torch.bfloat16 or list(source.shape) != member["shape"]
                 or render.shape != source.shape or not bool(torch.isfinite(source).all())
