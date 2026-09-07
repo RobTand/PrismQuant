@@ -16,7 +16,8 @@ in: `source_identity` (the sha256 of every safetensors shard the run consumes
 AND of the non-shard files it reads from the checkpoint root — `config.json`,
 which decides the skeleton the payloads were quantized against, and
 `model.safetensors.index.json`, which decides where each tensor is read from,
-and any root `*.py` a `trust_remote_code` checkpoint is built through — via the
+and every root `*.py` (all of them, not only the ones `auto_map` names), which
+a `trust_remote_code` checkpoint is built through — via the
 shared `cost_streaming.build_source_checkpoint_identity()`),
 `requested_dtype`, and `declared_buffer_dtypes`, and it computes the recipe
 hash with no swallow. `_admit_export_resume_cache()` decides admission

@@ -426,10 +426,14 @@ SOURCE_CHECKPOINT_METADATA_FILES = (
     "config.json",
     "model.safetensors.index.json",
 )
-# ... plus every `*.py` at the checkpoint root, which a `trust_remote_code`
-# checkpoint executes to build the skeleton (MiniMax-M2 ships
-# `configuration_minimax_m2.py` and `modeling_minimax_m2.py`; DeepSeek-V4 uses
-# the same pattern), discovered per call rather than named here.
+# ... plus every `*.py` at the checkpoint root, because a `trust_remote_code`
+# checkpoint executes modules from there to build the skeleton (MiniMax-M2
+# ships `configuration_minimax_m2.py` and `modeling_minimax_m2.py`;
+# DeepSeek-V4 uses the same pattern), discovered per call rather than named
+# here.  Every one of
+# them is bound, whether or not `auto_map` names it: binding a module nobody
+# imports can cost a false refusal, naming only some can cost a false
+# admission.
 SOURCE_CHECKPOINT_DIGEST_CACHE_SCHEMA = (
     "prismaquant.source_checkpoint.digest_cache.v1"
 )
@@ -502,7 +506,9 @@ def build_source_checkpoint_identity(
     any ``quantization_config``, the layer counts -- and
     ``model.safetensors.index.json`` decides which shard each tensor is read
     from.  Every ``*.py`` at the checkpoint root joins them, because a
-    ``trust_remote_code`` checkpoint executes those to build the skeleton.
+    ``trust_remote_code`` checkpoint executes modules from there to build the
+    skeleton; all of them are bound rather than only those ``auto_map`` names,
+    which can refuse falsely but never admit falsely.
     Editing any of them changes what a replayed ``layer_NNN.pt`` means while
     every shard byte stays identical.  They are kilobytes, so they are hashed
     on every call rather than cached.
@@ -586,7 +592,9 @@ def build_source_checkpoint_identity(
     metadata_names = list(SOURCE_CHECKPOINT_METADATA_FILES)
     if root.is_dir():
         # `trust_remote_code` checkpoints build their skeleton from modules at
-        # the checkpoint root, so those are read bytes too.
+        # the checkpoint root, so those are read bytes too.  All of them, not
+        # only the ones `auto_map` names: over-binding refuses falsely, and
+        # under-binding admits falsely.
         metadata_names += sorted(
             path.name for path in root.glob("*.py") if path.is_file()
         )
