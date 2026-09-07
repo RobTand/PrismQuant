@@ -1436,7 +1436,8 @@ def _read_layer_to_device(prefix: str,
     shard/key order either way.
 
     ``PRISMAQUANT_RELEASE_SOURCE_PAGES=1`` opts CUDA reads into advising
-    consumed source payload pages after copy completion and mapping release.
+    consumed source payload pages after each existing reader chunk completes
+    its copies and releases its mappings.
     CPU-backed outputs retain their mappings and never request page release.
     """
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -1449,12 +1450,6 @@ def _read_layer_to_device(prefix: str,
     release_pages = (os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1'
                      and device.type == 'cuda')
     source_stats = {shard: os.stat(shard) for shard in by_shard} if release_pages else {}
-    # Keep mmap-backed and converted CPU staging alive through asynchronous
-    # copies. This list exists only during this gather and owns no cache.
-    host_staging = []
-    copy_events = []
-    completion_errors = []
-
     def _read_chunk(shard: str,
                     pairs: list[tuple[str, str]]) -> dict[str, torch.Tensor]:
         local: dict[str, torch.Tensor] = {}
@@ -1466,6 +1461,9 @@ def _read_layer_to_device(prefix: str,
         except (TypeError, RuntimeError):
             f_ctx = safe_open(shard, framework="pt")
             used_direct = False
+        # This existing read chunk owns its mmap-backed/converted staging
+        # through one stream event, rather than retaining it for the layer.
+        host_staging = []
         cuda_copied = False
         try:
             with f_ctx as f:
@@ -1492,52 +1490,44 @@ def _read_layer_to_device(prefix: str,
                 # Fence this chunk's stream through its final transfer, even
                 # when a later source read fails. Do not fence the device or
                 # wait for unrelated work queued after this event.
-                try:
-                    event = torch.cuda.Event()
-                    event.record(torch.cuda.current_stream(device))
-                    copy_events.append(event)
-                except Exception as error:
-                    completion_errors.append(error)
-                    raise
+                # If record/sync fails, the propagated traceback retains
+                # this chunk's staging; completion has not been proven.
+                event = torch.cuda.Event()
+                event.record(torch.cuda.current_stream(device))
+                event.synchronize()
+            host_staging.clear()
+        if release_pages and local and all(t.device.type == 'cuda' for t in local.values()):
+            # Reached only on a successful chunk: its map is closed, copies
+            # completed and CPU views released. Other readers may still run.
+            _advise_consumed_safetensors_pages(
+                shard, [key for _, key in pairs], source_stats[shard])
         return local
 
     total_tensors = sum(len(pairs) for pairs in by_shard.values())
     threads = layer_read_threads()
-    try:
-        if threads > 1 and total_tensors >= _LAYER_READ_MIN_TENSORS:
-            pool = _layer_read_pool(threads)
-            jobs = []  # (shard, pairs) in deterministic order
-            for shard, pairs in by_shard.items():
-                for chunk in _split_pairs(pairs, threads):
-                    jobs.append((shard, chunk))
-            futures = [pool.submit(_read_chunk, shard, chunk)
-                       for shard, chunk in jobs]
-            if release_pages:
-                # Drain every launched reader before propagating an error;
-                # its CPU staging and events must outlive pending copies.
-                wait_futures(futures)
-            # `.result()` re-raises any worker exception: a partially gathered
-            # layer must never be installed as if it were complete.
-            for fut in futures:
-                out.update(fut.result())
-            # Future results own the original source tensors too. Drop that
-            # ownership before packing so consumed source members can be released.
-            futures.clear()
-            del fut
-        else:
-            for shard, pairs in by_shard.items():
-                out.update(_read_chunk(shard, pairs))
-    finally:
-        for event in copy_events:
-            try:
-                event.synchronize()
-            except Exception as error:
-                completion_errors.append(error)
-        if completion_errors:
-            # Do not discard staging when completion could not be proven.
-            # The propagated traceback retains these local views/events.
-            raise completion_errors[0]
-        host_staging.clear()
+    if threads > 1 and total_tensors >= _LAYER_READ_MIN_TENSORS:
+        pool = _layer_read_pool(threads)
+        jobs = []  # (shard, pairs) in deterministic order
+        for shard, pairs in by_shard.items():
+            for chunk in _split_pairs(pairs, threads):
+                jobs.append((shard, chunk))
+        futures = [pool.submit(_read_chunk, shard, chunk)
+                   for shard, chunk in jobs]
+        if release_pages:
+            # Drain every launched reader before propagating an error;
+            # each chunk fences its own copies, including on read failure.
+            wait_futures(futures)
+        # `.result()` re-raises any worker exception: a partially gathered
+        # layer must never be installed as if it were complete.
+        for fut in futures:
+            out.update(fut.result())
+        # Future results own the original source tensors too. Drop that
+        # ownership before packing so consumed source members can be released.
+        futures.clear()
+        del fut
+    else:
+        for shard, pairs in by_shard.items():
+            out.update(_read_chunk(shard, pairs))
     if len(out) != total_tensors:
         missing = total_tensors - len(out)
         raise RuntimeError(
@@ -1545,12 +1535,6 @@ def _read_layer_to_device(prefix: str,
             f"{len(out)} of {total_tensors} tensors ({missing} missing); "
             "refusing to install a partial layer"
         )
-    if release_pages and out and all(t.device.type == 'cuda' for t in out.values()):
-        # All contexts and host views are released, and the chunk events
-        # completed. Advise only those keys this successful call read.
-        for shard, pairs in by_shard.items():
-            _advise_consumed_safetensors_pages(
-                shard, [key for _, key in pairs], source_stats[shard])
     if fp8_scale_inv_map:
         _apply_fp8_dequant_inplace(out, fp8_scale_inv_map, device)
     if pack_experts is not None:

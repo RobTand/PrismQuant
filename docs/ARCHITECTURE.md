@@ -5,8 +5,11 @@ follow, newest first, each recording its own branch and date.
 
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the shared source
 reader's opt-in `PRISMAQUANT_RELEASE_SOURCE_PAGES=1`. CUDA gathers can advise
-complete consumed regular-file tensor payload pages after their copies finish,
-all reader contexts close, and host staging views are released. Header,
+complete consumed regular-file tensor payload pages after each existing reader
+chunk finishes its copies, closes its context, and releases its host staging
+views. A completed chunk advises its pages without waiting for sibling readers;
+a failed chunk fences copies but never advises, and the whole gather still
+drains every reader and refuses partial installation. Header,
 unread-tensor and partial edge pages are excluded; CPU-backed outputs retain
 their mappings. Source identity is checked before advice. This is kernel
 advice through the existing reader, with no additional cache or page ledger;

@@ -97,22 +97,18 @@ class FakeCudaTensor:
         return getattr(self.value, key)
 
 
-@pytest.mark.parametrize('direct', [False, True])
-@pytest.mark.parametrize('enabled', [False, True])
-@pytest.mark.parametrize('threads', [1, 4])
-def test_cuda_release_follows_copies_and_all_mapping_closes(tmp_path, monkeypatch, direct, enabled, threads):
-    path, tensors, *_ = checkpoint(tmp_path)
-    monkeypatch.setenv('PRISMAQUANT_RELEASE_SOURCE_PAGES', '1' if enabled else '0')
-    monkeypatch.setenv('PRISMAQUANT_DIRECT_CUDA_LOAD', '1' if direct else '0')
-    monkeypatch.setenv('PRISMAQUANT_LAYER_READ_THREADS', str(threads))
-    events = []
-    staged = []
+def mocked_cuda_reader(path, monkeypatch, *, direct=False, failure=None,
+                       wait_for_first_advice=False):
+    """Track each reader context separately; no real CUDA operation occurs."""
+    chunks = []
+    current = threading.local()
+    first_advised = threading.Event()
     real_to = torch.Tensor.to
 
     def copy(value, target, *args, **kwargs):
         if isinstance(target, torch.device) and target.type == 'cuda':
-            events.append('copy')
-            staged.append(weakref.ref(value))
+            current.chunk['events'].append('copy')
+            current.chunk['staged'].append(weakref.ref(value))
             return FakeCudaTensor(value)
         return real_to(value, target, *args, **kwargs)
 
@@ -120,104 +116,117 @@ def test_cuda_release_follows_copies_and_all_mapping_closes(tmp_path, monkeypatc
         def __enter__(self):
             self.ctx = safe_open(path, framework='pt')
             self.file = self.ctx.__enter__()
-            events.append('open')
+            self.chunk = dict(events=['open'], staged=[], keys=[])
+            current.chunk = self.chunk
+            chunks.append(self.chunk)
             return self
 
         def get_tensor(self, name):
-            value = self.file.get_tensor(name)
+            chunk = self.chunk
+            chunk['keys'].append(name)
+            number = int(name.split('_')[-1])
+            if wait_for_first_advice and number == 5:
+                assert first_advised.wait(3), 'finished chunk pages retained behind sibling read'
+            if failure == 'read' and number == 2:
+                raise RuntimeError('source read failed')
+            value = self.file.get_tensor('selected')
             if direct:
-                events.append('copy')
+                chunk['events'].append('copy')
                 return FakeCudaTensor(value)
             return value
 
         def __exit__(self, *args):
             self.ctx.__exit__(*args)
-            events.append('close')
-
-    monkeypatch.setattr(torch.Tensor, 'to', copy)
-    monkeypatch.setattr(ls, 'safe_open', lambda *args, **kwargs: Context())
+            self.chunk['events'].append('close')
 
     class Event:
         def record(self, stream):
             assert stream == threading.get_ident()
-            events.append('record')
+            self.chunk = current.chunk
+            self.chunk['events'].append('record')
+            if failure == 'event_record' and self.chunk['keys'][0] == 'selected_0':
+                raise RuntimeError('event record failed')
 
         def synchronize(self):
-            assert all(ref() is not None for ref in staged)
-            events.append('sync')
+            chunk = self.chunk
+            assert 'close' in chunk['events']
+            assert all(ref() is not None for ref in chunk['staged'])
+            chunk['events'].append('sync')
+            if failure == 'event_sync' and chunk['keys'][0] == 'selected_0':
+                raise RuntimeError('event sync failed')
 
+    def advise(shard, keys, expected_stat):
+        chunk = next(chunk for chunk in chunks if chunk['keys'] == keys)
+        assert all(ref() is None for ref in chunk['staged'])
+        chunk['events'].append('advise')
+        if keys[0] == 'selected_0':
+            first_advised.set()
+
+    monkeypatch.setattr(torch.Tensor, 'to', copy)
+    monkeypatch.setattr(ls, 'safe_open', lambda *args, **kwargs: Context())
     monkeypatch.setattr(torch.cuda, 'current_stream', lambda *args: threading.get_ident())
     monkeypatch.setattr(torch.cuda, 'Event', Event)
     monkeypatch.setattr(torch.cuda, 'synchronize', lambda *args: pytest.fail('device-wide synchronization'))
-    monkeypatch.setattr(os, 'posix_fadvise', lambda *args: events.append('advise'))
-    names = [f'selected_{i}' for i in range(20 if threads > 1 else 1)]
-    out = ls._read_layer_to_device('', {name: str(path) for name in names},
-                                   {name: 'selected' for name in names},
-                                   torch.int32, torch.device('cuda:0'))
-    assert all(torch.equal(out[name].value, tensors['selected']) for name in names)
-    if enabled:
-        assert events.index('advise') > max(i for i, event in enumerate(events) if event == 'close')
-        assert events.index('advise') > events.index('sync') > max(i for i, event in enumerate(events) if event == 'copy')
-    else:
-        assert 'advise' not in events and 'sync' not in events
+    monkeypatch.setattr(ls, '_advise_consumed_safetensors_pages', advise)
+    return chunks
 
 
-@pytest.mark.parametrize('failure', ['read', 'event_record', 'event_sync'])
-def test_failed_parallel_read_drains_chunk_copies_without_advice(tmp_path, monkeypatch, failure):
+def read_mock_layer(path, count):
+    names = [f'selected_{i}' for i in range(count)]
+    return ls._read_layer_to_device('', {name: str(path) for name in names},
+                                    {name: name for name in names},
+                                    torch.int32, torch.device('cuda:0'))
+
+
+@pytest.mark.parametrize('direct', [False, True])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('threads', [1, 4])
+def test_cuda_release_follows_each_chunks_copies_and_mapping_close(tmp_path, monkeypatch, direct, enabled, threads):
+    path, tensors, *_ = checkpoint(tmp_path)
+    monkeypatch.setenv('PRISMAQUANT_RELEASE_SOURCE_PAGES', '1' if enabled else '0')
+    monkeypatch.setenv('PRISMAQUANT_DIRECT_CUDA_LOAD', '1' if direct else '0')
+    monkeypatch.setenv('PRISMAQUANT_LAYER_READ_THREADS', str(threads))
+    chunks = mocked_cuda_reader(path, monkeypatch, direct=direct)
+    out = read_mock_layer(path, 20 if threads > 1 else 1)
+    assert all(torch.equal(value.value, tensors['selected']) for value in out.values())
+    for chunk in chunks:
+        events = chunk['events']
+        if enabled:
+            assert events[-4:] == ['close', 'record', 'sync', 'advise']
+            assert events.count('record') == events.count('sync') == 1
+        else:
+            assert 'advise' not in events and 'sync' not in events
+
+
+def test_finished_chunk_releases_pages_while_sibling_is_still_reading(tmp_path, monkeypatch):
     path, *_ = checkpoint(tmp_path)
     monkeypatch.setenv('PRISMAQUANT_RELEASE_SOURCE_PAGES', '1')
     monkeypatch.setenv('PRISMAQUANT_DIRECT_CUDA_LOAD', '0')
     monkeypatch.setenv('PRISMAQUANT_LAYER_READ_THREADS', '4')
-    events, staged = [], []
-    real_to = torch.Tensor.to
+    chunks = mocked_cuda_reader(path, monkeypatch, wait_for_first_advice=True)
+    assert len(read_mock_layer(path, 20)) == 20
+    assert len(chunks) == 4
 
-    def copy(value, target, *args, **kwargs):
-        if isinstance(target, torch.device) and target.type == 'cuda':
-            staged.append(weakref.ref(value))
-            return FakeCudaTensor(value)
-        return real_to(value, target, *args, **kwargs)
 
-    class Context:
-        def __enter__(self):
-            self.ctx = safe_open(path, framework='pt')
-            self.file = self.ctx.__enter__()
-            return self.file
-
-        def __exit__(self, *args):
-            self.ctx.__exit__(*args)
-            events.append('close')
-
-    class Event:
-        def record(self, stream):
-            assert stream == threading.get_ident()
-            events.append('record')
-            if failure == 'event_record' and events.count('record') == 1:
-                raise RuntimeError('event record failed')
-
-        def synchronize(self):
-            assert events.count('close') == 4
-            assert all(ref() is not None for ref in staged)
-            events.append('sync')
-            if failure == 'event_sync' and events.count('sync') == 1:
-                raise RuntimeError('event sync failed')
-
-    monkeypatch.setattr(torch.Tensor, 'to', copy)
-    monkeypatch.setattr(ls, 'safe_open', lambda *args, **kwargs: Context())
-    monkeypatch.setattr(torch.cuda, 'current_stream', lambda *args: threading.get_ident())
-    monkeypatch.setattr(torch.cuda, 'Event', Event)
-    monkeypatch.setattr(torch.cuda, 'synchronize', lambda *args: pytest.fail('device-wide synchronization'))
-    monkeypatch.setattr(os, 'posix_fadvise', lambda *args: pytest.fail('failed gather advised source pages'))
-    names = [f'selected_{i}' for i in range(20)]
-    with pytest.raises(Exception, match='missing|event .* failed') as caught:
-        ls._read_layer_to_device('', {name: str(path) for name in names},
-                                 {name: 'missing' if i == 2 and failure == 'read' else 'selected'
-                                  for i, name in enumerate(names)},
-                                 torch.int32, torch.device('cuda:0'))
-    assert events.count('record') == 4
-    assert events.count('sync') == (3 if failure == 'event_record' else 4)
-    if failure.startswith('event'):
-        assert caught.value.__traceback__ is not None
-        assert all(ref() is not None for ref in staged)
+@pytest.mark.parametrize('failure', ['read', 'event_record', 'event_sync'])
+def test_failed_parallel_chunk_drains_copies_without_advising_its_pages(tmp_path, monkeypatch, failure):
+    path, *_ = checkpoint(tmp_path)
+    monkeypatch.setenv('PRISMAQUANT_RELEASE_SOURCE_PAGES', '1')
+    monkeypatch.setenv('PRISMAQUANT_DIRECT_CUDA_LOAD', '0')
+    monkeypatch.setenv('PRISMAQUANT_LAYER_READ_THREADS', '4')
+    chunks = mocked_cuda_reader(path, monkeypatch, failure=failure)
+    with pytest.raises(RuntimeError, match='source read failed|event .* failed') as caught:
+        read_mock_layer(path, 20)
+    assert len(chunks) == 4
+    for chunk in chunks:
+        events = chunk['events']
+        assert 'close' in events and events.count('record') == 1
+        failed = chunk['keys'][0] == 'selected_0'
+        assert events.count('sync') == (0 if failed and failure == 'event_record' else 1)
+        assert ('advise' in events) is not failed
+        if failed and failure.startswith('event'):
+            assert caught.value.__traceback__ is not None
+            assert all(ref() is not None for ref in chunk['staged'])
 
 
 def test_unexpected_cpu_backed_output_is_not_advised(tmp_path, monkeypatch):

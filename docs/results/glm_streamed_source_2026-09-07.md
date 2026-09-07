@@ -219,3 +219,45 @@ The immutable packet is `review-02/source-page-release-cpu.json`. Byte/range
 checks use real CPU tensors and filesystem advice; CUDA copy/event ordering
 and failure lifetimes are explicitly mocked in this CPU run. A real GPU
 workspace repetition is still required; no throughput improvement is claimed.
+
+The first real opt-in repeat, PB action
+`2daabe0bf05a6fbc0bd810cc8979acaa1c329de1ac0780dd71d2b99de46fb71d`,
+also refused after one completed target batch. Its original bound input stayed
+unchanged. At the guard, cgroup current was 27,050,758,144 bytes and CUDA
+reserved was 82,829,115,392 bytes; their conservative sum was 109,879,873,536
+bytes, above the unchanged 102 GiB threshold. Ordinary file charge was
+22,217,383,936 bytes after excluding shmem. The target roster is unknown:
+the failed collector did not return its counters. This is not full-model
+coverage or a frozen production calibration draw. The terminal exited 1,
+cleanup completed, and no success CAS was published. The evidence inventory
+is `review-02/source-page-release-workspace-refusal.json`.
+
+The retained before/after traces show both target forwards started with the
+prior layer's CUDA allocation already gone. Non-atomic phase sampling had
+combined an earlier CUDA value with a later source-cache inventory. The newer
+guard fired further into Hessian growth and next-layer prefetch, explaining
+its higher CUDA reading. The old cgroup observer stopped at guard detection,
+so its last sample cannot be added to a later CUDA peak to claim a physical
+peak. The NFS module also changed between arms; no isolated causal speed claim
+is made. Reproducible trace analysis is `review-02/memory-alignment.json` with
+`analyze_memory.py`. Header-only page geometry is retained in
+`review-02/range-coverage.json`; this screen does not establish OS residency.
+
+A subsequent bounded repair moves staging ownership and one CUDA completion
+event into each existing reader chunk. Successful chunks release their own
+host views and advise the same payload-page ranges while sibling chunks can
+still be reading. Failed chunks never advise, and the gather drains all
+launched readers before refusing partial installation. The default and guard
+are unchanged. PB regression
+`b898bdc7dba2dd3f50a5d1a313835469f59b54ae24e3997cce6a3626b2591603`
+failed six checks and passed 15 against the previous implementation, including
+the finished-chunk-versus-blocked-sibling check. The repaired integration
+passed 67 CPU checks without skips on Sparky (8 xdist workers, one native
+thread each), under PB
+`6972033ac33a686384dbc68f2eb244f2fd7355dfec91ee2dcc2aafbaf5c9fbfb`.
+Exit was 0 and cleanup completed; payload SHA256
+`6dd3b30d865d1f3be4f84091c188fb1424a737a5bcff4a4bea1ccb530e0096c3`,
+receipt `06e86dd62c176fd8896003b8ae74509d6d5161f20c31df8352e689537f1feb08`.
+The receipt, bundle and current source bytes were checked in
+`review-02/chunk-source-page-release-cpu.json`. CUDA lifecycle remains mocked
+in these CPU checks; the chunk repair has no successful GPU qualification yet.
