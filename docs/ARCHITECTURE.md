@@ -12,6 +12,16 @@ storage, the campaign's int32 draw digest and its provenance. Joint AURA keeps
 its existing int64 tensor digest; both identities are recorded explicitly.
 Dataset sampling remains the default. Gate: `tests/test_native_panel_calibration.py`.
 
+The same research integration adds a native operator panel/receipt boundary
+(`#267`, `#237`) in `prismaquant.native_operator_panel`. Frozen PWC renders,
+source wire and shared activation QDQ provide the independent references;
+actual joint rows bind the same calibration and predeclared probes. Tessera's
+separate producer owns native preparation/execution. PQ consumes exact
+panel/runtime/route/tensor and resource-trace identities while retaining
+unknown fixed/full-model resources. Operator observations alone cannot become
+a measured-runtime table, and no pin, format default or serving gate changes.
+Gate: `tests/test_native_operator_panel.py`.
+
 Re-stamped (2026-09-06, `fix/packed-plan-handoff`) for **the producer plan
 input for packed decisions** (§4.10; #293). Scoped preflight already resolved
 packed allocations against per-expert wire receipts, but the producer's
