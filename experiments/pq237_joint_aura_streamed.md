@@ -192,8 +192,9 @@ The 48 GiB reservation/container limit retains the prior small-model screen's
 known working envelope; it is not a measured peak-memory claim.
 
 After committing the reviewed source, run from this checkout. This Python
-submission wrapper temporarily omits only the three unused external
-calibration symlinks while PB seals the checkout, restoring them in `finally`.
+submission wrapper temporarily omits any remaining legacy external calibration
+symlinks while PB seals the checkout, restoring them in `finally`. Main removed
+these tracked links in #269; a checkout without them also passes this step.
 The experiment reads only its own frozen inputs. The source manifest records
 that omission; no deleted symlink belongs in the delivered commit.
 
@@ -206,7 +207,7 @@ root = Path.cwd()
 run = Path('/mnt/shared/tessera-measurements/mixed-lfm-237-2026-09-06')
 links = {root / 'calibration' / (name + '.jsonl'): None
          for name in ('diverse-v1', 'xdom-fit-v1', 'xdom-gate-v1')}
-links = {path: path.readlink() for path in links}
+links = {path: path.readlink() for path in links if path.is_symlink()}
 try:
     for path in links:
         path.unlink()
