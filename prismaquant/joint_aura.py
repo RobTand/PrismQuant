@@ -14,12 +14,14 @@ import re
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from prismaquant.perturbed_x_cache import (
     _activation_max_abs_lookup, _activation_qdq, _first_tensor_location,
     _served_nvfp4_act_qdq_enabled,
 )
 from prismaquant.memory_management import env_truthy
+from prismaquant.routed_experts import PackedExpertProjection
 
 
 JOINT_CURRENCY = "joint_aura_predicted_dloss"
@@ -111,14 +113,25 @@ class SignedJointProjectionLease:
         self.deltas = delta_weights
         self.activation_max_abs = dict(activation_max_abs or {})
         self.handles = []
+        self.forward_originals = []
         self.active = False
         self.terms = {}
         self.groups = {}
         self.telemetry = {"qdq_calls": 0, "operator_gemms": 0, "persistent_cache_entries": 0}
-        if len({id(mod) for mod in self.modules.values()}) != len(self.modules):
+        dense_modules = [mod for mod in self.modules.values() if isinstance(mod, nn.Linear)]
+        if len({id(mod) for mod in dense_modules}) != len(dense_modules):
             raise ValueError("joint AURA refuses aliased Linear modules")
+        packed_aliases = set()
         for name, module in self.modules.items():
-            if not isinstance(module, nn.Linear):
+            if isinstance(module, PackedExpertProjection):
+                if module.qname != name:
+                    raise ValueError(f"joint AURA packed projection name differs for {name}")
+                rows = module.output_slice
+                alias = (id(module.parameter), module.expert_id, rows.start, rows.stop)
+                if alias in packed_aliases:
+                    raise ValueError("joint AURA refuses aliased packed projection views")
+                packed_aliases.add(alias)
+            elif not isinstance(module, nn.Linear):
                 raise TypeError(f"joint AURA target {name} is not Linear")
             expected = {fmt for qname, fmt in self.deltas if qname == name}
             if set(self.specs[name]) != expected:
@@ -143,18 +156,79 @@ class SignedJointProjectionLease:
             self.groups[name] = tuple(grouped.values())
 
     def __enter__(self):
-        if self.handles:
+        if self.handles or self.forward_originals:
             raise RuntimeError("joint AURA lease already entered")
-        for name, module in self.modules.items():
-            self.handles.append(module.register_forward_hook(self._hook(name), with_kwargs=True))
+        packed = {}
+        try:
+            for name, module in self.modules.items():
+                if isinstance(module, PackedExpertProjection):
+                    packed.setdefault(id(module.module), []).append(module)
+                else:
+                    self.handles.append(module.register_forward_hook(self._hook(name), with_kwargs=True))
+            for members in packed.values():
+                self._install_packed_observer(members)
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *_args):
         for handle in self.handles:
             handle.remove()
         self.handles.clear()
+        for module, original in reversed(self.forward_originals):
+            module.forward = original
+        self.forward_originals.clear()
         self.terms.clear()
         self.active = False
+
+    def _install_packed_observer(self, members):
+        """Observe the existing per-expert Linear slices without changing them.
+
+        This uses the same temporary F.linear interception and exact dim-0
+        slice recognizer as the packed Fisher and production activation taps.
+        The baseline forward and routing arithmetic execute unchanged.
+        """
+        from prismaquant.sensitivity_probe import _packed_expert_slice_index
+
+        module = members[0].module
+        original = module.forward
+        parameters = {id(member.parameter): member.parameter for member in members}
+        by_expert = {}
+        for member in members:
+            by_expert.setdefault((id(member.parameter), member.expert_id), []).append(member)
+
+        def forward(*args, **kwargs):
+            if not self.active:
+                raise RuntimeError("joint AURA packed forward outside active probe")
+            seen = set()
+            original_linear = F.linear
+
+            def linear(inputs, weight, bias=None):
+                base = weight._base if weight._is_view() else weight
+                parameter = parameters.get(id(base))
+                if parameter is None:
+                    return original_linear(inputs, weight, bias)
+                expert = _packed_expert_slice_index(weight, parameter)
+                if expert is None:
+                    raise RuntimeError("joint AURA packed weight escaped its declared Linear slice")
+                seen.add(id(parameter))
+                output = original_linear(inputs, weight, bias)
+                for member in by_expert.get((id(parameter), expert), ()):
+                    self._observe(member.qname, member.weight, inputs, output, member.output_slice)
+                return output
+
+            F.linear = linear
+            try:
+                result = original(*args, **kwargs)
+            finally:
+                F.linear = original_linear
+            if seen != set(parameters):
+                raise RuntimeError("joint AURA packed source did not execute declared F.linear boundaries")
+            return result
+
+        self.forward_originals.append((module, original))
+        module.forward = forward
 
     def begin_probe(self):
         if self.active:
@@ -164,49 +238,53 @@ class SignedJointProjectionLease:
 
     def _hook(self, name):
         def observe(module, args, kwargs, output):
-            if not self.active:
-                raise RuntimeError("joint AURA forward outside active probe")
             _, _, x = _first_tensor_location(args, kwargs)
-            if not isinstance(x, torch.Tensor) or not isinstance(output, torch.Tensor):
-                raise TypeError(f"joint AURA Linear {name} needs Tensor input/output")
-            # Detach, without copying the baseline activation or retaining its
-            # upstream graph. The existing reverse window owns its lifetime.
-            x = x.detach()
-
-            @torch.no_grad()
-            def project(gradient):
-                if x.device != gradient.device or x.device != module.weight.device:
-                    raise RuntimeError(f"joint AURA residency mismatch for {name}")
-                if x.shape[:-1] != gradient.shape[:-1] or x.shape[-1] != module.weight.shape[1] or gradient.shape[-1] != module.weight.shape[0]:
-                    raise RuntimeError(f"joint AURA Linear geometry/shape mismatch for {name}")
-                x2 = x.reshape(-1, x.shape[-1]).float()
-                g2 = gradient.reshape(-1, gradient.shape[-1]).float()
-                gw = g2.T @ x2
-                for spec, formats in self.groups[name]:
-                    d_operator = None
-                    activation = torch.zeros((), device=x.device)
-                    if spec.act_quant_changes_input:
-                        quantized = _activation_qdq(x, spec, self.activation_max_abs, name)
-                        if not isinstance(quantized, torch.Tensor) or quantized.shape != x.shape or quantized.device != x.device or quantized.dtype != x.dtype:
-                            raise RuntimeError(f"joint AURA QDQ changed residency/dtype/shape for {name}")
-                        dx = quantized.reshape_as(x2).float() - x2
-                        d_operator = g2.T @ dx
-                        activation = (d_operator * module.weight.float()).sum()
-                        self.telemetry["qdq_calls"] += 1
-                        self.telemetry["operator_gemms"] += 1
-                    for fmt in formats:
-                        delta = self.deltas[(name, fmt)].float()
-                        weight = (gw * delta).sum()
-                        mixed = ((d_operator * delta).sum() if d_operator is not None
-                                 else torch.zeros((), device=x.device))
-                        components = torch.stack((weight, activation, mixed))
-                        key = (name, fmt)
-                        self.terms[key] = self.terms.get(key, 0) + components
-                return gradient
-
-            if output.requires_grad:
-                output.register_hook(project)
+            self._observe(name, module.weight, x, output)
         return observe
+
+    def _observe(self, name, source_weight, x, output, output_slice=None):
+        if not self.active:
+            raise RuntimeError("joint AURA forward outside active probe")
+        if not isinstance(x, torch.Tensor) or not isinstance(output, torch.Tensor):
+            raise TypeError(f"joint AURA Linear {name} needs Tensor input/output")
+        # Detach, without copying the baseline activation or retaining its
+        # upstream graph. The existing reverse window owns its lifetime.
+        x = x.detach()
+
+        @torch.no_grad()
+        def project(gradient):
+            selected = gradient if output_slice is None else gradient[..., output_slice]
+            if x.device != selected.device or x.device != source_weight.device:
+                raise RuntimeError(f"joint AURA residency mismatch for {name}")
+            if x.shape[:-1] != selected.shape[:-1] or x.shape[-1] != source_weight.shape[1] or selected.shape[-1] != source_weight.shape[0]:
+                raise RuntimeError(f"joint AURA Linear geometry/shape mismatch for {name}")
+            x2 = x.reshape(-1, x.shape[-1]).float()
+            g2 = selected.reshape(-1, selected.shape[-1]).float()
+            gw = g2.T @ x2
+            for spec, formats in self.groups[name]:
+                d_operator = None
+                activation = torch.zeros((), device=x.device)
+                if spec.act_quant_changes_input:
+                    quantized = _activation_qdq(x, spec, self.activation_max_abs, name)
+                    if not isinstance(quantized, torch.Tensor) or quantized.shape != x.shape or quantized.device != x.device or quantized.dtype != x.dtype:
+                        raise RuntimeError(f"joint AURA QDQ changed residency/dtype/shape for {name}")
+                    dx = quantized.reshape_as(x2).float() - x2
+                    d_operator = g2.T @ dx
+                    activation = (d_operator * source_weight.float()).sum()
+                    self.telemetry["qdq_calls"] += 1
+                    self.telemetry["operator_gemms"] += 1
+                for fmt in formats:
+                    delta = self.deltas[(name, fmt)].float()
+                    weight = (gw * delta).sum()
+                    mixed = ((d_operator * delta).sum() if d_operator is not None
+                             else torch.zeros((), device=x.device))
+                    components = torch.stack((weight, activation, mixed))
+                    key = (name, fmt)
+                    self.terms[key] = self.terms.get(key, 0) + components
+            return gradient
+
+        if output.requires_grad:
+            output.register_hook(project)
 
     def finish_probe(self):
         if not self.active:
