@@ -38,14 +38,14 @@ def _row(name, signed, *, fmt="FP8_E4M3"):
     }
     arithmetic = joint.arithmetic_identity(torch.float32)
     probe = {
-        "schema": "prismaquant.joint_aura.probes.v1", "seed_base": 237000,
+        "schema": "prismaquant.joint_aura.probes.v2", "seed_base": 237000,
         "n_probes": len(signed), "calibration_sha256": "c" * 64,
         "producer_source_sha256": "d" * 64, "source_model": source_model,
         "distribution": "rademacher", "normalization": "global_kl_fisher",
         "temperature": 1.0, "arithmetic": arithmetic,
     }
     operator = {
-        "schema": "prismaquant.joint_aura.operator.v1", "qname": name,
+        "schema": "prismaquant.joint_aura.operator.v2", "qname": name,
         "format": fmt, "probe_identity_sha256": joint.identity_sha256(probe),
         "source_weight": {
             "content_sha256": joint.identity_sha256({"source": name}),

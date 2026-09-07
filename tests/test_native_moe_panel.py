@@ -63,14 +63,14 @@ def joined():
     model = {"schema": "prismaquant.streamed_model.identity.v1", "source": "/fixture", "resolved_commit": None,
              "content_sha256": identity_sha256(value), **value}
     arithmetic = arithmetic_identity(torch.bfloat16)
-    probe = {"schema": "prismaquant.joint_aura.probes.v1", "source_model": model,
+    probe = {"schema": "prismaquant.joint_aura.probes.v2", "source_model": model,
         "calibration_sha256": "1" * 64, "calibration_shape": [1, 2], "calibration_dtype": "torch.int64",
         "producer_source_sha256": "2" * 64, "n_probes": 3, "seed_base": 7, "token_scope": "causal",
         "distribution": "rademacher", "normalization": "global_kl_fisher", "temperature": 1.0,
         "arithmetic": arithmetic, "source_execution": copy.deepcopy(source_execution)}
     rows = {}
     for member in members:
-        joint = {"schema": "prismaquant.joint_aura.operator.v1", "qname": member["unit"], "format": FORMAT,
+        joint = {"schema": "prismaquant.joint_aura.operator.v2", "qname": member["unit"], "format": FORMAT,
             **{key: member[key] for key in ("source_weight", "rendered_weight", "activation")},
             "arithmetic": arithmetic, "probe_identity_sha256": identity_sha256(probe)}
         rows[member["unit"]] = make_joint_aura_entry(operator_identity=joint, probe_identity=probe,

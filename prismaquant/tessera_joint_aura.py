@@ -23,7 +23,7 @@ from .cost_stage_checkpoint import (
 )
 
 SCHEMA = "prismaquant.tessera_joint_aura.plan.v1"
-PREPARED_SCHEMA = "prismaquant.tessera_joint_aura.prepared.v1"
+PREPARED_SCHEMA = "prismaquant.tessera_joint_aura.prepared.v2"
 CAMPAIGN_SCHEMA = "prismaquant.tessera_campaign_cost.v1"
 CURRENCY = "output_mse_under_route_activation_contract"
 STAGE = "Tessera campaign"
@@ -437,6 +437,8 @@ def _load_plan(path, digest):
     _same(config.get("schema"), SCHEMA, "joint anchor plan schema")
     _source_prefetch(config)
     execution = config["execution"]
+    from .joint_projection_backend import normalize_projection_backend
+    normalize_projection_backend(execution.get("projection_backend"))
     _require(type(config.get("file_hash_workers", 1)) is int and config.get("file_hash_workers", 1) > 0,
              "positive file_hash_workers required")
     for name, minimum in (("n_calib_samples", 1), ("calib_seqlen", 1),
@@ -476,6 +478,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
     from .calibration_data import load_calibration_input
     from .cost_streaming import build_streamed_causal_lm, build_streamed_model_identity
     from .joint_aura import source_execution_identity, validate_joint_aura_entry
+    from .joint_projection_backend import prewarm_projection_backend
     from .model_profiles import detect_profile
     from .production_weight_cache import ProductionWeightCache
     from .gpu_guard import require_cuda_hot_path
@@ -533,6 +536,8 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
         for name in ("fit_ids_sha256", "text_sha256", "nsamples", "seqlen", "seed"):
             _same(calibration["provenance"].get(name), original_draw.get(name), f"original full draw {name}")
         result["calibration_input"] = calibration
+        projection_backend = prewarm_projection_backend(execution.get("projection_backend"), device="cuda")
+        result["projection_backend"] = projection_backend.identity
         source_prefetch = _source_prefetch(config)
         runner = build_streamed_causal_lm(config["model"], device=torch.device("cuda"),
             dtype=torch.bfloat16, offload_folder=str(root / "offload"),
@@ -557,25 +562,28 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                                   max_render_bytes=config["max_render_bytes"], reader=reader,
                                   file_load_workers=file_hash_workers)
             cache.metadata.update(plan_sha256=plan_sha256, source_model_identity=source,
-                                  source_execution=source_execution, implementation_sha256=implementation)
+                                  source_execution=source_execution, implementation_sha256=implementation,
+                                  projection_backend=projection_backend.identity)
             cache.compact_for_pickle()
             cache_path = root / "production.pkl"
             atomic_write_bytes(cache_path, pickle.dumps(cache, protocol=pickle.HIGHEST_PROTOCOL))
             completion = {"schema": PREPARED_SCHEMA, "status": "complete", "plan_sha256": plan_sha256,
                 "implementation_sha256": implementation, "source_model_identity": source,
-                "reader_identity": reader_identity,
+                "reader_identity": reader_identity, "projection_backend": projection_backend.identity,
                 "source_execution": source_execution, "calibration_input": calibration,
                 "production_cache": {"path": str(cache_path), "sha256": _sha(cache_path)},
                 "formats_by_qname": data.formats_by_qname, "measured_cells": len(data.cells)}
         else:
             _require(prepared is not None, "cost execution requires independently bound prepared inputs")
             completion = json.loads(_bound(prepared, "prepared anchors").read_text())
-            _same(completion.get("schema"), PREPARED_SCHEMA, "prepared schema")
+            _same(completion.get("schema"), PREPARED_SCHEMA,
+                  "prepared v2 schema required; legacy preparation requires fresh prepare and recompute")
             _same(completion.get("status"), "complete", "prepared completion")
             for key, value in (("plan_sha256", plan_sha256), ("implementation_sha256", implementation),
                                ("source_model_identity", source), ("source_execution", source_execution),
                                ("calibration_input", calibration), ("measured_cells", len(data.cells)),
-                               ("reader_identity", reader_identity)):
+                               ("reader_identity", reader_identity),
+                               ("projection_backend", projection_backend.identity)):
                 _same(completion.get(key), value, f"prepared {key}")
             _same(completion["formats_by_qname"], {n: list(v) for n, v in data.formats_by_qname.items()},
                   "prepared exact candidate roster")
@@ -583,6 +591,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
             _require(isinstance(cache, ProductionWeightCache), "prepared cache is not ProductionWeightCache")
             _same(cache.metadata["inputs"], data.inputs, "prepared source bindings")
             _same(cache.metadata.get("reader_identity"), reader_identity, "prepared reader identity")
+            _same(cache.metadata.get("projection_backend"), projection_backend.identity, "prepared backend identity")
             _same(set(cache.metadata["verified_cells"]), set(data.cells), "prepared verified cell coverage")
             _same(cache.weights, {pair: cell["render"] for pair, cell in data.cells.items()}, "prepared original render paths")
             for pair, cell in data.cells.items():
@@ -596,6 +605,7 @@ def execute(command, config, *, plan_sha256, prepared=None, resume=False):
                 n_probes=execution["n_probes"], probe_microbatch=execution["probe_microbatch"],
                 seed_base=execution["seed_base"], token_scope="all", temperature=1.0,
                 production_cache=cache, require_production_cache=True, joint_activation=True,
+                joint_projection_backend=projection_backend,
                 include_routed_experts=True, include_lm_head=False, dw_dtype="float32",
                 min_free_gib=config["min_free_gib"], formats_by_qname=data.formats_by_qname,
                 checkpoint_dir=Path(config["output_root"]) / "checkpoints", resume=resume,

@@ -48,6 +48,8 @@ def main(*, variant_controller=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--target-seconds', type=float, default=35)
+    parser.add_argument('--qualification-only', action='store_true')
+    parser.add_argument('--profile-qualified', action='store_true')
     parser.add_argument('--source-receipt', type=Path)
     parser.add_argument('--source-sha256')
     args = parser.parse_args()
@@ -196,7 +198,9 @@ def main(*, variant_controller=None):
             actual_invocations=source_capture['records'], rows_per_probe=[sum(len(v[0]) for v in values) for values in probe_inputs],
             projection_scope='four actual per-expert invocations accumulated per probe; not full-model cost')
     save()
-    lease = SignedJointProjectionLease({NAME: layer}, specs, deltas, activation_max_abs=cache.activation_max_abs)
+    lease_factory = (variant_controller.make_lease if variant_controller is not None
+                     and hasattr(variant_controller, 'make_lease') else SignedJointProjectionLease)
+    lease = lease_factory({NAME: layer}, specs, deltas, activation_max_abs=cache.activation_max_abs)
 
     def cycle(check=False):
         if variant_controller is not None:
@@ -227,56 +231,58 @@ def main(*, variant_controller=None):
         receipt['qualification'] = {'exact_projection_and_forward_backward': True, 'probes': actual}
         if variant_controller is not None:
             receipt['qualification']['reductions'] = variant_controller.reduction_checks
-        timings = []
-        for function in (before, after):
-            activate(function)
-            cycle()
-            torch.cuda.synchronize()
-            start = time.perf_counter()
-            for _ in range(3):
+        if not args.qualification_only:
+            timings = []
+            for function in (before, after):
+                activate(function)
                 cycle()
-            torch.cuda.synchronize()
-            timings.append((time.perf_counter() - start) / 3)
-        count = max(1, math.ceil(args.target_seconds / min(timings)))
-        assert count <= 5000, count
-        receipt['calibration'] = {'seconds_per_cycle': timings, 'cycles_per_arm': count}
-        save()
-        for index, (label, function) in enumerate((('before', before), ('after', after), ('after', after), ('before', before))):
-            activate(function)
-            receipt['active_phase'] = {'phase': f'{index}-{label}', 'cycles': count, 'started_epoch': time.time()}
-            save()
-            print(json.dumps({'starting': receipt['active_phase']}), flush=True)
-            torch.cuda.synchronize()
-            start, counters = time.time(), io_counters()
-            for _ in range(count):
-                cycle()
-            torch.cuda.synchronize()
-            end = time.time()
-            after_counters = io_counters()
-            phase = {'phase': f'{index}-{label}', 'kind': 'measured', 'arm': label,
-                     'start_epoch': start, 'end_epoch': end, 'seconds': end - start,
-                     'cycles': count, 'projection_terms': count * 4 * len(formats),
-                     'io_delta': {key: after_counters[key] - value for key, value in counters.items()}}
-            receipt['phases'].append(phase)
-            receipt.pop('active_phase', None)
-            save()
-            print(json.dumps(phase), flush=True)
-        for label, function in (('before', before), ('after', after)):
-            activate(function)
-            torch.cuda.synchronize()
-            start = time.time()
-            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-                                        record_shapes=True, profile_memory=True, with_stack=True) as profiler:
+                torch.cuda.synchronize()
+                start = time.perf_counter()
                 for _ in range(3):
                     cycle()
-            torch.cuda.synchronize()
-            end = time.time()
-            profiler.export_chrome_trace(str(args.output / f'{label}-trace.json'))
-            events = profiler.key_averages()
-            (args.output / f'{label}-cpu.txt').write_text(events.table(sort_by='self_cpu_time_total', row_limit=100))
-            (args.output / f'{label}-cuda.txt').write_text(events.table(sort_by='self_device_time_total', row_limit=100))
-            receipt['phases'].append({'phase': label + '-profile', 'kind': 'profile', 'start_epoch': start, 'end_epoch': end})
+                torch.cuda.synchronize()
+                timings.append((time.perf_counter() - start) / 3)
+            count = max(1, math.ceil(args.target_seconds / min(timings)))
+            assert count <= 5000, count
+            receipt['calibration'] = {'seconds_per_cycle': timings, 'cycles_per_arm': count}
             save()
+            for index, (label, function) in enumerate((('before', before), ('after', after), ('after', after), ('before', before))):
+                activate(function)
+                receipt['active_phase'] = {'phase': f'{index}-{label}', 'cycles': count, 'started_epoch': time.time()}
+                save()
+                print(json.dumps({'starting': receipt['active_phase']}), flush=True)
+                torch.cuda.synchronize()
+                start, counters = time.time(), io_counters()
+                for _ in range(count):
+                    cycle()
+                torch.cuda.synchronize()
+                end = time.time()
+                after_counters = io_counters()
+                phase = {'phase': f'{index}-{label}', 'kind': 'measured', 'arm': label,
+                         'start_epoch': start, 'end_epoch': end, 'seconds': end - start,
+                         'cycles': count, 'projection_terms': count * 4 * len(formats),
+                         'io_delta': {key: after_counters[key] - value for key, value in counters.items()}}
+                receipt['phases'].append(phase)
+                receipt.pop('active_phase', None)
+                save()
+                print(json.dumps(phase), flush=True)
+        if not args.qualification_only or args.profile_qualified:
+            for label, function in (('before', before), ('after', after)):
+                activate(function)
+                torch.cuda.synchronize()
+                start = time.time()
+                with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                                            record_shapes=True, profile_memory=True, with_stack=True) as profiler:
+                    for _ in range(3):
+                        cycle()
+                torch.cuda.synchronize()
+                end = time.time()
+                profiler.export_chrome_trace(str(args.output / f'{label}-trace.json'))
+                events = profiler.key_averages()
+                (args.output / f'{label}-cpu.txt').write_text(events.table(sort_by='self_cpu_time_total', row_limit=100))
+                (args.output / f'{label}-cuda.txt').write_text(events.table(sort_by='self_device_time_total', row_limit=100))
+                receipt['phases'].append({'phase': label + '-profile', 'kind': 'profile', 'start_epoch': start, 'end_epoch': end})
+                save()
     activate(after)
     receipt.update(passed=True, telemetry=lease.telemetry, max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                    cuda_max_allocated=torch.cuda.max_memory_allocated(), cuda_max_reserved=torch.cuda.max_memory_reserved())

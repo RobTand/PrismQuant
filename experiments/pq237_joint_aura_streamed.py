@@ -520,7 +520,7 @@ def main():
         # Bind the input contract before the producer returns any rows. Its
         # own self-consistent digest cannot authorize different probe inputs.
         expected_probe = {
-            "schema": "prismaquant.joint_aura.probes.v1", "source_model": model_identity,
+            "schema": "prismaquant.joint_aura.probes.v2", "source_model": model_identity,
             "calibration_sha256": _cb_cache_tensor_identity(calibration)["content_sha256"],
             "calibration_shape": list(calibration.shape), "calibration_dtype": str(calibration.dtype),
             "n_probes": protocol["n_probes"], "seed_base": protocol["seed_base"],
@@ -530,7 +530,7 @@ def main():
         }
         expected_probe_sha256 = identity_sha256(expected_probe)
         expected = {name: {fmt: identity_sha256({
-            "schema": "prismaquant.joint_aura.operator.v1", "qname": name, "format": fmt,
+            "schema": "prismaquant.joint_aura.operator.v2", "qname": name, "format": fmt,
             "source_weight": renders[name][fmt]["source_weight"],
             "rendered_weight": renders[name][fmt]["rendered_weight"],
             "activation": activation_identity(fr.get_format(fmt), cache.activation_max_abs, name),

@@ -95,12 +95,12 @@ def _main_fixture(tmp_path, *, fixed_ms=0.0):
     arithmetic = arithmetic_identity(torch.float32)
     rows = {}
     for fmt, loss in zip(formats, (1.0, 2.0)):
-        probe = {"schema": "prismaquant.joint_aura.probes.v1", "seed_base": 0,
+        probe = {"schema": "prismaquant.joint_aura.probes.v2", "seed_base": 0,
                  "n_probes": 3, "calibration_sha256": "c" * 64,
                  "producer_source_sha256": "d" * 64, "source_model": source_model,
                  "distribution": "rademacher", "normalization": "global_kl_fisher",
                  "temperature": 1.0, "arithmetic": arithmetic}
-        operator = {"schema": "prismaquant.joint_aura.operator.v1", "qname": name,
+        operator = {"schema": "prismaquant.joint_aura.operator.v2", "qname": name,
                     "format": fmt, "probe_identity_sha256": identity_sha256(probe),
                     "source_weight": {"content_sha256": "a" * 64, "shape": list(shape),
                                       "dtype": "torch.float32", "logical_bytes": 16384},

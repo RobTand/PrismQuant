@@ -6,7 +6,7 @@ run_root=/mnt/shared/tessera-measurements/first-model-20260907/joint-fused-proje
 mode=$1
 shift
 gpu_args=()
-if [[ "$mode" != build ]]; then
+if [[ "$mode" != build && "$mode" != policy_tests ]]; then
   gpu_args=(--gpus all)
 fi
 exec docker run --rm "${gpu_args[@]}" --ipc=host --network=host --user "$(id -u):$(id -g)" \

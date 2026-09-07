@@ -29,18 +29,23 @@ class Candidate:
 
         class Replace(ast.NodeTransformer):
             def visit_Call(self, node):
+                operands = None
                 if (isinstance(node.func, ast.Attribute) and node.func.attr == 'sum'
                         and isinstance(node.func.value, ast.BinOp) and isinstance(node.func.value.op, ast.Mult)
                         and not node.args and not node.keywords):
-                    product = node.func.value
-                    left = ast.unparse(product.left)
-                    right = ast.unparse(product.right)
+                    operands = node.func.value.left, node.func.value.right
+                elif (isinstance(node.func, ast.Attribute) and node.func.attr == '_projection_product_sum'
+                      and isinstance(node.func.value, ast.Name) and node.func.value.id == 'self'
+                      and len(node.args) == 2 and not node.keywords):
+                    operands = tuple(node.args)
+                if operands is not None:
+                    left, right = map(ast.unparse, operands)
                     component = {('gw', 'delta'): 'weight',
                                  ('d_operator', 'source_weight.float()'): 'activation',
                                  ('d_operator', 'delta'): 'mixed'}[(left, right)]
                     changed.append(component)
                     return ast.copy_location(ast.Call(func=ast.Name(id='_projection_product_sum', ctx=ast.Load()),
-                        args=[product.left, product.right], keywords=[ast.keyword(arg='component', value=ast.Constant(component))]), node)
+                        args=list(operands), keywords=[ast.keyword(arg='component', value=ast.Constant(component))]), node)
                 return self.generic_visit(node)
 
         tree = ast.fix_missing_locations(Replace().visit(tree))
