@@ -1791,7 +1791,8 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None,
-                         boundary_consumer=None, forward_batch=None, resource_check=None):
+                         boundary_consumer=None, forward_batch=None, resource_check=None,
+                         shared_packed_inputs: bool = False):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
@@ -1801,6 +1802,12 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     before/after each output concat and Hessian CPU transfer. A refusal clears
     owned output tensors before propagating; integer row observations remain
     available for diagnostics. The default performs no additional checks.
+
+    ``shared_packed_inputs`` is an experimental, default-off collector policy.
+    Only packed siblings with the same module, expert and derived input kind
+    share internal accumulation. The existing store retains private, bounded
+    FP32 device prefixes until output materialization; returned CPU H/X tensors
+    remain independent for every qname. This is not a new activation cache.
 
     Three different things come out of the same hook, and they have different
     row budgets on purpose:
@@ -1820,8 +1827,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
       served under, and a maximum over a prefix of the rows is a different
       calibration than the one an exporter would take.
 
-    Accumulated in fp32 on the model's device and moved to CPU once at the
-    end, matching how the kept rows are handled. Packed units use the existing
+    Hessians accumulate in fp32 on the model's device and move to CPU once at
+    the end. Legacy scoring chunks move to CPU as observed; the experimental
+    policy instead transfers their bounded device prefix at the end. Packed units use the existing
     module-input collector and routing/SwiGLU derivation, and land in the SAME
     three accumulators as a dense Linear -- rows, Hessian and ``max_abs`` --
     so there is one notion of "what the campaign captured" for either
@@ -1839,6 +1847,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     hess: dict[str, object] = {name: None for name in targets}
     seen: dict[str, int] = {name: 0 for name in targets}
     amax: dict[str, float] = {name: 0.0 for name in targets}
+    # Singleton dense owners stay distinct. Packed groups below may replace
+    # only proven identical gate/up owners; seen remains a per-qname diagnostic.
+    group_members = {name: [name] for name in targets}
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
@@ -1858,8 +1869,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         flat = x.detach().reshape(-1, x.shape[-1])
         if not flat.shape[0]:
             return
-        if name in routed_seen:
-            routed_seen[name] += int(flat.shape[0])
+        for member_name in group_members[name]:
+            if member_name in routed_seen:
+                routed_seen[member_name] += int(flat.shape[0])
+            seen[member_name] += int(flat.shape[0])
         batch_max = flat.abs().amax().float()
         previous_max = amax[name]
         if not isinstance(previous_max, torch.Tensor):
@@ -1867,7 +1880,6 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         # Python max(previous, NaN) preserves previous. fmax keeps that exact
         # policy while avoiding a device-to-host scalar read on every batch.
         amax[name] = torch.fmax(previous_max, batch_max)
-        seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
             f32 = flat.to(dtype=torch.float32)
@@ -1879,9 +1891,20 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         room = max_rows - kept[name]
         if room <= 0:
             return
-        take = flat[:room].to(dtype=torch.float32, device="cpu")
-        store[name].append(take)
-        kept[name] += int(take.shape[0])
+        if shared_packed_inputs:
+            # Never retain a view of a source/derived activation plane. One
+            # private prefix buffer is owned by the existing store, and copy_
+            # preserves the original row order and BF16-to-FP32 conversion.
+            take_rows = min(room, int(flat.shape[0]))
+            if not store[name]:
+                store[name].append(torch.empty(
+                    (max_rows, flat.shape[1]), dtype=torch.float32, device=flat.device))
+            store[name][0][kept[name]:kept[name] + take_rows].copy_(flat[:take_rows])
+            kept[name] += take_rows
+        else:
+            take = flat[:room].to(dtype=torch.float32, device="cpu")
+            store[name].append(take)
+            kept[name] += int(take.shape[0])
 
     def make_hook(name):
         def hook(_module, args):
@@ -1924,6 +1947,23 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             routed_seen[name] = 0
         parents = {name: _packed_experts_parent_module(model, name)
                    for name in selected_by_module}
+        if shared_packed_inputs:
+            for module_qname, selected in selected_by_module.items():
+                owners = {}
+                unique = []
+                for member in selected:
+                    key = (module_qname, member.expert_id, input_kind[member.param_name])
+                    owner = owners.get(key)
+                    if owner is None:
+                        owners[key] = member.qname
+                        unique.append(member)
+                    else:
+                        group_members[owner].append(member.qname)
+                        del group_members[member.qname]
+                        for state in (store, kept, hess, amax):
+                            del state[member.qname]
+                        state = None
+                selected_by_module[module_qname] = unique
 
         def consume_packed(module_qname, x):
             selected = selected_by_module.get(module_qname)
@@ -1962,6 +2002,17 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                     calibration_coordinates = torch.cartesian_prod(sample_ids, positions)
                     sample_offset += batch.shape[0]
                 (model if forward_batch is None else forward_batch)(batch.to(device))
+    except BaseException as error:
+        if shared_packed_inputs:
+            store.clear()
+            hess.clear()
+            amax.clear()
+            if torch.device(device).type == 'cuda':
+                try:
+                    torch.cuda.empty_cache()
+                except Exception as cleanup_error:
+                    error.add_note(f'capture CUDA cache release failed: {cleanup_error!r}')
+        raise
     finally:
         for handle in handles:
             handle.remove()
@@ -1969,19 +2020,63 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             packed_collector.remove()
     unobserved = [name for name, count in routed_seen.items() if not count]
     if unobserved:
+        if shared_packed_inputs:
+            store.clear()
+            hess.clear()
+            amax.clear()
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
     # All forwards are complete. Keep integer `seen` available to failure
     # diagnostics, but never pin a partial capture through this traceback.
     rows, hessians = {}, {}
-    h = chunks = None
+    h = chunks = cpu_rows = cpu_h = None
     try:
         if resource_check is not None:
             resource_check('before_output_materialization')
         # Materialize each unit's maximum only once.
         amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
                 for name, value in amax.items()}
+        if shared_packed_inputs:
+            # Drain one unique group before making independent CPU siblings.
+            # The final CPU footprint is unchanged. GPU storage (including
+            # cached allocator blocks) must not accumulate behind those clones.
+            maxima = {}
+            for name, members in group_members.items():
+                if resource_check is not None:
+                    resource_check(f'before_rows_concat:{name}')
+                chunks = store.pop(name)
+                # copy=True also compacts CPU qualification outputs: a short
+                # prefix must not serialize the uninitialized buffer tail.
+                cpu_rows = chunks[0][:kept[name]].to(device='cpu', copy=True) if chunks else None
+                released_cuda = bool(chunks and chunks[0].is_cuda)
+                chunks = None
+                if resource_check is not None:
+                    resource_check(f'after_rows_concat:{name}')
+                if want_hessian:
+                    if resource_check is not None:
+                        resource_check(f'before_hessian_cpu_transfer:{name}')
+                    h = hess.pop(name)
+                    cpu_h = None if h is None else h.to(device='cpu')
+                    released_cuda = released_cuda or (h is not None and h.is_cuda)
+                    h = None
+                    if resource_check is not None:
+                        resource_check(f'after_hessian_cpu_transfer:{name}')
+                if released_cuda:
+                    torch.cuda.empty_cache()
+                for index, member_name in enumerate(members):
+                    if resource_check is not None:
+                        resource_check(f'before_output_clone:{member_name}')
+                    rows[member_name] = (cpu_rows if index == 0 or cpu_rows is None
+                                         else cpu_rows.clone())
+                    if want_hessian:
+                        hessians[member_name] = (cpu_h if index == 0 or cpu_h is None
+                                                 else cpu_h.clone())
+                    maxima[member_name] = amax[name]
+                    if resource_check is not None:
+                        resource_check(f'after_output_clone:{member_name}')
+                cpu_rows = cpu_h = None
+            amax = maxima
         # Do not retain both original chunks and concatenated outputs for the
         # whole scope. Full-model captures can hold GiB of scoring rows.
         for name in list(store):
@@ -1992,7 +2087,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             chunks = None
             if resource_check is not None:
                 resource_check(f'after_rows_concat:{name}')
-        if want_hessian:
+        if want_hessian and not shared_packed_inputs:
             # GB10 shares physical DRAM with CPU tensors. Periodically return
             # cached CUDA blocks while transferring the full H, but also let
             # the caller refuse before the next unit if reserved blocks stay
@@ -2018,7 +2113,7 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     except BaseException as error:
         # Exception tracebacks keep this frame alive. Explicitly drain every
         # output owner and loop temporary while retaining only row counters.
-        h = chunks = None
+        h = chunks = cpu_rows = cpu_h = None
         store.clear()
         hess.clear()
         amax.clear()

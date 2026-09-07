@@ -1,7 +1,34 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `fix/glm-streaming-campaign`. Stamps
+As of: 2026-09-07 · `experiment/glm-shared-input-capture`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `experiment/glm-shared-input-capture`) for the
+**default-off shared packed-input collector experiment**. The private
+`_collect_activations(..., shared_packed_inputs=True)` option groups only the
+same packed module, expert and derived input kind. It reuses the existing
+store/H/count/max owners, accumulates one batch-ordered FP32 Gram and fmax per
+unique input, and keeps a private bounded FP32 device prefix. Full-row H,
+counts and maxima remain uncapped. Each group drains to compact CPU storage
+before independent sibling CPU clones; per-transfer and per-clone callbacks
+retain the workspace's existing memory refusal. Returned qnames never alias.
+The normal campaign default remains the legacy collector; no new cache,
+source prefetch path, format, serving gate, calibration draw or wire changes.
+
+`experiments/glm_layer_workspace.py --shared-packed-inputs` explicitly selects
+that candidate for a later full fit measurement. Its separate
+`--qualify-shared-inputs --qualification-expert-ids ...` mode captures a bounded
+fixture of actual derived gate/up/down inputs during the original source-prefix
+traversal and replays those identical tensors through both real collectors in
+legacy/shared/shared/legacy order. It profiles cold, row-filled and CPU-return
+windows while reusing both-host bounded Netdata and the physical guard. This
+measures isolated collector cost, excluding source forwards and derivation;
+it does not publish a full calibration capture or establish a served result.
+The first legacy arm has no retained CPU reference; later arms report that
+reference footprint and provide matched contexts for memory comparisons.
+Gates: bytewise and serialized H/X/count/max equality, independent CPU storage,
+complete original batch order, CPU failure-lifetime checks, then reviewed GPU
+A/B and a separate full 512-sample candidate fit. GPU qualification is pending.
 
 Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the campaign
 collector's optional `resource_check(label)` output-materialization checkpoints.

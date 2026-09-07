@@ -125,7 +125,18 @@ def main():
     parser.add_argument('--boundary-mode', choices=('synthetic', 'source-prefix'), default='synthetic')
     parser.add_argument('--input-binding', type=Path)
     parser.add_argument('--input-binding-sha256')
+    parser.add_argument('--shared-packed-inputs', action='store_true',
+                        help='experimental shared-input collector; full fit remains unqualified')
+    parser.add_argument('--qualify-shared-inputs', action='store_true',
+                        help='bounded exact real-input collector replay, not a full capture')
+    parser.add_argument('--qualification-expert-ids', type=int, nargs='+')
+    parser.add_argument('--qualification-fixture-mib', type=int, default=2048)
     args = parser.parse_args()
+    if args.qualify_shared_inputs and (args.shared_packed_inputs or
+            args.boundary_mode != 'source-prefix' or not args.qualification_expert_ids):
+        parser.error('replay requires source-prefix and explicit expert IDs, without --shared-packed-inputs')
+    if args.qualification_fixture_mib <= 0:
+        parser.error('qualification fixture budget must be positive')
     args.out.mkdir(parents=True, exist_ok=False)
     assert torch.cuda.is_available()
     assert 1 < args.physical_cap_gb <= 104, 'measurement must fit the declared worker capacity'
@@ -166,7 +177,10 @@ def main():
         physical_measurement_cap_gb=args.physical_cap_gb, guard_margin_gb=2,
         torch=torch.__version__, cuda=torch.version.cuda,
         device=torch.cuda.get_device_name(), cpu_affinity=sorted(os.sched_getaffinity(0)),
+        device_uuid=str(getattr(torch.cuda.get_device_properties(0), 'uuid', '')),
         source_page_release_optin=os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1',
+        shared_packed_inputs=args.shared_packed_inputs,
+        collector_replay_qualification=args.qualify_shared_inputs,
         host_kernel_release=os.uname().release,
         phases=[], telemetry_errors=[])
     for field, module_path in (
@@ -384,6 +398,31 @@ def main():
 
         def collect_and_audit(actual_forward):
             check_guard('before_activation_collection')
+            if args.qualify_shared_inputs:
+                from experiments.glm_shared_input_replay import qualify_collector
+                expert_ids = set(args.qualification_expert_ids)
+                selected = [member for member in members if member.expert_id in expert_ids]
+                if {member.expert_id for member in selected} != expert_ids:
+                    raise RuntimeError('qualification expert roster is not present in the real source')
+                next_source_batch = 0
+
+                def capture_forward(input_ids):
+                    nonlocal next_source_batch
+                    check_guard('before_replay_source_batch')
+                    actual_forward(input_ids)
+                    next_source_batch += 1
+                    check_guard('after_replay_source_batch')
+
+                try:
+                    result['collector_replay'] = qualify_collector(
+                        runner.model, selected, tokens, args.max_act_rows, runner.device,
+                        profile=profile, actual_forward=capture_forward, out=args.out,
+                        check_guard=check_guard, mark=mark,
+                        max_fixture_bytes=args.qualification_fixture_mib * 1024**2)
+                finally:
+                    result['target_source_batches_completed'] = next_source_batch
+                result['scope'] = 'bounded_real_routed_collector_replay_not_full_capture'
+                return
             next_batch = 0
             traces_written = []
             with (args.out/'batch-memory.jsonl').open('w') as samples:
@@ -422,7 +461,8 @@ def main():
                             on_trace_ready=trace_ready) as prof:
                         acts,hessians,counts,maxima = _collect_activations(runner.model,targets,tokens,
                             args.max_act_rows,runner.device,want_hessian=True,profile=profile,
-                            forward_batch=forward_batch, resource_check=check_guard)
+                            forward_batch=forward_batch, resource_check=check_guard,
+                            shared_packed_inputs=args.shared_packed_inputs)
                         audit_collector_rows(counts, targets, result, check_guard)
                 except BaseException as exc:
                     result['partial_target_row_observations'] = failed_collector_row_counts(
@@ -530,6 +570,18 @@ def main():
             monitor_thread.join(timeout=12)
             memory_thread.join(timeout=2)
             sampler_thread.join(timeout=2)
+            if 'collector_replay' in result:
+                from experiments.glm_shared_input_replay import summarize_device_energy
+                try:
+                    with (args.out/'netdata.jsonl').open() as samples:
+                        energy = summarize_device_energy(
+                            (json.loads(line) for line in samples),
+                            result['collector_replay']['arms'], result['device_uuid'])
+                    result['collector_replay']['energy'] = energy
+                    (args.out/'collector-replay.json').write_text(
+                        json.dumps(result['collector_replay'], indent=2)+'\n')
+                except Exception as exc:
+                    result['telemetry_errors'].append(f'collector energy summary: {exc!r}')
             if 'cleanup_failure' in result or result['telemetry_errors']:
                 result['status'] = 'failed'
             if guard_tripped.is_set() and result['status'] == 'complete':
