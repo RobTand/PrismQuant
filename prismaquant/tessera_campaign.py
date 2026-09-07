@@ -1809,14 +1809,30 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
-    rows = {
-        name: (torch.cat(chunks, dim=0) if chunks else None)
-        for name, chunks in store.items()
-    }
-    hessians = {
-        name: (None if h is None else h.to(device="cpu"))
-        for name, h in hess.items()
-    } if want_hessian else {}
+    # Do not retain both the original chunks and their concatenated outputs
+    # for the whole scope. Full-model captures can hold GiB of scoring rows.
+    rows = {}
+    for name in list(store):
+        chunks = store.pop(name)
+        rows[name] = torch.cat(chunks, dim=0) if chunks else None
+        del chunks
+    hessians = {}
+    if want_hessian:
+        # GB10 shares physical DRAM with CPU tensors. Releasing Python tensor
+        # references alone leaves the CUDA allocator's cached blocks resident,
+        # so periodically return those blocks while transferring the full H.
+        released_cuda_bytes = 0
+        for name in list(hess):
+            h = hess.pop(name)
+            hessians[name] = None if h is None else h.to(device="cpu")
+            if h is not None and h.is_cuda:
+                released_cuda_bytes += h.numel() * h.element_size()
+            del h
+            if released_cuda_bytes >= 256 * 1024**2:
+                torch.cuda.empty_cache()
+                released_cuda_bytes = 0
+        if released_cuda_bytes:
+            torch.cuda.empty_cache()
     return rows, hessians, dict(seen), dict(amax)
 
 
