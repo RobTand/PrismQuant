@@ -14,6 +14,7 @@ probe for adjoint sketches.
 from __future__ import annotations
 
 import math
+import hashlib
 from typing import Literal
 
 import torch
@@ -21,6 +22,7 @@ import torch
 
 TokenScope = Literal["last", "all", "causal"]
 ProbeDistribution = Literal["gaussian", "rademacher"]
+ROW_PROBE_LAYOUT = "prismaquant.kl_fisher.global_row.v1"
 
 
 def select_token_scope(logits: torch.Tensor, token_scope: str) -> torch.Tensor:
@@ -82,6 +84,7 @@ def fisher_probe_scalar(
     temperature: float = 1.0,
     distribution: str = "gaussian",
     token_count_override: int | None = None,
+    global_row_offset: int | None = None,
 ) -> torch.Tensor:
     """Return a scalar whose logit gradient is one KL/Fisher probe.
 
@@ -97,6 +100,12 @@ def fisher_probe_scalar(
     normalize by the GLOBAL token count, not its own slice's count, or the
     summed gradient is inflated by ``sqrt(n_microbatches)``.  Default ``None``
     preserves the standard per-call normalization exactly.
+
+    ``global_row_offset`` opts into the versioned global-row noise layout.
+    Each complete sequence row uses a SHA256-derived seed with fixed token and
+    vocabulary geometry, independent of how rows are partitioned into calls.
+    Callers must also supply the global token normalizer. None preserves the
+    legacy generator and exact draws; it is not the row-indexed reference.
     """
     temp = float(temperature)
     if not math.isfinite(temp) or temp <= 0.0:
@@ -111,24 +120,40 @@ def fisher_probe_scalar(
     with torch.no_grad():
         probs = torch.softmax(scaled.detach(), dim=-1)
         root = torch.sqrt(torch.clamp(probs, min=0.0))
-        generator = torch.Generator(device=scaled.device)
-        generator.manual_seed(int(seed))
-        if distribution == "gaussian":
-            noise = torch.randn(
-                probs.shape,
-                generator=generator,
-                device=probs.device,
-                dtype=torch.float32,
-            )
-        elif distribution == "rademacher":
-            noise = torch.empty(
-                probs.shape,
-                device=probs.device,
-                dtype=torch.float32,
-            )
-            noise.bernoulli_(0.5, generator=generator).mul_(2.0).sub_(1.0)
-        else:
+        if global_row_offset is not None:
+            if (type(global_row_offset) is not int or global_row_offset < 0
+                    or selected.ndim != 3 or token_count_override is None
+                    or token_count_override < token_count_for_logits(selected)):
+                raise ValueError("global-row probes require a nonnegative row offset, "
+                                 "3D logits and the global token count")
+        if distribution not in {"gaussian", "rademacher"}:
             raise ValueError(f"unknown Fisher probe distribution: {distribution!r}")
+        generator = torch.Generator(device=scaled.device)
+
+        def fill_noise(target, noise_seed):
+            generator.manual_seed(noise_seed)
+            if distribution == "gaussian":
+                target.normal_(generator=generator)
+            else:
+                target.bernoulli_(0.5, generator=generator).mul_(2.0).sub_(1.0)
+
+        if global_row_offset is None:
+            # Keep the original Gaussian operator as well as its seed/layout.
+            generator.manual_seed(int(seed))
+            if distribution == "gaussian":
+                noise = torch.randn(probs.shape, generator=generator,
+                                    device=probs.device, dtype=torch.float32)
+            else:
+                noise = torch.empty_like(probs, dtype=torch.float32)
+                fill_noise(noise, int(seed))
+        else:
+            noise = torch.empty_like(probs, dtype=torch.float32)
+            for local_row in range(selected.shape[0]):
+                domain = (f"{ROW_PROBE_LAYOUT}:{int(seed)}:{token_scope}:"
+                          f"{global_row_offset + local_row}:"
+                          f"{selected.shape[1]}:{selected.shape[2]}")
+                row_seed = int.from_bytes(hashlib.sha256(domain.encode("ascii")).digest()[:8], "little")
+                fill_noise(noise[local_row], row_seed)
         root_noise = root * noise
         probe = root_noise - probs * root_noise.sum(dim=-1, keepdim=True)
         probe = probe / math.sqrt(float(token_count))

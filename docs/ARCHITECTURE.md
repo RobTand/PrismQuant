@@ -1,7 +1,28 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `fix/fp8-native-parity`. Stamps
+As of: 2026-09-07 · `feat/joint-aura-calibration-microbatch`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `feat/joint-aura-calibration-microbatch`) for
+**bounded full-calibration streamed joint AURA** (#318). Explicit
+`--probe-microbatch N` partitions the exact token draw into contiguous complete
+sequence rows through the existing streamed boundary/shared-state mechanism.
+The opt-in `prismaquant.kl_fisher.global_row.v1` noise layout derives each row's
+seed from its global row index, probe seed, scope and token/vocabulary geometry;
+all partitions use the full draw's token normalizer. The same per-Linear signed
+residual lease spans every partition of a probe and squares only after their
+sum. Gradient diagnostics likewise sum FP32 gradients before taking norms.
+GPU full-vocabulary tensors and recompute graphs are bounded by N; CPU boundary
+and cotangent storage still scales with the full draw, and existing source
+prefetch/cache residency remains required. Probe identity seals the full draw,
+source backend and row layout. Its existing arithmetic descriptor also seals N,
+as do execution provenance and checkpoint identity. The row RNG layout stays
+partition independent; paired candidates, assignments and resume reject mixed
+execution sizes because floating-point source kernels can round differently
+across batch shapes. Zero retains the legacy streamed probe draws;
+resident microbatch semantics remain unchanged. This is opt-in research with no
+format, allocator-objective, serving or export gate change.
+Gates: `tests/test_joint_aura_microbatch.py`, `tests/test_joint_aura_packed.py`.
 
 Re-stamped (2026-09-07, `fix/fp8-native-parity`) for **served FP8 activation
 arithmetic**. The shared dynamic activation adapter uses FP32 tensor-denominator

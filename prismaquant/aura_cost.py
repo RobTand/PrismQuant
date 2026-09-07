@@ -1850,6 +1850,7 @@ def compute_aura_cost_streamed(
     formats: Sequence[str],
     *,
     n_probes: int = 16,
+    probe_microbatch: int = 0,
     token_scope: str = "all",
     temperature: float = 1.0,
     production_cache: object | None = None,
@@ -1881,9 +1882,47 @@ def compute_aura_cost_streamed(
     probe, projects each weight gradient onto production ``dW`` in fp32, and
     unloads the layer.  Thus source weights, gradients, and rendered deltas
     are bounded by one decoder layer; no autograd graph can retain the whole
-    model.  The resident :func:`compute_aura_cost` path is deliberately
-    unchanged.
+    model. ``probe_microbatch > 0`` opts joint AURA into complete-sequence
+    partitions with versioned global-row probes. Local signed terms and weight
+    gradients sum across all partitions before squaring; full-vocabulary GPU
+    tensors are bounded by the partition. CPU boundaries and shared pass state
+    still cover the full calibration. Checkpoints bind the execution partition
+    because floating-point kernels may round differently with batch shape.
+    The resident :func:`compute_aura_cost` path is deliberately unchanged.
     """
+    if type(probe_microbatch) is not int or probe_microbatch < 0:
+        raise ValueError("probe_microbatch must be a nonnegative integer")
+    if calib_ids.ndim != 2 or min(calib_ids.shape) < 1:
+        raise ValueError("streamed AURA needs nonempty [rows, sequence] calibration")
+    if probe_microbatch and not joint_activation:
+        raise ValueError("streamed probe_microbatch currently requires joint_activation")
+    batch_rows = min(probe_microbatch or len(calib_ids), len(calib_ids))
+    row_offsets = list(range(0, len(calib_ids), batch_rows))
+    probe_layout = None
+    if probe_microbatch:
+        from prismaquant.kl_fisher import ROW_PROBE_LAYOUT
+        sequence_length = int(calib_ids.shape[1])
+        selected_tokens = {"all": sequence_length, "last": 1,
+                           "causal": sequence_length - 1}.get(token_scope, 0)
+        if selected_tokens < 1:
+            raise ValueError("invalid token scope or sequence length for streamed probes")
+        probe_layout = {
+            "schema": ROW_PROBE_LAYOUT,
+            "global_rows": len(calib_ids),
+            "sequence_length": sequence_length,
+            "selected_tokens_per_row": selected_tokens,
+            "vocab_size": int(runner._head().weight.shape[0]),
+            "token_scope": token_scope,
+            "global_token_count": len(calib_ids) * selected_tokens,
+        }
+    execution_partition = {
+        "schema": "prismaquant.aura.streamed_microbatch.v1",
+        "requested_rows": probe_microbatch,
+        "effective_rows": batch_rows,
+        "partition_count": len(row_offsets),
+        "row_order": "contiguous_complete_sequences",
+        "gradient_diagnostics": "sum_fp32_gradients_before_norm",
+    } if probe_microbatch else None
     if n_probes < 1:
         raise ValueError(f"n_probes must be >= 1, got {n_probes!r}")
     if resume and checkpoint_dir is None:
@@ -2084,6 +2123,12 @@ def compute_aura_cost_streamed(
             "source_execution": source_execution_identity(runner.model),
             "arithmetic": arithmetic_identity(runner.dtype),
         }
+        if probe_layout is not None:
+            joint_probe_identity["noise_layout"] = probe_layout
+            # RNG row coordinates are partition independent; the source
+            # arithmetic is not. Existing paired/assignment consumers compare
+            # this complete probe identity and must refuse mixed batch shapes.
+            joint_probe_identity["arithmetic"]["execution_partition"] = execution_partition
         # Hash actual decoded production outputs before checkpoint admission,
         # in layer-bounded prefetch windows. This is identity preparation,
         # outside the cotangent/projection hot path; no tensor copy is retained.
@@ -2274,6 +2319,7 @@ def compute_aura_cost_streamed(
             "streamed_gradient_harvest",
             "streamed_cotangent_rollover",
             "streamed_boundary_release",
+            "streamed_microbatch",
         } & set(extra)
         if reserved:
             raise ValueError(
@@ -2281,6 +2327,8 @@ def compute_aura_cost_streamed(
                 f"AURA identity fields: {sorted(reserved)}"
             )
         extra["streaming"] = True
+        if execution_partition is not None:
+            extra["streamed_microbatch"] = execution_partition
         if joint_activation:
             extra["joint_aura"] = joint_run_identity
         extra["streamed_model_identity"] = exact_model_identity
@@ -2316,7 +2364,7 @@ def compute_aura_cost_streamed(
             include_lm_head=False,
             hook_harvest=True,
             allow_packed_expert_omission=allow_packed_expert_omission,
-            probe_microbatch=0,
+            probe_microbatch=probe_microbatch,
             collect_col_energy=collect_col_energy,
             require_production_cache=require_production_cache,
             production_cache=production_cache,
@@ -2404,6 +2452,8 @@ def compute_aura_cost_streamed(
             col_energy=col_energy,
             weight_mse_diagnostic=weight_mse_diagnostic,
         )
+        if execution_partition is not None:
+            payload["provenance"]["streamed_microbatch"] = execution_partition
         if joint_activation:
             if set(joint_rows) != set(names):
                 raise RuntimeError("joint AURA incomplete unit coverage")
@@ -2502,59 +2552,62 @@ def compute_aura_cost_streamed(
             "source_weight": joint_source_tensors[name],
             "rendered_weight": rendered_identity,
             "activation": activation,
-            "arithmetic": arithmetic_identity(runner.dtype),
+            "arithmetic": joint_probe_identity["arithmetic"],
             "probe_identity_sha256": identity_sha256(joint_probe_identity),
         }
         joint_components[(name, fmt)] = []
 
     # Identity validation above is intentionally before the first model
     # forward: a mismatched resume is a refusal, never a recomputation.
-    _log(
-        f"boundary capture: one streamed forward over calib "
-        f"{tuple(calib_ids.shape)} across {runner.num_layers} layers ..."
-    )
+    _log(f"boundary capture: calib {tuple(calib_ids.shape)} in "
+         f"{len(row_offsets)} partition(s) across {runner.num_layers} layers ...")
     capture_started = time.time()
-    batch = runner.capture_boundaries(calib_ids)
-    _log(
-        f"boundary capture done in {(time.time() - capture_started) / 60:.1f} "
-        f"min; starting {n_probes}-probe tail cotangents"
-    )
+    batches = []
+    for offset in row_offsets:
+        available_gib = _free_gib()
+        if available_gib < min_free_gib:
+            raise RuntimeError(f"free UMA {available_gib:.1f} < floor {min_free_gib:.1f}; "
+                               f"abort before calibration row {offset}")
+        batches.append(runner.capture_boundaries(calib_ids[offset:offset + batch_rows]))
+    _log(f"boundary capture done in {(time.time() - capture_started) / 60:.1f} "
+         f"min; starting {n_probes}-probe tail cotangents")
     device = runner.device
     dtype = runner.dtype
 
-    # One independent shared-state cotangent accumulator per KL probe.  This
-    # preserves architectures with declared cross-layer state (e.g. shared
-    # K/V) while remaining an exact no-op for the ordinary decoder contract.
+    # Existing boundary and shared-state mechanisms, one instance per complete
+    # sequence partition. Host boundary/cotangent storage still scales with the
+    # full calibration; only GPU activations and full-vocabulary tensors are
+    # bounded by batch_rows. No second residency or spill cache is introduced.
     from prismaquant.sensitivity_probe import (
         SharedStateCotangents,
         kv_cotangent_path_enabled,
     )
-
-    cotangents = [
-        SharedStateCotangents(enabled=kv_cotangent_path_enabled())
-        for _ in range(n_probes)
-    ]
-    grad_outs: list[torch.Tensor] = []
-    for probe_index in range(n_probes):
-        tail = batch.activations_cpu[-1].to(
-            device=device, dtype=dtype
-        ).detach().requires_grad_(True)
-        logits = runner.tail_logits(batch, tail)
-        probe = fisher_probe_scalar(
-            logits,
-            seed=seed_base + probe_index,
-            token_scope=token_scope,
-            temperature=temperature,
-            distribution="rademacher",
-        )
-        probe.backward()
-        if tail.grad is None:
-            raise RuntimeError("streamed AURA tail produced no cotangent")
-        grad_outs.append(tail.grad.detach().to("cpu"))
-        del logits, probe, tail
-    # The tail cotangents are now independent CPU tensors. Its source output
-    # boundary will not be read again during the reverse sweep.
-    batch.activations_cpu[-1] = torch.empty(0)
+    cotangents = [[SharedStateCotangents(enabled=kv_cotangent_path_enabled())
+                  for _ in batches] for _ in range(n_probes)]
+    grad_outs: list[list[torch.Tensor]] = [[] for _ in range(n_probes)]
+    for batch_index, batch in enumerate(batches):
+        for probe_index in range(n_probes):
+            tail = batch.activations_cpu[-1].to(
+                device=device, dtype=dtype
+            ).detach().requires_grad_(True)
+            logits = runner.tail_logits(batch, tail)
+            if probe_layout is not None and list(logits.shape) != [
+                len(batch.input_ids), int(calib_ids.shape[1]), probe_layout["vocab_size"]
+            ]:
+                raise RuntimeError("streamed AURA tail differs from bound probe geometry")
+            probe = fisher_probe_scalar(
+                logits, seed=seed_base + probe_index, token_scope=token_scope,
+                temperature=temperature, distribution="rademacher",
+                **({"token_count_override": probe_layout["global_token_count"],
+                    "global_row_offset": row_offsets[batch_index]}
+                   if probe_layout is not None else {}),
+            )
+            probe.backward()
+            if tail.grad is None:
+                raise RuntimeError("streamed AURA tail produced no cotangent")
+            grad_outs[probe_index].append(tail.grad.detach().to("cpu"))
+            del logits, probe, tail
+        batch.activations_cpu[-1] = torch.empty(0)
 
     reverse_started = time.time()
     reverse_layers_done = 0
@@ -2800,6 +2853,18 @@ def compute_aura_cost_streamed(
             # that parameter's AccumulateGrad node completes is numerically
             # identical to the old post-backward qname loop.
             harvested: set[str] = set()
+            accumulated_gradients: dict[str, torch.Tensor] = {}
+
+            def _consume_streamed_gradient(name, gradient):
+                if probe_microbatch:
+                    with torch.no_grad():
+                        if name in accumulated_gradients:
+                            accumulated_gradients[name].add_(gradient)
+                        else:
+                            accumulated_gradients[name] = gradient.to(torch.float32, copy=True)
+                else:
+                    _harvest_streamed_gradient(name, gradient)
+
 
             def _harvest_streamed_gradient(
                 name: str, gradient: torch.Tensor
@@ -2849,7 +2914,7 @@ def compute_aura_cost_streamed(
                         return
                     for name in member_names:
                         if name not in harvested:
-                            _harvest_streamed_gradient(name, _source_gradient(linears[name], gradient))
+                            _consume_streamed_gradient(name, _source_gradient(linears[name], gradient))
                     parameter.grad = None
 
                 return _hook
@@ -2873,58 +2938,63 @@ def compute_aura_cost_streamed(
                         )
                     )
                 for probe_index in range(n_probes):
-                    available_gib = _free_gib()
-                    if available_gib < min_free_gib:
-                        raise RuntimeError(
-                            f"free UMA {available_gib:.1f} < floor "
-                            f"{min_free_gib:.1f}; abort before streamed "
-                            f"layer {layer} probe {probe_index + 1}"
-                        )
                     harvested.clear()
+                    accumulated_gradients.clear()
                     if joint_lease is not None:
                         joint_lease.begin_probe()
-                    incoming_grad = grad_outs[probe_index].to(device)
-                    x_in = batch.activations_cpu[layer].to(
-                        device=device, dtype=dtype
-                    ).detach().requires_grad_(True)
-                    isolated = profile.isolated_layer_pass_state(
-                        batch.shared_pass_state, runner.layers[layer]
-                    )
-                    isolated = cotangents[probe_index].graft(isolated)
-                    out = runner.isolated_layer(
-                        batch, layer, x_in, pass_state=isolated
-                    )
-                    roots, root_grads = cotangents[probe_index].produced_roots()
-                    if roots:
-                        torch.autograd.backward(
-                            [out, *roots],
-                            [incoming_grad, *root_grads],
+                    for batch_index, batch in enumerate(batches):
+                        available_gib = _free_gib()
+                        if available_gib < min_free_gib:
+                            raise RuntimeError(
+                                f"free UMA {available_gib:.1f} < floor "
+                                f"{min_free_gib:.1f}; abort before streamed "
+                                f"layer {layer} probe {probe_index + 1}"
+                            )
+                        incoming_grad = grad_outs[probe_index][batch_index].to(device)
+                        x_in = batch.activations_cpu[layer].to(
+                            device=device, dtype=dtype
+                        ).detach().requires_grad_(True)
+                        isolated = profile.isolated_layer_pass_state(
+                            batch.shared_pass_state, runner.layers[layer]
                         )
-                    else:
-                        out.backward(incoming_grad)
-                    cotangents[probe_index].harvest()
-                    if x_in.grad is None:
-                        raise RuntimeError(
-                            f"streamed AURA layer {layer} produced no input "
-                            "cotangent"
+                        isolated = cotangents[probe_index][batch_index].graft(isolated)
+                        out = runner.isolated_layer(
+                            batch, layer, x_in, pass_state=isolated
                         )
-                    # Replace this probe's consumed incoming cotangent now.
-                    # The former next_grad_outs list retained all 32 incoming
-                    # CPU tensors while growing a second complete outgoing
-                    # plane. In-place rollover bounds the CPU plane to 32
-                    # tensors plus the one result currently being copied.
-                    grad_outs[probe_index] = x_in.grad.detach().to("cpu")
-                    for parameter_id, parameter in parameters.items():
-                        gradient = parameter.grad
-                        if gradient is not None:
-                            # Defensive straggler path for a backend that did
-                            # not invoke the post-accumulate hook. It performs
-                            # the identical reduction and still frees the
-                            # gradient before the next probe.
-                            for name in parameter_members[parameter_id]:
-                                if name not in harvested:
-                                    _harvest_streamed_gradient(name, _source_gradient(linears[name], gradient))
-                            parameter.grad = None
+                        roots, root_grads = cotangents[probe_index][batch_index].produced_roots()
+                        if roots:
+                            torch.autograd.backward(
+                                [out, *roots],
+                                [incoming_grad, *root_grads],
+                            )
+                        else:
+                            out.backward(incoming_grad)
+                        cotangents[probe_index][batch_index].harvest()
+                        if x_in.grad is None:
+                            raise RuntimeError(
+                                f"streamed AURA layer {layer} produced no input "
+                                "cotangent"
+                            )
+                        # Replace this probe's consumed incoming cotangent now.
+                        # The former next_grad_outs list retained all 32 incoming
+                        # CPU tensors while growing a second complete outgoing
+                        # plane. In-place rollover bounds the CPU plane to 32
+                        # tensors plus the one result currently being copied.
+                        grad_outs[probe_index][batch_index] = x_in.grad.detach().to("cpu")
+                        for parameter_id, parameter in parameters.items():
+                            gradient = parameter.grad
+                            if gradient is not None:
+                                # Defensive straggler path for a backend that did
+                                # not invoke the post-accumulate hook. It performs
+                                # the identical reduction and still frees the
+                                # gradient before the next probe.
+                                for name in parameter_members[parameter_id]:
+                                    if name not in harvested:
+                                        _consume_streamed_gradient(name, _source_gradient(linears[name], gradient))
+                                parameter.grad = None
+                        del (out, x_in, incoming_grad, isolated, roots, root_grads)
+                    for name in list(accumulated_gradients):
+                        _harvest_streamed_gradient(name, accumulated_gradients.pop(name))
                     for name in pending:
                         if name in harvested:
                             continue
@@ -2945,15 +3015,8 @@ def compute_aura_cost_streamed(
                             s2[key] += value
                             s4[key] += value * value
                             x2_probe[key].append(value)
-                    del (
-                        out,
-                        x_in,
-                        incoming_grad,
-                        isolated,
-                        roots,
-                        root_grads,
-                    )
             finally:
+                accumulated_gradients.clear()
                 if joint_lease is not None:
                     joint_lease.__exit__(None, None, None)
                     joint_lease = None
@@ -2982,7 +3045,8 @@ def compute_aura_cost_streamed(
             # sweep (the next iteration consumes boundary ``layer - 1``).
             # Release it progressively instead of retaining all 44 DSv4
             # hc_mult=4 boundary snapshots to the end.
-            batch.activations_cpu[layer] = torch.empty(0)
+            for batch in batches:
+                batch.activations_cpu[layer] = torch.empty(0)
 
             if checkpoint_root is not None:
                 assert checkpoint_identity_sha256 is not None
@@ -3054,6 +3118,7 @@ def run_streamed_production_anchor_aura(
     checkpoint_dir: str | Path,
     resume: bool,
     n_probes: int,
+    probe_microbatch: int = 0,
     token_scope: str = "all",
     temperature: float = 1.0,
     seed_base: int = 7000,
@@ -3237,6 +3302,7 @@ def run_streamed_production_anchor_aura(
         calib_ids,
         format_union,
         n_probes=n_probes,
+        probe_microbatch=probe_microbatch,
         token_scope=token_scope,
         temperature=temperature,
         production_cache=None,
@@ -3429,8 +3495,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "control for production calib volume; the monolithic "
                         "forward's vocab-shaped tensors are ~20 GiB at "
                         "32x1024). 0 = single batch (legacy, bit-identical). "
-                        ">0 changes probe-noise draws: statistically "
-                        "equivalent, not bit-identical to monolithic.")
+                        "Streamed joint AURA uses versioned row-indexed "
+                        "draws independent of the partition; compares against "
+                        "an explicit full-size >0 reference. Resident draws "
+                        "retain the legacy microbatch policy. Checkpoints "
+                        "bind the execution batch size.")
     p.add_argument("--allow-packed-expert-omission", action="store_true",
                    help="Explicit research/debug escape: allow AURA to omit "
                         "profile-declared routed expert targets from the cost "
@@ -3618,6 +3687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 calib,
                 requested_formats,
                 n_probes=args.n_probes,
+                probe_microbatch=args.probe_microbatch,
                 token_scope=args.token_scope,
                 temperature=args.temperature,
                 production_cache=cache,
