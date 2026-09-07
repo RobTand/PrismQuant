@@ -1204,10 +1204,10 @@ def select_anchor_groups(selection: Mapping, resolved: Mapping[str, list[str]],
             raise RuntimeError(
                 f"{where}: selection names anchor group {key!r}, which this "
                 f"run's scope does not contain")
-        if resolved[key] != members:
+        if sorted(resolved[key]) != members:
             raise RuntimeError(
-                f"{where}: anchor group {key!r} has members {resolved[key]} "
-                f"here and {members} in the selection")
+                f"{where}: anchor group {key!r} has members "
+                f"{sorted(resolved[key])} here and {members} in the selection")
         if key in keys:
             raise RuntimeError(f"{where}: anchor group {key!r} selected twice")
         keys.append(key)
