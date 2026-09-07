@@ -31,3 +31,45 @@ and OMP/MKL/OpenBLAS threads bounded to one per worker:
 Initial submissions `be339e093292` and `4c1c3cdc5cd3` omitted the required
 Tessera import path and failed collection/imports. They are not behavioral
 results; the corrected invocations above supply that dependency explicitly.
+
+## Completed isolated canonical comparison
+
+The earlier profiling prerequisite is now satisfied by the seven-arm canonical
+measurement documented in [campaign-capture-reuse.md](campaign-capture-reuse.md).
+PB `0c4b585e8f43472a085435628bff68955d8bd6b546da2fe39a583dcb8d6ed821`
+exited 0; actual CAS payload
+`84b67475c6831a43c7b03f404e1827e81e051539ff87f0186d9ece2d46e7d349`
+and the broker's successful termination receipt were inspected. All arms
+preserve the finalized-buffer change, canonical initializer, eager attention,
+source checkpoint, 512 samples of 512 tokens, and the same 96 selected layer-10
+expert projections. The scalar-sync collector differs from the current
+collector only in the maxima hunk. Source bytes and `amax-only.diff` are
+retained under
+`/mnt/shared/tessera-measurements/first-model-20260907/capture-reuse/canonical-compare/frozen-source/`.
+No cached arm is included in the isolated maxima statistic.
+
+The ABBA order is device-max forward 3, scalar-sync forwards 4/5, device-max
+forward 6. Arm 3 is the shared endpoint with the separate reuse ABBA. Profiled
+scalar-sync times are **102.406 / 102.715 seconds**, versus device-max
+**101.423 / 100.154 seconds**. Medians are 102.561 and 100.789 seconds, a
+**1.73% observed reduction**. This is a small effect across only two repetitions
+per method; it does not establish a robust or general speedup, and it does not
+explain the much larger gain from skipping repeated forwards through reuse.
+Every arm exactly matches all 96 canonical X/H/count/max records.
+
+The before profiles have 1,938/2,023 samples; 195 samples in each fall at the
+per-batch scalar-read line. The after profiles have 2,076/1,976 samples, and
+the per-batch scalar-read site is absent by construction. Grouped-matmul frames
+remain the largest sampled Python location on both sides. These are sampled
+call locations, not CUDA event timing or a claim that every sampled scalar-read
+second becomes saved wall time.
+
+Both-host Netdata raw series and per-phase CPU/RAM/I/O/power summaries are
+retained alongside all four in-process profiles. Interpolated median GPU
+energy is **4,057.215 J scalar-sync versus 3,463.417 J device-max**, or 0.02366
+versus 0.02772 selected units per GPU joule (**1.17× observed work/J ratio**).
+Power uses ten-second sampling, with device-max means 31.821/36.938 W and
+scalar-sync 40.227/38.894 W; repeat variability and coarse telemetry limit the
+claim. This is GPU energy only, not whole-machine energy. Power is far below
+the approximate 140 W envelope, so these measurements do not establish GPU
+saturation. `derived-metrics.json` retains unrounded figures and limitations.
