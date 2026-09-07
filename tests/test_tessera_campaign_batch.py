@@ -43,7 +43,7 @@ def test_batch_adapter_calls_producer_once_with_separate_activation_inputs(monke
         seen.append((values, kwargs))
         return [SimpleNamespace(blob=bytes([i])) for i in range(len(values))]
 
-    monkeypatch.setattr(render._tessera_export, "encode_linears", encode)
+    monkeypatch.setattr(render._tessera_export, "encode_linears", encode, raising=False)
     from tessera import unit_artifact
     monkeypatch.setattr(unit_artifact, "read_unit_artifact",
                         lambda blob, **_kwargs: weights[blob[0]])
@@ -56,7 +56,7 @@ def test_batch_adapter_calls_producer_once_with_separate_activation_inputs(monke
 
 def test_batch_missing_hessian_refuses_before_any_producer_call(monkeypatch):
     monkeypatch.setattr(render._tessera_export, "encode_linears",
-                        lambda *_args, **_kwargs: pytest.fail("encoded invalid inputs"))
+                        lambda *_args, **_kwargs: pytest.fail("encoded invalid inputs"), raising=False)
     with pytest.raises(render.HessianContractError, match="no Hessian"):
         render.encode_tessera_units([torch.ones(16, 256)] * 2, FMT,
                                     activation_kwargs=[{"ldl": torch.eye(256)}, None])
@@ -151,7 +151,7 @@ def test_batch_scoring_keeps_each_units_static_activation_scale(monkeypatch, tmp
 
 
 def test_requested_batch_refuses_old_producer_before_loading_model(monkeypatch, tmp_path):
-    monkeypatch.setattr(render._tessera_export, "encode_linears", None)
+    monkeypatch.setattr(render._tessera_export, "encode_linears", None, raising=False)
     with pytest.raises(RuntimeError, match="no encode_linears API"):
         campaign.main(["--model", "must-not-load", "--out", str(tmp_path / "cost.pkl"),
                        "--cache-dir", str(tmp_path / "cache"), "--anchor-batch-size", "4"])
