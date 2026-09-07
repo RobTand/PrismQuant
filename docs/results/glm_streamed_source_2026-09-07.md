@@ -358,3 +358,25 @@ The exact source bundle and verified receipt/payload are in
 `review-02/collector-resource-check-cpu.json`; payload SHA256
 `fdc8ead46efbaaa4d6551887e2c7326bb843e876593ea9cd2cd9c2f7fdb567fd`,
 receipt `a979cff1fda62fabf64f2b3abf25fb22521ccf7cd503a39183a084cd2cc1e873`.
+
+
+The seven producer-bridge skips were resolved by declaring
+`TESSERA_REPO=/mnt/shared/tessera-measurements/first-model-20260907/inputs/tessera-382a1a97`
+on dl380g10. PB
+`19efde98199d3183b51ddffcf90b99fc4df39a62ef636b7fd945a4d7531aad2f`
+then passed all 16 packed-campaign checks without skips in 62.51 seconds;
+exit 0, cleanup and exact collector/test source bytes were verified in
+`review-02/collector-producer-bridge-cpu.json`. This is CPU producer-bridge
+validation, not a served-format qualification.
+
+Current main `01583d6d00` was merged after the guard repair. Both adjacent
+architecture provenance blocks were preserved; collector and reader source
+bytes did not change. PB
+`f8f872976062b5a2770bb15a83f9497be8723410d10941464b60873daea8c94b`
+passed 83 focused integration checks without skips on Sparky (eight xdist
+workers, one native thread each). Exit was 0 and cleanup completed. Its exact
+bundle, collector/harness/guard-test/architecture/source-transition files,
+payload and canonical receipt were verified in
+`review-02/current-main-guard-integration-cpu.json`; payload SHA256
+`e6476746bf4b43ec356928b710e7b097762399f57c59951b162fdc5aa9c78b7f`,
+receipt `43ec1025a7cab4005d5988d54fc3f1c7f7c4371af6adefb1ecaa2e65cd10c6fd`.
