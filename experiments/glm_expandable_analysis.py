@@ -72,7 +72,7 @@ def summarize(root):
         'status', 'target_batches_completed', 'input_binding_sha256',
         'source_binding_unchanged_at_exit', 'telemetry_errors', 'torch', 'cuda',
         'device_uuid', 'host_kernel_release', 'nfsv4_module_build_id_note_hex']}
-    selected.update(units=len(result['units']), wall_seconds=result['end']-result['begin'], memory=memory,
+    selected.update(units=result['units'], wall_seconds=result['end']-result['begin'], memory=memory,
         phases=phases, traces=traces, telemetry=telemetry,
         materialization={k:v for k,v in result.get('output_materialization_progress',{}).items()
                          if k not in ['completed_groups','group_boundaries','last_observation']},
