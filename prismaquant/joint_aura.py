@@ -7,6 +7,7 @@ QDQ is the same owner used by PerturbedActivationCache and assignment KL.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -31,7 +32,71 @@ PROBE_UNCERTAINTY_SCOPE = "probe_sampling_conditional_on_fixed_calibration"
 ASSIGNMENT_OBJECTIVES = ("additive", "joint_quadratic")
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class _ValidatedProbeIdentity(Mapping):
+    """Owned immutable JSON fields; mutable values are returned as fresh copies.
+
+    Only this constructor can issue the fast-path type, after checking the
+    source model. Serialization deliberately restores an ordinary dict so a
+    validation result never crosses a persisted artifact boundary.
+    """
+
+    _fields: tuple
+    _sha256: str
+
+    def __init__(self, probe):
+        encoded = json.dumps(probe, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        snapshot = json.loads(encoded)
+        from prismaquant.cost_streaming import validate_streamed_model_identity
+        validate_streamed_model_identity(probe["source_model"], where="joint AURA row")
+        object.__setattr__(self, "_fields", tuple(
+            (key, json.dumps(value, separators=(",", ":"), allow_nan=False))
+            for key, value in snapshot.items()))
+        object.__setattr__(self, "_sha256", hashlib.sha256(encoded.encode()).hexdigest())
+
+    def __getitem__(self, key):
+        for name, encoded in self._fields:
+            if name == key:
+                return json.loads(encoded)
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (name for name, _ in self._fields)
+
+    def __len__(self):
+        return len(self._fields)
+
+    def __reduce__(self):
+        return dict, (dict(self),)
+
+
+def prepare_joint_aura_identities(cost_data):
+    """Own shared probe identities for one allocator table, without trusting rows.
+
+    Pickle preserves shared object references. Deduplicate by that reference
+    only while retaining it here, then discard the temporary index. No global
+    cache, digest-only trust, or caller promise of immutability is involved.
+    Row/operator/digest/sample checks still run at every consumption boundary.
+    """
+    prepared = {}
+    for per_unit in cost_data.get("costs", {}).values():
+        if not isinstance(per_unit, Mapping):
+            continue
+        for row in per_unit.values():
+            if not isinstance(row, dict):
+                continue
+            probe = row.get("probe_identity")
+            if not isinstance(probe, dict) or probe.get("schema") != "prismaquant.joint_aura.probes.v2":
+                continue
+            key = id(probe)
+            if key not in prepared:
+                prepared[key] = (probe, _ValidatedProbeIdentity(probe))
+            row["probe_identity"] = prepared[key][1]
+
+
 def identity_sha256(value) -> str:
+    if type(value) is _ValidatedProbeIdentity:
+        return value._sha256
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode()).hexdigest()
@@ -405,7 +470,8 @@ def validate_joint_aura_entry(entry: Mapping) -> bool:
         raise ValueError("joint AURA probe identity mismatch")
     from prismaquant.cost_streaming import validate_streamed_model_identity
     try:
-        validate_streamed_model_identity(probe["source_model"], where="joint AURA row")
+        if type(probe) is not _ValidatedProbeIdentity:
+            validate_streamed_model_identity(probe["source_model"], where="joint AURA row")
         for field in ("calibration_sha256", "producer_source_sha256"):
             if re.fullmatch(r"[a-f0-9]{64}", probe[field]) is None:
                 raise ValueError(f"invalid {field}")

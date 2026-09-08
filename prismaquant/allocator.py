@@ -2352,6 +2352,8 @@ def main():
             cost_data = pickle.load(f)
     validate_probe_payload(probe, args.probe)
     validate_cost_payload(cost_data, args.costs)
+    from .joint_aura import prepare_joint_aura_identities
+    prepare_joint_aura_identities(cost_data)
     # One DP prices in one currency: a cost table carrying Tessera-currency
     # rows (output_mse under the route's activation contract) is admissible
     # only on the objective those rows measure (render-score). Read from the

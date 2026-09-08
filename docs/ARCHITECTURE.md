@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `codex/joint-allocation-handoff`. Stamps
+As of: 2026-09-07 · `fix/joint-aura-validation-cost`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-07, `fix/joint-aura-validation-cost`) for allocator-local
+joint-AURA probe identity reuse. After loading a cost table, the allocator
+owns immutable JSON copies of shared probe identities and validates each
+source-model identity once. The row validator reuses only that checked model
+identity and its probe digest; operator, scalar, sample, currency and cross-row
+checks still run. Mutable values returned from an owned identity are detached
+copies, replacement identities receive full validation, and pickle restores
+ordinary dictionaries requiring fresh admission. No persisted cost schema,
+calibration, numerical objective, format, cache or serving gate changes.
+Gate: `tests/test_joint_aura_validation_reuse.py`.
 
 Re-stamped (2026-09-07, `codex/joint-allocation-handoff`) for the opt-in
 completed joint-table allocation handoff (#351). `tessera_joint_allocation`
