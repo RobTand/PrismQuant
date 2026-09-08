@@ -71,3 +71,56 @@ def test_streaming_cache_preserves_declared_buffer_precision(tmp_path, prefetch)
         _assert_routing_precision(model)
     finally:
         context.shutdown()
+
+
+@pytest.mark.parametrize('mode', ['resident', 'cold', 'prefetch'])
+def test_checkpoint_strict_fp32_parameters_keep_source_bytes(tmp_path, mode):
+    from transformers import PreTrainedModel
+
+    class PolicyModel(nn.Module):
+        _get_dtype_plan = PreTrainedModel._get_dtype_plan
+        _keep_in_fp32_modules = ['ordinary']
+        _keep_in_fp32_modules_strict = ['strict']
+
+    model = PolicyModel()
+    layer = nn.Module()
+    # This value loses bits in BF16, so an upcast after loading cannot pass.
+    value = torch.tensor([[1.003]], dtype=torch.float32)
+    layer.strict = nn.Linear(1, 1, bias=False)
+    layer.ordinary = nn.Linear(1, 1, bias=False)
+    model.layers = nn.ModuleList([layer])
+    with torch.no_grad():
+        layer.strict.weight.copy_(value)
+        layer.ordinary.weight.copy_(value)
+    path = tmp_path / 'strict.safetensors'
+    save_file(model.state_dict(), str(path))
+    keys = {name: name for name in model.state_dict()}
+    shards = dict.fromkeys(keys, str(path))
+    model.to_empty(device='meta')
+
+    def check():
+        assert layer.strict.weight.dtype == torch.float32
+        assert torch.equal(layer.strict.weight, value)
+        # HF's non-strict declaration applies only to FP16, not BF16.
+        assert layer.ordinary.weight.dtype == torch.bfloat16
+
+    if mode == 'resident':
+        _materialize(model, ['layers.0.'], shards, keys, torch.device('cpu'), torch.bfloat16)
+        check()
+        return
+    context = StreamingContext(model=model, base_model=model, layers=model.layers,
+        layers_prefix='layers.', num_layers=1,
+        install_resolvers=[_build_install_resolver(model, 'layers.0')],
+        weight_shard=shards, weight_ckpt=keys,
+        layer_cache=LayerCache(max_bytes=1024), prefetch_pool=ThreadPoolExecutor(max_workers=1),
+        device=torch.device('cpu'), dtype=torch.bfloat16, offload_folder=str(tmp_path))
+    try:
+        if mode == 'prefetch':
+            context.schedule_prefetch(0)
+        context.install(0, require_prefetched=mode == 'prefetch')
+        check()
+        context.unload(0)
+        context.install(0, require_prefetched=True)
+        check()
+    finally:
+        context.shutdown()

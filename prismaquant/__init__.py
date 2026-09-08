@@ -214,6 +214,14 @@ def pretrained_initialization_contract(model):
         getattr(model, _INITIALIZATION_CONTRACT_ATTRIBUTE, None))
 
 
+def validate_source_initialization_contract(value):
+    """Read either qualified source-loading route without conflating them."""
+    if isinstance(value, dict) and value.get("schema") == "prismaquant.streaming_initialization.v1":
+        from .streaming_model import validate_streaming_initialization_contract
+        return validate_streaming_initialization_contract(value)
+    return validate_pretrained_initialization_contract(value)
+
+
 @_contextlib.contextmanager
 def genuine_weight_initialization():
     """Build a model the way transformers would, inside a PrismaQuant process.

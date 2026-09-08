@@ -60,6 +60,7 @@ one for the other.
 from __future__ import annotations
 
 import argparse
+import re
 import functools
 import json
 import math
@@ -1790,12 +1791,28 @@ def _link_seed_wire(seed_wire: Path, wire_dir: Path, filename) -> None:
 
 def _collect_activations(model, targets, tokens, max_rows: int, device,
                          *, want_hessian: bool = False, profile=None,
-                         boundary_consumer=None):
+                         boundary_consumer=None, forward_batch=None, resource_check=None,
+                         shared_packed_inputs: bool = False, on_forwards_complete=None):
     """One model forward per batch, for dense and declared packed projections.
 
     Returns ``(rows, hessians, token_counts, max_abs)``. Counts describe every
     observed input row, including when Hessians and retained scoring rows are
     disabled; they are calibration provenance, not a Hessian-computation flag.
+    ``resource_check(label)`` optionally enforces the caller's existing guard
+    before/after each output concat and Hessian CPU transfer. A refusal clears
+    owned output tensors before propagating; integer row observations remain
+    available for diagnostics. The default performs no additional checks.
+    ``on_forwards_complete()`` is an optional source-lifecycle boundary after
+    every original forward, hook removal and release of local packed weight
+    views. It runs before CPU output materialization, within failure cleanup.
+    The caller can release only exhausted source state while retaining the
+    next resident layer and current hidden boundaries. The default is None.
+
+    ``shared_packed_inputs`` is an experimental, default-off collector policy.
+    Only packed siblings with the same module, expert and derived input kind
+    share internal accumulation. The existing store retains private, bounded
+    FP32 device prefixes until output materialization; returned CPU H/X tensors
+    remain independent for every qname. This is not a new activation cache.
 
     Three different things come out of the same hook, and they have different
     row budgets on purpose:
@@ -1815,8 +1832,9 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
       served under, and a maximum over a prefix of the rows is a different
       calibration than the one an exporter would take.
 
-    Accumulated in fp32 on the model's device and moved to CPU once at the
-    end, matching how the kept rows are handled. Packed units use the existing
+    Hessians accumulate in fp32 on the model's device and move to CPU once at
+    the end. Legacy scoring chunks move to CPU as observed; the experimental
+    policy instead transfers their bounded device prefix at the end. Packed units use the existing
     module-input collector and routing/SwiGLU derivation, and land in the SAME
     three accumulators as a dense Linear -- rows, Hessian and ``max_abs`` --
     so there is one notion of "what the campaign captured" for either
@@ -1834,9 +1852,14 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
     hess: dict[str, object] = {name: None for name in targets}
     seen: dict[str, int] = {name: 0 for name in targets}
     amax: dict[str, float] = {name: 0.0 for name in targets}
+    # Singleton dense owners stay distinct. Packed groups below may replace
+    # only proven identical gate/up owners; seen remains a per-qname diagnostic.
+    group_members = {name: [name] for name in targets}
     routed_seen: dict[str, int] = {}
     handles = []
     packed_collector = None
+    inventory = by_name = selected_by_module = parents = None
+    member = selected = unique = consume_packed = None
     calibration_coordinates = None
 
     def consume_boundary(qname, module, args, kwargs):
@@ -1853,8 +1876,10 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         flat = x.detach().reshape(-1, x.shape[-1])
         if not flat.shape[0]:
             return
-        if name in routed_seen:
-            routed_seen[name] += int(flat.shape[0])
+        for member_name in group_members[name]:
+            if member_name in routed_seen:
+                routed_seen[member_name] += int(flat.shape[0])
+            seen[member_name] += int(flat.shape[0])
         batch_max = flat.abs().amax().float()
         previous_max = amax[name]
         if not isinstance(previous_max, torch.Tensor):
@@ -1862,7 +1887,6 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         # Python max(previous, NaN) preserves previous. fmax keeps that exact
         # policy while avoiding a device-to-host scalar read on every batch.
         amax[name] = torch.fmax(previous_max, batch_max)
-        seen[name] += int(flat.shape[0])
         if want_hessian:
             # Every row, before any cap: see the docstring.
             f32 = flat.to(dtype=torch.float32)
@@ -1874,9 +1898,20 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
         room = max_rows - kept[name]
         if room <= 0:
             return
-        take = flat[:room].to(dtype=torch.float32, device="cpu")
-        store[name].append(take)
-        kept[name] += int(take.shape[0])
+        if shared_packed_inputs:
+            # Never retain a view of a source/derived activation plane. One
+            # private prefix buffer is owned by the existing store, and copy_
+            # preserves the original row order and BF16-to-FP32 conversion.
+            take_rows = min(room, int(flat.shape[0]))
+            if not store[name]:
+                store[name].append(torch.empty(
+                    (max_rows, flat.shape[1]), dtype=torch.float32, device=flat.device))
+            store[name][0][kept[name]:kept[name] + take_rows].copy_(flat[:take_rows])
+            kept[name] += take_rows
+        else:
+            take = flat[:room].to(dtype=torch.float32, device="cpu")
+            store[name].append(take)
+            kept[name] += int(take.shape[0])
 
     def make_hook(name):
         def hook(_module, args):
@@ -1919,6 +1954,23 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
             routed_seen[name] = 0
         parents = {name: _packed_experts_parent_module(model, name)
                    for name in selected_by_module}
+        if shared_packed_inputs:
+            for module_qname, selected in selected_by_module.items():
+                owners = {}
+                unique = []
+                for member in selected:
+                    key = (module_qname, member.expert_id, input_kind[member.param_name])
+                    owner = owners.get(key)
+                    if owner is None:
+                        owners[key] = member.qname
+                        unique.append(member)
+                    else:
+                        group_members[owner].append(member.qname)
+                        del group_members[member.qname]
+                        for state in (store, kept, hess, amax):
+                            del state[member.qname]
+                        state = None
+                selected_by_module[module_qname] = unique
 
         def consume_packed(module_qname, x):
             selected = selected_by_module.get(module_qname)
@@ -1956,44 +2008,143 @@ def _collect_activations(model, targets, tokens, max_rows: int, device,
                     positions = torch.arange(batch.shape[1], dtype=torch.int64)
                     calibration_coordinates = torch.cartesian_prod(sample_ids, positions)
                     sample_offset += batch.shape[0]
-                model(batch.to(device))
+                (model if forward_batch is None else forward_batch)(batch.to(device))
+    except BaseException as error:
+        if shared_packed_inputs or on_forwards_complete is not None:
+            store.clear()
+            hess.clear()
+            amax.clear()
+            if torch.device(device).type == 'cuda':
+                try:
+                    torch.cuda.empty_cache()
+                except Exception as cleanup_error:
+                    error.add_note(f'capture CUDA cache release failed: {cleanup_error!r}')
+        raise
     finally:
         for handle in handles:
             handle.remove()
         if packed_collector is not None:
             packed_collector.remove()
+        if on_forwards_complete is not None:
+            # Hook removal alone leaves row_consumer's closure and these
+            # PackedExpertProjection.weight views owning the old packed slabs.
+            # Loop variables own views too, even after their dictionaries die.
+            packed_collector = None
+            inventory = by_name = selected_by_module = parents = None
+            member = selected = unique = consume_packed = None
     unobserved = [name for name, count in routed_seen.items() if not count]
     if unobserved:
+        if shared_packed_inputs or on_forwards_complete is not None:
+            store.clear()
+            hess.clear()
+            amax.clear()
         raise RuntimeError(
             "packed campaign units have no routed calibration rows: "
             f"{sorted(unobserved)}; refusing a shared-Hessian or weight-only fallback")
-    # All forwards are complete: materialize each unit's maximum only once.
-    amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
-            for name, value in amax.items()}
-    # Do not retain both the original chunks and their concatenated outputs
-    # for the whole scope. Full-model captures can hold GiB of scoring rows.
-    rows = {}
-    for name in list(store):
-        chunks = store.pop(name)
-        rows[name] = torch.cat(chunks, dim=0) if chunks else None
-        del chunks
-    hessians = {}
-    if want_hessian:
-        # GB10 shares physical DRAM with CPU tensors. Releasing Python tensor
-        # references alone leaves the CUDA allocator's cached blocks resident,
-        # so periodically return those blocks while transferring the full H.
-        released_cuda_bytes = 0
-        for name in list(hess):
-            h = hess.pop(name)
-            hessians[name] = None if h is None else h.to(device="cpu")
-            if h is not None and h.is_cuda:
-                released_cuda_bytes += h.numel() * h.element_size()
-            del h
-            if released_cuda_bytes >= 256 * 1024**2:
+    # All forwards are complete. Keep integer `seen` available to failure
+    # diagnostics, but never pin a partial capture through this traceback.
+    rows, hessians = {}, {}
+    h = chunks = cpu_rows = cpu_h = None
+    try:
+        if on_forwards_complete is not None:
+            on_forwards_complete()
+        if resource_check is not None:
+            resource_check('before_output_materialization')
+        # Materialize each unit's maximum only once.
+        amax = {name: float(value.item()) if isinstance(value, torch.Tensor) else value
+                for name, value in amax.items()}
+        if shared_packed_inputs:
+            # Drain one unique group before making independent CPU siblings.
+            # The final CPU footprint is unchanged. GPU storage (including
+            # cached allocator blocks) must not accumulate behind those clones.
+            maxima = {}
+            for name, members in group_members.items():
+                if resource_check is not None:
+                    resource_check(f'before_output_group:{name}')
+                if resource_check is not None:
+                    resource_check(f'before_rows_concat:{name}')
+                chunks = store.pop(name)
+                # copy=True also compacts CPU qualification outputs: a short
+                # prefix must not serialize the uninitialized buffer tail.
+                cpu_rows = chunks[0][:kept[name]].to(device='cpu', copy=True) if chunks else None
+                released_cuda = bool(chunks and chunks[0].is_cuda)
+                chunks = None
+                if resource_check is not None:
+                    resource_check(f'after_rows_concat:{name}')
+                if want_hessian:
+                    if resource_check is not None:
+                        resource_check(f'before_hessian_cpu_transfer:{name}')
+                    h = hess.pop(name)
+                    cpu_h = None if h is None else h.to(device='cpu')
+                    released_cuda = released_cuda or (h is not None and h.is_cuda)
+                    h = None
+                    if resource_check is not None:
+                        resource_check(f'after_hessian_cpu_transfer:{name}')
+                if released_cuda:
+                    torch.cuda.empty_cache()
+                for index, member_name in enumerate(members):
+                    if resource_check is not None:
+                        resource_check(f'before_output_clone:{member_name}')
+                    rows[member_name] = (cpu_rows if index == 0 or cpu_rows is None
+                                         else cpu_rows.clone())
+                    if want_hessian:
+                        hessians[member_name] = (cpu_h if index == 0 or cpu_h is None
+                                                 else cpu_h.clone())
+                    maxima[member_name] = amax[name]
+                    if resource_check is not None:
+                        resource_check(f'after_output_clone:{member_name}')
+                cpu_rows = cpu_h = None
+                if resource_check is not None:
+                    resource_check(f'after_output_group:{name}')
+            amax = maxima
+        # Do not retain both original chunks and concatenated outputs for the
+        # whole scope. Full-model captures can hold GiB of scoring rows.
+        for name in list(store):
+            if resource_check is not None:
+                resource_check(f'before_rows_concat:{name}')
+            chunks = store.pop(name)
+            rows[name] = torch.cat(chunks, dim=0) if chunks else None
+            chunks = None
+            if resource_check is not None:
+                resource_check(f'after_rows_concat:{name}')
+        if want_hessian and not shared_packed_inputs:
+            # GB10 shares physical DRAM with CPU tensors. Periodically return
+            # cached CUDA blocks while transferring the full H, but also let
+            # the caller refuse before the next unit if reserved blocks stay
+            # resident. Python-reference release alone cannot prove fit.
+            released_cuda_bytes = 0
+            for name in list(hess):
+                if resource_check is not None:
+                    resource_check(f'before_hessian_cpu_transfer:{name}')
+                h = hess.pop(name)
+                hessians[name] = None if h is None else h.to(device='cpu')
+                if h is not None and h.is_cuda:
+                    released_cuda_bytes += h.numel() * h.element_size()
+                h = None
+                if released_cuda_bytes >= 256 * 1024**2:
+                    torch.cuda.empty_cache()
+                    released_cuda_bytes = 0
+                if resource_check is not None:
+                    resource_check(f'after_hessian_cpu_transfer:{name}')
+            if released_cuda_bytes:
                 torch.cuda.empty_cache()
-                released_cuda_bytes = 0
-        if released_cuda_bytes:
-            torch.cuda.empty_cache()
+        if resource_check is not None:
+            resource_check('after_output_materialization')
+    except BaseException as error:
+        # Exception tracebacks keep this frame alive. Explicitly drain every
+        # output owner and loop temporary while retaining only row counters.
+        h = chunks = cpu_rows = cpu_h = None
+        store.clear()
+        hess.clear()
+        amax.clear()
+        rows.clear()
+        hessians.clear()
+        if (resource_check is not None or on_forwards_complete is not None) and torch.device(device).type == 'cuda':
+            try:
+                torch.cuda.empty_cache()
+            except Exception as cleanup_error:
+                error.add_note(f'capture CUDA cache release failed: {cleanup_error!r}')
+        raise
     return rows, hessians, dict(seen), dict(amax)
 
 
@@ -2035,7 +2186,9 @@ def _calibration_tokens(model_path: str, n: int, seqlen: int, seed: int):
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(model_path)
-    data = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    # Use the canonical repository: newer Hub URI validation rejects the
+    # legacy namespace-free alias while resolving the dataset metadata.
+    data = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
     text = "\n\n".join(data["text"])
     ids = tok(text, return_tensors="pt").input_ids[0]
     # The corpus text travels beside the ids: Tessera's identity triple wants
@@ -3204,6 +3357,114 @@ def write_export_inputs(cache_dir: Path, *, hessians, hessian_rows,
     return hessian_capture_path, input_scales_path, capture_sha256
 
 
+def _run_streamed_calibration(args, runner, profile, *, mode, population,
+                              dense_targets, expert_targets, scope_groups,
+                              tokens, corpus_text, census, context_by_unit,
+                              attention_implementation, capture_runtime):
+    """Wire canonical collection to the existing resident layer traversal."""
+    import torch
+    from . import tessera_calibration_cache as store
+    from .routed_experts import refresh_packed_expert_projections
+    from .tessera_menu import PARALLEL_NONE
+
+    targets = [*dense_targets, *expert_targets]
+    modules = dict(runner.model.named_modules())
+    # Meta views are used only for shape/menu/projection planning. Live views
+    # are refreshed from the shared loader at each layer's consumption.
+    weights = {name: modules[name].weight for name in dense_targets}
+    weights.update({member.qname: member.weight for member in population.members})
+    shapes = {name: list(weight.shape) for name, weight in weights.items()}
+    names_by_layer = {}
+    for name in targets:
+        names_by_layer.setdefault(runner.layer_index_for_qname(name), []).append(name)
+    menus = expand_menus_for_targets(weights, targets, mode=mode, tp_degree=args.tp_degree,
+        parallel_kind=PARALLEL_NONE, context_by_unit=context_by_unit)
+    report_empty_menus(menus, mode=mode)
+    projection = None
+    if population.declared:
+        projection, _ = _project_expert_population(population, weights=weights,
+            menus=menus, model_path=args.model, cache_dir=Path(args.cache_dir),
+            measured=set(), projection=None if census is None else census.get('expert_projection'))
+    del weights
+
+    writer = None
+    if census is not None:
+        if (census.get('model_load_contract') or {}).get('schema') != 'prismaquant.streaming_initialization.v1':
+            raise RuntimeError('streamed capture requires a census from the qualified streaming source route')
+        hi, lo = census_token_counts(census, {})
+        calibration = th.calibration_identity(corpus_text, tokens, fit_tokens=hi,
+            source="wikitext-2-raw-v1/train", split_role="calibration", model=str(args.model),
+            seed=args.seed, nsamples=args.nsamples, seqlen=args.seqlen, fit_tokens_min=lo)
+        require_census_draw(census, calibration, where="streamed calibration capture")
+        # The recorded witness describes the census. The new traversal's own
+        # witness is compared at completion; no from-config model is stamped
+        # as an already completed checkpoint load before it runs.
+        identity = store.capture_identity(args.calibration_census, calibration=calibration,
+            max_act_rows=args.max_act_rows, model_load_contract=census['model_load_contract'],
+            attention_implementation=attention_implementation)
+        writer = store.CaptureWriter(args.capture_calibration_out,
+            census_path=args.calibration_census, identity=identity)
+
+    counts, maxima, telemetry = {}, {}, []
+    runner.context.begin_source_initialization_audit()
+
+    def visit(layer, forward_batch):
+        names = names_by_layer.get(layer, [])
+        members = [m for m in population.members if m.qname in names]
+        live = refresh_packed_expert_projections(members, profile)
+        if live:
+            _checked_projected_units(projection['stacks'],
+                weights={m.qname: m.weight for m in live}, model_path=args.model,
+                source=projection['producer']['source'], measured={m.qname for m in live})
+        # The source identity check is complete. The collector creates its own
+        # live views; this caller must not pin old packed storage through return.
+        del live
+        before = time.perf_counter()
+        acts, hessians, rows, amax = _collect_activations(runner.model, names, tokens,
+            args.max_act_rows if writer is not None else 0, runner.device,
+            want_hessian=writer is not None, profile=profile, forward_batch=forward_batch)
+        collected = time.perf_counter()
+        counts.update(rows)
+        maxima.update(amax)
+        if writer is not None:
+            writer.write(acts=acts, hessians=hessians, counts=rows, maxima=amax)
+        flushed = time.perf_counter()
+        record = dict(layer=layer, units=len(names), collect_seconds=collected-before,
+            flush_seconds=flushed-collected,
+            capture_tensor_bytes=sum(t.numel()*t.element_size()
+                for t in [*acts.values(), *hessians.values()] if t is not None))
+        telemetry.append(record)
+        print(json.dumps({'streamed_calibration_layer': record}), flush=True)
+        del acts, hessians
+        if runner.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    runner.visit_layer_batches(tokens, visit)
+    contract = runner.context.source_initialization_contract()
+    if set(counts) != set(targets) or any(value <= 0 for value in counts.values()):
+        raise RuntimeError('streamed calibration did not observe every in-scope unit')
+    hi, lo = census_token_counts(census, counts)
+    calibration = th.calibration_identity(corpus_text, tokens, fit_tokens=hi,
+        source="wikitext-2-raw-v1/train", split_role="calibration", model=str(args.model),
+        seed=args.seed, nsamples=args.nsamples, seqlen=args.seqlen, fit_tokens_min=lo)
+    if writer is not None:
+        census_max_abs(census, maxima)
+        receipt = writer.finish(model_load_contract=contract)
+        print(f"[campaign] complete streamed calibration capture: {receipt}", flush=True)
+    else:
+        payload = calibration_census(counts, maxima, args=args, groups=scope_groups,
+            dense_targets=dense_targets, expert_targets=expert_targets, shapes=shapes,
+            identity=calibration, expert_projection=projection, model_load_contract=contract,
+            attention_implementation=attention_implementation, capture_runtime=capture_runtime)
+        from .cost_stage_checkpoint import atomic_write_bytes
+        atomic_write_bytes(Path(args.census_out),
+            (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)+'\n').encode())
+        print(f"[campaign] wrote streamed calibration census {args.census_out}", flush=True)
+    telemetry_path = Path(args.cache_dir)/'streamed-calibration-telemetry.json'
+    telemetry_path.write_text(json.dumps(telemetry, indent=2, sort_keys=True)+'\n')
+    return 0
+
+
 def main(argv: "Sequence[str] | None" = None) -> int:
     import torch
 
@@ -3317,6 +3578,11 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                          "scoring rows, no encodes.")
     ap.add_argument("--attention-implementation", choices=("eager", "sdpa"), default=None,
                     help="Explicit HF attention backend required for canonical census/capture.")
+    ap.add_argument("--streaming", action="store_true",
+                    help="Use the existing source layer cache for canonical census/capture.")
+    ap.add_argument("--streaming-cache-slots", type=int, default=2)
+    ap.add_argument("--streaming-prefetch-workers", type=int, default=1)
+    ap.add_argument("--streaming-cache-headroom-gb", type=float, default=24)
     ap.add_argument("--capture-calibration-out", default=None,
                     help="Capture full-census float32 prefix X and uncapped H once, then exit.")
     ap.add_argument("--calibration-cache", default=None,
@@ -3324,6 +3590,10 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--calibration-cache-sha256", default=None,
                     help="Expected capture manifest hash, sealed by the campaign planner.")
     args = ap.parse_args(argv)
+    if args.streaming and (not (args.census_out or args.capture_calibration_out) or args.units):
+        ap.error("--streaming currently requires full-scope --census-out or --capture-calibration-out")
+    if args.streaming and (args.streaming_cache_slots < 2 or args.streaming_prefetch_workers < 1):
+        ap.error("streaming calibration requires at least two cache slots and one prefetch worker")
     if (args.census_out or args.capture_calibration_out or args.calibration_cache) and not args.attention_implementation:
         ap.error("canonical census/capture requires explicit --attention-implementation")
     if args.calibration_cache_sha256 and not args.calibration_cache:
@@ -3365,13 +3635,27 @@ def main(argv: "Sequence[str] | None" = None) -> int:
         Path(args.out).with_suffix(".anchors.json")
     )
 
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.bfloat16, device_map=device,
-        **({"attn_implementation": args.attention_implementation}
-           if args.attention_implementation is not None else {}),
-    )
+    from .model_profiles import detect_profile
+    profile = detect_profile(args.model)
+    runner = None
+    if args.streaming:
+        from .cost_streaming import build_streamed_causal_lm
+        runner = build_streamed_causal_lm(args.model, device=torch.device(device), dtype=torch.bfloat16,
+            profile=profile, offload_folder=str(cache_dir/'source-offload'),
+            max_cache_slots=args.streaming_cache_slots,
+            prefetch_workers=args.streaming_prefetch_workers,
+            cache_headroom_gb=args.streaming_cache_headroom_gb,
+            prefetch_min_available_gb=args.streaming_cache_headroom_gb,
+            prefetch_lookahead=args.streaming_cache_slots-1, require_prefetched_residency=True,
+            attn_implementation=args.attention_implementation)
+        model = runner.model
+    else:
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.bfloat16, device_map=device,
+            **({"attn_implementation": args.attention_implementation}
+               if args.attention_implementation is not None else {}),
+        )
     model.eval()
     model_load_contract = None
     attention_implementation = None
@@ -3379,16 +3663,14 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     if args.census_out or args.capture_calibration_out or args.calibration_cache:
         import importlib.metadata
         from prismaquant import pretrained_initialization_contract
-        model_load_contract = pretrained_initialization_contract(model)
+        if runner is None:
+            model_load_contract = pretrained_initialization_contract(model)
         attention_implementation = model.config._attn_implementation
         if attention_implementation != args.attention_implementation:
             raise RuntimeError("loaded model attention backend differs from explicit request")
         capture_runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
             transformers=importlib.metadata.version("transformers"))
 
-    from .model_profiles import detect_profile
-
-    profile = detect_profile(args.model)
     # The packed expert population the producer bridge covers, or a refusal by
     # name before calibration.  Its members are priced as the producer's
     # projected units below (PrismaQuant #183).
@@ -3401,7 +3683,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
             continue
         if name.endswith("lm_head") or "embed" in name:
             continue
-        if profile.is_pinned_name(name):
+        if profile.is_pinned_name(name) or (profile.probe_linear_exclude_extra() and
+                re.search(profile.probe_linear_exclude_extra(), name)):
             pinned.append(name)
             continue
         all_dense.append(name)
@@ -3510,6 +3793,15 @@ def main(argv: "Sequence[str] | None" = None) -> int:
                              for member in population.members})
         if census["unit_shapes"] != scope_shapes:
             raise RuntimeError("calibration census geometry differs from the loaded model")
+    if runner is not None:
+        try:
+            return _run_streamed_calibration(args, runner, profile, mode=mode, population=population,
+                dense_targets=census_dense_targets, expert_targets=census_expert_targets,
+                scope_groups=scope_groups, tokens=tokens, corpus_text=corpus_text, census=census,
+                context_by_unit=context_by_unit, attention_implementation=attention_implementation,
+                capture_runtime=capture_runtime)
+        finally:
+            runner.shutdown()
     if args.capture_calibration_out or args.calibration_cache:
         from . import tessera_calibration_cache as calibration_store
         hi, lo = census_token_counts(census, {})
