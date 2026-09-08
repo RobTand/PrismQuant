@@ -14,6 +14,81 @@ ordinary dictionaries requiring fresh admission. No persisted cost schema,
 calibration, numerical objective, format, cache or serving gate changes.
 Gate: `tests/test_joint_aura_validation_reuse.py`.
 
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the **opt-in
+completed-current-source release boundary**. The bounded workspace's
+`--release-completed-source` requires shared-input collection and the original
+source-prefix route. After all original forwards and hook removal, the
+collector drops its packed source views before invoking the optional
+`on_forwards_complete` callback. The existing `StreamingContext` unload and
+`LayerCache.discard(current)` then release only the exhausted layer, without
+pressure-trimming its resident successor. Next-layer cache/future ownership,
+hidden boundaries and the strict next-prefetch gate remain intact. No new
+cache, source reader or two-pass output drain is introduced.
+
+Callback failures clear capture owners and retain integer row observations.
+The diagnostic records actual group start/completion boundaries, completed
+qnames, the foreground refusal checkpoint and allocator state, plus source
+owner metadata before/after release. The normal campaign does not enable this
+release callback; its checked live projection views are dropped after identity
+validation. This option remains default-off pending a reviewed GPU fit result;
+the retained full-prefix-05 shared collector still refused at the original
+memory guard before this lifecycle change.
+
+Re-stamped (2026-09-07, `experiment/glm-shared-input-capture`) for the
+**default-off shared packed-input collector experiment**. The private
+`_collect_activations(..., shared_packed_inputs=True)` option groups only the
+same packed module, expert and derived input kind. It reuses the existing
+store/H/count/max owners, accumulates one batch-ordered FP32 Gram and fmax per
+unique input, and keeps a private bounded FP32 device prefix. Full-row H,
+counts and maxima remain uncapped. Each group drains to compact CPU storage
+before independent sibling CPU clones; per-transfer and per-clone callbacks
+retain the workspace's existing memory refusal. Returned qnames never alias.
+The normal campaign default remains the legacy collector; no new cache,
+source prefetch path, format, serving gate, calibration draw or wire changes.
+
+`experiments/glm_layer_workspace.py --shared-packed-inputs` explicitly selects
+that candidate for a later full fit measurement. Its separate
+`--qualify-shared-inputs --qualification-expert-ids ...` mode captures a bounded
+fixture of actual derived gate/up/down inputs during the original source-prefix
+traversal and replays those identical tensors through both real collectors in
+legacy/shared/shared/legacy order. It profiles cold, row-filled and CPU-return
+windows while reusing both-host bounded Netdata and the physical guard. This
+measures isolated collector cost, excluding source forwards and derivation;
+it does not publish a full calibration capture or establish a served result.
+The first legacy arm has no retained CPU reference; later arms report that
+reference footprint and provide matched contexts for memory comparisons.
+Gates: bytewise and serialized H/X/count/max equality, independent CPU storage,
+complete original batch order, CPU failure-lifetime checks, then reviewed GPU
+A/B and a separate full 512-sample candidate fit. Bounded real-input GPU replay
+passed exact-output checks; the full 512-sample candidate still refused during
+CPU output return at the unchanged memory guard. The option remains default-off.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the campaign
+collector's optional `resource_check(label)` output-materialization checkpoints.
+The bounded workspace diagnostic passes its existing memory guard before and
+after each scoring-row concatenation and Hessian CPU transfer, so a latched
+refusal stops before another unit is copied. A failed materialization clears
+owned row/Hessian/maxima tensors and temporaries before rethrowing, while
+retaining integer row observations for diagnostics. CUDA callers also attempt
+to return freed allocator blocks without masking the original failure. The
+collector default adds no checks; these checkpoints establish containment,
+not successful workspace admission or a new capture-fit allowance.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for the shared source
+reader's opt-in `PRISMAQUANT_RELEASE_SOURCE_PAGES=1`. CUDA gathers can advise
+complete consumed regular-file tensor payload pages after each existing reader
+chunk finishes its copies, closes its context, and releases its host staging
+views. A completed chunk advises its pages without waiting for sibling readers;
+a failed chunk fences copies but never advises, and the whole gather still
+drains every reader and refuses partial installation. Header,
+unread-tensor and partial edge pages are excluded; CPU-backed outputs retain
+their mappings. Source identity is checked before advice. This is kernel
+advice through the existing reader, with no additional cache or page ledger;
+the reader default, resident source-cache/prefetch ownership and hard workspace
+admission bounds are unchanged. CPU byte/range and mocked CUDA lifecycle
+regressions are in `tests/test_streaming_source_pages.py`; successful GLM
+workspace admission and performance remain unqualified.
+
 Re-stamped (2026-09-07, `codex/joint-allocation-handoff`) for the opt-in
 completed joint-table allocation handoff (#351). `tessera_joint_allocation`
 authenticates the original plan, joint table, preparation and PWC metadata by
@@ -27,6 +102,45 @@ neither re-encodes weights nor re-probes them, adds no cache, and does not certi
 current wire bytes or runtime coverage: those remain existing export/serving
 gates. The CLI requires bound input hashes and new output/receipt paths.
 Gate: `tests/test_tessera_joint_allocation.py`.
+
+Re-stamped (2026-09-07, `fix/pr348-orphan-cache-root`) for missing-manifest
+export-cache refusal. Existing `layer_*.pt` files without a manifest are
+discarded through the same refusal path as mismatched fingerprints before
+any layer can be replayed. A fresh empty cache retains its initialization
+behavior. Real streaming-export regressions check emitted bytes and absence
+of orphaned payload reads for both unchanged and changed source weights.
+
+Re-stamped (2026-09-07, `triage/340-export-resume-source-identity`) for the
+standalone compressed-tensors export resume cache's **source identity** (#340).
+`--export-cache-dir` replays `layer_NNN.pt` payloads whenever the manifest
+matches. The manifest bound the render levers and named no source, so the same
+cache dir reused against a different checkpoint replayed the first checkpoint's
+quantized bytes; the `assignment_hash` beside them compared nothing either,
+because `hashlib` was in scope nowhere inside `materialize_tensors_streaming`
+and the swallowed `NameError` stamped a null on every manifest ever written.
+`_export_resume_fingerprint()` now adds three fields the payloads silently bake
+in: `source_identity` (the sha256 of every safetensors shard the run consumes
+AND of the non-shard files it reads from the checkpoint root — `config.json`,
+which decides the skeleton the payloads were quantized against, and
+`model.safetensors.index.json`, which decides where each tensor is read from,
+and every root `*.py` (all of them, not only the ones `auto_map` names), which
+a `trust_remote_code` checkpoint is built through — via the
+shared `cost_streaming.build_source_checkpoint_identity()`),
+`requested_dtype`, and `declared_buffer_dtypes`, and it computes the recipe
+hash with no swallow. `_admit_export_resume_cache()` decides admission
+before any payload is read and fails closed: a manifest missing any of those
+keys — every pre-fix cache — is refused, not treated as a weaker match, and no
+field may degrade to `None`. Identity is CONTENT, not path: a relocated
+checkpoint still resumes, a same-size same-header value edit does not. The hash
+runs only when a cache dir was requested, and a `source_identity_cache.json`
+beside the manifest keys each digest to the shard's full stat fingerprint
+(`ctime_ns` included), so unchanged shards can reuse their recorded content
+digests. Resume still performs source discovery, metadata reads, digest-cache
+JSON handling, identity construction and manifest admission; primitive stat
+timings do not measure that full path. Gate:
+`tests/test_export_resume_source_identity.py`, which drives the real streaming
+exporter and asserts on whether a `layer_*.pt` was read at all. No served
+artifact gate is claimed.
 
 Re-stamped (2026-09-07, `fix/profile-dispatch-identity`) for declared
 scheme-dispatch identity rewrites. `ModelProfile.to_vllm_internal_name()` now
@@ -113,6 +227,60 @@ serving gate, allocator objective, calibration draw or pipeline default.
 Gates: `tests/test_joint_projection_backend.py`, `tests/test_joint_projection_reduce.py`,
 the retained-source production-lease replay and
 `docs/results/joint_projection_backend_promotion_2026-09-07.md`.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **bounded shared
+expert packing**. The profile-driven per-expert bridge validates the complete
+layout and source dtype/device before mutation, allocates each final packed
+parameter once, and copies original projections directly into their final
+expert slices. Consumed source members and completed shard-read futures release
+their references as packing proceeds. It preserves source bytes, dtype and
+projection order without intermediate fused slabs. Canonical resource planning
+still charges all original packed-source bytes as a conservative physical
+allocator allowance; released references alone do not prove returned DRAM.
+Original CPU token draws and device token states are both charged explicitly.
+Gate: `tests/test_per_expert_packing.py`, native GLM source parity, and the
+real GLM/LFM per-layer byte and allocator comparison.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **bounded canonical
+source calibration**. Full-scope census/capture may explicitly select
+`--streaming`, reusing the shared model construction, resident layer cache,
+prefetch and profile forward adapters. The original ordered sample microbatches
+drive the existing activation collector unchanged: float32 prefix X, uncapped
+H, routed counts and maxima retain their canonical semantics. Only current
+sample boundaries survive between layers; masks/positions are ephemeral per
+original batch, and each completed layer's capture is drained to the existing
+activation-cache writer/journal before the source layer unloads.
+
+This route produces `prismaquant.streaming_initialization.v1` only after actual
+installed source state has been observed across every decoder layer. Its scope
+is the text source forward; vision/MTP are outside that witness. A streamed
+capture requires a census from the same route and verifies its own completed
+initialization witness before publishing the full manifest. Legacy pretrained
+contracts remain readable through the strict schema dispatcher. Interrupted
+capture entries must replay with exact X/H/metadata; incomplete traversal cannot
+publish a complete capture. Header-derived admission charges the source window,
+loader transients, current boundaries, one layer's H/X, entry validation and
+explicit workspace; disk admission charges all H/X plus atomic replacement.
+PB owns admission and placement. Defaults are two cache slots, one prefetch
+worker and 24 GiB explicit headroom; no complete BF16 model is materialized.
+Gates: `tests/test_glm_campaign_streaming.py`,
+`tests/test_tessera_calibration_cache.py` and native GLM source parity.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **checkpoint loader
+precision parity**. Shared resident materialization, cold reads and prefetched
+layer reads apply Hugging Face's declared dtype plan, including strict FP32
+parameters. Split checkpoint sources inherit their final concatenated live
+parameter's dtype before any conversion. Model buffers retain their declared
+precision and layer-cache sizing charges the resolved loaded dtype. This keeps
+GLM KDA convolution, recurrence and routing state consistent with the source
+checkpoint loader under BF16 execution.
+Gate: `tests/test_streaming_buffer_precision.py` and native GLM source parity.
+
+Re-stamped (2026-09-07, `fix/glm-streaming-campaign`) for **GLM live KDA
+pin aliases**. The profile's existing immutable attention scope also names
+`self_attn.forget_gate.f_a_proj` and `f_b_proj`, the live spellings produced by
+checkpoint conversion. Both source and live names remain pinned.
+Gate: `tests/test_glm5_next_pinned_names.py`.
 
 Re-stamped (2026-09-07, `perf/joint-prepare-single-read`) for **verified
 single-read PWC preparation**. Joint-anchor preparation performs complete
@@ -9926,8 +10094,11 @@ allocator/floor distinction on disk, so `breakdown.dense` is `0` there by constr
 the split is only meaningful in the pre-export `assignment_read_traffic` form.
 
 Also on the card: exact `artifact_bytes`, format histogram, the render-lever
-echo (`_render_lever_provenance()`, shared with the export cache's fingerprint so the two
-cannot drift), and the `PRISMAQUANT_ALLOW_KV_SHARED_FISHER` / `PRISMAQUANT_KV_COTANGENT` state
+echo (`_render_lever_provenance()`, which the export cache's fingerprint folds in whole so
+the render levers cannot drift between the two; the cache additionally binds the source
+checkpoint identity, requested dtype and declared buffer dtypes, which are cache-admission
+facts rather than render levers — see the #340 stamp), and the
+`PRISMAQUANT_ALLOW_KV_SHARED_FISHER` / `PRISMAQUANT_KV_COTANGENT` state
 so an allocation that rode an unvalidated Fisher correction is visible on the artifact rather
 than only in a probe log (D24) — and since 2026-09-03 `verify` refuses a card carrying
 `unvalidated_kv_fisher_correction=true`, and shape-replays the stamped forensic hashes
@@ -11253,7 +11424,7 @@ Linear-exclusion regex **profile-owned**. `incremental_probe.resolve_linear_excl
 (`:423-437`) ORs the profile's fragment into the router baseline and replaced four literal
 regex sites, so hook installs and the shard-reuse meta stamp (`:830`) can no longer disagree —
 a mismatch there silently invalidates shard reuse. `DeepseekV4Profile` overrides it
-(`deepseek_v4.py:115`) to exclude `self_attn.{compressor,indexer}`. The reason is a contract
+(`deepseek_v4.py:115`) to exclude `self_attn.{compressor,indexer}`. The Tessera campaign's dense-Linear census honours the same fragment (`tessera_campaign.py:3686`), so every campaign pins the set the probe pins. The reason is a contract
 fact, not a preference: the faithful vendored forward (`87ca027`) instantiates and loads the
 compressor and indexer, so their `nn.Linear` leaves became visible to the probe's enumeration,
 but they sit **outside the gridbook D0.1 serving contract's quantizable set** — served

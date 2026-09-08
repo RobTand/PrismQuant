@@ -136,6 +136,8 @@
     "self_attn.b_proj",
     "self_attn.f_a_proj",
     "self_attn.f_b_proj",
+    "self_attn.forget_gate.f_a_proj",
+    "self_attn.forget_gate.f_b_proj",
     "self_attn.g_a_proj",
     "self_attn.g_b_proj",
     "self_attn.o_proj",

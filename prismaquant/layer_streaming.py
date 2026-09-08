@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import threading
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 from pathlib import Path
 
 import torch
@@ -786,6 +787,38 @@ def _apply_fp8_dequant_inplace(
     return dequanted
 
 
+def _model_tensor_dtypes(model: nn.Module, dtype: torch.dtype) -> dict[str, torch.dtype]:
+    """Use the checkpoint loader's dtype policy for live source slots.
+
+    Constructor-declared buffers retain their precision. HF's own dtype plan
+    additionally retains strict FP32 parameters, including architecture-specific
+    convolution, recurrence and routing state. Match it with the same glob
+    helper used by HF after checkpoint conversion, rather than guessing names.
+    """
+    result = {name: value.dtype for name, value in
+              model.named_buffers(remove_duplicate=False)}
+    get_plan = getattr(model, '_get_dtype_plan', None)
+    plan = get_plan(dtype) if callable(get_plan) else {}
+    if plan:
+        from transformers.core_model_loading import build_glob_alternation
+        pattern, by_group, _ = build_glob_alternation(list(plan))
+        for name, _value in [*model.named_parameters(remove_duplicate=False),
+                             *model.named_buffers(remove_duplicate=False)]:
+            match = pattern.search(name)
+            if match is not None:
+                result[name] = plan[by_group[match.lastgroup]]
+    return result
+
+
+def _source_tensor_dtypes(model: nn.Module, dtype: torch.dtype, concat_merger=None):
+    """Propagate the resolved live precision to explicitly split source slots."""
+    result = _model_tensor_dtypes(model, dtype)
+    for source, target in getattr(concat_merger, 'source_targets', {}).items():
+        if target in result:
+            result[source] = result[target]
+    return result
+
+
 def _materialize(model: nn.Module, prefixes: list[str],
                  model_to_shard: dict[str, str],
                  model_to_ckpt: dict[str, str],
@@ -802,7 +835,7 @@ def _materialize(model: nn.Module, prefixes: list[str],
     cast to bf16. See `_dequant_fp8_block_weight`.
 
     Returns count of tensors loaded."""
-    buffer_dtypes = {name: value.dtype for name, value in model.named_buffers(remove_duplicate=False)}
+    buffer_dtypes = _model_tensor_dtypes(model, dtype)
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
         if any(model_name.startswith(p) for p in prefixes):
@@ -845,7 +878,7 @@ def _pack_per_expert_into_packed(
     projection_names_for,
     live_param_shape,
 ) -> int:
-    """Stack per-expert checkpoint tensors into packed 3D live params.
+    """Copy per-expert checkpoint tensors into their final packed 3D params.
 
     Some MoE checkpoints store each routed expert's projections separately
     on disk (``…experts.{i}.{proj}.weight``) while the live module exposes a
@@ -864,15 +897,14 @@ def _pack_per_expert_into_packed(
     Mutates ``out`` in place: removes consumed per-expert keys and inserts
     the packed keys. Returns the number of packed params produced (0 = the
     checkpoint isn't per-expert, or the live module isn't packed)."""
-    # packed_full_name -> {expert_idx -> {projection -> tensor}}
-    groups: dict[str, dict[int, dict[str, torch.Tensor]]] = defaultdict(
-        lambda: defaultdict(dict))
-    consumed: list[str] = []
-    for key, t in out.items():
+    # Keep names, not tensor references: each source can be released as soon
+    # as its bytes have reached their final slice in the packed parameter.
+    groups: dict[str, dict[int, dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
+    for key in out:
         name = key[:-len(".weight")] if key.endswith(".weight") else key
         if not is_per_expert(name):
             continue
-        head, proj = name.rsplit(".", 1)           # head = …experts.{idx}
+        head, proj = name.rsplit(".", 1)
         experts_path, idx_str = head.rsplit(".", 1)
         if not idx_str.isdigit():
             continue
@@ -881,39 +913,55 @@ def _pack_per_expert_into_packed(
             continue
         packed_full = f"{experts_path}.{parent}"
         if live_param_shape(packed_full) is None:
-            continue  # live module isn't packed for this group — leave as-is
-        groups[packed_full][int(idx_str)][proj] = t
-        consumed.append(key)
-    produced = 0
+            continue
+        by_projection = groups[packed_full][int(idx_str)]
+        if proj in by_projection:
+            raise ValueError(f"per-expert pack: duplicate source for {packed_full} expert {idx_str} {proj}")
+        by_projection[proj] = key
+
+    # Validate the full layout before consuming any source. Copying into a
+    # correctly typed final allocation cannot silently promote mixed dtypes.
+    plans = []
     for packed_full, by_expert in groups.items():
-        parent = packed_full.rsplit(".", 1)[1]
-        order = tuple(projection_names_for(parent))
-        n_experts = max(by_expert) + 1
-        slabs: list[torch.Tensor] = []
-        for i in range(n_experts):
-            projs = by_expert.get(i)
-            if projs is None or any(p not in projs for p in order):
-                raise ValueError(
-                    f"per-expert pack: {packed_full} missing expert {i} "
-                    f"projection(s) {order}")
-            if len(order) == 1:
-                slabs.append(projs[order[0]])
-            else:
-                # Fuse projections along the output axis (the transformers
-                # packed-FusedMoE convention), then stack experts on a new
-                # leading axis. The shape check below is the safety net.
-                slabs.append(torch.cat([projs[p] for p in order], dim=0))
-        packed = torch.stack(slabs, dim=0).contiguous()
-        target = live_param_shape(packed_full)
-        if tuple(packed.shape) != tuple(target):
-            raise ValueError(
-                f"per-expert pack: assembled {packed_full} shape "
-                f"{tuple(packed.shape)} != live param {tuple(target)}")
+        order = tuple(projection_names_for(packed_full.rsplit(".", 1)[1]))
+        target = tuple(live_param_shape(packed_full))
+        if not order or len(target) != 3 or set(by_expert) != set(range(target[0])):
+            raise ValueError(f"per-expert pack: {packed_full} missing expert or invalid live shape {target}")
+        first = None
+        for i in range(target[0]):
+            projs = by_expert[i]
+            if set(projs) != set(order):
+                raise ValueError(f"per-expert pack: {packed_full} missing expert {i} projection(s) {order}")
+            rows = 0
+            for proj in order:
+                tensor = out[projs[proj]]
+                if tensor.ndim != 2 or tensor.shape[1] != target[2]:
+                    raise ValueError(f"per-expert pack: {packed_full} source shape {tuple(tensor.shape)} != live param {target}")
+                rows += tensor.shape[0]
+                precision = (tensor.dtype, tensor.device)
+                if first is None:
+                    first = precision
+                if precision != first:
+                    raise ValueError(f"per-expert pack: {packed_full} source dtype/device differs")
+            if rows != target[1]:
+                raise ValueError(f"per-expert pack: {packed_full} assembled shape rows {rows} != live param {target}")
+        plans.append((packed_full, by_expert, order, target))
+    # The validation loop's last tensor must not keep a consumed allocation.
+    if groups:
+        del tensor
+    for packed_full, by_expert, order, target in plans:
+        first_key = by_expert[0][order[0]]
+        packed = out[first_key].new_empty(target)
+        for i in range(target[0]):
+            offset = 0
+            for proj in order:
+                tensor = out.pop(by_expert[i][proj])
+                rows = tensor.shape[0]
+                packed[i].narrow(0, offset, rows).copy_(tensor)
+                offset += rows
+                del tensor
         out[packed_full] = packed
-        produced += 1
-    for key in consumed:
-        out.pop(key, None)
-    return produced
+    return len(plans)
 
 
 def _merge_concat_sources(
@@ -1042,6 +1090,14 @@ def _build_concat_merger(model: nn.Module, weight_ckpt: dict[str, str]):
         _merge_concat_sources(
             out, groups=active, live_param_shape=live_shapes.get)
 
+    # The shared reader must preserve the final parameter's declared dtype
+    # while loading its split sources, before any lossy cast can occur.
+    _merger.source_targets = {
+        name: name[:-len(source)]+target
+        for name in weight_ckpt
+        for target, sources, _dim in active
+        for source in sources if name.endswith(source)
+    }
     return _merger
 
 
@@ -1313,6 +1369,44 @@ def _split_pairs(pairs: list[tuple[str, str]],
     return [pairs[i:i + size] for i in range(0, len(pairs), size)]
 
 
+def _advise_consumed_safetensors_pages(shard: str, keys: list[str],
+                                     expected_stat=None) -> None:
+    """Release complete consumed payload pages; caller owns copy/map lifetime.
+
+    This is best-effort kernel advice, not a cache or an admission allowance.
+    Never include the header, unread tensors, or shared partial edge pages.
+    """
+    if not hasattr(os, 'posix_fadvise') or not hasattr(os, 'POSIX_FADV_DONTNEED'):
+        return
+    fd = os.open(shard, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        source_stat = os.fstat(fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            return
+        if expected_stat is not None:
+            fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            if any(getattr(source_stat, k) != getattr(expected_stat, k) for k in fields):
+                raise RuntimeError('source changed before consumed-page release')
+        raw_size = os.pread(fd, 8, 0)
+        header_size = int.from_bytes(raw_size, 'little')
+        if len(raw_size) != 8 or not 0 < header_size <= min(100_000_000, source_stat.st_size - 8):
+            raise ValueError('invalid safetensors header for consumed-page release')
+        header = json.loads(os.pread(fd, header_size, 8))
+        base = 8 + header_size
+        page = os.sysconf('SC_PAGE_SIZE')
+        for key in sorted(set(keys)):
+            begin, end = header[key]['data_offsets']
+            if (type(begin) is not int or type(end) is not int
+                    or not 0 <= begin <= end <= source_stat.st_size - base):
+                raise ValueError('invalid tensor span for consumed-page release')
+            first = ((base + begin + page - 1) // page) * page
+            last = ((base + end) // page) * page
+            if first < last:
+                os.posix_fadvise(fd, first, last - first, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+
+
 def _read_layer_to_device(prefix: str,
                           model_to_shard: dict[str, str],
                           model_to_ckpt: dict[str, str],
@@ -1327,8 +1421,8 @@ def _read_layer_to_device(prefix: str,
     """Read all tensors under `prefix` from safetensors and place them
     on `device`. Returns {model_name: device_tensor}.
 
-    `buffer_dtypes` preserves model-declared buffer precision independently
-    of the requested parameter dtype (for example FP32 router bias).
+    `buffer_dtypes` carries resolved model-declared tensor precision independently
+    of the requested dtype (including buffers and strict FP32 parameters).
 
     When `fp8_scale_inv_map` is provided, native-FP8 block-scaled
     weights are kept compressed through the host-side read and moved to
@@ -1340,6 +1434,11 @@ def _read_layer_to_device(prefix: str,
     the layer has enough tensors to be worth it (see
     ``layer_read_threads``); the result is assembled in deterministic
     shard/key order either way.
+
+    ``PRISMAQUANT_RELEASE_SOURCE_PAGES=1`` opts CUDA reads into advising
+    consumed source payload pages after each existing reader chunk completes
+    its copies and releases its mappings.
+    CPU-backed outputs retain their mappings and never request page release.
     """
     by_shard: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for model_name, shard in model_to_shard.items():
@@ -1348,7 +1447,9 @@ def _read_layer_to_device(prefix: str,
     out: dict[str, torch.Tensor] = {}
     open_kwargs = _safe_open_kwargs(device)
     direct = "device" in open_kwargs
-
+    release_pages = (os.environ.get('PRISMAQUANT_RELEASE_SOURCE_PAGES') == '1'
+                     and device.type == 'cuda')
+    source_stats = {shard: os.stat(shard) for shard in by_shard} if release_pages else {}
     def _read_chunk(shard: str,
                     pairs: list[tuple[str, str]]) -> dict[str, torch.Tensor]:
         local: dict[str, torch.Tensor] = {}
@@ -1360,19 +1461,46 @@ def _read_layer_to_device(prefix: str,
         except (TypeError, RuntimeError):
             f_ctx = safe_open(shard, framework="pt")
             used_direct = False
-        with f_ctx as f:
-            for model_name, ckpt_name in pairs:
-                t = f.get_tensor(ckpt_name)
-                _require_fp8_scale(model_name, t, fp8_scale_inv_map)
-                if (t.is_floating_point()
-                        and not _is_fp8_scaled_tensor(
-                            model_name, fp8_scale_inv_map)):
-                    t = t.to((buffer_dtypes or {}).get(model_name, dtype))
-                if not used_direct:
-                    t = t.to(device, non_blocking=True)
-                if not t.is_contiguous():
-                    t = t.contiguous()
-                local[model_name] = t
+        # This existing read chunk owns its mmap-backed/converted staging
+        # through one stream event, rather than retaining it for the layer.
+        host_staging = []
+        cuda_copied = False
+        try:
+            with f_ctx as f:
+                for model_name, ckpt_name in pairs:
+                    t = f.get_tensor(ckpt_name)
+                    cuda_copied |= t.device.type == 'cuda'
+                    if release_pages and t.device.type == 'cpu':
+                        host_staging.append(t)
+                    _require_fp8_scale(model_name, t, fp8_scale_inv_map)
+                    if (t.is_floating_point()
+                            and not _is_fp8_scaled_tensor(
+                                model_name, fp8_scale_inv_map)):
+                        t = t.to((buffer_dtypes or {}).get(model_name, dtype))
+                    if not used_direct:
+                        if release_pages and t.device.type == 'cpu':
+                            host_staging.append(t)
+                        t = t.to(device, non_blocking=True)
+                        cuda_copied |= t.device.type == 'cuda'
+                    if not t.is_contiguous():
+                        t = t.contiguous()
+                    local[model_name] = t
+        finally:
+            if release_pages and cuda_copied:
+                # Fence this chunk's stream through its final transfer, even
+                # when a later source read fails. Do not fence the device or
+                # wait for unrelated work queued after this event.
+                # If record/sync fails, the propagated traceback retains
+                # this chunk's staging; completion has not been proven.
+                event = torch.cuda.Event()
+                event.record(torch.cuda.current_stream(device))
+                event.synchronize()
+            host_staging.clear()
+        if release_pages and local and all(t.device.type == 'cuda' for t in local.values()):
+            # Reached only on a successful chunk: its map is closed, copies
+            # completed and CPU views released. Other readers may still run.
+            _advise_consumed_safetensors_pages(
+                shard, [key for _, key in pairs], source_stats[shard])
         return local
 
     total_tensors = sum(len(pairs) for pairs in by_shard.values())
@@ -1385,10 +1513,18 @@ def _read_layer_to_device(prefix: str,
                 jobs.append((shard, chunk))
         futures = [pool.submit(_read_chunk, shard, chunk)
                    for shard, chunk in jobs]
+        if release_pages:
+            # Drain every launched reader before propagating an error;
+            # each chunk fences its own copies, including on read failure.
+            wait_futures(futures)
         # `.result()` re-raises any worker exception: a partially gathered
         # layer must never be installed as if it were complete.
         for fut in futures:
             out.update(fut.result())
+        # Future results own the original source tensors too. Drop that
+        # ownership before packing so consumed source members can be released.
+        futures.clear()
+        del fut
     else:
         for shard, pairs in by_shard.items():
             out.update(_read_chunk(shard, pairs))

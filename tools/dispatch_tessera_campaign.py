@@ -158,12 +158,32 @@ def _row_memory_gb(spec: dict, members: list[str], census: dict) -> int:
     plus the spec's declared headroom for the forward pass and the encoder.
     """
     gib = 1024 ** 3
+    if "--streaming" in spec['campaign_argv']:
+        resource = _streamed_resource_plan(spec, census, members)
+        return int(math.ceil(resource['memory_bytes']/gib))
     shapes = census.get("unit_shapes") or {}
     hessian = sum(int(shapes.get(name, [0, 0])[1]) ** 2 * 4 for name in members)
     rows = sum(int(shapes.get(name, [0, 0])[1]) * int(spec.get("max_act_rows", 512)) * 4
                for name in members)
     total = _model_bytes(spec["model"]) + hessian + rows
     return int(math.ceil(total / gib)) + int(spec.get("headroom_gb", 24))
+
+
+def _streamed_resource_plan(spec, census, members):
+    from prismaquant.autoscale import streamed_calibration_resources
+    argv = spec['campaign_argv']
+    def argument(name, default, convert=int):
+        return convert(argv[argv.index(name)+1]) if name in argv else default
+    shapes = census.get('unit_shapes') or {}
+    counts = census.get('counts') or {}
+    return streamed_calibration_resources(spec['model'],
+        unit_shapes={n: shapes[n] for n in members}, counts=counts,
+        nsamples=argument('--nsamples', 8), seqlen=argument('--seqlen', 512),
+        max_act_rows=argument('--max-act-rows', int(spec.get('max_act_rows', 512))),
+        cache_slots=argument('--streaming-cache-slots', 2),
+        prefetch_workers=argument('--streaming-prefetch-workers', 1),
+        headroom_gb=max(float(spec.get('headroom_gb', 24)),
+                        argument('--streaming-cache-headroom-gb', 24., float)))
 
 
 def require_rows_fit(mem_gb: "list[int]", per_box: int, budget) -> int:
@@ -236,6 +256,9 @@ def cmd_census(args) -> int:
         timeout_s=int(args.timeout_s),
     )
     manifest.write_text(json.dumps([row], indent=2) + "\n")
+    if '--streaming' in spec['campaign_argv']:
+        (workspace/'census-resources.json').write_text(json.dumps(
+            _streamed_resource_plan(spec, {}, []), indent=2, sort_keys=True)+'\n')
     print(f"[dispatch] census manifest {manifest}")
     if args.submit:
         return _pbcampaign(manifest, wait_s=args.wait_s,
@@ -261,6 +284,10 @@ def cmd_capture(args) -> int:
         mem_gb=_row_memory_gb(spec, sorted(census["counts"]), census),
         timeout_s=int(args.timeout_s))
     manifest.write_text(json.dumps([row], indent=2) + "\n")
+    if '--streaming' in spec['campaign_argv']:
+        (workspace/'capture-resources.json').write_text(json.dumps(
+            _streamed_resource_plan(spec, census, sorted(census['counts'])),
+            indent=2, sort_keys=True)+'\n')
     if args.submit:
         return _pbcampaign(manifest, wait_s=args.wait_s,
                            receipts=workspace / "capture-receipts.json")

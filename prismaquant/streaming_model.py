@@ -30,6 +30,7 @@ stable public API that both sides share.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -65,6 +66,8 @@ from .layer_streaming import (
     _build_fp8_scale_inv_map,
     LayerCache,
     _build_concat_merger,
+    _model_tensor_dtypes,
+    _source_tensor_dtypes,
     _build_expert_packer,
     _build_install_resolver,
     _build_weight_map,
@@ -79,6 +82,120 @@ from .layer_streaming import (
     set_module_tensor_to_device,
 )
 from .tied_embeddings import resolve_tied_output_embedding
+
+
+_STREAMING_INITIALIZATION_SCHEMA = "prismaquant.streaming_initialization.v1"
+
+
+def _initialization_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    allow_nan=False).encode()).hexdigest()
+
+
+def validate_streaming_initialization_contract(value):
+    """Read completed source-forward coverage; never accept a pending skeleton."""
+    keys = {"schema", "scope", "status", "transformers_version", "model_class",
+            "dtype", "layers_prefix", "num_layers", "persistent_tensors",
+            "derived_buffers", "state_sha256", "source_map_sha256"}
+    if (not isinstance(value, dict) or set(value) != keys or
+            value.get("schema") != _STREAMING_INITIALIZATION_SCHEMA or
+            value.get("scope") != "streamed_text_source_forward" or
+            value.get("status") != "completed" or
+            any(not isinstance(value.get(k), str) or not value[k]
+                for k in ("transformers_version", "model_class", "dtype", "layers_prefix")) or
+            any(type(value.get(k)) is not int or value[k] < minimum
+                for k, minimum in (("num_layers", 1), ("persistent_tensors", 1), ("derived_buffers", 0))) or
+            any(not isinstance(value.get(k), str) or not re.fullmatch(r"[0-9a-f]{64}", value[k])
+                for k in ("state_sha256", "source_map_sha256"))):
+        raise ValueError("Missing or incomplete streaming initialization contract")
+    return dict(value)
+
+
+class _StreamingInitializationAudit:
+    """Observe the shared loader's actual installed state before consumption.
+
+    This does not initialize tensors, replace the loader, or claim an HF
+    checkpoint-load stamp. It requires every persistent source-forward slot
+    to be delivered by the existing loader, every derived buffer to be real
+    and finite, and every decoder layer to be observed before completion.
+    Vision and MTP are outside this text-forward witness; the capture's source
+    identity still seals the complete checkpoint including those regions.
+    """
+
+    def __init__(self, context):
+        self.context = context
+        self.records = {}
+        self.layers_seen = set()
+        base_prefix = context.layers_prefix.removesuffix(".layers.")
+        if context.layers_prefix == "layers.":
+            base_prefix = ""
+        heads = _head_prefixes(context.model, base_prefix)
+        self._observe(heads, delivered=None)
+
+    def _observe(self, prefixes, *, delivered):
+        model = self.context.model
+        for name, tensor in [*model.named_parameters(remove_duplicate=False),
+                             *model.named_buffers(remove_duplicate=False)]:
+            if not any(name.startswith(prefix) for prefix in prefixes):
+                continue
+            owner_name, _, attr = name.rpartition(".")
+            owner = model.get_submodule(owner_name) if owner_name else model
+            derived = attr in getattr(owner, "_non_persistent_buffers_set", ())
+            if tensor.is_meta:
+                raise RuntimeError(f"streaming initialization left {name} on meta")
+            if not derived:
+                if delivered is not None and name not in delivered:
+                    raise RuntimeError(f"streaming initialization did not load source slot {name}")
+                if delivered is None and name not in self.context.weight_ckpt:
+                    # Tied heads are a real alias established by the shared
+                    # loader, not an invented missing-checkpoint fallback.
+                    embedding = model.get_input_embeddings().weight
+                    head = model.get_output_embeddings().weight
+                    if tensor is not head or head is not embedding:
+                        raise RuntimeError(f"streaming initialization has no source for {name}")
+            record = {"shape": list(tensor.shape), "dtype": str(tensor.dtype),
+                      "kind": "derived_buffer" if derived else "checkpoint"}
+            if derived:
+                if not torch.isfinite(tensor).all():
+                    raise RuntimeError(f"streaming initialization has nonfinite buffer {name}")
+                raw = tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
+                record["sha256"] = hashlib.sha256(raw).hexdigest()
+            previous = self.records.get(name)
+            if previous is not None and previous != record:
+                raise RuntimeError(f"streaming initialization state changed for {name}")
+            self.records[name] = record
+
+    def observe_layer(self, layer, delivered):
+        if layer in self.layers_seen:
+            return
+        expected = set(self.context.install_resolvers[layer])
+        missing = expected - set(delivered)
+        if missing:
+            raise RuntimeError(f"streaming initialization omitted source slots: {sorted(missing)[:8]}")
+        self._observe([f"{self.context.layers_prefix}{layer}."], delivered=delivered)
+        self.layers_seen.add(layer)
+
+    def complete(self):
+        import transformers
+        if self.layers_seen != set(range(self.context.num_layers)):
+            raise RuntimeError("streaming initialization has not observed every source layer")
+        if not self.records:
+            raise RuntimeError("streaming initialization observed no source state")
+        mapping = {name: {"tensor": key, "file": os.path.basename(self.context.weight_shard[name])}
+                   for name, key in self.context.weight_ckpt.items()}
+        model_class = type(self.context.model)
+        return validate_streaming_initialization_contract({
+            "schema": _STREAMING_INITIALIZATION_SCHEMA,
+            "scope": "streamed_text_source_forward", "status": "completed",
+            "transformers_version": transformers.__version__,
+            "model_class": f"{model_class.__module__}.{model_class.__qualname__}",
+            "dtype": str(self.context.dtype), "layers_prefix": self.context.layers_prefix,
+            "num_layers": self.context.num_layers,
+            "persistent_tensors": sum(r["kind"] == "checkpoint" for r in self.records.values()),
+            "derived_buffers": sum(r["kind"] == "derived_buffer" for r in self.records.values()),
+            "state_sha256": _initialization_digest(self.records),
+            "source_map_sha256": _initialization_digest(mapping),
+        })
 
 
 def _bypass_hf_fp8_module_rewrite(model_path: str) -> bool:
@@ -293,6 +410,7 @@ def _estimate_layer_cache_bytes(
     num_layers: int,
     target_dtype: torch.dtype,
     fp4_experts: bool = False,
+    tensor_dtypes: dict[str, torch.dtype] | None = None,
 ) -> tuple[int, list[int]]:
     """Estimate dequanted cache bytes per decoder layer without loading data.
 
@@ -302,7 +420,7 @@ def _estimate_layer_cache_bytes(
     price as MXFP4 nibble-packs (2 logical elements/byte at the execution
     dtype) instead of verbatim int8."""
     pat = re.compile(rf"^{re.escape(layers_prefix)}(?P<idx>\d+)\.")
-    by_shard: dict[str, list[tuple[int, str, bool]]] = {}
+    by_shard: dict[str, list[tuple[int, str, bool, torch.dtype]]] = {}
     for model_name, shard in weight_shard.items():
         m = pat.match(model_name)
         if m is None:
@@ -313,19 +431,20 @@ def _estimate_layer_cache_bytes(
         by_shard.setdefault(shard, []).append((
             idx, weight_ckpt[model_name],
             bool(fp4_experts and declared_expert_dtype_covers(model_name)),
+            (tensor_dtypes or {}).get(model_name, target_dtype),
         ))
 
     sizes = [0 for _ in range(num_layers)]
     try:
         for shard, pairs in by_shard.items():
             with safe_open(shard, framework="pt") as f:
-                for idx, ckpt_name, fp4_packed in pairs:
+                for idx, ckpt_name, fp4_packed, load_dtype in pairs:
                     sl = f.get_slice(ckpt_name)
                     n = 1
                     for dim in sl.get_shape():
                         n *= int(dim)
                     sizes[idx] += n * _safetensors_cache_dtype_bytes(
-                        sl.get_dtype(), target_dtype,
+                        sl.get_dtype(), load_dtype,
                         fp4_packed=fp4_packed)
     except Exception:
         return 0, sizes
@@ -432,8 +551,7 @@ class StreamingContext:
         self.install_resolvers = install_resolvers
         self.weight_shard = weight_shard
         self.weight_ckpt = weight_ckpt
-        self.buffer_dtypes = {name: value.dtype for name, value in
-                              model.named_buffers(remove_duplicate=False)}
+        self.buffer_dtypes = _source_tensor_dtypes(model, dtype, concat_merger)
         self.layer_cache = layer_cache
         self.prefetch_pool = prefetch_pool
         self.device = device
@@ -739,6 +857,9 @@ class StreamingContext:
             L, require_prefetched=require_prefetched,
         )
         _fast_install(self.install_resolvers[L], tensors, self.device, model=self.model)
+        audit = getattr(self, "_source_initialization_audit", None)
+        if audit is not None:
+            audit.observe_layer(L, tensors)
         # Re-derive the lookahead window now that this layer's slot is free.
         self._top_up_prefetch(L)
         # v20 step 3+4: value-aware retention. The historical
@@ -753,9 +874,88 @@ class StreamingContext:
         # out via mark_done (v20 step 2).
         return src
 
-    def unload(self, L: int):
+    def begin_source_initialization_audit(self):
+        """Require actual source-state coverage for this complete traversal."""
+        self._source_initialization_audit = _StreamingInitializationAudit(self)
+
+    def source_initialization_contract(self):
+        audit = getattr(self, "_source_initialization_audit", None)
+        if audit is None:
+            raise RuntimeError("streaming initialization audit was not started")
+        return audit.complete()
+
+    def unload(self, L: int, *, trim_cache: bool = True):
         _unload(self.model, [f"{self.layers_prefix}{L}."])
-        return self.layer_cache.trim_for_memory_pressure()
+        return self.layer_cache.trim_for_memory_pressure() if trim_cache else 0
+
+    def release_completed_layer(self, L: int):
+        """Release an exhausted layer without disturbing its resident successor.
+
+        The caller must have completed every source forward and released its
+        own parameter views. Other traversals retain the normal unload/cache
+        policy; this explicit boundary is for one-pass collection.
+        """
+        if type(L) is not int or not 0 <= L < self.num_layers:
+            raise ValueError('completed source layer is outside the model')
+        with self._inflight_lock:
+            if L in self._inflight:
+                raise RuntimeError('completed source layer still has an unclaimed prefetch')
+        # Pressure trimming could spend the next layer's prefetch pin. This
+        # transition releases only the layer the caller has finished using.
+        self.unload(L, trim_cache=False)
+        self.layer_cache.discard(L)
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    def source_residency_snapshot(self, layer_indices):
+        """Describe existing layer owners without retaining any tensor views.
+
+        Pending prefetches remain pending; inspection never waits, claims a
+        future, refreshes LRU state or loads a missing source layer.
+        """
+        owners, all_storages = [], {}
+
+        def describe(layer, owner, tensors, **extra):
+            storages = {}
+            count = 0
+            for tensor in tensors:
+                if tensor.is_meta:
+                    continue
+                count += 1
+                storage = tensor.untyped_storage()
+                key = (str(tensor.device), storage.data_ptr())
+                storages[key] = storage.nbytes()
+            all_storages.update(storages)
+            owners.append(dict(layer=layer, owner=owner, tensor_count=count,
+                unique_storage_bytes=sum(storages.values()),
+                storages=[dict(device=device, pointer=pointer, bytes=size)
+                          for (device, pointer), size in sorted(storages.items())], **extra))
+
+        for layer in layer_indices:
+            if type(layer) is not int or not 0 <= layer < self.num_layers:
+                raise ValueError('source residency layer is outside the model')
+            module = self.layers[layer]
+            describe(layer, 'installed_model', [*module.parameters(), *module.buffers()])
+            cached = self.layer_cache._cache.get(layer)
+            describe(layer, 'layer_cache', () if cached is None else cached.values())
+            with self._inflight_lock:
+                future = self._inflight.get(layer)
+            if future is None:
+                describe(layer, 'prefetch_future', (), state='absent')
+            elif future.cancelled():
+                describe(layer, 'prefetch_future', (), state='cancelled')
+            elif not future.done():
+                describe(layer, 'prefetch_future', (), state='pending', bytes_known=False)
+            else:
+                try:
+                    delivered = future.result()
+                except Exception as exc:
+                    describe(layer, 'prefetch_future', (), state='failed', error=repr(exc))
+                else:
+                    describe(layer, 'prefetch_future', () if not delivered else delivered.values(),
+                             state='completed', bytes_known=True)
+        return dict(schema='prismaquant.source_residency_snapshot.v1', owners=owners,
+                    unique_storage_bytes=sum(all_storages.values()))
 
     def shutdown(self):
         self.prefetch_pool.shutdown(wait=True)
@@ -1336,8 +1536,7 @@ def _build_streaming_context(model_path: str, *,
                 visual_prefix + ".",
                 weight_shard, weight_ckpt, dtype, device,
                 fp8_scale_inv_map=fp8_scale_inv_map,
-                buffer_dtypes={name: value.dtype for name, value in
-                               model.named_buffers(remove_duplicate=False)})
+                buffer_dtypes=_model_tensor_dtypes(model, dtype))
             print(f"{log_prefix} materializing visual tower: "
                   f"{len(tensors)}/{len(vis_keys)} tensors -> {device}", flush=True)
             if _module_has_meta_tensors(visual_module):
@@ -1420,6 +1619,7 @@ def _build_streaming_context(model_path: str, *,
               f"+ safety={autoscale_diag['safety_gb']:.1f} GB "
               f"(lps={autoscale_diag['layers_per_shard']})", flush=True)
 
+    concat_merger = _build_concat_merger(model, weight_ckpt)
     estimated_layer_bytes, layer_bytes = _estimate_layer_cache_bytes(
         weight_shard=weight_shard,
         weight_ckpt=weight_ckpt,
@@ -1427,6 +1627,7 @@ def _build_streaming_context(model_path: str, *,
         num_layers=num_layers,
         target_dtype=dtype,
         fp4_experts=declared_fp4_expert_dtype(model_path),
+        tensor_dtypes=_source_tensor_dtypes(model, dtype, concat_merger),
     )
     worker_count, worker_src = _auto_prefetch_workers(
         cache_bytes, estimated_layer_bytes, requested=prefetch_workers)
@@ -1469,5 +1670,5 @@ def _build_streaming_context(model_path: str, *,
         prefetch_workers=worker_count,
         prefetch_min_available_bytes=min_available_bytes,
         expert_packer=_build_expert_packer(model, weight_ckpt),
-        concat_merger=_build_concat_merger(model, weight_ckpt),
+        concat_merger=concat_merger,
     )

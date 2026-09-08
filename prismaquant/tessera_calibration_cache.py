@@ -37,9 +37,9 @@ def capture_identity(census_path, *, calibration, max_act_rows,
     census = json.loads(census_path.read_text())
     if type(max_act_rows) is not int or max_act_rows < 1:
         raise ValueError('capture scoring prefix must have positive max_act_rows')
-    from prismaquant import validate_pretrained_initialization_contract
-    contract = validate_pretrained_initialization_contract(model_load_contract)
-    recorded = validate_pretrained_initialization_contract(census.get('model_load_contract'))
+    from prismaquant import validate_source_initialization_contract
+    contract = validate_source_initialization_contract(model_load_contract)
+    recorded = validate_source_initialization_contract(census.get('model_load_contract'))
     runtime = dict(torch=torch.__version__,cuda=torch.version.cuda,
                    transformers=importlib.metadata.version('transformers'))
     if (contract != recorded or census.get('capture_runtime') != runtime or
@@ -147,9 +147,86 @@ def publish_capture(root, *, census_path, identity, acts=None, hessians=None,
     return dict(path=str(path),sha256=sha256(path))
 
 
+class CaptureWriter:
+    """Drain completed layers through the existing per-unit writer and journal.
+
+    An interrupted traversal may leave valid unit entries, but no complete
+    manifest. A retry recomputes the source forward and must match every entry
+    it reuses. Completion additionally requires the actual initialization
+    witness from that traversal, not only the census's expected descriptor.
+    """
+
+    def __init__(self, root, *, census_path, identity):
+        self.root = Path(root).resolve()
+        self.census_path = census_path
+        self.census = json.loads(Path(census_path).read_text())
+        self.identity = identity
+        self.names = sorted(identity['units'])
+        if set(self.names) != set(self.census['counts']):
+            raise RuntimeError('calibration writer scope differs from census')
+        import shutil
+        from .perturbed_x_cache import activation_cache_filename
+        self.root.mkdir(parents=True, exist_ok=True)
+        entries = {name: 4*(int(self.census['unit_shapes'][name][1])**2 +
+            min(int(self.census['counts'][name]), identity['max_act_rows'])*
+            int(self.census['unit_shapes'][name][1]))+16384 for name in self.names}
+        existing = 0
+        for name, bound in entries.items():
+            path = self.root/'inputs'/activation_cache_filename(name)
+            if path.is_file():
+                existing += min(path.stat().st_size, bound)
+        required = sum(entries.values())+max(entries.values(), default=0)-existing
+        available = shutil.disk_usage(self.root).free
+        if available < required:
+            raise RuntimeError(f'canonical capture needs {required} additional disk bytes; '
+                               f'only {available} are available')
+        self.journal, self.digest, self.completed = prepare_journal(
+            self.root/'journal', stage=STAGE, resume=True, identity=identity, qnames=self.names)
+        self.records = {}
+
+    def write(self, *, acts, hessians, counts, maxima):
+        from .perturbed_x_cache import activation_cache_filename, write_activation_cache_entry
+        names = set(acts)
+        if (not names <= set(self.names) or names.intersection(self.records) or
+                any(set(values) != names for values in (hessians, counts, maxima))):
+            raise RuntimeError('calibration writer has repeated or inconsistent layer scope')
+        for name in sorted(names):
+            payload = dict(inputs=acts[name], hessian=hessians[name], count=counts[name],
+                           max_abs=maxima[name], name=name, source=SOURCE)
+            _validate_tensors(name, payload, self.census, self.identity['max_act_rows'])
+            previous = self.completed.get(name)
+            if previous is not None:
+                import torch
+                expected = str(Path('inputs')/activation_cache_filename(name))
+                path = self.root/expected
+                if previous.get('path') != expected or sha256(path) != previous.get('sha256'):
+                    raise RuntimeError(f'{name}: interrupted capture entry changed')
+                old = torch.load(path, map_location='cpu', weights_only=True)
+                old_x, old_h = _validate_tensors(name, old, self.census, self.identity['max_act_rows'])
+                if not torch.equal(old_x, acts[name]) or not torch.equal(old_h, hessians[name]):
+                    raise RuntimeError(f'{name}: replayed capture differs from interrupted entry')
+                record = previous
+            else:
+                path = write_activation_cache_entry(self.root/'inputs', name, acts[name],
+                    source=SOURCE, durable=True, hessian=hessians[name],
+                    count=counts[name], max_abs=maxima[name])
+                record = dict(path=str(Path('inputs')/activation_cache_filename(name)), sha256=sha256(path))
+                write_unit(self.journal, stage=STAGE, qname=name,
+                           identity_sha256=self.digest, state=record)
+            self.records[name] = record
+
+    def finish(self, *, model_load_contract):
+        from prismaquant import validate_source_initialization_contract
+        actual = validate_source_initialization_contract(model_load_contract)
+        if actual != self.identity['model_load_contract']:
+            raise RuntimeError('actual capture initialization differs from the census')
+        return publish_capture(self.root, census_path=self.census_path,
+                               identity=self.identity, existing_entries=self.records)
+
+
 def require_capture_contract(path, expected_sha256=None):
     """Validate a complete canonical capture before downstream preparation."""
-    from prismaquant import validate_pretrained_initialization_contract
+    from prismaquant import validate_source_initialization_contract
     path = Path(path)
     if expected_sha256 is not None and sha256(path) != expected_sha256:
         raise RuntimeError('priced calibration capture manifest changed')
@@ -157,7 +234,7 @@ def require_capture_contract(path, expected_sha256=None):
     identity = manifest.get('identity') or {}
     if manifest.get('schema') != SCHEMA or manifest.get('status') != 'complete':
         raise RuntimeError('not a complete canonical calibration capture v2')
-    contract = validate_pretrained_initialization_contract(identity.get('model_load_contract'))
+    contract = validate_source_initialization_contract(identity.get('model_load_contract'))
     runtime = identity.get('capture_runtime')
     if (not isinstance(runtime,dict) or set(runtime) != {'torch','cuda','transformers'} or
             not isinstance(runtime.get('torch'),str) or not runtime['torch'] or
