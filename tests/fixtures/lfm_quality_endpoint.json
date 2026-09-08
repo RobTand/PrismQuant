@@ -1,0 +1,768 @@
+{
+  "source_sha256": "b3f54ea59699dd07a1c6a12bbdfa59f9f49f5f4e27ce6ba19ac1518d6bc4663d",
+  "probe_sha256": "5d08904df98d07d91fa29cffe9d5bb44080e63f8149037b1f29153b6457bd451",
+  "units": [
+    {
+      "name": "model.layers.0.feed_forward.w2",
+      "n_params": 14680064,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 29360128,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5111607142857144,
+          "memory_bytes": 6443008,
+          "predicted_dloss": 0.006304780365598535
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R1024",
+          "bits_per_param": 4.011160714285714,
+          "memory_bytes": 7360512,
+          "predicted_dloss": 0.001804353518227313
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R1152",
+          "bits_per_param": 4.511160714285714,
+          "memory_bytes": 8278016,
+          "predicted_dloss": 0.0007034233101471547
+        }
+      ]
+    },
+    {
+      "name": "model.layers.1.feed_forward.w2",
+      "n_params": 14680064,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 29360128,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5111607142857144,
+          "memory_bytes": 6443008,
+          "predicted_dloss": 0.00122667058257037
+        }
+      ]
+    },
+    {
+      "name": "model.layers.10.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.004566241945956486
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R1024",
+          "bits_per_param": 4.0703125,
+          "memory_bytes": 2134016,
+          "predicted_dloss": 0.00029748423740553554
+        }
+      ]
+    },
+    {
+      "name": "model.layers.14.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.0010260786803534343
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R1152",
+          "bits_per_param": 4.5390625,
+          "memory_bytes": 2379776,
+          "predicted_dloss": 0.0006637849603100441
+        }
+      ]
+    },
+    {
+      "name": "model.layers.18.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.0117397572653755
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 1871872,
+          "predicted_dloss": 0.0023402171734250264
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R1024",
+          "bits_per_param": 4.0390625,
+          "memory_bytes": 2117632,
+          "predicted_dloss": 0.0008918009082313055
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R1152",
+          "bits_per_param": 4.5703125,
+          "memory_bytes": 2396160,
+          "predicted_dloss": 0.0004398715591219914
+        }
+      ]
+    },
+    {
+      "name": "model.layers.2.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.016354091080306443
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 1871872,
+          "predicted_dloss": 0.0016861841011920693
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R1024",
+          "bits_per_param": 4.0390625,
+          "memory_bytes": 2117632,
+          "predicted_dloss": 0.0013209105190431151
+        }
+      ]
+    },
+    {
+      "name": "model.layers.21.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.004822636637908629
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 1871872,
+          "predicted_dloss": 0.0003802799663727677
+        }
+      ]
+    },
+    {
+      "name": "model.layers.6.self_attn.out_proj",
+      "n_params": 4194304,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 8388608,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5390625,
+          "memory_bytes": 1855488,
+          "predicted_dloss": 0.011414626003454399
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 1871872,
+          "predicted_dloss": 0.0010298967008860451
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R1024",
+          "bits_per_param": 4.0703125,
+          "memory_bytes": 2134016,
+          "predicted_dloss": 0.0005660441150281701
+        }
+      ]
+    },
+    {
+      "name": "model.layers.10.feed_forward.experts.0.__packed_serving__.model__layers__10__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0010489913931271612
+        }
+      ]
+    },
+    {
+      "name": "model.layers.11.feed_forward.experts.0.__packed_serving__.model__layers__11__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0009903385281851888
+        }
+      ]
+    },
+    {
+      "name": "model.layers.12.feed_forward.experts.0.__packed_serving__.model__layers__12__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.000975168255508065
+        }
+      ]
+    },
+    {
+      "name": "model.layers.13.feed_forward.experts.0.__packed_serving__.model__layers__13__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.001510986977513534
+        }
+      ]
+    },
+    {
+      "name": "model.layers.14.feed_forward.experts.0.__packed_serving__.model__layers__14__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0008176509260202327
+        }
+      ]
+    },
+    {
+      "name": "model.layers.15.feed_forward.experts.0.__packed_serving__.model__layers__15__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0005798116623155694
+        }
+      ]
+    },
+    {
+      "name": "model.layers.16.feed_forward.experts.0.__packed_serving__.model__layers__16__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.001417692148961959
+        }
+      ]
+    },
+    {
+      "name": "model.layers.17.feed_forward.experts.0.__packed_serving__.model__layers__17__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0011552693679756
+        }
+      ]
+    },
+    {
+      "name": "model.layers.18.feed_forward.experts.0.__packed_serving__.model__layers__18__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0006601255254514348
+        }
+      ]
+    },
+    {
+      "name": "model.layers.19.feed_forward.experts.0.__packed_serving__.model__layers__19__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0009712827259834322
+        }
+      ]
+    },
+    {
+      "name": "model.layers.2.feed_forward.experts.0.__packed_serving__.model__layers__2__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.008626966777560422
+        }
+      ]
+    },
+    {
+      "name": "model.layers.20.feed_forward.experts.0.__packed_serving__.model__layers__20__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0011852857690366717
+        }
+      ]
+    },
+    {
+      "name": "model.layers.21.feed_forward.experts.0.__packed_serving__.model__layers__21__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0006852360763392278
+        }
+      ]
+    },
+    {
+      "name": "model.layers.22.feed_forward.experts.0.__packed_serving__.model__layers__22__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0005865597754269874
+        }
+      ]
+    },
+    {
+      "name": "model.layers.23.feed_forward.experts.0.__packed_serving__.model__layers__23__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0007415927362775366
+        }
+      ]
+    },
+    {
+      "name": "model.layers.3.feed_forward.experts.0.__packed_serving__.model__layers__3__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.00832176817320481
+        }
+      ]
+    },
+    {
+      "name": "model.layers.4.feed_forward.experts.0.__packed_serving__.model__layers__4__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0046356053370413715
+        }
+      ]
+    },
+    {
+      "name": "model.layers.5.feed_forward.experts.0.__packed_serving__.model__layers__5__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.008839667490985737
+        }
+      ]
+    },
+    {
+      "name": "model.layers.6.feed_forward.experts.0.__packed_serving__.model__layers__6__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.002768939557967569
+        }
+      ]
+    },
+    {
+      "name": "model.layers.7.feed_forward.experts.0.__packed_serving__.model__layers__7__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0025994202463908204
+        }
+      ]
+    },
+    {
+      "name": "model.layers.8.feed_forward.experts.0.__packed_serving__.model__layers__8__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0029779786669550594
+        }
+      ]
+    },
+    {
+      "name": "model.layers.9.feed_forward.experts.0.__packed_serving__.model__layers__9__feed_forward__experts::__packed_format__:w1,w3,w2",
+      "n_params": 352321536,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 704643072,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5438988095238093,
+          "memory_bytes": 156073984,
+          "predicted_dloss": 0.0029535343819712453
+        }
+      ]
+    },
+    {
+      "name": "model.layers.0.feed_forward.__siblings__.model__layers__0__feed_forward__w13",
+      "n_params": 29360128,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 58720256,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5167410714285716,
+          "memory_bytes": 12906496,
+          "predicted_dloss": 0.005640354487604853
+        }
+      ]
+    },
+    {
+      "name": "model.layers.1.feed_forward.__siblings__.model__layers__1__feed_forward__w13",
+      "n_params": 29360128,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 58720256,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5167410714285716,
+          "memory_bytes": 12906496,
+          "predicted_dloss": 0.014150081178882954
+        },
+        {
+          "fmt": "TESSERA_BF16_K1_R1024",
+          "bits_per_param": 4.025669642857143,
+          "memory_bytes": 14774272,
+          "predicted_dloss": 0.0106168963347829
+        }
+      ]
+    },
+    {
+      "name": "model.layers.10.self_attn.__siblings__.model__layers__10__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.01075845580400904
+        }
+      ]
+    },
+    {
+      "name": "model.layers.14.self_attn.__siblings__.model__layers__14__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.00477868836974173
+        }
+      ]
+    },
+    {
+      "name": "model.layers.18.self_attn.__siblings__.model__layers__18__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.008174959412094595
+        }
+      ]
+    },
+    {
+      "name": "model.layers.2.self_attn.__siblings__.model__layers__2__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.01999972752863082
+        }
+      ]
+    },
+    {
+      "name": "model.layers.21.self_attn.__siblings__.model__layers__21__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.009044566423585611
+        }
+      ]
+    },
+    {
+      "name": "model.layers.6.self_attn.__siblings__.model__layers__6__self_attn__qkv_proj",
+      "n_params": 6291456,
+      "candidates": [
+        {
+          "fmt": "BF16",
+          "bits_per_param": 16.0,
+          "memory_bytes": 12582912,
+          "predicted_dloss": 0.0
+        },
+        {
+          "fmt": "TESSERA_E4M3_K1_R896",
+          "bits_per_param": 3.5703125,
+          "memory_bytes": 2807808,
+          "predicted_dloss": 0.02458035252275414
+        }
+      ]
+    }
+  ]
+}

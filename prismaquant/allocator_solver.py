@@ -1432,7 +1432,13 @@ def solve_with_promotion(
     correct — the rung label was just wrong, skewing the Pareto curve's
     x-axis rather than fabricating feasibility.
 
-    The search runs in two phases on the *tightened* DP target:
+    First evaluate the per-unit minimum measured loss assignment. Return it
+    if serving promotion preserves every unit's minimum and its unrounded
+    candidate payload fits. Otherwise use the existing two-phase search on
+    the *tightened* DP target. The caller still exact-prices shared sidecars
+    and other non-additive artifact costs before accepting any proposal.
+
+    The binned search runs in two phases:
 
     1. Damped descent (the old loop's cost profile — the first eval at the
        full target is the only expensive DP; every subsequent eval has a
@@ -1504,6 +1510,42 @@ def solve_with_promotion(
     # the format it picks has to be runnable for every member. Built once: the
     # search re-promotes on every DP evaluation.
     legal_formats = legal_formats_from_candidates(candidates)
+
+    # Bin rounding can exclude the exact feasible quality endpoint: every
+    # unit may round upward even when the sum of its real bytes fits. Check
+    # the unconstrained per-unit loss minimum before using the binned proposal.
+    # Equal-loss choices retain the existing preference for larger achieved
+    # payloads. This is format-agnostic; BF16 gets no special treatment.
+    quality_choices = {
+        name: min(options, key=lambda c: (c.predicted_dloss, -c.memory_bytes))
+        for name, options in candidates.items()
+    }
+    quality_assignment = promote_serving_units(
+        {name: c.fmt for name, c in quality_choices.items()},
+        format_rank,
+        profile=profile,
+        include_fused=not no_fused_promote,
+        include_moe=True,
+        legal_formats=legal_formats,
+    )
+    quality_achieved, quality_loss = compute_achieved(
+        stats, quality_assignment, format_specs, candidates=candidates,
+    )
+    # Test each promoted row against its own minimum; comparing rounded sums
+    # could hide a small loss increase beside a very large unchanged row.
+    quality_preserved = all(
+        _candidate_for_assignment(name, fmt, candidates).predicted_dloss
+        == quality_choices[name].predicted_dloss
+        for name, fmt in quality_assignment.items()
+    )
+    diag.update(quality_endpoint_achieved_bits=float(quality_achieved),
+                quality_endpoint_preserves_minimum_loss=quality_preserved)
+    if quality_preserved and quality_achieved - target <= overshoot_tolerance:
+        diag.update(feasible=True, achieved_bits=float(quality_achieved),
+                    predicted_dloss=float(quality_loss),
+                    quality_endpoint_selected=True)
+        return quality_assignment, quality_achieved
+    diag["quality_endpoint_selected"] = False
 
     def _evaluate(t: float) -> float | None:
         """Solve+promote at tightened ``t``; ratchet if feasible.
@@ -1585,8 +1627,8 @@ def solve_with_promotion(
             continue
         if achieved - target <= overshoot_tolerance:
             if achieved >= target - overshoot_tolerance:
-                # Within the band on both sides — no denser feasible
-                # iterate exists; return the ratcheted min-Δloss one.
+                # Within the band on both sides; return the best feasible
+                # iterate seen. Binning does not prove global optimality.
                 return best_assign, best_achieved
             lo = tightened
             break
