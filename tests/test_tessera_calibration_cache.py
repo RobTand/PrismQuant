@@ -268,3 +268,25 @@ def test_campaign_boundary_coordinates_follow_batched_calibration_ids():
     assert captures[1][1].tolist() == [[2,0],[2,1]]
     assert captures[0][0][:,0].tolist() == [-1,1,1,-1]
     assert all(count == 3 for count in values[2].values())
+
+
+def test_layer_writer_releases_previous_resume_storage_before_next_load(capture, monkeypatch):
+    from torch.multiprocessing.reductions import StorageWeakRef
+    root, path, census, identity, acts, hessians, _record = capture
+    writer = cc.CaptureWriter(root, census_path=path, identity=identity)
+    original_load = torch.load
+    storages, loaded = [], []
+
+    def load(filename, *args, **kwargs):
+        assert all(ref.expired() for ref in storages), 'previous resume entry still owns CPU storage'
+        payload = original_load(filename, *args, **kwargs)
+        storages.extend(StorageWeakRef(payload[key].untyped_storage())
+                        for key in ('inputs', 'hessian'))
+        loaded.append(Path(filename).name)
+        return payload
+
+    monkeypatch.setattr(torch, 'load', load)
+    writer.write(acts=acts, hessians=hessians, counts=census['counts'], maxima=census['max_abs'])
+    assert loaded == ['a.pt', 'b.pt']
+    assert all(ref.expired() for ref in storages)
+    assert set(writer.records) == {'a', 'b'}
