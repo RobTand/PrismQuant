@@ -1,7 +1,18 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-07 · `fix/joint-aura-validation-cost`. Stamps
+As of: 2026-09-08 · `fix/allocator-quality-endpoint`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-08, `fix/allocator-quality-endpoint`) for the allocator's
+unrounded quality endpoint. `solve_with_promotion` first considers each unit's
+minimum measured loss option, breaking local ties toward larger payloads. It
+returns that assignment only if existing serving-group promotion preserves
+every unit's minimum and the unrounded candidate payload fits the declared
+bit target and tolerance. Otherwise the binned search proceeds as before.
+The outer exact artifact/sidecar budget filter remains mandatory. This avoids
+rounding away a feasible zero-loss endpoint without a BF16-specific default,
+changing DP bin charges, re-probing or claiming global artifact optimality.
+Gate: `tests/test_allocator_quality_endpoint.py`.
 
 Re-stamped (2026-09-07, `fix/joint-aura-validation-cost`) for allocator-local
 joint-AURA probe identity reuse. After loading a cost table, the allocator
