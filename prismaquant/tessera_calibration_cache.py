@@ -206,6 +206,9 @@ class CaptureWriter:
                 if not torch.equal(old_x, acts[name]) or not torch.equal(old_h, hessians[name]):
                     raise RuntimeError(f'{name}: replayed capture differs from interrupted entry')
                 record = previous
+                # Admission allows one loaded validation entry alongside the
+                # current capture. Drop all views before loading its successor.
+                del old, old_x, old_h
             else:
                 path = write_activation_cache_entry(self.root/'inputs', name, acts[name],
                     source=SOURCE, durable=True, hessian=hessians[name],

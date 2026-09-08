@@ -209,6 +209,41 @@ def test_streamed_campaign_publishes_original_layout_census_and_capture(glm_chec
     capture.require_capture_contract(manifest)
     assert json.loads(manifest.read_text())['status'] == 'complete'
 
+    # The explicit policy must traverse the same source and publish the same
+    # per-unit tensors, while releasing each exhausted layer before return.
+    from prismaquant.streaming_model import StreamingContext
+    released = []
+    release = StreamingContext.release_completed_layer
+    def track_release(context, layer):
+        release(context, layer)
+        assert all(p.is_meta for p in context.layers[layer].parameters())
+        assert layer not in context.layer_cache._cache
+        released.append(layer)
+    monkeypatch.setattr(StreamingContext, 'release_completed_layer', track_release)
+    shared_root = tmp_path/'shared-capture'
+    campaign.main([*common, '--cache-dir', str(tmp_path/'shared-capture-cache'),
+        '--calibration-census', str(census), '--capture-calibration-out', str(shared_root),
+        '--streaming-capture-policy', 'shared-inputs-release-v1'])
+    shared_manifest = shared_root/'capture_manifest.json'
+    capture.require_capture_contract(shared_manifest)
+    baseline = json.loads(manifest.read_text())
+    candidate = json.loads(shared_manifest.read_text())
+    assert candidate['identity'] == baseline['identity']
+    assert candidate['entries'].keys() == baseline['entries'].keys()
+    for name, entry in baseline['entries'].items():
+        before = torch.load(root/entry['path'], weights_only=True)
+        after = torch.load(shared_root/candidate['entries'][name]['path'], weights_only=True)
+        assert before.keys() == after.keys()
+        for key, value in before.items():
+            if isinstance(value, torch.Tensor):
+                assert torch.equal(value.view(torch.uint8), after[key].view(torch.uint8)), (name, key)
+            else:
+                assert value == after[key], (name, key)
+    assert released == list(range(config.text_config.num_hidden_layers))
+    telemetry = json.loads((tmp_path/'shared-capture-cache'/'streamed-calibration-telemetry.json').read_text())
+    assert all(row['capture_policy'] == 'shared-inputs-release-v1' and
+               row['completed_source_released'] for row in telemetry)
+
 
 def test_streamed_bf16_keeps_hf_strict_fp32_source_slots(glm_checkpoint, tmp_path):
     """BF16 forward weights retain HF-declared strict FP32 recurrence state."""
@@ -276,3 +311,16 @@ def test_layer_visit_releases_derived_batch_metadata(glm_checkpoint, tmp_path, m
         runner.visit_layer_batches(tokens, visit)
     finally:
         runner.shutdown()
+
+
+@pytest.mark.parametrize('extra', [[], ['--streaming'],
+    ['--capture-calibration-out', '/unused/capture']])
+def test_shared_capture_policy_refuses_other_routes_before_loading(extra, tmp_path, capsys):
+    from prismaquant.tessera_campaign import main
+    with pytest.raises(SystemExit) as caught:
+        main(['--model', '/missing/source', '--out', str(tmp_path/'unused.pkl'),
+              '--cache-dir', str(tmp_path/'cache'),
+              '--streaming-capture-policy', 'shared-inputs-release-v1', *extra])
+    assert caught.value.code == 2
+    assert '--streaming-capture-policy requires --streaming and --capture-calibration-out' in capsys.readouterr().err
+    assert not (tmp_path/'cache').exists()

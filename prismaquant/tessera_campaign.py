@@ -3405,6 +3405,10 @@ def _run_streamed_calibration(args, runner, profile, *, mode, population,
         writer = store.CaptureWriter(args.capture_calibration_out,
             census_path=args.calibration_census, identity=identity)
 
+    capture_policy = getattr(args, 'streaming_capture_policy', 'legacy')
+    shared_capture = capture_policy == 'shared-inputs-release-v1'
+    if shared_capture and writer is None:
+        raise RuntimeError('shared-inputs-release-v1 requires streamed calibration capture')
     counts, maxima, telemetry = {}, {}, []
     runner.context.begin_source_initialization_audit()
 
@@ -3419,17 +3423,26 @@ def _run_streamed_calibration(args, runner, profile, *, mode, population,
         # The source identity check is complete. The collector creates its own
         # live views; this caller must not pin old packed storage through return.
         del live
+        completed_source_released = False
+        def release_completed_source():
+            nonlocal completed_source_released
+            runner.context.release_completed_layer(layer)
+            completed_source_released = True
+
         before = time.perf_counter()
         acts, hessians, rows, amax = _collect_activations(runner.model, names, tokens,
             args.max_act_rows if writer is not None else 0, runner.device,
-            want_hessian=writer is not None, profile=profile, forward_batch=forward_batch)
+            want_hessian=writer is not None, profile=profile, forward_batch=forward_batch,
+            shared_packed_inputs=shared_capture,
+            on_forwards_complete=release_completed_source if shared_capture else None)
         collected = time.perf_counter()
         counts.update(rows)
         maxima.update(amax)
         if writer is not None:
             writer.write(acts=acts, hessians=hessians, counts=rows, maxima=amax)
         flushed = time.perf_counter()
-        record = dict(layer=layer, units=len(names), collect_seconds=collected-before,
+        record = dict(layer=layer, units=len(names), capture_policy=capture_policy,
+            completed_source_released=completed_source_released, collect_seconds=collected-before,
             flush_seconds=flushed-collected,
             capture_tensor_bytes=sum(t.numel()*t.element_size()
                 for t in [*acts.values(), *hessians.values()] if t is not None))
@@ -3583,6 +3596,9 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--streaming-cache-slots", type=int, default=2)
     ap.add_argument("--streaming-prefetch-workers", type=int, default=1)
     ap.add_argument("--streaming-cache-headroom-gb", type=float, default=24)
+    ap.add_argument("--streaming-capture-policy", default="legacy",
+                    choices=("legacy", "shared-inputs-release-v1"),
+                    help="Opt-in shared packed inputs and completed-source release for capture.")
     ap.add_argument("--capture-calibration-out", default=None,
                     help="Capture full-census float32 prefix X and uncapped H once, then exit.")
     ap.add_argument("--calibration-cache", default=None,
@@ -3590,6 +3606,8 @@ def main(argv: "Sequence[str] | None" = None) -> int:
     ap.add_argument("--calibration-cache-sha256", default=None,
                     help="Expected capture manifest hash, sealed by the campaign planner.")
     args = ap.parse_args(argv)
+    if args.streaming_capture_policy != "legacy" and not (args.streaming and args.capture_calibration_out):
+        ap.error("--streaming-capture-policy requires --streaming and --capture-calibration-out")
     if args.streaming and (not (args.census_out or args.capture_calibration_out) or args.units):
         ap.error("--streaming currently requires full-scope --census-out or --capture-calibration-out")
     if args.streaming and (args.streaming_cache_slots < 2 or args.streaming_prefetch_workers < 1):

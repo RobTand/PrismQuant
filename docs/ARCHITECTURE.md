@@ -1,7 +1,22 @@
 # PrismaQuant Architecture
 
-As of: 2026-09-08 · `fix/allocator-quality-endpoint`. Stamps
+As of: 2026-09-08 · `feat/streamed-shared-capture`. Stamps
 follow, newest first, each recording its own branch and date.
+
+Re-stamped (2026-09-08, `feat/streamed-shared-capture`) for the experimental
+campaign `--streaming-capture-policy shared-inputs-release-v1`. Only full-scope
+streamed capture accepts it. It selects the existing shared packed-input
+collector and releases the exhausted current source through
+`StreamingContext.release_completed_layer` after original forwards and hook
+removal, before CPU output materialization. The existing next-layer prefetch,
+per-unit capture writer and census identity gates remain authoritative.
+Capture telemetry records the selected policy and completed release boundary;
+the canonical numerical identity stays the same because H/X/count/max bytes
+must match the legacy policy. The default is `legacy`, and the existing
+conservative resource reservation is unchanged. A bounded workspace fit does
+not establish that the complete campaign capture fits; full-model admission
+and measurement remain required. Gates: `tests/test_glm_campaign_streaming.py`
+and the collector's existing shared-input and source-lifetime regressions.
 
 Re-stamped (2026-09-08, `fix/allocator-quality-endpoint`) for the allocator's
 unrounded quality endpoint. `solve_with_promotion` first considers each unit's
